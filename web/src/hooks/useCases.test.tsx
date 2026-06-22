@@ -8,10 +8,15 @@
 // onCaseOpen now optimistically upserts the envelope's CaseSummary.
 
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { CaseSessionState, CaseSummary } from "../contracts";
-import { useCases } from "./useCases";
+import type {
+  CaseSessionState,
+  CaseSummary,
+  ProjectLayerSummary,
+} from "../contracts";
+import { LayerCache } from "../lib/layer_cache";
+import { coldRenderableRasterSummaries, useCases } from "./useCases";
 
 function summary(id: string, title: string): CaseSummary {
   return {
@@ -29,6 +34,36 @@ function session(id: string, title: string): CaseSessionState {
     chat_history: [],
     loaded_layers: [],
   } as unknown as CaseSessionState;
+}
+
+// A cold-renderable RASTER summary: its `uri` is the resolved TiTiler
+// /cog/tiles/.../{z}/{x}/{y}.png?... template served by the always-on
+// TiTiler+CloudFront box, so it paints with the agent box asleep.
+function rasterLayer(
+  id: string,
+  uri = `https://d125yfbyjrpbre.cloudfront.net/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3://runs/${id}.tif`,
+): ProjectLayerSummary {
+  return {
+    layer_id: id,
+    name: `Raster ${id}`,
+    layer_type: "raster",
+    uri,
+    visible: true,
+    opacity: 1,
+    z_index: 0,
+  } as ProjectLayerSummary;
+}
+
+function vectorLayer(id: string, uri = `s3://runs/${id}.fgb`): ProjectLayerSummary {
+  return {
+    layer_id: id,
+    name: `Vector ${id}`,
+    layer_type: "vector",
+    uri,
+    visible: true,
+    opacity: 1,
+    z_index: 1,
+  } as ProjectLayerSummary;
 }
 
 const noopSend = () => {};
@@ -83,5 +118,234 @@ describe("useCases auto-create race (job-0273)", () => {
       result.current.onCaseList({ cases: [summary("01B", "B")] });
     });
     expect(result.current.activeCaseId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PRIMARY - cold-open RENDER: a box-OFF case-open whose snapshot carries a
+// populated `session_state.loaded_layers` (the cold-renderable array: raster
+// TiTiler tile templates + inline vectors) must reach the map paintable.
+//
+// The live contradiction (GROUND TRUTH 2026-06-22): NATE reports box-OFF
+// case-open shows NO layers, but the real Ellicott snapshot's
+// `session_state.loaded_layers` is fully cold-renderable. This pins the WEB
+// cold-open path: onCaseOpen exposes the snapshot's loaded_layers verbatim on
+// `activeSession.loaded_layers` (which App.tsx's rehydration effect pushes onto
+// the map channel with replace_layers:true), and that frame, run through the
+// SAME LayerCache.mergeSnapshot the bus subscriber uses, yields a PAINTABLE
+// raster frame (tile template intact). So if the snapshot carries the layers,
+// the web paints them cold - confirming the no-layers symptom is the
+// server-side stale/lost-write race, NOT a web cold-render drop.
+// ---------------------------------------------------------------------------
+describe("useCases cold-open render (PRIMARY - box-off loaded_layers paint)", () => {
+  it("exposes the cold snapshot's loaded_layers on activeSession verbatim", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+
+    const raster = rasterLayer("01RAS");
+    const vector = vectorLayer("01VEC");
+    const coldSnapshot = {
+      case: summary("01COLD", "Ellicott City"),
+      chat_history: [],
+      // The Ellicott snapshot's COLD-RENDERABLE array.
+      loaded_layers: [raster, vector],
+    } as unknown as CaseSessionState;
+
+    act(() => {
+      result.current.onCaseOpen({ session_state: coldSnapshot });
+    });
+
+    expect(result.current.activeCaseId).toBe("01COLD");
+    // The layers App.tsx forwards to the map are read off activeSession - they
+    // must be the snapshot's loaded_layers untouched (incl. the raster tile
+    // template that paints with the agent box asleep).
+    const layers = result.current.activeSession?.loaded_layers ?? [];
+    expect(layers).toHaveLength(2);
+    expect(layers.map((l) => l.layer_id)).toEqual(["01RAS", "01VEC"]);
+  });
+
+  it("a cold loaded_layers frame produces a paintable raster map frame (mergeSnapshot)", () => {
+    // Mirror App.tsx's cold-open dispatch end-to-end: onCaseOpen sets
+    // activeSession, the rehydration effect pushes activeSession.loaded_layers
+    // with replace_layers:true, and the bus subscriber runs
+    // LayerCache.mergeSnapshot. We assert the RASTER survives that merge into
+    // the rendered list with its TiTiler tile template intact (cold-renderable).
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+    const raster = rasterLayer("01RAS");
+    const coldSnapshot = {
+      case: summary("01COLD", "Ellicott City"),
+      chat_history: [],
+      loaded_layers: [raster],
+    } as unknown as CaseSessionState;
+
+    act(() => {
+      result.current.onCaseOpen({ session_state: coldSnapshot });
+    });
+
+    const cache = new LayerCache({
+      backend: { load: async () => ({}), save: async () => {} },
+    });
+    const caseId = result.current.activeCaseId!;
+    cache.activeCaseId = caseId;
+    // App.tsx pushes the OPEN-case frame with replace_layers:true => an
+    // AUTHORITATIVE replace. On a fresh (cold) Case the cache has nothing
+    // tracked, so the layer is ADDED (the #158 empty-frame guard only blocks an
+    // EMPTY authoritative frame - a layer-bearing one always paints).
+    const rendered = cache.mergeSnapshot(
+      caseId,
+      result.current.activeSession?.loaded_layers ?? [],
+      { authoritativeReplace: true },
+    );
+
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]!.layer_id).toBe("01RAS");
+    // The cold-renderable proof: the raster URI is an http(s) TiTiler tile
+    // template, so MapLibre can register a raster source with the agent asleep.
+    expect(rendered[0]!.uri).toMatch(/^https:\/\/.*\/cog\/tiles\/.*\{z\}\/\{x\}\/\{y\}\.png/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SECONDARY - cold-LIST raster fallback (defense in depth, coldview FIX C).
+// When the per-case snapshot is missing / stale / 404, the cold case-LIST
+// envelope still carries each Case's `loaded_layer_summaries`. onCaseList
+// surfaces the OPEN Case's cold-renderable RASTER summaries to the
+// onListLayerSummaries sink so they still paint (non-authoritative top-up).
+// ---------------------------------------------------------------------------
+describe("coldRenderableRasterSummaries (cold-list filter)", () => {
+  it("keeps raster layers with an http(s) tile-template uri", () => {
+    const kept = coldRenderableRasterSummaries([
+      rasterLayer("R1"),
+      rasterLayer(
+        "R2",
+        "http://example.com/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=x",
+      ),
+    ]);
+    expect(kept.map((l) => l.layer_id)).toEqual(["R1", "R2"]);
+  });
+
+  it("drops vectors, bare object-store rasters, and empty/garbage", () => {
+    const kept = coldRenderableRasterSummaries([
+      vectorLayer("V1"), // vector - needs inline geojson (J2), not the list
+      rasterLayer("R_S3", "s3://runs/R_S3.tif"), // bare handle - not browser-readable
+      rasterLayer("R_GS", "gs://runs/R_GS.tif"), // bare handle - not browser-readable
+      rasterLayer("R_EMPTY", ""), // empty uri
+    ]);
+    expect(kept).toHaveLength(0);
+  });
+
+  it("tolerates undefined / null / non-array input", () => {
+    expect(coldRenderableRasterSummaries(undefined)).toEqual([]);
+    expect(coldRenderableRasterSummaries(null)).toEqual([]);
+    expect(
+      coldRenderableRasterSummaries(undefined as unknown as ProjectLayerSummary[]),
+    ).toEqual([]);
+  });
+});
+
+describe("useCases cold-list raster fallback (SECONDARY - coldview FIX C)", () => {
+  function openCase(
+    result: { current: ReturnType<typeof useCases> },
+    id: string,
+  ): void {
+    // Open a Case so the OPEN-case selection in onCaseList has a target.
+    act(() => {
+      result.current.onCaseOpen({ session_state: session(id, id) });
+    });
+  }
+
+  it("surfaces the OPEN Case's cold-renderable rasters to the sink", () => {
+    const sink = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({
+        sendCaseCommand: noopSend as never,
+        isSignedIn: false,
+        onListLayerSummaries: sink,
+      }),
+    );
+    openCase(result, "01OPEN");
+
+    const openSummary = summary("01OPEN", "Open Case");
+    // The case-list carries loaded_layer_summaries: a cold-renderable raster, a
+    // bare-handle raster (dropped), and a vector (dropped - J2's job).
+    openSummary.loaded_layer_summaries = [
+      rasterLayer("RAS_OK"),
+      rasterLayer("RAS_S3", "s3://runs/RAS_S3.tif"),
+      vectorLayer("VEC"),
+    ];
+
+    act(() => {
+      result.current.onCaseList(
+        { cases: [openSummary, summary("01OTHER", "Other")] },
+        true,
+      );
+    });
+
+    expect(sink).toHaveBeenCalledTimes(1);
+    const [caseIdArg, rastersArg] = sink.mock.calls[0]!;
+    expect(caseIdArg).toBe("01OPEN");
+    expect(rastersArg.map((l: ProjectLayerSummary) => l.layer_id)).toEqual([
+      "RAS_OK",
+    ]);
+  });
+
+  it("does NOT call the sink when no Case is open (Cases root)", () => {
+    const sink = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({
+        sendCaseCommand: noopSend as never,
+        isSignedIn: false,
+        onListLayerSummaries: sink,
+      }),
+    );
+    const s = summary("01A", "A");
+    s.loaded_layer_summaries = [rasterLayer("RAS_OK")];
+    act(() => {
+      result.current.onCaseList({ cases: [s] }, true);
+    });
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call the sink when the open Case has no cold-renderable rasters", () => {
+    const sink = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({
+        sendCaseCommand: noopSend as never,
+        isSignedIn: false,
+        onListLayerSummaries: sink,
+      }),
+    );
+    openCase(result, "01OPEN");
+    const openSummary = summary("01OPEN", "Open Case");
+    // Only a vector + a bare-handle raster - nothing cold-renderable.
+    openSummary.loaded_layer_summaries = [
+      vectorLayer("VEC"),
+      rasterLayer("RAS_S3", "s3://runs/RAS_S3.tif"),
+    ];
+    act(() => {
+      result.current.onCaseList({ cases: [openSummary] }, true);
+    });
+    expect(sink).not.toHaveBeenCalled();
+  });
+
+  it("does NOT regress the warm path - no sink wired => no extra behavior", () => {
+    // The warm path passes no onListLayerSummaries; onCaseList must be a
+    // byte-identical no-op beyond the rail reconcile (no throw, rail updates).
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+    const s = summary("01OPEN", "Open Case");
+    s.loaded_layer_summaries = [rasterLayer("RAS_OK")];
+    act(() => {
+      result.current.onCaseOpen({ session_state: session("01OPEN", "Open Case") });
+    });
+    act(() => {
+      result.current.onCaseList({ cases: [s] }, true);
+    });
+    // Rail reconciled normally; no crash from the absent sink.
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01OPEN"]);
   });
 });

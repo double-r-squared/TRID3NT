@@ -36,7 +36,37 @@ import {
   CaseOpenEnvelopePayload,
   CaseSessionState,
   CaseSummary,
+  ProjectLayerSummary,
 } from "../contracts";
+
+/**
+ * COLD-LIST RASTER FALLBACK (defense in depth - coldview_layers_fix.md FIX C).
+ *
+ * A raster `ProjectLayerSummary` is cold-renderable ONLY if its `uri` is an
+ * already-resolved TiTiler tile template served by the always-on
+ * TiTiler+CloudFront box (e.g. `https://.../cog/tiles/.../{z}/{x}/{y}.png?...`).
+ * A bare `s3://...` / `gs://...` object handle is an agent-only DATA pointer the
+ * browser holds no creds to read, so it is NOT cold-renderable and is dropped
+ * here. Vector layers are dropped regardless (their cold-render needs inline
+ * GeoJSON the list summary does not carry - that is the per-case snapshot's job,
+ * J2). This is deliberately conservative: the list fallback paints what is
+ * provably cold-renderable and nothing else, so a stale per-case snapshot
+ * degrades to "rasters paint" instead of "no layers loaded", never to a broken /
+ * unauthorized tile request.
+ */
+export function coldRenderableRasterSummaries(
+  summaries: ReadonlyArray<ProjectLayerSummary> | undefined | null,
+): ProjectLayerSummary[] {
+  if (!Array.isArray(summaries)) return [];
+  return summaries.filter((s) => {
+    if (!s || s.layer_type !== "raster") return false;
+    const uri = typeof s.uri === "string" ? s.uri.trim() : "";
+    // Cold-renderable raster URIs are browser-fetchable http(s) tile templates
+    // (the resolved TiTiler /cog/tiles/.../{z}/{x}/{y}.png?... face). A bare
+    // object-store handle (s3:// / gs://) or empty uri is NOT cold-renderable.
+    return /^https?:\/\//i.test(uri);
+  });
+}
 /**
  * Closed enum of persistence states used by the Cases lifecycle. Previously
  * lived on `components/PersistenceChip.tsx`; that floating chip was removed
@@ -73,6 +103,23 @@ export interface UseCasesOptions {
    * persistence track default per kickoff §5).
    */
   isSignedIn: boolean;
+  /**
+   * COLD-LIST RASTER FALLBACK (defense in depth - coldview_layers_fix.md FIX
+   * C). Optional sink the hook calls from `onCaseList` with the OPEN Case's
+   * cold-renderable RASTER `loaded_layer_summaries` (filtered via
+   * `coldRenderableRasterSummaries`). App.tsx wires this to push those rasters
+   * onto the map channel as a NON-authoritative reconcile, so when the per-case
+   * `case-views/{id}.json` snapshot is missing / stale / 404 the cold case-LIST
+   * still paints the raster overlays (which are always-on TiTiler tile
+   * templates) instead of leaving "no layers loaded". Because the push is
+   * non-authoritative (and rasters merge idempotently with the snapshot's
+   * loaded_layers), it never wipes the warm path nor strands vectors. Absent =>
+   * the hook does nothing extra (the warm path is byte-identical to before).
+   */
+  onListLayerSummaries?: (
+    caseId: string,
+    rasterSummaries: ProjectLayerSummary[],
+  ) => void;
 }
 
 export interface UseCasesReturn {
@@ -126,13 +173,22 @@ export interface UseCasesReturn {
  * on every parent render.
  */
 export function useCases(opts: UseCasesOptions): UseCasesReturn {
-  const { sendCaseCommand, isSignedIn } = opts;
+  const { sendCaseCommand, isSignedIn, onListLayerSummaries } = opts;
 
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [activeSession, setActiveSession] = useState<CaseSessionState | null>(
     null,
   );
+
+  // COLD-LIST RASTER FALLBACK - `onCaseList` is a stable useCallback([]) so it
+  // cannot read `activeCaseId` / `onListLayerSummaries` from its closure
+  // without going stale. Mirror both into refs kept in lockstep below so the
+  // list handler always sees the CURRENT open Case + sink.
+  const activeCaseIdRef = useRef<string | null>(null);
+  activeCaseIdRef.current = activeCaseId;
+  const onListLayerSummariesRef = useRef(onListLayerSummaries);
+  onListLayerSummariesRef.current = onListLayerSummaries;
   // Optimistic in-flight count: how many case-commands have been emitted
   // without a corresponding case-list / case-open reply. The reply clears
   // the counter back to zero. We keep this as a ref + state pair: the ref
@@ -179,6 +235,28 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
           : incoming,
       );
       settle();
+
+      // COLD-LIST RASTER FALLBACK (defense in depth - coldview_layers_fix.md
+      // FIX C). When a Case is open but its per-case snapshot is missing /
+      // stale / 404 (the box-stop lost-write race), the map shows "no layers".
+      // The cold case-LIST envelope already carries each Case's
+      // `loaded_layer_summaries`; surface the OPEN Case's cold-renderable RASTER
+      // summaries (TiTiler tile templates via always-on CloudFront) to the sink
+      // so they still paint. We forward only the open Case's rasters (the map
+      // channel shows one Case at a time); vectors + bare object-store handles
+      // are dropped by `coldRenderableRasterSummaries` (vectors need inline
+      // GeoJSON from the snapshot - J2's job). The sink pushes a
+      // NON-authoritative reconcile, so this is idempotent with a later snapshot
+      // / live frame and never wipes a warm Case.
+      const sink = onListLayerSummariesRef.current;
+      const openId = activeCaseIdRef.current;
+      if (sink && openId !== null) {
+        const openCase = incoming.find((c) => c.case_id === openId);
+        const rasters = coldRenderableRasterSummaries(
+          openCase?.loaded_layer_summaries,
+        );
+        if (rasters.length > 0) sink(openId, rasters);
+      }
     },
     [],
   );

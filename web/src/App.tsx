@@ -529,6 +529,25 @@ export function App(): JSX.Element {
     [],
   );
   const isSignedIn = !!authUser && !authUser.isAnonymous;
+  // COLD-LIST RASTER FALLBACK (coldview_layers_fix.md FIX C) - useCases calls
+  // this from `onCaseList` with the OPEN Case's cold-renderable RASTER
+  // loaded_layer_summaries (TiTiler tile templates via always-on CloudFront).
+  // Push them onto the map channel as a NON-authoritative reconcile
+  // (replace_layers:false) so when the per-case snapshot is missing / stale /
+  // 404 (the box-stop lost-write race) the rasters STILL paint instead of "no
+  // layers loaded". Non-authoritative => the seatbelt merges/adds these into
+  // the active Case but never evicts, so this is idempotent with a later
+  // snapshot / live frame and never wipes a warm Case nor strands vectors.
+  const onListLayerSummaries = useCallback(
+    (_caseId: string, rasterSummaries: ProjectLayerSummary[]) => {
+      if (rasterSummaries.length === 0) return;
+      bus.pushSessionState({
+        loaded_layers: rasterSummaries,
+        replace_layers: false,
+      });
+    },
+    [bus],
+  );
   const {
     cases,
     activeCaseId,
@@ -541,7 +560,7 @@ export function App(): JSX.Element {
     archiveCase,
     deleteCase,
     clearActive,
-  } = useCases({ sendCaseCommand, isSignedIn });
+  } = useCases({ sendCaseCommand, isSignedIn, onListLayerSummaries });
 
   // job-0143: gate save-triggering Case actions for anonymous users.
   const saveGate = useSaveGate({

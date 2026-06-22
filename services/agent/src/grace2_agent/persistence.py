@@ -89,6 +89,16 @@ CASE_VIEWS_PREFIX = "case-views"
 #: ``case-views`` prefix convention (PRIVATE objects, owner in S3 metadata).
 CASE_MANIFESTS_PREFIX = "case-manifests"
 
+#: Hard cap (bytes) on a single vector layer's inline GeoJSON that the snapshot
+#: writer will embed cold. This is the cross-case resolve guard: a non-open-case
+#: snapshot reads each vector's persisted ``.fgb`` / ``.geojson`` and embeds the
+#: GeoJSON so the browser can paint it without the agent. The dense-vector
+#: simplify+cap (``pipeline_emitter._densify_off_loop``) already bounds the live
+#: wire payload, but a snapshot built for a NON-open case has no emitter, so we
+#: re-apply a sane ceiling here. 250 MB mirrors the existing payload norm's
+#: hard-block (>250 MB is never inlined; the layer stays URI-only and is logged).
+CASE_VIEW_INLINE_GEOJSON_MAX_BYTES = 250 * 1024 * 1024
+
 
 def case_view_snapshot_key(case_id: str) -> str:
     """Return the S3 object key for a Case's materialized view snapshot.
@@ -786,38 +796,141 @@ class Persistence:
         entries here — byte-for-byte the same merge ``emit_session_state``
         performs on the live wire (additive ``inline_geojson`` / density fields).
 
-        Pure: builds and returns the dict; ``write_case_view_snapshot`` does the
-        S3 put. Split so the contract test can assert the shape without S3.
+        Cross-case inline (job-0372 FIX B): the explicit
+        ``inline_geojson_by_layer_id`` is only ever populated by the OPEN-case
+        emitter, so a snapshot for a NON-open case (a cross-case mutation - e.g.
+        rename Case B while Case A is open) would otherwise strand its vectors as
+        an agent-only ``s3://...fgb|geojson`` handle the browser cannot read cold
+        (Invariant-5). After the fast-path merge we therefore do a SECOND pass:
+        for any vector layer STILL missing ``inline_geojson`` that carries a
+        readable object-store URI, we READ the ``.fgb`` / ``.geojson`` from the
+        store and embed the resolved GeoJSON at write time, regardless of which
+        Case is open. This is the layer-handle->data-URI lesson: persist the
+        resolved DATA, not a handle the agent must later resolve. Absurdly large
+        GeoJSON (> ``CASE_VIEW_INLINE_GEOJSON_MAX_BYTES``) is skipped + flagged so
+        the cold snapshot stays within the payload norm.
+
+        Pure w.r.t. S3 PUT: builds and returns the dict (``write_case_view_snapshot``
+        does the put). The cross-case pass may READ vector artifacts from the
+        object store (best-effort per layer; a missing/oversized/corrupt artifact
+        skips that layer, never raises).
         """
         session_state = await self.get_session_state(case_id)
         payload = CaseOpenEnvelopePayload(session_state=session_state)
         snapshot = payload.model_dump(mode="json")
         inline = inline_geojson_by_layer_id or {}
         density = density_meta_by_layer_id or {}
-        if not inline and not density:
+        ss = snapshot.get("session_state")
+        if not isinstance(ss, dict):
             return snapshot
-        # Merge inline GeoJSON / density tags into loaded_layers, mirroring
+        layers = ss.get("loaded_layers")
+        if not isinstance(layers, list):
+            return snapshot
+        # Pass 1 (fast path) - merge the OPEN-case emitter's inline GeoJSON /
+        # density tags into loaded_layers, mirroring
         # PipelineEmitter.emit_session_state EXACTLY (same field names, same
         # best-effort density-tag handling) so a cold view paints vectors and a
         # warm case-open are indistinguishable to the client.
-        ss = snapshot.get("session_state")
-        if isinstance(ss, dict):
-            layers = ss.get("loaded_layers")
-            if isinstance(layers, list):
-                for layer in layers:
-                    if not isinstance(layer, dict):
-                        continue
-                    lid = layer.get("layer_id")
-                    geojson_obj = inline.get(lid)
-                    if geojson_obj is not None:
-                        layer["inline_geojson"] = geojson_obj
-                    meta = density.get(lid)
-                    if meta is not None:
-                        try:
-                            layer.update(meta.as_wire_tag())
-                        except Exception:  # noqa: BLE001 — match live merge
-                            pass
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            lid = layer.get("layer_id")
+            geojson_obj = inline.get(lid)
+            if geojson_obj is not None:
+                layer["inline_geojson"] = geojson_obj
+            meta = density.get(lid)
+            if meta is not None:
+                try:
+                    layer.update(meta.as_wire_tag())
+                except Exception:  # noqa: BLE001 - match live merge
+                    pass
+        # Pass 2 (cross-case resolve) - embed inline GeoJSON for any vector layer
+        # the emitter did NOT supply (i.e. this snapshot is for a non-open Case),
+        # reading the artifact straight from its persisted object-store URI so a
+        # cold reopen never sees a vector-URI-only entry the browser cannot read.
+        await self._resolve_cross_case_vector_inline(layers, case_id=case_id)
         return snapshot
+
+    async def _resolve_cross_case_vector_inline(
+        self, layers: list[Any], *, case_id: str
+    ) -> int:
+        """Embed inline GeoJSON for vector layers missing it, reading from S3.
+
+        For every VECTOR layer dict that does NOT already carry
+        ``inline_geojson`` and has a readable object-store ``uri``, read the
+        ``.fgb`` / ``.geojson`` artifact and embed the resolved GeoJSON
+        FeatureCollection. Reuses the emitter's ``_read_vector_uri_as_geojson``
+        (the SAME read+reproject+densify path the live wire uses) so a cold
+        snapshot vector is byte-equivalent to a warm one. Rasters are untouched
+        (their resolved TiTiler tile template already renders cold).
+
+        Best-effort by contract: a missing / unreadable / oversized artifact
+        skips that layer and is logged, never raised - a vector-inline hiccup
+        must never break the snapshot write (turn-safety discipline). Returns the
+        number of layers newly inlined (for tests / telemetry).
+        """
+        import json as _json
+
+        # Lazy import: pipeline_emitter does NOT import persistence, so this is a
+        # one-way edge (no circular import), but keep it local so importing
+        # persistence stays cheap and the emitter's heavy deps load only when a
+        # cross-case vector actually needs resolving.
+        from .pipeline_emitter import _read_vector_uri_as_geojson
+
+        count = 0
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            if layer.get("layer_type") != "vector":
+                continue
+            if layer.get("inline_geojson") is not None:
+                # Pass 1 already inlined it (open-case fast path) - leave as-is.
+                continue
+            uri = layer.get("uri")
+            if not isinstance(uri, str) or not uri:
+                continue
+            try:
+                geojson_obj = await _read_vector_uri_as_geojson(uri)
+            except Exception:  # noqa: BLE001 - per-layer best-effort
+                logger.warning(
+                    "case-view-snapshot cross-case inline read failed case=%s "
+                    "layer_id=%s uri=%s",
+                    case_id,
+                    layer.get("layer_id"),
+                    uri,
+                )
+                continue
+            if geojson_obj is None:
+                continue
+            # Guard absurdly large GeoJSON against the payload norm: skip + flag
+            # so the cold snapshot never balloons past the hard-block ceiling.
+            try:
+                size = len(
+                    _json.dumps(geojson_obj, separators=(",", ":")).encode("utf-8")
+                )
+            except Exception:  # noqa: BLE001 - un-serializable -> skip safely
+                logger.warning(
+                    "case-view-snapshot cross-case inline unserializable case=%s "
+                    "layer_id=%s uri=%s",
+                    case_id,
+                    layer.get("layer_id"),
+                    uri,
+                )
+                continue
+            if size > CASE_VIEW_INLINE_GEOJSON_MAX_BYTES:
+                logger.warning(
+                    "case-view-snapshot cross-case inline SKIPPED (too large: "
+                    "%d bytes > %d) case=%s layer_id=%s uri=%s",
+                    size,
+                    CASE_VIEW_INLINE_GEOJSON_MAX_BYTES,
+                    case_id,
+                    layer.get("layer_id"),
+                    uri,
+                )
+                continue
+            layer["inline_geojson"] = geojson_obj
+            count += 1
+        return count
 
     async def _resolve_case_owner(self, case_id: str) -> str | None:
         """Resolve a Case's owner from the RAW ``projects`` doc (best-effort).

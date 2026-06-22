@@ -26,12 +26,23 @@ Coverage:
   ``False`` and never raises (turn-safety discipline).
 - ``test_async_injected_s3_put_is_awaited`` — an async injected ``s3_put`` is
   awaited (the production path runs put_object off-thread).
+- ``test_cross_case_snapshot_inlines_vector_from_uri_without_open_case`` /
+  ``test_build_cross_case_snapshot_inlines_vector_from_uri`` (FIX B, job-0372) -
+  a snapshot built for a NON-open Case (no inline side-table) still carries
+  non-empty ``inline_geojson`` for its vector layers, resolved from the
+  persisted object-store URI at write time; rasters stay URI-only.
+- ``test_explicit_inline_takes_precedence_over_uri_resolve`` - the open-case
+  emitter's inline payload wins over the URI re-read (no override).
+- ``test_cross_case_inline_skips_oversized_geojson`` - a vector GeoJSON over
+  ``CASE_VIEW_INLINE_GEOJSON_MAX_BYTES`` is skipped (URI-only), not embedded.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 
 import pytest
@@ -364,6 +375,210 @@ def test_build_case_view_snapshot_is_pure_no_s3() -> None:
         if layer["layer_id"] == vector_layer_id
     )
     assert vector_entry["inline_geojson"] == inline
+
+
+# --------------------------------------------------------------------------- #
+# FIX B (job-0372): cross-case vector inline - a snapshot built for a NON-open
+# Case carries inline_geojson for its vectors, resolved from the persisted
+# object-store URI at write time (the browser cannot read an s3:// handle cold).
+# --------------------------------------------------------------------------- #
+
+
+def _seed_case_with_local_vector_artifact(
+    tmp_dir: str, *, feature_count: int = 1
+) -> tuple[Persistence, str, str, dict]:
+    """Seed a Case whose vector layer's ``uri`` is a REAL local ``.geojson``.
+
+    This mirrors the cross-case scenario WITHOUT S3: the persisted vector
+    layer points at an object-store artifact (here a local file the snapshot
+    writer's ``_read_vector_uri_as_geojson`` can read deterministically), and
+    NO inline side-table is supplied - exactly what happens when the snapshot
+    is built while a DIFFERENT Case is open (no live emitter holds the inline).
+
+    Returns ``(persistence, case_id, vector_layer_id, geojson_on_disk)``.
+    """
+    mock = MockMCPClient()
+    p = Persistence(mock)
+    case_id = new_ulid()
+    vector_layer_id = new_ulid()
+    raster_layer_id = new_ulid()
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [-81.9 + i * 0.001, 26.6 + i * 0.001],
+                },
+                "properties": {"name": f"bldg-{i}"},
+            }
+            for i in range(feature_count)
+        ],
+    }
+    artifact_path = os.path.join(tmp_dir, f"{vector_layer_id}.geojson")
+    with open(artifact_path, "w", encoding="utf-8") as fh:
+        json.dump(geojson, fh)
+
+    vector_layer = ProjectLayerSummary(
+        layer_id=vector_layer_id,
+        name="Buildings (cross-case)",
+        layer_type="vector",
+        uri=artifact_path,  # object-store handle the writer resolves cold
+        style_preset="buildings",
+        visible=True,
+        role="context",
+        temporal=False,
+    )
+    raster_layer = ProjectLayerSummary(
+        layer_id=raster_layer_id,
+        name="Flood depth",
+        layer_type="raster",
+        uri="https://d125yfbyjrpbre.cloudfront.net/cog/tiles/WebMercatorQuad/"
+        "{z}/{x}/{y}.png?url=s3://grace2-hazard-runs/abc/flood.tif",
+        style_preset="flood-depth",
+        visible=True,
+        role="primary",
+        temporal=False,
+    )
+    case = CaseSummary(
+        case_id=case_id,
+        title="Cross-case vector inline",
+        created_at=datetime(2026, 6, 22, 0, 0, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 6, 22, 0, 0, 0, tzinfo=timezone.utc),
+        status="active",
+        bbox=(-82.0, 26.5, -81.8, 26.7),
+        primary_hazard="flood",
+        layer_summary=[vector_layer_id, raster_layer_id],
+        loaded_layer_summaries=[
+            vector_layer.model_dump(mode="json"),
+            raster_layer.model_dump(mode="json"),
+        ],
+    )
+    asyncio.run(p.upsert_case(case))
+    return p, case_id, vector_layer_id, geojson
+
+
+def test_cross_case_snapshot_inlines_vector_from_uri_without_open_case() -> None:
+    """A snapshot built with NO inline side-table still inlines its vectors.
+
+    This is the FIX B acceptance: the snapshot is built for a Case that is NOT
+    the open Case (so ``inline_geojson_by_layer_id`` is empty - the open-case
+    emitter holds nothing for it). The writer must resolve the vector's inline
+    GeoJSON from the persisted object-store URI at write time so the cold reopen
+    paints the vector. The raster is left URI-only (its tile template renders
+    cold already).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        p, case_id, vector_layer_id, geojson = _seed_case_with_local_vector_artifact(
+            td
+        )
+        fake = _FakeS3()
+        ok = asyncio.run(
+            # No inline_geojson_by_layer_id at all -> the cross-case path.
+            p.write_case_view_snapshot(case_id, s3_put=fake.put)
+        )
+        assert ok is True
+        written = json.loads(fake.body.decode("utf-8"))
+        layers = written["session_state"]["loaded_layers"]
+
+        vector_entry = next(
+            layer for layer in layers if layer["layer_id"] == vector_layer_id
+        )
+        # The vector carries NON-EMPTY inline GeoJSON resolved from its URI.
+        inline = vector_entry.get("inline_geojson")
+        assert isinstance(inline, dict)
+        assert inline.get("type") == "FeatureCollection"
+        assert len(inline.get("features", [])) == len(geojson["features"]) > 0
+
+        # The raster stays URI-only (no inline - it renders cold via TiTiler).
+        raster_entry = next(
+            layer for layer in layers if layer["layer_id"] != vector_layer_id
+        )
+        assert "inline_geojson" not in raster_entry
+
+
+def test_build_cross_case_snapshot_inlines_vector_from_uri() -> None:
+    """build_case_view_snapshot (pure, no S3 put) inlines a cross-case vector."""
+    with tempfile.TemporaryDirectory() as td:
+        p, case_id, vector_layer_id, geojson = _seed_case_with_local_vector_artifact(
+            td
+        )
+        snapshot = asyncio.run(p.build_case_view_snapshot(case_id))
+        vector_entry = next(
+            layer
+            for layer in snapshot["session_state"]["loaded_layers"]
+            if layer["layer_id"] == vector_layer_id
+        )
+        inline = vector_entry.get("inline_geojson")
+        assert isinstance(inline, dict)
+        assert len(inline.get("features", [])) == len(geojson["features"]) > 0
+
+
+def test_explicit_inline_takes_precedence_over_uri_resolve() -> None:
+    """The OPEN-case emitter's inline payload wins; the URI is not re-read.
+
+    When ``inline_geojson_by_layer_id`` already carries the layer (the open-case
+    fast path), that exact object is embedded and the cross-case URI-resolve
+    pass leaves it untouched (no double-read, no override).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        p, case_id, vector_layer_id, _on_disk = _seed_case_with_local_vector_artifact(
+            td, feature_count=3
+        )
+        # A DIFFERENT payload than what is on disk, to prove precedence.
+        emitter_inline = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                    "properties": {"name": "emitter-supplied"},
+                }
+            ],
+        }
+        snapshot = asyncio.run(
+            p.build_case_view_snapshot(
+                case_id,
+                inline_geojson_by_layer_id={vector_layer_id: emitter_inline},
+            )
+        )
+        vector_entry = next(
+            layer
+            for layer in snapshot["session_state"]["loaded_layers"]
+            if layer["layer_id"] == vector_layer_id
+        )
+        # The emitter-supplied payload is embedded verbatim (not the 3 on disk).
+        assert vector_entry["inline_geojson"] == emitter_inline
+
+
+def test_cross_case_inline_skips_oversized_geojson() -> None:
+    """An absurdly large vector GeoJSON is skipped + flagged, not embedded.
+
+    Tightening the size cap to a tiny value forces the realistic artifact over
+    the ceiling; the writer must leave the vector URI-only rather than balloon
+    the cold snapshot past the payload norm.
+    """
+    import grace2_agent.persistence as persistence_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        p, case_id, vector_layer_id, _g = _seed_case_with_local_vector_artifact(
+            td, feature_count=5
+        )
+        original_cap = persistence_mod.CASE_VIEW_INLINE_GEOJSON_MAX_BYTES
+        persistence_mod.CASE_VIEW_INLINE_GEOJSON_MAX_BYTES = 1  # 1 byte ceiling
+        try:
+            snapshot = asyncio.run(p.build_case_view_snapshot(case_id))
+        finally:
+            persistence_mod.CASE_VIEW_INLINE_GEOJSON_MAX_BYTES = original_cap
+        vector_entry = next(
+            layer
+            for layer in snapshot["session_state"]["loaded_layers"]
+            if layer["layer_id"] == vector_layer_id
+        )
+        # Over the cap -> skipped: the vector stays URI-only (no inline).
+        assert "inline_geojson" not in vector_entry
 
 
 # --------------------------------------------------------------------------- #

@@ -874,6 +874,53 @@ _SESSION_ACTIVE_CASE_CAP = 4096
 #: here and self-discards via an ``add_done_callback`` once it finishes.
 _BG_SNAPSHOT_TASKS: set[asyncio.Task] = set()
 
+#: COLDVIEW DURABILITY (J1): bounded wall-clock budget for the graceful-shutdown
+#: drain of ``_BG_SNAPSHOT_TASKS``. A SIGTERM unwinds ``run_server`` and waits at
+#: most this long for outstanding detached snapshot/manifest PUTs to flush so a
+#: stale cold ``case-views/{case_id}.json`` is not left behind; if a PUT is
+#: pathologically slow it is abandoned rather than hanging shutdown forever.
+#: Overridable for ops via the env var (seconds).
+_BG_SNAPSHOT_DRAIN_TIMEOUT_S: float = float(
+    os.environ.get("GRACE2_BG_SNAPSHOT_DRAIN_TIMEOUT_S", "10")
+)
+
+
+async def _drain_bg_snapshot_tasks(
+    timeout: float | None = None,
+) -> None:
+    """Flush any outstanding detached case-view snapshot / manifest writes.
+
+    Called from ``run_server``'s shutdown ``finally`` so a graceful stop
+    (SIGTERM) lands the per-turn / turn-close fire-and-forget snapshot PUTs
+    still pending in ``_BG_SNAPSHOT_TASKS`` before the process exits -- closing
+    the box-stop write race for the sites that (unlike the publish site) stay
+    detached. Bounded by ``timeout`` (defaults to
+    ``_BG_SNAPSHOT_DRAIN_TIMEOUT_S``) so a pathologically slow PUT cannot hang
+    shutdown. Best-effort: each snapshot task swallows its own errors (returns
+    False / never raises); ``return_exceptions=True`` plus the timeout guard
+    keep a slow/failed PUT from breaking teardown. A no-op when nothing is
+    pending."""
+    pending = [t for t in _BG_SNAPSHOT_TASKS if not t.done()]
+    if not pending:
+        return
+    budget = timeout if timeout is not None else _BG_SNAPSHOT_DRAIN_TIMEOUT_S
+    logger.info("bg-snapshot drain: flushing %d pending write(s)", len(pending))
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=budget,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "bg-snapshot drain: timed out after %.1fs with %d write(s) "
+            "still pending",
+            budget,
+            sum(1 for t in pending if not t.done()),
+        )
+    except Exception:  # noqa: BLE001 - drain is best-effort, never blocks exit
+        logger.exception("bg-snapshot drain: unexpected error")
+
+
 #: Sentinel for ``SessionState.case_context_synced_to`` — distinct from None
 #: because ``None`` is a legitimate "no active Case" binding.
 _CASE_SYNC_NEVER = "__case-context-never-synced__"
@@ -1263,8 +1310,22 @@ def is_busy() -> bool:
     through running work even with zero sockets attached -- the open-connection
     count is no longer needed (and no longer used) to protect in-flight work.
     ``inflight_turn_count`` is resolved at call time (defined later, alongside
-    the connection registry)."""
-    return inflight_turn_count() > 0 or solve_in_flight_count() > 0
+    the connection registry).
+
+    COLDVIEW DURABILITY (J1): a PENDING case-view snapshot / manifest PUT also
+    pins the box. The per-turn and turn-close sites still detach their snapshot
+    refresh into ``_BG_SNAPSHOT_TASKS`` (the publish site now awaits inline).
+    Counting an outstanding detached write as busy keeps ``/api/health``
+    ``busy=true`` until that S3 PUT lands, so the idle Lambda will NOT
+    StopInstances mid-write and strand ``case-views/{case_id}.json`` at its
+    prior (often empty) contents. ``done`` tasks awaiting their self-removing
+    callback are filtered so a just-finished write does not falsely pin the
+    box."""
+    return (
+        inflight_turn_count() > 0
+        or solve_in_flight_count() > 0
+        or any(not t.done() for t in _BG_SNAPSHOT_TASKS)
+    )
 
 
 def liveness_snapshot() -> dict[str, object]:
@@ -1277,11 +1338,13 @@ def liveness_snapshot() -> dict[str, object]:
     ``active_connections`` is the attached-client count, kept REPORTED for
     observability (the idle Lambda logs it) but, as of STAGE 3, it NO LONGER
     GATES ``busy``: an idle-but-open viewer does not pin the box. ``busy`` is
-    the conservative OR over detached turns + in-flight solves only (so a box
-    mid-turn/solve whose only socket dropped still reads ``busy=true``, while a
-    box whose only signal is an idle open tab reads ``busy=false`` and may be
-    stopped after the idle streak). Computed synchronously on the asyncio loop
-    -- no awaits, no locks (single-loop invariant)."""
+    the conservative OR over detached turns, in-flight solves, AND any
+    outstanding case-view snapshot/manifest PUT (J1 coldview durability) -- so a
+    box mid-turn/solve OR mid-snapshot-write whose only socket dropped still
+    reads ``busy=true``, while a box whose only signal is an idle open tab reads
+    ``busy=false`` and may be stopped after the idle streak. Computed
+    synchronously on the asyncio loop -- no awaits, no locks (single-loop
+    invariant)."""
     return {
         "ok": True,
         "active_connections": active_connection_count(),
@@ -7277,25 +7340,26 @@ async def _invoke_tool_via_emitter(
             # layer accumulator is persisted, while the emitter still holds the
             # in-memory inline vector GeoJSON (the only source of it). A layer
             # publish is the mutation that most needs the cold-view refresh.
-            # A1 FIX 5 (latency): fire-and-forget - the Dynamo round-trips + S3
-            # PUT must NEVER sit on the turn/resume response hot path (a slow
-            # snapshot delayed the resume pong past the deadline -> blink). The
-            # snapshot swallows its own errors and returns False (never raises),
-            # so the detached task leaves no unretrieved exception.
-            _t = asyncio.create_task(
-                _persist_case_view_snapshot(state, case_id=turn_case_id)
-            )
-            _BG_SNAPSHOT_TASKS.add(_t)
-            _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
-            # #165 dual-write: fire-and-forget the thin manifest ALONGSIDE the
-            # snapshot (same latency discipline — never on the turn/resume hot
-            # path). The manifest swallows its own errors (returns False, never
-            # raises), so the detached task leaves no unretrieved exception.
-            _tm = asyncio.create_task(
-                _persist_case_manifest(state, case_id=turn_case_id)
-            )
-            _BG_SNAPSHOT_TASKS.add(_tm)
-            _tm.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+            #
+            # COLDVIEW DURABILITY (J1): AWAIT the snapshot + manifest writes here
+            # instead of detaching them. A layer publish is exactly the mutation
+            # whose cold-refresh must be DURABLE before the turn returns -- the
+            # prior fire-and-forget detach raced box-stop: the idle Lambda's
+            # is_busy() gate flips false the instant the turn returns, so the box
+            # could halt AFTER the turn returned but BEFORE the detached PUT
+            # landed, leaving case-views/{case_id}.json at its prior (empty)
+            # contents (the "box-off case open shows no layers" bug). We still
+            # keep the Dynamo round-trips + S3 PUT OFF the asyncio loop (the
+            # no-sync-blocking norm): the persist coroutines are already async
+            # and run blocking I/O via asyncio.to_thread internally, so awaiting
+            # them does not pin the loop. Both swallow their own errors (return
+            # False / never raise), so the await never breaks the dispatch.
+            await _persist_case_view_snapshot(state, case_id=turn_case_id)
+            # #165 dual-write: persist the thin manifest ALONGSIDE the snapshot
+            # (same durability requirement -- a published layer must be
+            # cold-renderable from either index before the box can stop). The
+            # manifest swallows its own errors (returns False, never raises).
+            await _persist_case_manifest(state, case_id=turn_case_id)
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
@@ -7468,27 +7532,28 @@ async def _invoke_tool_via_emitter(
                             # snapshot here too — otherwise the published tile
                             # layer (publish_layer is the LAST tool) lands only
                             # in memory and the cold view would miss it.
-                            # A1 FIX 5 (latency): fire-and-forget so the S3 PUT
-                            # never blocks the turn/resume path (the snapshot
-                            # never raises, so no unretrieved-task exception).
-                            _t = asyncio.create_task(
-                                _persist_case_view_snapshot(
-                                    state, case_id=turn_case_id
-                                )
+                            #
+                            # COLDVIEW DURABILITY (J1): AWAIT the snapshot +
+                            # manifest here too. This is the publish_layer-is-the
+                            # -last-tool path -- precisely the layer-publish
+                            # mutation whose cold-refresh must be durable before
+                            # the turn returns, or box-stop races the detached
+                            # PUT and the cold view misses the just-published
+                            # layer. Same loop-safety as the finally site: the
+                            # persist coroutines run blocking I/O off-thread and
+                            # swallow their own errors (never raise), so the
+                            # inline await neither pins the loop nor breaks the
+                            # emission.
+                            await _persist_case_view_snapshot(
+                                state, case_id=turn_case_id
                             )
-                            _BG_SNAPSHOT_TASKS.add(_t)
-                            _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
                             # #165 dual-write: thin manifest ALONGSIDE the
                             # snapshot (publish_layer is the LAST tool, so the
                             # published layer would land only in memory without
-                            # this). Fire-and-forget, swallows its own errors.
-                            _tm = asyncio.create_task(
-                                _persist_case_manifest(
-                                    state, case_id=turn_case_id
-                                )
+                            # this). Swallows its own errors (never raises).
+                            await _persist_case_manifest(
+                                state, case_id=turn_case_id
                             )
-                            _BG_SNAPSHOT_TASKS.add(_tm)
-                            _tm.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
                 except Exception:  # noqa: BLE001 — emission is best-effort
                     logger.exception(
                         "publish_layer loaded-layer emission failed "
@@ -9503,6 +9568,19 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         ):
             await asyncio.Future()  # serve forever
     finally:
+        # COLDVIEW DURABILITY (J1): graceful-shutdown drain of any outstanding
+        # detached case-view snapshot / manifest writes. A SIGTERM (graceful
+        # uvicorn/process stop) cancels ``await asyncio.Future()`` and unwinds
+        # here while the per-turn / turn-close sites may still have fire-and-
+        # forget snapshot PUTs in ``_BG_SNAPSHOT_TASKS``. gather them with a
+        # bounded timeout so the flush cannot hang shutdown indefinitely; each
+        # task swallows its own errors (returns False / never raises), and
+        # ``return_exceptions=True`` plus the wait_for guard keep a slow/failed
+        # PUT from blocking the rest of teardown. (The publish site already
+        # awaits inline; this closes the per-turn/turn-close write race and any
+        # future fire-and-forget site so an immediate StopInstances does not
+        # leave a stale cold snapshot.)
+        await _drain_bg_snapshot_tasks()
         if http_server is not None:
             http_server.close()
             try:
@@ -9537,6 +9615,10 @@ __all__ = [
     "_persist_case_view_snapshot",
     # #165 data-island: dual-write the THIN per-case manifest to S3.
     "_persist_case_manifest",
+    # COLDVIEW DURABILITY (J1): graceful-shutdown drain of detached snapshot
+    # writes (the publish site now awaits inline; per-turn/turn-close stay
+    # detached and are flushed here on shutdown).
+    "_drain_bg_snapshot_tasks",
     # job-0268: turn-start Case binding (cross-Case contamination fix).
     "_turn_case_id",
     "_dispatch_tool_and_persist",
