@@ -349,6 +349,15 @@ default every flood to SFINCS.
   developed AOI (water routes around footprints on the regular/quadtree grid),
   so a developed AOI alone does NOT force SWMM -- the storm-drain / pipe-network
   / street-scale / barrier framing is what selects the urban PySWMM engine.
+  COASTAL STORM SURGE WITH WAVES: for a coastal storm-surge / hurricane-inundation
+  prompt (surge coming in from the sea, storm tide, wave run-up), set
+  ``coastal=True`` -- this now AUTO-WIRES a time-varying sea-surge water-level
+  boundary AND turns on SnapWave waves, so the animation shows water rising from
+  the sea and marching inland with a wave-height field (you do NOT need to hand-build
+  ``surge_forcing``). Set ``quadtree=True`` if the user explicitly wants WAVES on an
+  otherwise-inland AOI. ``coastal=True`` with NO sea/surge/wave intent (a rainfall
+  flood that merely happens to be near the coast) models only rainfall -- only flag
+  coastal when the SEA is part of the scenario.
 
 When the scope is ambiguous between the two (e.g. a developed AOI with no
 storm-drain / barrier / street framing, where either engine could fit), ASK the

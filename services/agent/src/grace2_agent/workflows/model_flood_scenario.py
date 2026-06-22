@@ -1207,6 +1207,297 @@ def _resolve_surge_forcing_from_fetchers(
     return out
 
 
+# --------------------------------------------------------------------------- #
+# COASTAL SFINCS  -  auto-wire a time-varying sea-surge water-level boundary
+# --------------------------------------------------------------------------- #
+
+# Parametric design-storm surge scaling. The peak surge above the tidal datum
+# (metres) is a smooth, monotone function of the design-storm return period so a
+# "major hurricane / 100-yr" event shows a real, visually-meaningful multi-metre
+# surge marching inland, while a frequent (2-yr) event shows only a modest rise.
+# Anchored to published Gulf-coast storm-tide observations (Hurricane Michael at
+# Mexico Beach peaked near 4 m NAVD88)  -  the 100-yr anchor sits at ~3.5 m, with a
+# gentle log-scaling above/below so the curve never goes negative or runaway.
+# Tunable via env for ops without a code change.
+_SURGE_PEAK_M_AT_100YR = float(os.getenv("GRACE2_SURGE_PEAK_M_AT_100YR", "3.5"))
+_SURGE_PEAK_M_FLOOR = float(os.getenv("GRACE2_SURGE_PEAK_M_FLOOR", "0.6"))
+_SURGE_PEAK_M_CEIL = float(os.getenv("GRACE2_SURGE_PEAK_M_CEIL", "7.5"))
+
+
+def _parametric_surge_peak_m(return_period_yr: int | float | None) -> float:
+    """Peak design-storm surge height (m above datum) for a return period.
+
+    Monotone log-scaling anchored at the 100-yr peak (``_SURGE_PEAK_M_AT_100YR``):
+    a larger ARI -> a higher peak, a smaller ARI -> a lower peak, clamped to a
+    sane [floor, ceil] window so a degenerate / huge ARI can't drive a negative
+    or runaway surge. ``log10(rp/100)`` gives 0 at 100-yr, +1 decade -> +scale,
+    -1 decade -> -scale; a 0.9 m/decade slope puts 10-yr near ~2.6 m, 500-yr near
+    ~4.1 m, 1000-yr near ~4.4 m  -  a realistic Gulf-coast spread.
+    """
+    import math
+
+    rp = float(return_period_yr) if return_period_yr else 100.0
+    rp = max(rp, 1.0)
+    peak = _SURGE_PEAK_M_AT_100YR + 0.9 * math.log10(rp / 100.0)
+    return max(_SURGE_PEAK_M_FLOOR, min(_SURGE_PEAK_M_CEIL, peak))
+
+
+def _synthesize_parametric_surge_forcing(
+    bbox: tuple[float, float, float, float],
+    *,
+    duration_hr: float,
+    return_period_yr: int | float | None,
+) -> dict[str, Any]:
+    """LAST-RESORT parametric design-storm surge -> materialised bzs files dict.
+
+    With no CO-OPS station and no CDS key (the only fully offline / key-free
+    deterministic path), synthesise a smooth surge hydrograph: a base ramp that
+    rises to a single peak near mid-event then recedes (a raised-cosine bump on a
+    small tidal-mean offset), driven onto a handful of offshore boundary points
+    laid along the SEAWARD edge of the bbox. The peak scales with
+    ``return_period_yr`` via ``_parametric_surge_peak_m`` so a major-hurricane ARI
+    yields a real multi-metre surge.
+
+    Returns the SAME materialised dict shape ``waterlevel_forcing_from_fgb``
+    produces (``{"timeseries_uri": <bzs.csv>, "locations_uri": <bnd.fgb>}``), so it
+    flows verbatim through ``_build_surge_forcing_members`` -> a NON-None
+    ``WaterlevelForcing`` (``timeseries_uri`` is set, which is the gate). The files
+    are written via the SAME ``write_bzs_timeseries_csv`` / ``write_locations_fgb``
+    seam the fetcher adapter uses, so the deck consumes them unchanged.
+    """
+    import math
+
+    from .sfincs_forcing_adapter import (
+        SFINCS_TREF,
+        ReanchoredSeries,
+        StationHydrograph,
+        write_bzs_timeseries_csv,
+        write_locations_fgb,
+    )
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    peak_m = _parametric_surge_peak_m(return_period_yr)
+    # Small tidal-mean offset the surge rides on (a modest high-tide baseline so
+    # the boundary water level is never below the datum even off-peak).
+    base_m = 0.3
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+
+    # Hourly samples across the deck window (>= 2 so set_forcing_1d accepts it).
+    n_steps = max(int(round(win_hr)), 2)
+    secs = [float(i) * (win_hr * 3600.0) / float(n_steps) for i in range(n_steps + 1)]
+    # Raised-cosine surge bump peaking at mid-event: 0 at the ends, ``peak_m`` at
+    # the centre. A smooth rise-and-recede so the flood marches IN then drains.
+    t_peak_s = 0.5 * win_hr * 3600.0
+    span_s = 0.5 * win_hr * 3600.0
+    values: list[float] = []
+    for s in secs:
+        frac = (s - t_peak_s) / span_s  # -1 .. +1 across the window
+        frac = max(-1.0, min(1.0, frac))
+        bump = 0.5 * (1.0 + math.cos(math.pi * frac))  # 1 at centre, 0 at edges
+        values.append(round(base_m + peak_m * bump, 4))
+
+    # Offshore boundary points along the SEAWARD edge of the bbox. Without a
+    # coastline lookup we cannot know which edge faces the sea, so we seed points
+    # along ALL FOUR edges (a thin ring just inside the bbox)  -  HydroMT selects
+    # the boundary cells nearest the actual water-level boundary via ``buffer_m``,
+    # and the deck ignores points that don't fall on a boundary cell. A few points
+    # per edge is enough to drive a coherent surge boundary.
+    inset_lon = 0.02 * (max_lon - min_lon)
+    inset_lat = 0.02 * (max_lat - min_lat)
+    mid_lon = 0.5 * (min_lon + max_lon)
+    mid_lat = 0.5 * (min_lat + max_lat)
+    edge_pts: list[tuple[float, float]] = [
+        (min_lon + inset_lon, mid_lat),  # west edge
+        (max_lon - inset_lon, mid_lat),  # east edge
+        (mid_lon, min_lat + inset_lat),  # south edge
+        (mid_lon, max_lat - inset_lat),  # north edge
+    ]
+
+    times = [SFINCS_TREF + _timedelta_s(s) for s in secs]
+    stations: list[StationHydrograph] = []
+    series_by_id: dict[int, ReanchoredSeries] = {}
+    for i, (lon, lat) in enumerate(edge_pts, start=1):
+        stations.append(
+            StationHydrograph(
+                point_id=i,
+                lon=float(lon),
+                lat=float(lat),
+                times=times,
+                values=list(values),
+                source_id=f"parametric-surge-{i}",
+                provenance={"_prov_synthetic": True},
+            )
+        )
+        series_by_id[i] = ReanchoredSeries(
+            seconds=list(secs),
+            datetimes=list(times),
+            values=list(values),
+        )
+
+    from .sfincs_forcing_adapter import _staging_dir, _unique  # local: lean top
+
+    stage = _staging_dir(None)
+    csv_path = write_bzs_timeseries_csv(series_by_id, _unique(stage, "bzs", "csv"))
+    loc_path = write_locations_fgb(stations, _unique(stage, "bnd", "fgb"))
+    logger.info(
+        "model_flood_scenario: synthesised PARAMETRIC surge hydrograph for "
+        "bbox=%s (return_period_yr=%s -> peak=%.2f m, base=%.2f m, %d steps over "
+        "%.0f hr, %d boundary points) -> bzs=%s bnd=%s",
+        bbox,
+        return_period_yr,
+        peak_m,
+        base_m,
+        len(secs),
+        win_hr,
+        len(stations),
+        csv_path,
+        loc_path,
+    )
+    return {
+        "timeseries_uri": csv_path,
+        "locations_uri": loc_path,
+        "_prov_synthetic_parametric": True,
+        "_prov_peak_m": peak_m,
+        "_prov_return_period_yr": return_period_yr,
+    }
+
+
+def _timedelta_s(seconds: float):
+    """Local helper: a ``timedelta`` of ``seconds`` (avoids a top-level import)."""
+    from datetime import timedelta
+
+    return timedelta(seconds=float(seconds))
+
+
+def _autowire_coastal_surge_forcing(
+    bbox: tuple[float, float, float, float],
+    *,
+    duration_hr: float,
+    return_period_yr: int | float | None,
+    data_sources: list[DataSource] | None = None,
+) -> dict[str, Any]:
+    """Auto-wire a time-varying SEA surge water-level boundary for a coastal run.
+
+    The COASTAL fix: a ``coastal=True`` run with NO explicit ``surge_forcing``
+    used to silently degrade to a pure-RAINFALL deck (``fetch_topobathy`` only
+    deepened the bed, no sea water was added). This builds a water-level boundary
+    so the flood animation shows water rising from the sea and marching inland.
+
+    Degrade ladder (data-source fallback norm: primary -> fallback -> honest
+    last-resort, never a silent dead-end):
+
+    1. PRIMARY  -  NOAA CO-OPS tides (``fetch_noaa_coops_tides``): KEY-FREE, CONUS.
+       Pull the observed tide+surge timeseries over the event window for the
+       AOI's stations. Returns a FlatGeobuf carrying per-station ``time_series_csv``
+        -  handed back as ``{"waterlevel": {"fetch_uri": <uri>}}`` so the EXISTING
+       ``_resolve_surge_forcing_from_fetchers`` adapter materialises the bzs files.
+    2. FALLBACK  -  GTSM tide+surge (``fetch_gtsm_tide_surge``): global, needs a CDS
+       key. Attempted only if CO-OPS yields no usable station; degrades on a
+       missing key / no data.
+    3. LAST-RESORT  -  a PARAMETRIC design-storm surge hydrograph (key-free, offline,
+       deterministic) materialised directly to bzs files. The peak scales with
+       ``return_period_yr`` (a major-hurricane ARI -> a real multi-metre surge).
+
+    Returns a ``surge_forcing`` dict whose ``waterlevel`` sub-dict yields a
+    NON-None ``WaterlevelForcing`` after the resolve+build seam  -  guaranteed,
+    because the last-resort parametric path is always available. Never raises (a
+    fetcher exception logs + falls through to the next rung).
+    """
+    # Event window: anchor on "today" and run forward over the deck window. The
+    # exact calendar dates do NOT matter  -  the adapter re-anchors the series onto
+    # the deck's synthetic ``tref`` window (reanchor_to_tref), so we just need a
+    # window long enough to carry the surge shape.
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+    end_dt = datetime.now(timezone.utc)
+    span_days = max(int((win_hr + 23) // 24), 1)
+    from datetime import timedelta as _td
+
+    start_dt = end_dt - _td(days=span_days)
+    start_date = start_dt.strftime("%Y-%m-%d")
+    end_date = end_dt.strftime("%Y-%m-%d")
+
+    # --- 1) PRIMARY: NOAA CO-OPS tides (key-free, CONUS) -------------------- #
+    try:
+        from ..tools.fetch_noaa_coops_tides import fetch_noaa_coops_tides
+
+        layer = fetch_noaa_coops_tides(
+            bbox, start_date=start_date, end_date=end_date, product="water_level"
+        )
+        uri = getattr(layer, "uri", None)
+        if uri:
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="NOAA CO-OPS tides (auto-wired surge boundary)",
+                        uri=str(uri),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+            logger.info(
+                "model_flood_scenario: auto-wired coastal surge via NOAA CO-OPS "
+                "tides for bbox=%s -> %s",
+                bbox,
+                uri,
+            )
+            return {"waterlevel": {"fetch_uri": str(uri)}}
+    except Exception as exc:  # noqa: BLE001  -  degrade to the next rung
+        logger.warning(
+            "model_flood_scenario: NOAA CO-OPS auto-wire failed for bbox=%s "
+            "(%s)  -  trying GTSM fallback.",
+            bbox,
+            exc,
+        )
+
+    # --- 2) FALLBACK: GTSM tide+surge (global, needs a CDS key) ------------- #
+    try:
+        from ..tools.fetch_gtsm_tide_surge import fetch_gtsm_tide_surge
+
+        layer = fetch_gtsm_tide_surge(
+            bbox, start_date=start_date, end_date=end_date
+        )
+        uri = getattr(layer, "uri", None)
+        if uri:
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="GTSM tide+surge (auto-wired surge boundary)",
+                        uri=str(uri),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+            logger.info(
+                "model_flood_scenario: auto-wired coastal surge via GTSM for "
+                "bbox=%s -> %s",
+                bbox,
+                uri,
+            )
+            return {"waterlevel": {"fetch_uri": str(uri)}}
+    except Exception as exc:  # noqa: BLE001  -  degrade to the parametric path
+        logger.warning(
+            "model_flood_scenario: GTSM auto-wire failed for bbox=%s (%s)  -  "
+            "falling back to the PARAMETRIC design-storm surge.",
+            bbox,
+            exc,
+        )
+
+    # --- 3) LAST-RESORT: parametric design-storm surge (always available) --- #
+    wl = _synthesize_parametric_surge_forcing(
+        bbox, duration_hr=win_hr, return_period_yr=return_period_yr
+    )
+    if data_sources is not None:
+        data_sources.append(
+            DataSource(
+                name=(
+                    "Parametric design-storm surge (auto-wired; "
+                    f"{return_period_yr}-yr, peak {wl.get('_prov_peak_m')} m)"
+                ),
+                uri="synthetic:parametric-surge",
+                accessed_at=datetime.now(timezone.utc),
+            )
+        )
+    return {"waterlevel": wl}
+
+
 def _resolve_building_obstacle_uri(
     building_obstacles: bool | str,
     bbox: tuple[float, float, float, float],
@@ -1400,6 +1691,16 @@ async def model_flood_scenario(
             hard topobathy failure (no CUDEM AND no 3DEP, bad bbox) surfaces as a
             typed failed envelope. The land DEM behaviour for a non-coastal run
             is never touched.
+            COASTAL AUTO-WIRE (job: coastal surge-with-waves): when ``is_coastal``
+            (this flag OR ``surge_forcing`` OR ``quadtree``) AND no explicit
+            ``surge_forcing`` was supplied, the workflow auto-wires a time-varying
+            SEA surge water-level boundary via ``_autowire_coastal_surge_forcing``
+            (CO-OPS tides -> GTSM -> a parametric design-storm surge scaling with
+            ``return_period_yr``) AND forces ``quadtree`` on so the SnapWave wave
+            deck + ``postprocess_waves`` run. This makes a coastal run show water
+            coming IN from the sea + a wave-height field, instead of the old
+            silent rainfall-only degrade. ALL gated on ``is_coastal``  -  the
+            inland/pluvial path is byte-identical (no boundary, quadtree unchanged).
         quadtree: COASTAL SFINCS North Star — build the deck with a multi-level
             REFINED QUADTREE grid + SnapWave wave coupling (incident + infragravity
             waves) instead of a regular grid. This authoring requires cht_sfincs
@@ -1856,6 +2157,24 @@ async def model_flood_scenario(
         # off the event loop so the WS heartbeat + keepalive stay responsive on
         # the coastal surge path (otherwise the loop stalls -> the client sees
         # ~30s of silence -> force-reconnect -> the turn's socket dies 1005).
+        #
+        # COASTAL AUTO-WIRE (the fix): a coastal run with NO explicit
+        # ``surge_forcing`` used to silently degrade to a pure-RAINFALL deck
+        # (``fetch_topobathy`` only deepened the bed  -  no sea water entered). For a
+        # coastal AOI we now AUTO-WIRE a time-varying sea-surge water-level
+        # boundary (CO-OPS primary -> GTSM -> parametric last-resort) so water
+        # rises from the sea and marches inland across the frames. Gated strictly
+        # on ``is_coastal`` so the inland / pluvial path is byte-identical (no
+        # surge boundary, branch never taken). The fetcher fan-out does sync
+        # network I/O, so it runs off the loop alongside the resolve.
+        if is_coastal and not surge_forcing:
+            surge_forcing = await asyncio.to_thread(
+                _autowire_coastal_surge_forcing,
+                resolved_bbox,
+                duration_hr=float(duration_hr),
+                return_period_yr=return_period_yr,
+                data_sources=data_sources,
+            )
         surge_forcing = await asyncio.to_thread(
             _resolve_surge_forcing_from_fetchers,
             surge_forcing,
@@ -2045,6 +2364,14 @@ async def model_flood_scenario(
     # solved. INERT until NATE provisions the combined job-def
     # (GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE) — a DeckBuildError surfaces as a
     # typed DECK_BUILD_FAILED failed envelope (honest degrade, never silent).
+    #
+    # COASTAL -> WAVES (the fix): a coastal storm-surge run should also show the
+    # SnapWave wave-height field (incident + infragravity waves are the back half
+    # of "storm surge WITH waves"). The wave deck + ``postprocess_waves`` are gated
+    # on this combined quadtree+SnapWave run, so force it on for any coastal AOI.
+    # Gated strictly on ``is_coastal`` so the inland / pluvial path is unchanged
+    # (quadtree stays exactly as passed there  -  the regular-grid build).
+    quadtree = quadtree or is_coastal
     solve_model_setup_uri = model_setup.setup_uri
     quadtree_run_result: RunResult | None = None
     if quadtree:
@@ -2972,6 +3299,10 @@ async def run_model_flood_scenario(
             boundary is supplied. Use for prompts mentioning the coast, storm
             surge, hurricane inundation at the shoreline, tide, or "include the
             sea floor / bathymetry".
+            ``coastal=True`` also auto-wires a sea water-level boundary + waves
+            (no ``surge_forcing`` needed); set it only when the sea is involved.
+        quadtree: set ``True`` for storm waves / wave run-up (implies
+            ``coastal=True``; auto-enabled for any coastal run). Default ``False``.
         building_obstacles: OPTIONAL, default ``False`` (OFF). When truthy, the
             workflow burns building footprints into the SFINCS grid so the flood
             routes AROUND buildings — a more realistic (but slightly slower)
