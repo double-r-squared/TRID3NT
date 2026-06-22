@@ -52,6 +52,7 @@ interface MapMock {
   getLayer: ReturnType<typeof vi.fn>;
   getSource: ReturnType<typeof vi.fn>;
   isStyleLoaded: ReturnType<typeof vi.fn>;
+  isSourceLoaded: ReturnType<typeof vi.fn>;
   remove: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
@@ -108,6 +109,10 @@ vi.mock("maplibre-gl", () => {
     keyboard = { disableRotation: vi.fn() };
     // isStyleLoaded must return true for the session-state handler to apply.
     isStyleLoaded = vi.fn().mockReturnValue(true);
+    // NATE item 2 - the raster frame-swap hold path probes source-tile load
+    // state. Default true so the dim-the-other-frames step runs synchronously in
+    // tests (no deferred once('idle')).
+    isSourceLoaded = vi.fn().mockReturnValue(true);
     // getLayer / getSource consult the internal tracking sets.
     getLayer = vi.fn((id: string) => (this._addedLayers.has(id) ? { id } : null));
     getSource = vi.fn((id: string) =>
@@ -2919,7 +2924,7 @@ describe("MapView - AnimationController frame-visibility emitter (JOB WEB-ANIM #
     setAnimationController(new AnimationController());
   });
 
-  it("registers a frame-visibility emitter that flips MapLibre layer visibility", () => {
+  it("registers a frame emitter that drives the single-visible-frame contract (raster opacity hold, item 2)", () => {
     const sessionBus = makeSessionBus();
     render(
       <MapView
@@ -2927,6 +2932,10 @@ describe("MapView - AnimationController frame-visibility emitter (JOB WEB-ANIM #
       />,
     );
     // Add three frame layers so the map "knows" them (getLayer returns truthy).
+    // These are RASTER frames (no vector geom kind), so the emitter uses the
+    // NATE item-2 preload + hold-until-loaded OPACITY swap (lib/frame_preload)
+    // instead of a visibility toggle: every frame stays visible (tiles warm), and
+    // exactly one frame is at raster-opacity 1 while the rest are at 0.
     act(() => {
       sessionBus.push({
         loaded_layers: [
@@ -2937,11 +2946,10 @@ describe("MapView - AnimationController frame-visibility emitter (JOB WEB-ANIM #
       });
     });
     const m = lastMapMock!;
-    m.setLayoutProperty.mockClear();
+    m.setPaintProperty.mockClear();
 
-    // Drive the controller as the panel/scrubber/auto-play would: show frame 1
-    // (f03), hide the others. The emitter Map.tsx registered must translate this
-    // into setLayoutProperty visibility calls on the live map.
+    // Drive the controller: show frame 1 (f03). isSourceLoaded is true in the
+    // mock so the hold dims the prior frame synchronously.
     act(() => {
       getAnimationController().setGroups([
         {
@@ -2954,15 +2962,16 @@ describe("MapView - AnimationController frame-visibility emitter (JOB WEB-ANIM #
       getAnimationController().stepGroupTo("grp", 1);
     });
 
-    const calls = m.setLayoutProperty.mock.calls as MockCallArgs[];
-    const visById = new Map<string, string>();
+    // Collect the LAST raster-opacity set per layer id.
+    const calls = m.setPaintProperty.mock.calls as MockCallArgs[];
+    const opById = new Map<string, number>();
     for (const [id, prop, val] of calls) {
-      if (prop === "visibility") visById.set(id as string, val as string);
+      if (prop === "raster-opacity") opById.set(id as string, val as number);
     }
-    // f03 visible; f01 + f06 hidden  -  the single-visible-frame contract.
-    expect(visById.get("f03")).toBe("visible");
-    expect(visById.get("f01")).toBe("none");
-    expect(visById.get("f06")).toBe("none");
+    // f03 at full opacity; f01 + f06 dimmed to 0  -  single-visible-frame.
+    expect(opById.get("f03")).toBe(1);
+    expect(opById.get("f01")).toBe(0);
+    expect(opById.get("f06")).toBe(0);
   });
 
   it("unregisters the emitter on unmount (no map writes after teardown)", () => {

@@ -55,7 +55,15 @@ beforeEach(() => {
   setLayerCache(new LayerCache({ backend: moduleNoopBackend }));
   // JOB WEB-ANIM — reset the shared AnimationController so playback / frame
   // state from one test never leaks into the next (it is a process-global).
-  setAnimationController(new AnimationController());
+  // ITEM 5 (NATE 2026-06-22): setGroups now AUTO-PLAYS a freshly-loaded
+  // multi-frame group. These panel-mirroring tests assert the PAUSED frame-
+  // readout / manual-play mechanics, so install the controller with reduced-
+  // motion ON (auto-play suppressed) to keep that baseline. The first-frame
+  // default (index 0) + the auto-play behavior itself are covered by the
+  // animation_controller + App.sequenceScrubber item-5 suites.
+  setAnimationController(
+    new AnimationController({ prefersReducedMotion: () => true }),
+  );
   try {
     localStorage.clear();
   } catch {
@@ -1099,13 +1107,14 @@ describe("LayerPanel — sequential group row rendering", () => {
     expect(screen.getByTestId("layer-row")).toHaveAttribute("data-layer-id", "flood");
   });
 
-  it("shows the active frame position as x/N in header (defaults to the LAST frame)", () => {
+  it("shows the active frame position as x/N in header (defaults to the FIRST frame, item 5)", () => {
     render(
       <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
     );
-    // Default active = last frame (3/3). Item 5: header shows x/N counter, not
-    // full frame label text (that's in the expanded sub-rows and the scrubber).
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("3/3");
+    // ITEM 5: default active = FIRST frame (1/3), so the animation reads from the
+    // start. Header shows the x/N counter (full frame labels are in the expanded
+    // sub-rows + the scrubber).
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
   });
 
   it("play button in the group header toggles auto-play (item 5)", () => {
@@ -1138,11 +1147,11 @@ describe("LayerPanel — sequential group row rendering", () => {
         ]}
       />,
     );
-    // Default = 3/3 (last frame). advanceActive(1) wraps to 1/3.
+    // ITEM 5: default = 1/3 (FIRST frame). advanceActive(1) -> 2/3.
     act(() => {
       getAnimationController().advanceActive(1);
     });
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("2/3");
   });
 
   it("header has NO step arrows (they live on the scrubber — item 5)", () => {
@@ -1189,30 +1198,30 @@ describe("LayerPanel — sequential group row rendering", () => {
     // JOB WEB-ANIM (#157.1) — the map is now driven by the controller's emitter
     // (show frame i, hide the rest), NOT by onMapCommand. Register a stub emitter
     // BEFORE mount and assert the panel collapses the all-visible stack to the
-    // default (last) frame: the emitter is called with the full member list +
-    // visibleIndex = 2 (F+06h).
+    // default (FIRST, item 5) frame: the emitter is called with the full member
+    // list + visibleIndex = 0 (F+01h).
     const emitted: Array<{ ids: string[]; idx: number }> = [];
     const emitter: FrameVisibilityEmitter = (ids, idx) =>
       emitted.push({ ids: [...ids], idx });
     getAnimationController().setEmitter(emitter);
     // All three start visible (the server published them all) — the group must
-    // hide all but the default (last) frame so the map shows one overlay.
+    // hide all but the default (FIRST) frame so the map shows one overlay.
     act(() => {
       render(
         <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
       );
     });
-    // The emitter was driven to show only the last frame (index 2 of 3).
+    // ITEM 5: the emitter was driven to show only the FIRST frame (index 0 of 3).
     expect(emitted.length).toBeGreaterThan(0);
     const last = emitted[emitted.length - 1]!;
     expect(last.ids).toEqual(["run-a-f01", "run-a-f03", "run-a-f06"]);
-    expect(last.idx).toBe(2);
+    expect(last.idx).toBe(0);
     // The panel reducer also reflects the single-visible-frame state: expand to
-    // confirm only the last frame's sub-row is the active one.
+    // confirm only the FIRST frame's sub-row is the active one.
     fireEvent.click(screen.getByTestId("layer-group-expand"));
     const frames = screen.getAllByTestId("layer-group-frame");
-    expect(frames[2]).toHaveAttribute("data-active", "true");
-    expect(frames[0]).toHaveAttribute("data-active", "false");
+    expect(frames[0]).toHaveAttribute("data-active", "true");
+    expect(frames[2]).toHaveAttribute("data-active", "false");
   });
 });
 
@@ -1277,10 +1286,10 @@ describe("LayerPanel  -  group row redesign (ITEM 2/3/4)", () => {
     fireEvent.click(eye); // hide all
     fireEvent.click(screen.getByTestId("layer-group-visibility")); // show again
     const after = seen[seen.length - 1]!;
-    // Default active frame is the LAST (F+06h); only it should be visible.
-    expect(after.find((l) => l.layer_id === "run-a-f06")?.visible).toBe(true);
-    expect(after.find((l) => l.layer_id === "run-a-f01")?.visible).toBe(false);
+    // ITEM 5: default active frame is the FIRST (F+01h); only it should be visible.
+    expect(after.find((l) => l.layer_id === "run-a-f01")?.visible).toBe(true);
     expect(after.find((l) => l.layer_id === "run-a-f03")?.visible).toBe(false);
+    expect(after.find((l) => l.layer_id === "run-a-f06")?.visible).toBe(false);
   });
 
   it("a sequential group + ordinary layers share ONE interleaved sortable order", () => {
@@ -1331,9 +1340,10 @@ describe("LayerPanel — pushes groups to the controller (scrubber is App-owned)
       "run-a-f03",
       "run-a-f06",
     ]);
-    // Active group + default frame (last) are set so App can render the scrubber.
+    // Active group + default frame (FIRST, item 5) are set so App can render the
+    // scrubber.
     expect(ctrl.getActiveGroup()?.key).toBe(groups[0]?.key);
-    expect(ctrl.frameIndexFor(groups[0]!.key)).toBe(2);
+    expect(ctrl.frameIndexFor(groups[0]!.key)).toBe(0);
   });
 
   it("registers NO group when there is no sequential series", () => {

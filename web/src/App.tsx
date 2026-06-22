@@ -47,6 +47,15 @@ import { MobileLegendToggle, legendHasContent } from "./components/LayerLegend";
 import { getAnimationController } from "./lib/animation_controller";
 import { useAnimationState } from "./lib/use_animation_controller";
 import type { ScreenRect } from "./lib/legend_snap";
+// NATE map/loading-UX polish item 1 - the AOI-bbox loading animation overlay +
+// its pure state machine / settings persistence. Driven from App's live
+// loading / connection / sim signals; anchored to the projected AOI rect.
+import { BboxProgressOverlay } from "./components/BboxProgressOverlay";
+import {
+  resolveBboxProgress,
+  readBboxAnimationsEnabled,
+  isPipelineRunning,
+} from "./lib/bbox_progress";
 import {
   AuthGate,
   clearAnonymousAccepted,
@@ -302,6 +311,20 @@ export function App(): JSX.Element {
   // is no AOI / it leaves the viewport). Mirrors the layers/chatWidth lift
   // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
   const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
+
+  // NATE map/loading-UX polish item 1 - the bbox loading-animation overlay.
+  //   - `bboxAnimEnabled` is the user's persisted enable flag (DEFAULT ON; the
+  //     SettingsPopup toggle writes it through + bumps `bboxAnimSettingsTick` so
+  //     this re-reads after a change). The CONNECTING scan border ignores it.
+  //   - `simRunning` mirrors session-state.current_pipeline being in progress;
+  //     it drives the PURPLE scan border for a long-running solve. Updated by the
+  //     session-state subscription below (isPipelineRunning).
+  const [bboxAnimSettingsTick, setBboxAnimSettingsTick] = useState(0);
+  const bboxAnimEnabled = useMemo(
+    () => readBboxAnimationsEnabled(),
+    [bboxAnimSettingsTick],
+  );
+  const [simRunning, setSimRunning] = useState<boolean>(false);
 
   // #170 AOI-first manual case-creation: when the user taps "+ New Case" we open
   // an AOI-capture overlay (the AoiPickerCard, mounted by Map.tsx) instead of
@@ -660,6 +683,32 @@ export function App(): JSX.Element {
       deleteCase(caseId);
     },
     [deleteCase],
+  );
+
+  // NATE item 3 - SNAP-ON-SELECT. On case-select, fit the map to the case
+  // SUMMARY bbox (CaseSummary.bbox, already on the cases list) IMMEDIATELY -
+  // BEFORE the full case/layers round-trip - so the camera moves + the analysis
+  // extent draws (and the bbox loading animation arms via aoiScreenRect) the
+  // instant the user taps, instead of the dead air where nothing moves until the
+  // whole case loads. The layers then stream in underneath. The later case-open
+  // rehydration (the [activeSession, bus] effect) re-asserts the FLOORED bbox /
+  // last zoom-to idempotently, so a refined extent supersedes this preview snap.
+  // When the summary has no (valid) bbox we just select - no snap (older Cases /
+  // no-AOI Cases are unchanged, and the case-open path still replays any history
+  // zoom-to). asBbox is the SAME finite-4-number guard the rehydration uses.
+  const onSelectCase = useCallback(
+    (caseId: string) => {
+      const summary = cases.find((c) => c.case_id === caseId);
+      const previewBbox = summary ? asBbox(summary.bbox) : null;
+      if (previewBbox) {
+        bus.pushMapCommand({
+          command: "zoom-to",
+          args: { bbox: previewBbox },
+        } as unknown as MapCommandPayload);
+      }
+      selectCase(caseId);
+    },
+    [cases, bus, selectCase],
   );
 
   // currentCaseId for the embedded SecretsPanel scope (inside Settings).
@@ -1341,6 +1390,16 @@ export function App(): JSX.Element {
       // iff the shared cache's activeCaseId is non-null (App keeps it in lockstep
       // with activeCaseId). This keeps the rail / legend / map consistent: no
       // case layers anywhere until a Case is entered.
+      // NATE item 1 - track the long-running-sim signal off the live pipeline
+      // snapshot so the bbox overlay can paint the PURPLE scan border. Derived
+      // here (vs a separate subscription) because this is the one place App sees
+      // every session-state frame. Tolerant of the loosely-typed field.
+      setSimRunning(
+        isPipelineRunning(
+          (p as { current_pipeline?: unknown }).current_pipeline ?? null,
+        ),
+      );
+
       const caseId = layerCache.activeCaseId;
       if (caseId === null) {
         setLayers([]);
@@ -1443,6 +1502,25 @@ export function App(): JSX.Element {
     [activeCaseId, caseSelectedButUnsettled, wsStatus],
   );
 
+  // NATE item 1 - resolve the AOI-bbox loading-animation render descriptor from
+  // the live signals (pure state machine, unit-tested in lib/bbox_progress). Must
+  // be a HOOK computed BEFORE the AuthGate early-return (same #310 rule as
+  // layersLoading above). `connecting` is exempt from the user toggle inside the
+  // resolver, so a transport drop always shows the scan border. `hasBbox` is the
+  // projected AOI rect being present (the overlay's anchor).
+  const bboxProgress = useMemo(
+    () =>
+      resolveBboxProgress({
+        hasBbox: aoiScreenRect !== null,
+        layerCount: layers.length,
+        layersLoading,
+        connecting: wsStatus === "connecting" || wsStatus === "reconnecting",
+        simRunning,
+        animationsEnabled: bboxAnimEnabled,
+      }),
+    [aoiScreenRect, layers.length, layersLoading, wsStatus, simRunning, bboxAnimEnabled],
+  );
+
   // CASE-LIST LOADING SIGNAL (BUG 1: late spinner). True while the FIRST
   // case-list load is plausibly in flight AND has not yet settled, so the
   // CasesPanel shows its spinner IMMEDIATELY (on first paint, before the WS even
@@ -1535,7 +1613,19 @@ export function App(): JSX.Element {
         onAoiCaptureCancel={onAoiCaptureCancel}
       />
 
-      {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19)  -  with the iOS status bar
+      {/* NATE item 1 - AOI-bbox loading-animation overlay. Anchored to the
+          projected AOI screen rect (aoiScreenRect, the same one the legend +
+          scrubber pin against). The render mode/tone is decided by the pure
+          resolveBboxProgress state machine off the live loading / connection /
+          sim signals. The app shell is position:fixed;inset:0 (the rect coords
+          are viewport-relative), so the overlay sits directly over the map. */}
+      <BboxProgressOverlay
+        rect={aoiScreenRect}
+        mode={bboxProgress.mode}
+        tone={bboxProgress.tone}
+      />
+
+      {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19)  - with the iOS status bar
           now translucent (apple-mobile-web-app-status-bar-style=black-translucent
           in index.html), the page runs UNDER the time/battery, so more map shows
           but those glyphs can wash out over a light basemap. This thin
@@ -1625,7 +1715,7 @@ export function App(): JSX.Element {
             activeCaseId={activeCaseId}
             loading={casesListLoading}
             onCreate={onCreateGated}
-            onSelect={selectCase}
+            onSelect={onSelectCase}
             onRename={onRenameGated}
             onArchive={onArchiveGated}
             onDelete={onDeleteGated}
@@ -2001,7 +2091,7 @@ export function App(): JSX.Element {
                   loading={casesListLoading}
                   onCreate={onCreateGated}
                   onSelect={(caseId) => {
-                    selectCase(caseId);
+                    onSelectCase(caseId);
                     setMobileDrawerOpen(false);
                   }}
                   onRename={onRenameGated}
@@ -2263,6 +2353,11 @@ export function App(): JSX.Element {
           isSignedIn={isSignedIn}
           theme={theme}
           onToggleTheme={toggleTheme}
+          /* NATE item 1 - the bbox loading-animation enable toggle (DEFAULT ON).
+             SettingsPopup persists the flag itself (localStorage); the callback
+             bumps a tick so App re-reads `bboxAnimEnabled`. The CONNECTING scan
+             border ignores this (it is a transport-health cue). */
+          onBboxAnimationsChange={() => setBboxAnimSettingsTick((t) => t + 1)}
           onSignOut={() => {
             void handleSignOut();
             setSettingsOpen(false);

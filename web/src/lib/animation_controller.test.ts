@@ -22,6 +22,15 @@ const GROUP: AnimGroup = {
   frameLabels: ["F+01h", "F+03h", "F+06h"],
 };
 
+// ITEM 5 (NATE 2026-06-22): setGroups now AUTO-PLAYS a newly-seen multi-frame
+// group (unless prefers-reduced-motion). The existing tests below assert the
+// controller's NON-autoplay mechanics (default frame, manual play/pause, prune),
+// so they construct the controller with reduced-motion ON to suppress the
+// auto-play side effect and keep exercising the underlying primitives. The
+// dedicated "ITEM 5" describe block at the bottom verifies the auto-play +
+// first-frame-default behavior with reduced-motion OFF.
+const REDUCED = { prefersReducedMotion: () => true } as const;
+
 /** A controllable fake timer seam: returns a `tick()` to fire the interval. */
 function makeFakeTimers(): { timers: AnimTimers; tick: () => void; cleared: () => boolean } {
   let cb: (() => void) | null = null;
@@ -45,17 +54,18 @@ function makeFakeTimers(): { timers: AnimTimers; tick: () => void; cleared: () =
 }
 
 describe("AnimationController — group registration + default frame", () => {
-  it("seeds the active group + the LAST frame as default on setGroups", () => {
-    const c = new AnimationController();
+  it("seeds the active group + the FIRST frame as default on setGroups (item 5)", () => {
+    const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
     expect(c.getActiveGroup()?.key).toBe("grp-1");
-    // Default = last frame (the latest forecast hour reads as "current").
-    expect(c.frameIndexFor("grp-1")).toBe(2);
+    // ITEM 5: default = FIRST frame (0), so the animation reads from the start
+    // (not a static peak). Reduced-motion suppresses auto-play, so it stays on 0.
+    expect(c.frameIndexFor("grp-1")).toBe(0);
   });
 
   it("clears the active group + stops play when no groups remain", () => {
     const { timers } = makeFakeTimers();
-    const c = new AnimationController({ timers });
+    const c = new AnimationController({ timers, ...REDUCED });
     c.setGroups([GROUP]);
     c.setPlaying(true);
     c.setGroups([]);
@@ -64,18 +74,18 @@ describe("AnimationController — group registration + default frame", () => {
   });
 
   it("prunes frame state for groups that disappear", () => {
-    const c = new AnimationController();
+    const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
-    c.stepGroupTo("grp-1", 0);
+    c.stepGroupTo("grp-1", 2);
     c.setGroups([]); // grp-1 gone
-    c.setGroups([GROUP]); // re-formed -> default frame again (last)
-    expect(c.frameIndexFor("grp-1")).toBe(2);
+    c.setGroups([GROUP]); // re-formed -> default frame again (FIRST, item 5)
+    expect(c.frameIndexFor("grp-1")).toBe(0);
   });
 });
 
 describe("AnimationController — stepping drives the emitter", () => {
   it("emits show-frame-i / hide-the-rest on stepGroupTo", () => {
-    const c = new AnimationController();
+    const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
     const emitted: Array<{ ids: string[]; idx: number }> = [];
     const emitter: FrameVisibilityEmitter = (ids, idx) =>
@@ -87,7 +97,7 @@ describe("AnimationController — stepping drives the emitter", () => {
   });
 
   it("advanceActive wraps past the last frame back to 0", () => {
-    const c = new AnimationController();
+    const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
     const seen: number[] = [];
     c.setEmitter((_ids, idx) => seen.push(idx));
@@ -101,7 +111,7 @@ describe("AnimationController — stepping drives the emitter", () => {
 describe("AnimationController — auto-play interval (controller-owned)", () => {
   it("arms the interval on play + advances on each tick", () => {
     const { timers, tick } = makeFakeTimers();
-    const c = new AnimationController({ timers });
+    const c = new AnimationController({ timers, ...REDUCED });
     c.setGroups([GROUP]);
     const seen: number[] = [];
     c.setEmitter((_ids, idx) => seen.push(idx));
@@ -116,7 +126,7 @@ describe("AnimationController — auto-play interval (controller-owned)", () => 
 
   it("clears the interval on pause", () => {
     const { timers, cleared } = makeFakeTimers();
-    const c = new AnimationController({ timers });
+    const c = new AnimationController({ timers, ...REDUCED });
     c.setGroups([GROUP]);
     c.setPlaying(true);
     expect(cleared()).toBe(false);
@@ -126,7 +136,7 @@ describe("AnimationController — auto-play interval (controller-owned)", () => 
 
   it("does not arm the interval for a single-frame group", () => {
     const { timers, tick } = makeFakeTimers();
-    const c = new AnimationController({ timers });
+    const c = new AnimationController({ timers, ...REDUCED });
     c.setGroups([{ ...GROUP, layerIds: ["only"], frameLabels: ["F+01h"] }]);
     const seen: number[] = [];
     c.setEmitter((_ids, idx) => seen.push(idx));
@@ -138,23 +148,102 @@ describe("AnimationController — auto-play interval (controller-owned)", () => 
 
 describe("AnimationController — subscription snapshot stability", () => {
   it("returns the SAME snapshot reference until a mutation (useSyncExternalStore safe)", () => {
-    const c = new AnimationController();
+    const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
     const a = c.snapshot();
     const b = c.snapshot();
     expect(a).toBe(b); // stable identity between reads
-    c.stepGroupTo("grp-1", 0);
+    c.stepGroupTo("grp-1", 1);
     const d = c.snapshot();
     expect(d).not.toBe(a); // new reference after a change
   });
 
   it("notifies subscribers on state changes", () => {
-    const c = new AnimationController();
+    const c = new AnimationController(REDUCED);
     const cb = vi.fn();
     c.subscribe(cb); // immediate invoke (1)
     c.setGroups([GROUP]); // (2)
     c.setPlaying(true); // (3)
     expect(cb.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// --- ITEM 5 (NATE 2026-06-22): default-to-FIRST-frame + AUTO-PLAY on load ---- //
+describe("AnimationController — item 5 first-frame default + auto-play", () => {
+  it("defaults a newly-loaded group to frame 0 (not the last)", () => {
+    const c = new AnimationController({ prefersReducedMotion: () => false });
+    c.setGroups([GROUP]);
+    expect(c.frameIndexFor("grp-1")).toBe(0);
+  });
+
+  it("auto-starts playback on a freshly-loaded multi-frame group", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+    });
+    c.setGroups([GROUP]);
+    expect(c.isPlaying()).toBe(true);
+    expect(c.getActiveGroup()?.key).toBe("grp-1");
+  });
+
+  it("emits frame 0 immediately on load (first frame painted before any tick)", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+    });
+    const seen: number[] = [];
+    c.setEmitter((_ids, idx) => seen.push(idx));
+    c.setGroups([GROUP]);
+    expect(seen[0]).toBe(0); // the first frame is shown on load.
+  });
+
+  it("does NOT auto-play under prefers-reduced-motion (stays on frame 0, paused)", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => true,
+    });
+    c.setGroups([GROUP]);
+    expect(c.isPlaying()).toBe(false);
+    expect(c.frameIndexFor("grp-1")).toBe(0);
+  });
+
+  it("does NOT auto-play a single-frame group", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+    });
+    c.setGroups([{ ...GROUP, layerIds: ["only"], frameLabels: ["F+01h"] }]);
+    expect(c.isPlaying()).toBe(false);
+  });
+
+  it("does NOT restart playback when the same group is re-pushed after a pause", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+    });
+    c.setGroups([GROUP]); // auto-plays
+    expect(c.isPlaying()).toBe(true);
+    c.setPlaying(false); // user pauses
+    c.setGroups([GROUP]); // re-detect (LayerPanel re-pushes) -> must NOT replay
+    expect(c.isPlaying()).toBe(false);
+  });
+
+  it("re-auto-plays a group after reset() (a new Case)", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+    });
+    c.setGroups([GROUP]);
+    c.setPlaying(false);
+    c.reset(); // Case exit clears the auto-played marker
+    c.setGroups([GROUP]); // new Case -> auto-play again
+    expect(c.isPlaying()).toBe(true);
   });
 });
 

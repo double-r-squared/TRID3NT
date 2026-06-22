@@ -35,6 +35,14 @@ import {
   writeChatOpacity,
   type ChatOpacityTier,
 } from "../Chat";
+// NATE map/loading-UX polish item 1 - the bbox loading-animation enable flag.
+// Settings owns the persistence write here (mirroring the chat-opacity pattern);
+// App re-reads via readBboxAnimationsEnabled after the onBboxAnimationsChange
+// callback fires. DEFAULT ON.
+import {
+  readBboxAnimationsEnabled,
+  writeBboxAnimationsEnabled,
+} from "../lib/bbox_progress";
 
 export interface SettingsPopupProps {
   /** Email of the signed-in user, or null if anonymous. */
@@ -45,6 +53,13 @@ export interface SettingsPopupProps {
   theme: MapTheme;
   /** Toggle theme handler. */
   onToggleTheme: () => void;
+  /**
+   * NATE item 1 - optional notify when the bbox loading-animation enable flag is
+   * toggled. SettingsPopup writes the persisted flag itself; this callback lets
+   * App re-read it (re-deriving the overlay state). Kept OPTIONAL so pre-existing
+   * fixtures that don't plumb it still render (the toggle just won't notify App).
+   */
+  onBboxAnimationsChange?: (enabled: boolean) => void;
   /** Sign-out handler. App.tsx wires the real auth.signOut call. */
   onSignOut: () => void;
   /** Sign-in handler — only invoked when isSignedIn=false. */
@@ -247,6 +262,7 @@ export function SettingsPopup({
   isSignedIn,
   theme,
   onToggleTheme,
+  onBboxAnimationsChange,
   onSignOut,
   onSignInRequest,
   onClose,
@@ -268,6 +284,21 @@ export function SettingsPopup({
   function onSelectOpacity(tier: ChatOpacityTier): void {
     setOpacityTier(tier);
     writeChatOpacity(tier);
+  }
+
+  // NATE item 1 - the bbox loading-animation enable flag (DEFAULT ON). Persisted
+  // here; App re-reads via onBboxAnimationsChange. The connecting scan border is
+  // exempt from this (handled in the resolver), so disabling only silences the
+  // decorative loading animations, not the transport-health cue.
+  const [bboxAnimEnabled, setBboxAnimEnabled] = useState<boolean>(() =>
+    readBboxAnimationsEnabled(),
+  );
+
+  function onToggleBboxAnimations(): void {
+    const next = !bboxAnimEnabled;
+    setBboxAnimEnabled(next);
+    writeBboxAnimationsEnabled(next);
+    onBboxAnimationsChange?.(next);
   }
 
   // Agent sleep control (NATE 2026-06-18). Two-step: first click ARMS a confirm,
@@ -438,6 +469,22 @@ export function SettingsPopup({
                 );
               })}
             </div>
+          </div>
+          {/* NATE item 1 - bbox loading-animation toggle (DEFAULT ON). Disabling
+              silences the decorative AOI loading animations; the connecting
+              scan border (transport health) stays on regardless. */}
+          <div style={{ ...valueStyle, marginTop: 10 }}>
+            <span>Map loading animations</span>
+            <button
+              data-testid="grace2-settings-bbox-animations-toggle"
+              onClick={onToggleBboxAnimations}
+              style={buttonStyle}
+              role="switch"
+              aria-checked={bboxAnimEnabled}
+              aria-label={`Turn map loading animations ${bboxAnimEnabled ? "off" : "on"}`}
+            >
+              {bboxAnimEnabled ? "On" : "Off"}
+            </button>
           </div>
         </div>
 

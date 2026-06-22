@@ -86,6 +86,23 @@ export interface AnimControllerOptions {
   intervalMs?: number;
   /** Timer seam (tests inject a fake). Default = window.setInterval. */
   timers?: AnimTimers;
+  /**
+   * ITEM 5 (NATE 2026-06-22) - reduced-motion seam. When this returns true the
+   * controller does NOT auto-start playback on a newly-seen group (the user
+   * prefers no motion), though manual play still works. Default consults the
+   * `prefers-reduced-motion` media query; tests inject a deterministic stub.
+   */
+  prefersReducedMotion?: () => boolean;
+}
+
+/** SSR/test-safe default reduced-motion probe (mirrors PipelineCard's). */
+function defaultPrefersReducedMotion(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  try {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  } catch {
+    return false;
+  }
 }
 
 function clampIndex(i: number, n: number): number {
@@ -121,10 +138,18 @@ export class AnimationController {
   private readonly intervalMs: number;
   private readonly timers: AnimTimers;
   private timerId: number | null = null;
+  // ITEM 5 - reduced-motion probe (auto-play suppressed when it returns true).
+  private readonly prefersReducedMotion: () => boolean;
+  // ITEM 5 - groups we have already auto-played, so re-pushing the same group
+  // set (LayerPanel re-detects on every session-state frame) does not restart
+  // playback after the user paused it. Keyed by group key.
+  private autoPlayedKeys = new Set<string>();
 
   constructor(opts: AnimControllerOptions = {}) {
     this.intervalMs = Math.max(50, opts.intervalMs ?? 1100);
     this.timers = opts.timers ?? defaultTimers;
+    this.prefersReducedMotion =
+      opts.prefersReducedMotion ?? defaultPrefersReducedMotion;
   }
 
   // --- emitter wiring --------------------------------------------------- //
@@ -181,22 +206,35 @@ export class AnimationController {
    * Replace the known group set (LayerPanel calls this whenever its detected
    * sequential groups change). Keeps the active key valid (defaults to the
    * first group), prunes frame indices for vanished groups, and stops playback
-   * when no groups remain. Frame indices default to the LAST frame on first
-   * sight (the latest forecast hour reads as "current") to match the prior UX.
+   * when no groups remain.
+   *
+   * ITEM 5 (NATE 2026-06-22): a newly-loaded animation group now defaults its
+   * frame to the FIRST frame (index 0, not the last) AND auto-starts playback,
+   * so the animation reads as an animation (a sweep from the start) instead of a
+   * static peak. Auto-play is suppressed under prefers-reduced-motion, and is
+   * done at most ONCE per group key (autoPlayedKeys) so a re-push of the same
+   * group set after the user paused does not restart playback.
    */
   setGroups(groups: AnimGroup[]): void {
     this.groups = groups;
 
-    // Prune frame state for groups that no longer exist.
+    // Prune frame state for groups that no longer exist. Also forget their
+    // auto-play marker so a genuinely NEW group of the same key later re-plays.
     const live = new Set(groups.map((g) => g.key));
     for (const k of Object.keys(this.frameByGroup)) {
       if (!live.has(k)) delete this.frameByGroup[k];
     }
+    for (const k of [...this.autoPlayedKeys]) {
+      if (!live.has(k)) this.autoPlayedKeys.delete(k);
+    }
 
-    // Seed a default frame index (last frame) for any newly-seen group.
+    // Seed a default frame index (FIRST frame) for any newly-seen group, and
+    // collect the newly-seen multi-frame group keys for auto-play below.
+    const newlySeen: string[] = [];
     for (const g of groups) {
       if (this.frameByGroup[g.key] === undefined) {
-        this.frameByGroup[g.key] = Math.max(0, g.layerIds.length - 1);
+        this.frameByGroup[g.key] = 0; // ITEM 5: default to the FIRST frame.
+        if (g.layerIds.length > 1) newlySeen.push(g.key);
       }
     }
 
@@ -215,6 +253,31 @@ export class AnimationController {
     ) {
       this.activeGroupKey = first.key;
     }
+
+    // ITEM 5: auto-start playback on a freshly-loaded multi-frame group so it
+    // animates on load (not a static peak). Make the new group active first so
+    // the interval drives the right frames. Skip under reduced-motion and skip
+    // groups already auto-played this lifetime. Also emit frame 0 so the map
+    // shows the first frame immediately even before the first interval tick.
+    if (newlySeen.length > 0) {
+      const autoKey =
+        this.activeGroupKey && newlySeen.includes(this.activeGroupKey)
+          ? this.activeGroupKey
+          : newlySeen[0]!;
+      this.activeGroupKey = autoKey;
+      const g = this.groups.find((gr) => gr.key === autoKey);
+      if (g) this.emitFrame(g, 0); // show the first frame now.
+      if (!this.prefersReducedMotion()) {
+        this.autoPlayedKeys.add(autoKey);
+        // setPlaying arms the interval (syncInterval) and notifies.
+        this.setPlaying(true);
+        return;
+      }
+      // Reduced motion: still mark it seen so we don't re-attempt, but leave it
+      // paused on frame 0 (a static first frame, not the peak).
+      this.autoPlayedKeys.add(autoKey);
+    }
+
     this.notify();
   }
 
@@ -233,12 +296,14 @@ export class AnimationController {
     return this.playing;
   }
 
-  /** Resolved active frame index for a group key (default = last frame). */
+  /** Resolved active frame index for a group key (default = FIRST frame). */
   frameIndexFor(key: string): number {
     const g = this.groups.find((gr) => gr.key === key);
     if (!g) return 0;
     const raw = this.frameByGroup[key];
-    const idx = typeof raw === "number" ? raw : g.layerIds.length - 1;
+    // ITEM 5 (NATE 2026-06-22): default to the FIRST frame (0), not the last,
+    // so a group seen before its frame index is recorded reads from the start.
+    const idx = typeof raw === "number" ? raw : 0;
     return clampIndex(idx, g.layerIds.length);
   }
 
@@ -330,6 +395,7 @@ export class AnimationController {
     this.activeGroupKey = null;
     this.frameByGroup = {};
     this.playing = false;
+    this.autoPlayedKeys.clear(); // ITEM 5: a new Case may re-auto-play its groups.
     this.dispose(); // stop the advance interval
     this.notify();
   }

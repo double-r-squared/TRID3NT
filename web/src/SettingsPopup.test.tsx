@@ -18,6 +18,12 @@ import { SettingsPopup } from "./components/SettingsPopup";
 // real persisted tier rather than poking a hard-coded localStorage key, so the
 // test stays correct even if Group B renames the underlying key.
 import { readChatOpacity, writeChatOpacity } from "./Chat";
+// NATE item 1 - the bbox loading-animation enable flag helpers (real impl; the
+// SettingsPopup toggle persists through these).
+import {
+  readBboxAnimationsEnabled,
+  writeBboxAnimationsEnabled,
+} from "./lib/bbox_progress";
 
 // job-0322 F56 — mock Chat.tsx with a localStorage-backed fake implementing the
 // AGREED per-user opacity contract (tiers low|medium|high, default "medium").
@@ -122,6 +128,36 @@ describe("SettingsPopup", () => {
     render(<SettingsPopup {...defaultProps} onToggleTheme={onToggleTheme} />);
     fireEvent.click(screen.getByTestId("grace2-settings-theme-toggle"));
     expect(onToggleTheme).toHaveBeenCalledTimes(1);
+  });
+
+  // NATE item 1 - the map loading-animation toggle (DEFAULT ON).
+  it("map loading animations toggle defaults ON and persists OFF on click", () => {
+    const onBboxAnimationsChange = vi.fn();
+    render(
+      <SettingsPopup
+        {...defaultProps}
+        onBboxAnimationsChange={onBboxAnimationsChange}
+      />,
+    );
+    const toggle = screen.getByTestId("grace2-settings-bbox-animations-toggle");
+    // DEFAULT ON.
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle.textContent).toBe("On");
+    fireEvent.click(toggle);
+    // Persisted OFF + the change callback fired with false.
+    expect(readBboxAnimationsEnabled()).toBe(false);
+    expect(onBboxAnimationsChange).toHaveBeenCalledWith(false);
+    expect(
+      screen.getByTestId("grace2-settings-bbox-animations-toggle"),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("map loading animations toggle initialises from the persisted OFF value", () => {
+    writeBboxAnimationsEnabled(false);
+    render(<SettingsPopup {...defaultProps} />);
+    expect(
+      screen.getByTestId("grace2-settings-bbox-animations-toggle"),
+    ).toHaveAttribute("aria-checked", "false");
   });
 
   it("close button invokes onClose", () => {

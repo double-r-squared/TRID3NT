@@ -44,6 +44,9 @@ import {
 } from "./lib/spatial_input_bus";
 import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
 import { AoiPickerCard } from "./components/AoiPickerCard";
+// NATE map/loading-UX polish item 4 - the always-on "Draw AOI" map control that
+// arms the bbox rectangle-draw on demand and stages it for the next prompt.
+import { DrawAoiControl } from "./components/DrawAoiControl";
 import type { SpatialInputRequestPayload } from "./contracts";
 import { LayerLegend } from "./components/LayerLegend";
 // C3 (job-0356 / per-case-layer-durability)  -  the CLIENT is the source of truth
@@ -70,6 +73,9 @@ import { getLayerCache } from "./lib/layer_cache";
 // registers the frame-visibility emitter so frames keep advancing on the map
 // even while the Layers panel is closed.
 import { getAnimationController } from "./lib/animation_controller";
+// NATE map/loading-UX polish item 2 - preload + hold-until-loaded raster frame
+// swap so stepping/playing an animation never shows a black-then-fill gap.
+import { swapFrameWithHold, type FrameMapAdapter } from "./lib/frame_preload";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
@@ -3087,11 +3093,92 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // re-asserts the single-visible-frame state. Mounted once with the map; the
   // emitter no-ops until the map style is ready. Map.tsx is always mounted, so
   // frames keep advancing on the map while the panel is closed.
+  // NATE item 2 - the id of the frame the LAST raster swap raised, threaded into
+  // swapFrameWithHold so it knows which single frame to HOLD underneath until the
+  // new frame's tiles load (the hold = no black gap). Reset when the active group
+  // changes (a different layerIds set), so a held id from another group is never
+  // carried over.
+  const prevFrameTargetRef = useRef<{ groupKey: string; target: string | null }>(
+    { groupKey: "", target: null },
+  );
   useEffect(() => {
     const controller = getAnimationController();
     const unregister = controller.setEmitter((layerIds, visibleIndex) => {
       const m = map.current;
       if (!m) return;
+
+      // NATE item 2 - kill the black-then-fill on raster frame swaps. A frame
+      // group of RASTER overlays (the common case: HRRR hours / temporal COGs)
+      // gets the PRELOAD + hold-until-loaded opacity swap (lib/frame_preload):
+      // every frame is warmed (visible, opacity 0) so its tiles load, the target
+      // is raised to opacity 1 immediately, and the OTHER frames are dimmed only
+      // once the target's tiles are loaded - so the prior frame holds underneath
+      // and there is never a black gap, even on first play. A group that contains
+      // any non-raster (vector) member falls back to the plain visibility toggle
+      // (vectors render from already-fetched GeoJSON, so they have no tile gap).
+      const allRaster = layerIds.every(
+        (id) => !vectorGeomKinds.current.has(id),
+      );
+
+      if (allRaster && layerIds.length > 1) {
+        const adapter: FrameMapAdapter = {
+          hasLayer: (id) => {
+            try {
+              return Boolean(m.getLayer(id));
+            } catch {
+              return false;
+            }
+          },
+          setVisibility: (id, visible) => {
+            try {
+              m.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+            } catch {
+              /* mid-add race - the reconcile restores it */
+            }
+          },
+          setOpacity: (id, opacity) => {
+            try {
+              m.setPaintProperty(id, "raster-opacity", opacity);
+            } catch {
+              /* mid-add race */
+            }
+          },
+          isSourceLoaded: (id) => {
+            try {
+              return m.isSourceLoaded(id) === true;
+            } catch {
+              return false;
+            }
+          },
+          onceSourceSettled: (cb) => {
+            try {
+              m.once("idle", cb);
+            } catch {
+              cb();
+            }
+          },
+        };
+        // Thread the previous target so the swap holds the right frame. A new
+        // group (different member set) starts with no held frame.
+        const groupKey = layerIds.join("|");
+        const prev =
+          prevFrameTargetRef.current.groupKey === groupKey
+            ? prevFrameTargetRef.current.target
+            : null;
+        const { target } = swapFrameWithHold(adapter, layerIds, visibleIndex, prev);
+        prevFrameTargetRef.current = { groupKey, target };
+        // Persist the single-visible-frame intent through the cache so a
+        // reconcile / reconnect re-asserts it (the cache models visibility, not
+        // opacity; the opacity dance is a transient anti-flash treatment).
+        layerIds.forEach((id, i) => {
+          layerCache.setOverride(layerCache.activeCaseId, id, {
+            visible: i === visibleIndex,
+          });
+        });
+        return;
+      }
+
+      // Non-raster (or single-frame) group: the original visibility toggle.
       layerIds.forEach((id, i) => {
         const visible = i === visibleIndex;
         try {
@@ -3771,6 +3858,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           onSkip={onAoiCaptureSkip}
           onCancel={onAoiCaptureCancel}
         />
+      ) : null}
+
+      {/* NATE item 4 - the ALWAYS-ON "Draw AOI" control. Persistent map control
+          that arms the bbox rectangle-draw on demand; the drawn box stages as the
+          next-prompt analysis extent (aoiStageBus), non-destructive, with an easy
+          clear. Suppressed while another draw surface owns the gesture (an
+          agent-requested spatial-input pick, or the #170 AOI-capture card) so two
+          drag handlers never fight. NO-CLOBBER: only this control arms the draw. */}
+      {!spatialRequest && !aoiCaptureActive ? (
+        <DrawAoiControl map={map.current} />
       ) : null}
     </div>
   );

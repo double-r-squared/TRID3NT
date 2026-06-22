@@ -1,15 +1,15 @@
-// GRACE-2 web — JOB WEB-ANIM (#157.1-.3) integration tests.
+// GRACE-2 web - JOB WEB-ANIM (#157.1-.3) integration tests.
 //
 // The keystone behaviour NATE reported broken on mobile: closing the Layers
 // panel KILLED the animation and dropped the scrubber, because the playback
 // state + interval + scrubber all lived inside LayerPanel. After the fix:
-//   #157.1 — playback (the `playing` flag + the advance interval) lives in the
+//   #157.1 - playback (the `playing` flag + the advance interval) lives in the
 //            module-level AnimationController and KEEPS RUNNING across a
 //            LayerPanel unmount; the controller drives frame visibility via an
 //            emitter (Map.tsx in prod) independent of the panel.
-//   #157.2 — the scrubber renders WHENEVER a sequence is active on the
+//   #157.2 - the scrubber renders WHENEVER a sequence is active on the
 //            controller, regardless of whether the Layers panel is open.
-//   #157.3 — the scrubber carries its own play/pause button wired to the
+//   #157.3 - the scrubber carries its own play/pause button wired to the
 //            controller's playing state.
 //
 // These tests compose the SAME pieces App.tsx wires (LayerPanel as a control +
@@ -36,8 +36,15 @@ import type { ProjectLayerSummary } from "./contracts";
 
 // A controllable fake-timer seam so we can fire the controller's advance tick
 // deterministically without real wall-clock time.
+//
+// ITEM 5 (NATE 2026-06-22): setGroups now AUTO-PLAYS a freshly-loaded multi-frame
+// group. The existing scrubber-CONTROL tests assert the manual play/pause +
+// stepping mechanics from a PAUSED baseline, so they install the controller with
+// reduced-motion ON (auto-play suppressed). The dedicated item-5 block at the
+// bottom installs it with reduced-motion OFF to verify the auto-play + first-
+// frame default.
 let fireTick: () => void = () => {};
-function installFakeTimerController(): AnimationController {
+function installFakeTimerController(reducedMotion = true): AnimationController {
   let cb: (() => void) | null = null;
   const timers: AnimTimers = {
     setInterval: (fn) => {
@@ -49,7 +56,10 @@ function installFakeTimerController(): AnimationController {
     },
   };
   fireTick = () => cb?.();
-  const c = new AnimationController({ timers });
+  const c = new AnimationController({
+    timers,
+    prefersReducedMotion: () => reducedMotion,
+  });
   setAnimationController(c);
   return c;
 }
@@ -114,7 +124,7 @@ function AppScrubberHarness(): JSX.Element | null {
   );
 }
 
-describe("JOB WEB-ANIM #157.2 — scrubber renders whenever a sequence animates", () => {
+describe("JOB WEB-ANIM #157.2 - scrubber renders whenever a sequence animates", () => {
   beforeEach(() => {
     installFakeTimerController();
   });
@@ -135,7 +145,7 @@ describe("JOB WEB-ANIM #157.2 — scrubber renders whenever a sequence animates"
         },
       ]);
     });
-    // Now the scrubber appears — panel never mounted.
+    // Now the scrubber appears - panel never mounted.
     expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
   });
 
@@ -144,7 +154,7 @@ describe("JOB WEB-ANIM #157.2 — scrubber renders whenever a sequence animates"
     const panel = render(<LayerPanel initialLayers={FRAMES} />);
     render(<AppScrubberHarness />);
     expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
-    // Close the panel (unmount) — the scrubber must stay because it is driven by
+    // Close the panel (unmount) - the scrubber must stay because it is driven by
     // the controller, not by the panel's lifetime.
     act(() => {
       panel.unmount();
@@ -153,7 +163,7 @@ describe("JOB WEB-ANIM #157.2 — scrubber renders whenever a sequence animates"
   });
 });
 
-describe("JOB WEB-ANIM #157.1 — playback survives a LayerPanel unmount", () => {
+describe("JOB WEB-ANIM #157.1 - playback survives a LayerPanel unmount", () => {
   beforeEach(() => {
     installFakeTimerController();
   });
@@ -176,7 +186,7 @@ describe("JOB WEB-ANIM #157.1 — playback survives a LayerPanel unmount", () =>
     expect(ctrl.isPlaying()).toBe(true);
     emitted.length = 0;
 
-    // Close the Layers panel — the keystone scenario.
+    // Close the Layers panel - the keystone scenario.
     act(() => {
       panel.unmount();
     });
@@ -184,7 +194,7 @@ describe("JOB WEB-ANIM #157.1 — playback survives a LayerPanel unmount", () =>
     // The controller is STILL playing after unmount.
     expect(ctrl.isPlaying()).toBe(true);
 
-    // And frames STILL advance on the next tick(s) — driving the emitter (the
+    // And frames STILL advance on the next tick(s) - driving the emitter (the
     // map) even though the panel is gone.
     act(() => {
       fireTick(); // 0 -> 1
@@ -199,7 +209,7 @@ describe("JOB WEB-ANIM #157.1 — playback survives a LayerPanel unmount", () =>
   });
 });
 
-describe("JOB WEB-ANIM #157.3 — the scrubber play button toggles playing", () => {
+describe("JOB WEB-ANIM #157.3 - the scrubber play button toggles playing", () => {
   beforeEach(() => {
     installFakeTimerController();
   });
@@ -228,6 +238,9 @@ describe("JOB WEB-ANIM #157.3 — the scrubber play button toggles playing", () 
 
   it("the scrubber advancing the controller also advances the panel-driven map", () => {
     // Step via the scrubber slider; the controller records the frame + emits.
+    // ITEM 5: the group now defaults to frame 0, so step to a DIFFERENT frame (2)
+    // to exercise a real slider change + emit (a change to the current value 0
+    // would be a controlled-input no-op in the DOM).
     const emitted: number[] = [];
     getAnimationController().setEmitter((_ids, idx) => emitted.push(idx));
     render(<LayerPanel initialLayers={FRAMES} />);
@@ -235,17 +248,17 @@ describe("JOB WEB-ANIM #157.3 — the scrubber play button toggles playing", () 
     emitted.length = 0;
     act(() => {
       fireEvent.change(screen.getByTestId("scrubber-slider"), {
-        target: { value: "0" },
+        target: { value: "2" },
       });
     });
     expect(getAnimationController().frameIndexFor(
       getAnimationController().getActiveGroup()!.key,
-    )).toBe(0);
-    expect(emitted).toContain(0);
+    )).toBe(2);
+    expect(emitted).toContain(2);
   });
 });
 
-// --- Item b/c (NATE 2026-06-20) — mobile legend toggle + case-exit clearing --- //
+// --- Item b/c (NATE 2026-06-20) - mobile legend toggle + case-exit clearing --- //
 //
 // These compose the real pieces App.tsx wires: the MOBILE legend show/hide
 // toggle rendered INSIDE the LayerPanel's expanded section (off the chat
@@ -256,7 +269,7 @@ import {
   legendHasContent,
 } from "./components/LayerLegend";
 
-describe("Item b — mobile legend toggle lives INSIDE the Layers section", () => {
+describe("Item b - mobile legend toggle lives INSIDE the Layers section", () => {
   beforeEach(() => {
     installFakeTimerController();
   });
@@ -359,7 +372,7 @@ describe("scrubber+legend scaling unification (NATE 2026-06-22)", () => {
   });
 });
 
-describe("Item c — Case exit clears the scrubber (controller reset)", () => {
+describe("Item c - Case exit clears the scrubber (controller reset)", () => {
   it("after the panel unmounts (Case exit) + reset(), the App scrubber clears", () => {
     installFakeTimerController();
     // Mount the panel (pushes the group) + the App scrubber harness.
@@ -367,7 +380,7 @@ describe("Item c — Case exit clears the scrubber (controller reset)", () => {
     render(<AppScrubberHarness />);
     expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
     // On Case EXIT: the LayerPanel unmounts (the rail shows the Cases list, not
-    // CaseView) — so nothing re-pushes the old Case's groups — and App's
+    // CaseView) - so nothing re-pushes the old Case's groups - and App's
     // Case-switch handler resets the shared controller.
     act(() => {
       panel.unmount();
@@ -375,7 +388,44 @@ describe("Item c — Case exit clears the scrubber (controller reset)", () => {
     });
     // The scrubber renders only when a group is active; reset cleared it, and
     // (unlike a panel close alone) nothing re-pushes the group, so the scrubber
-    // stays gone — item c: the scrubber clears on Case exit.
+    // stays gone - item c: the scrubber clears on Case exit.
     expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+  });
+});
+
+// --- ITEM 5 (NATE 2026-06-22): scrubber defaults to FIRST frame + AUTO-PLAYS - //
+describe("Item 5 - scrubber defaults to first frame + auto-plays on load", () => {
+  it("a freshly-loaded sequence starts on frame 1/N and is auto-playing", () => {
+    // Install the controller with reduced-motion OFF so auto-play fires.
+    installFakeTimerController(false);
+    render(<LayerPanel initialLayers={FRAMES} />);
+    render(<AppScrubberHarness />);
+    const ctrl = getAnimationController();
+    const key = ctrl.getActiveGroup()!.key;
+    // FIRST frame default (index 0 -> "1/N" in the scrubber readout).
+    expect(ctrl.frameIndexFor(key)).toBe(0);
+    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent(
+      `1/${FRAMES.length}`,
+    );
+    // AUTO-PLAYING: the controller plays + the scrubber's play button shows Pause.
+    expect(ctrl.isPlaying()).toBe(true);
+    expect(screen.getByTestId("scrubber-play")).toHaveAttribute(
+      "aria-label",
+      "Pause sequence",
+    );
+  });
+
+  it("does NOT auto-play under prefers-reduced-motion (stays paused on frame 1)", () => {
+    installFakeTimerController(true); // reduced-motion ON
+    render(<LayerPanel initialLayers={FRAMES} />);
+    render(<AppScrubberHarness />);
+    const ctrl = getAnimationController();
+    const key = ctrl.getActiveGroup()!.key;
+    expect(ctrl.frameIndexFor(key)).toBe(0); // still defaults to the first frame
+    expect(ctrl.isPlaying()).toBe(false); // but no autoplay
+    expect(screen.getByTestId("scrubber-play")).toHaveAttribute(
+      "aria-label",
+      "Play sequence",
+    );
   });
 });
