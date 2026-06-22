@@ -56,6 +56,7 @@ RUN python3 -m venv "$VENV" \
     && "$VENV/bin/pip" install --no-cache-dir --upgrade pip \
     && "$VENV/bin/pip" install --no-cache-dir \
         "numpy>=1.23,<2" \
+        "pandas>=1.5,<2" \
         "openquake.engine>=3.19,<3.21" \
         "fiona>=1.9,<2" \
         "numba" \
