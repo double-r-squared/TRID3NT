@@ -40,7 +40,10 @@ def test_modflow_run_args_minimal_applies_oq3_defaults() -> None:
     )
     assert args.aquifer_k_ms == DEFAULT_AQUIFER_K_MS == 1e-4
     assert args.porosity == DEFAULT_POROSITY == 0.3
-    assert args.schema_version == "v1"
+    assert args.schema_version == "v2"
+    # River-coupling fields default off -> the deck stays the pure-spill deck.
+    assert args.river_geometry_uri is None
+    assert args.along_river_source is False
 
 
 def test_modflow_run_args_explicit_overrides_defaults() -> None:

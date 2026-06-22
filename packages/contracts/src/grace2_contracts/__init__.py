@@ -65,7 +65,8 @@ from .common import (
     new_ulid,
     now_utc,
 )
-from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
+from .geoclaw_contracts import GeoClawDepthLayerURI, GeoClawRunArgs
+from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI, SeepageLayerURI
 from .swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from .sandbox_contracts import (
     CodeExecRequestPayload,
@@ -92,6 +93,7 @@ __all__ = [
     "case_results",
     "chart_contracts",
     "execution",
+    "geoclaw_contracts",
     "modflow_contracts",
     "payload_warning",
     "region_choice",
@@ -109,9 +111,13 @@ __all__ = [
     # MODFLOW groundwater contracts (sprint-13)
     "MODFLOWRunArgs",
     "PlumeLayerURI",
+    "SeepageLayerURI",
     # SWMM quasi-2D urban-flood contracts (sprint-16 P1)
     "SWMMRunArgs",
     "SWMMDepthLayerURI",
+    # GeoClaw (Clawpack) shallow-water inundation contracts (sprint-17)
+    "GeoClawRunArgs",
+    "GeoClawDepthLayerURI",
     # chart-emission contracts (sprint-13 conversational analysis layer)
     "ChartEmissionPayload",
     "SessionChartRecord",
