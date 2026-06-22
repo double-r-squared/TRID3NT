@@ -1850,7 +1850,14 @@ async def model_flood_scenario(
         # an adapter failure for an EXPLICIT surge request raises (caught below as
         # a typed failed envelope — never a silent pluvial degrade). Empty/absent
         # → pure-pluvial deck (no surge blocks emitted).
-        surge_forcing = _resolve_surge_forcing_from_fetchers(
+        # NO-SYNC-BLOCKING-ON-LOOP: the forcing adapter does heavy synchronous
+        # geopandas/rasterio/pandas work (reads the GTSM/CO-OPS/NWM FlatGeobuf,
+        # samples the CaMa COG, writes the bzs/dis CSV + locations files). Run it
+        # off the event loop so the WS heartbeat + keepalive stay responsive on
+        # the coastal surge path (otherwise the loop stalls -> the client sees
+        # ~30s of silence -> force-reconnect -> the turn's socket dies 1005).
+        surge_forcing = await asyncio.to_thread(
+            _resolve_surge_forcing_from_fetchers,
             surge_forcing,
             resolved_bbox,
             window_hours=float(duration_hr),
@@ -1885,8 +1892,14 @@ async def model_flood_scenario(
         # triggers a BEST-EFFORT OSM-footprint fetch (so a footprint-fetch
         # failure NEVER kills the flood — same degrade policy as river geometry,
         # job-0307); a string is used verbatim as the obstacle geofile URI.
-        building_obstacle_uri = _resolve_building_obstacle_uri(
-            building_obstacles, resolved_bbox, data_sources
+        # NO-SYNC-BLOCKING-ON-LOOP: a True building_obstacles triggers a
+        # synchronous OSM Overpass footprint fetch (network I/O). Off-load it so
+        # the loop keeps servicing the WS heartbeat.
+        building_obstacle_uri = await asyncio.to_thread(
+            _resolve_building_obstacle_uri,
+            building_obstacles,
+            resolved_bbox,
+            data_sources,
         )
         options = BuildOptions(
             grid_resolution_m=grid_resolution_m,
@@ -2048,13 +2061,19 @@ async def model_flood_scenario(
         # flood still runs) — the agent only POINTS the worker at the geofiles, it
         # never does the GIS itself. ``building_obstacles`` reuses the existing
         # best-effort OSM-footprint helper (True → fetch, str → verbatim URI).
-        _q_buildings_uri = _resolve_building_obstacle_uri(
+        # NO-SYNC-BLOCKING-ON-LOOP: both fetchers do synchronous network I/O
+        # (OSM Overpass footprints + NHDPlus rivers). Off-load them so the loop
+        # keeps the WS heartbeat alive on the quadtree+SnapWave coastal path.
+        _q_buildings_uri = await asyncio.to_thread(
+            _resolve_building_obstacle_uri,
             building_obstacles=building_obstacles or True,
             bbox=resolved_bbox,
             data_sources=data_sources,
         )
-        _q_rivers_uri = _resolve_quadtree_rivers_uri(
-            bbox=resolved_bbox, data_sources=data_sources
+        _q_rivers_uri = await asyncio.to_thread(
+            _resolve_quadtree_rivers_uri,
+            bbox=resolved_bbox,
+            data_sources=data_sources,
         )
         # Map the building-obstacle MODE onto the combined worker's burn modes.
         # The workflow's mode vocabulary is {exclude, raise}; the worker's is
@@ -2077,7 +2096,12 @@ async def model_flood_scenario(
             # asyncio.CancelledError -> the child is marked cancelled (yellow) then
             # re-raises. No-op when no emitter is bound.
             async with substep(emitter, "run_sfincs_quadtree"):
-                build_spec_uri = _compose_and_upload_deckbuild_spec(
+                # NO-SYNC-BLOCKING-ON-LOOP: composing the build_spec reprojects
+                # the bbox (pyproj) and uploads the spec JSON via SYNC boto3
+                # put_object. Off-load it so the loop keeps the WS heartbeat alive
+                # while the deck-build spec is staged to S3.
+                build_spec_uri = await asyncio.to_thread(
+                    _compose_and_upload_deckbuild_spec,
                     bbox=resolved_bbox,
                     topobathy_uri=dem_layer.uri,
                     bathymetry_present=bathymetry_present,

@@ -2235,6 +2235,20 @@
       "model": "opus",
       "subagent_tokens": 450000,
       "description": "ESTIMATE: 3 Explore agents this session (tool-usage surfacing map, tool-card completeness/dedup audit, current map-rendering-seam map for the deck.gl docs)."
+    },
+    {
+      "job_id": "research-telemac-engine-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 95000,
+      "description": "ESTIMATE: TELEMAC-2D engine research spike (task #174) - primary-source research (opentelemac.org, conda-forge, Docker, SELAFIN/TelApy, case studies) + codebase grounding against the GeoClaw/SFINCS solver seam; wrote reports/design/engine_spike_telemac.md with GO_WITH_CAVEATS verdict + 8-job integration list."
+    },
+    {
+      "job_id": "agent-coastal-loopblock-fix-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 130000,
+      "description": "ESTIMATE: coastal North-Star WS-1005 root-cause + fix - traced run_model_flood_scenario coastal branch, wrapped 5 unwrapped heavy sync call sites (surge forcing adapter, OSM/NHDPlus fetches x2, quadtree rivers, deckbuild spec compose+upload) in asyncio.to_thread so the 12s WS heartbeat is not starved; wrote tests/test_coastal_forcing_offloop.py (AST + dynamic off-loop proof) + acceptance-parity telemetry design doc during the exploration window."
     }
   ],
   "totals_by_sprint": {
