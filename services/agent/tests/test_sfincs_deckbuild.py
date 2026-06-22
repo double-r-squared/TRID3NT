@@ -523,3 +523,161 @@ def test_agent_build_spec_passes_worker_validation(reset_seams, monkeypatch) -> 
     assert overrides["snapwave_use_herbers"] == 1
     # output URIs present for run_solver to consume.
     assert normalized["output"]["manifest_uri"].endswith("manifest.json")
+
+
+# --------------------------------------------------------------------------- #
+# 6. QUADTREE forcing fix (run 01KVRJK7333NP2XC64PBHABZ11):
+#    (issue 1) LOCAL surge forcing files (the bzs CSV + bnd FGB the auto-wired /
+#    parametric surge wrote under /tmp) are UPLOADED to S3 + the build_spec's
+#    waterlevel forcing URIs are rewritten to s3:// (the remote Batch worker can
+#    only download s3:// / gs://  -  a /tmp path crashes _split_object_uri).
+#    (issue 2) a COASTAL quadtree run synthesises a parametric SnapWave wave
+#    boundary (offshore Hs/Tp/dir points) so wavebnd>0.
+# --------------------------------------------------------------------------- #
+
+
+def test_quadtree_build_spec_uploads_local_forcing_and_rewrites_to_s3(
+    reset_seams, monkeypatch, tmp_path
+) -> None:
+    """A coastal quadtree build_spec must carry s3:// waterlevel forcing URIs.
+
+    The auto-wired surge writes bzs/bnd to LOCAL /tmp paths; on the quadtree path
+    those are uploaded to the cache bucket and the build_spec waterlevel block is
+    rewritten to s3:// (NOT the local path) so the remote deck-builder can
+    download them. The worker validator must still accept the result.
+    """
+    worker = _load_worker_validate()
+
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("GRACE2_CACHE_BUCKET", "deck-cache-bucket")
+    s3 = FakeS3Client()
+    set_s3_client(s3)
+
+    from grace2_agent.workflows.model_flood_scenario import (
+        _compose_and_upload_deckbuild_spec,
+    )
+
+    # Materialise LOCAL forcing files on disk (mirrors what the parametric /
+    # CO-OPS surge adapter writes under /tmp/grace2-sfincs-forcing/).
+    bzs_path = tmp_path / "bzs-2018dcd9c22e.csv"
+    bnd_path = tmp_path / "bnd-2018dcd9c22e.fgb"
+    bzs_path.write_text("time,1\n0,0.3\n3600,3.8\n")
+    bnd_path.write_bytes(b"\x66\x67\x62fake-flatgeobuf-bytes")
+
+    model_setup = _FakeModelSetup(parameters={"crs": "EPSG:3857"})
+    forcing_spec = _FakeForcingSpec(provenance={})
+
+    build_spec_uri = _compose_and_upload_deckbuild_spec(
+        bbox=(-82.0, 26.5, -81.8, 26.7),
+        topobathy_uri="s3://topo-bucket/topobathy.tif",
+        bathymetry_present=True,
+        model_setup=model_setup,
+        forcing_spec=forcing_spec,
+        # LOCAL paths  -  exactly what triggered the worker crash.
+        surge_forcing={
+            "waterlevel": {
+                "timeseries_uri": str(bzs_path),
+                "locations_uri": str(bnd_path),
+            }
+        },
+        grid_resolution_m=30.0,
+        duration_hr=24.0,
+        return_period_yr=100,
+        is_coastal=True,
+    )
+
+    assert build_spec_uri.startswith("s3://deck-cache-bucket/")
+    s3_bucket, _, key = build_spec_uri[len("s3://"):].partition("/")
+    composed = json.loads(s3.objects[(s3_bucket, key)])
+
+    wl = composed["forcing"]["surge_forcing"]["waterlevel"]
+    # ISSUE 1: the build_spec waterlevel URIs are s3:// (NOT local /tmp paths).
+    assert wl["timeseries_uri"].startswith("s3://deck-cache-bucket/")
+    assert wl["locations_uri"].startswith("s3://deck-cache-bucket/")
+    assert not wl["timeseries_uri"].startswith("/")
+    assert not wl["locations_uri"].startswith("/")
+    # The forcing files were actually uploaded under this deck's forcing/ prefix.
+    assert any(
+        k.endswith("bzs-2018dcd9c22e.csv") for (_b, k) in s3.put_calls
+    ), s3.put_calls
+    assert any(
+        k.endswith("bnd-2018dcd9c22e.fgb") for (_b, k) in s3.put_calls
+    ), s3.put_calls
+    # The uploaded bytes round-trip (the worker would download these).
+    up_bucket, _, up_key = wl["timeseries_uri"][len("s3://"):].partition("/")
+    assert s3.objects[(up_bucket, up_key)] == bzs_path.read_bytes()
+
+    # ISSUE 2: a COASTAL run carries a parametric SnapWave wave boundary with
+    # offshore incident-wave points (Hs/Tp/dir) so the worker's wavebnd>0.
+    sw_bc = composed["forcing"]["surge_forcing"]["snapwave_boundary"]
+    assert sw_bc and sw_bc.get("points"), "coastal run must carry wave boundary points"
+    for pt in sw_bc["points"]:
+        assert {"x", "y", "hs", "tp", "wd", "ds"} <= set(pt)
+        assert pt["hs"] > 0.0 and pt["tp"] > 0.0
+    # The worker resolves the wave boundary from forcing.surge_forcing.
+    blocks = worker.resolve_forcing_blocks(composed)
+    assert blocks["snapwave_boundary"] and blocks["snapwave_boundary"]["points"]
+    # And the whole spec still validates against the worker contract.
+    worker.validate_build_spec(composed)
+
+
+def test_quadtree_build_spec_leaves_remote_uris_and_inland_has_no_wave_bc(
+    reset_seams, monkeypatch
+) -> None:
+    """Already-s3:// forcing URIs pass through untouched; an INLAND (non-coastal)
+    quadtree run emits NO synthetic wave boundary (path unchanged)."""
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("GRACE2_CACHE_BUCKET", "deck-cache-bucket")
+    s3 = FakeS3Client()
+    set_s3_client(s3)
+
+    from grace2_agent.workflows.model_flood_scenario import (
+        _compose_and_upload_deckbuild_spec,
+    )
+
+    model_setup = _FakeModelSetup(parameters={"crs": "EPSG:3857"})
+    forcing_spec = _FakeForcingSpec(provenance={})
+
+    build_spec_uri = _compose_and_upload_deckbuild_spec(
+        bbox=(-90.1, 29.9, -89.9, 30.1),
+        topobathy_uri="s3://topo-bucket/topobathy.tif",
+        bathymetry_present=False,
+        model_setup=model_setup,
+        forcing_spec=forcing_spec,
+        # Already-remote URI  -  must be left exactly as-is (no re-upload).
+        surge_forcing={"waterlevel": {"timeseries_uri": "s3://f/bzs.csv"}},
+        grid_resolution_m=30.0,
+        duration_hr=24.0,
+        return_period_yr=100,
+        is_coastal=False,  # INLAND  -  no synthetic wave boundary
+    )
+
+    s3_bucket, _, key = build_spec_uri[len("s3://"):].partition("/")
+    composed = json.loads(s3.objects[(s3_bucket, key)])
+    wl = composed["forcing"]["surge_forcing"]["waterlevel"]
+    # Already-remote URI untouched (not re-uploaded under the deck prefix).
+    assert wl["timeseries_uri"] == "s3://f/bzs.csv"
+    # No forcing-file upload happened (only the build_spec.json itself).
+    forcing_uploads = [k for (_b, k) in s3.put_calls if "/forcing/" in k]
+    assert forcing_uploads == [], forcing_uploads
+    # INLAND: no synthetic wave boundary block.
+    assert "snapwave_boundary" not in composed["forcing"]["surge_forcing"]
+
+
+def test_synthesize_parametric_wave_boundary_scales_with_return_period() -> None:
+    """The parametric offshore wave Hs scales monotonically with the ARI and the
+    boundary points are emitted in the deck CRS (projected, not lon/lat)."""
+    from grace2_agent.workflows.model_flood_scenario import (
+        _parametric_wave_hs_m,
+        _synthesize_parametric_wave_boundary,
+    )
+
+    assert _parametric_wave_hs_m(10) < _parametric_wave_hs_m(100) < _parametric_wave_hs_m(500)
+
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    bc = _synthesize_parametric_wave_boundary(bbox, target_epsg=32617, return_period_yr=100)
+    assert bc["points"]
+    # Projected UTM coordinates are O(1e5..1e6), not lon/lat in [-180,180].
+    for pt in bc["points"]:
+        assert abs(pt["x"]) > 1000.0 and abs(pt["y"]) > 1000.0
+        assert 0.0 <= pt["wd"] <= 360.0

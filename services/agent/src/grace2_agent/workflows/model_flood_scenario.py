@@ -532,6 +532,250 @@ def _default_runs_prefix(run_id: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
+# Surge/discharge/wave forcing sub-dict keys that carry a FILE URI the worker
+# downloads via ``_download`` (entrypoint._split_object_uri rejects anything that
+# is not s3:// or gs://). On the QUADTREE path the deck is built REMOTELY on
+# Batch, so any of these that point at a LOCAL agent-box path (e.g. the bzs CSV /
+# bnd FGB the parametric/CO-OPS surge wrote under /tmp/grace2-sfincs-forcing/)
+# must be uploaded to S3 first and the URI rewritten to s3://  -  else the worker
+# crashes "unsupported object URI scheme: '/tmp/...'" (run 01KVRJK7333NP2XC64...).
+_FORCING_FILE_URI_KEYS = (
+    "timeseries_uri",
+    "locations_uri",
+    "geodataset_uri",
+    "rivers_uri",
+    "hydrography_uri",
+)
+
+
+def _is_remote_object_uri(uri: Any) -> bool:
+    """True when ``uri`` is already an object-store URI the worker can download.
+
+    The deck-builder worker's ``_split_object_uri`` accepts ONLY ``s3://`` /
+    ``gs://``. Anything else (a bare ``/tmp/...`` path, ``file://``, a relative
+    path) is a LOCAL agent-box path the remote Batch worker cannot read.
+    """
+    return isinstance(uri, str) and (
+        uri.startswith("s3://") or uri.startswith("gs://")
+    )
+
+
+def _upload_local_forcing_files_to_s3(
+    surge_forcing: dict[str, Any] | None,
+    *,
+    cache_bucket: str,
+    scheme: str,
+    key_prefix: str,
+) -> dict[str, Any] | None:
+    """Upload any LOCAL forcing file URIs to S3 + return a rewritten surge dict.
+
+    QUADTREE-PATH FIX (run 01KVRJK7333NP2XC64PBHABZ11 crash): the auto-wired /
+    parametric surge (and any CO-OPS/GTSM/NWM adapter output) materialises its
+    bzs/bnd (and dis/src) files to LOCAL paths on the AGENT box
+    (``/tmp/grace2-sfincs-forcing/bzs-*.csv``, ``bnd-*.fgb``). The SIMPLE-SFINCS
+    path builds the deck ON the box so those local paths resolve; the QUADTREE
+    path builds the deck on a REMOTE Batch worker that can only ``_download``
+    ``s3://`` / ``gs://`` URIs. This walks every forcing sub-dict, uploads each
+    file URI that is NOT already a remote object URI to
+    ``{scheme}://{cache_bucket}/{key_prefix}<filename>``, and returns a DEEP-COPIED
+    surge_forcing dict with those URIs rewritten to s3://. Already-remote URIs and
+    non-file fields (offset/buffer_m/value_unit/_prov*) pass through untouched.
+
+    Raises ``DeckBuildError`` when a referenced local file is missing or the
+    upload fails  -  honest typed failure (the worker would otherwise crash later
+    on the unscheme'd URI; surface it here where it is actionable).
+    """
+    if not surge_forcing:
+        return surge_forcing
+
+    from ..tools.solver import DeckBuildError as _DeckBuildError
+
+    s3 = None  # lazy: only create the client if there is a local file to upload
+    out: dict[str, Any] = {}
+    for member_name, member in surge_forcing.items():
+        if not isinstance(member, dict):
+            out[member_name] = member
+            continue
+        new_member = dict(member)
+        for key in _FORCING_FILE_URI_KEYS:
+            uri = new_member.get(key)
+            if not uri or _is_remote_object_uri(uri):
+                continue  # absent, or already an s3:///gs:// URI -> leave as-is
+            local_path = uri[len("file://"):] if str(uri).startswith("file://") else str(uri)
+            if not os.path.isfile(local_path):
+                raise _DeckBuildError(
+                    f"quadtree forcing file for {member_name}.{key} is a LOCAL "
+                    f"path the remote Batch deck-builder cannot read and it does "
+                    f"not exist on the agent box: {uri!r}"
+                )
+            filename = os.path.basename(local_path)
+            s3_key = f"{key_prefix}{member_name}/{filename}"
+            s3_uri = f"{scheme}://{cache_bucket}/{s3_key}"
+            try:
+                if s3 is None:
+                    from ..tools.solver import _get_s3_client
+
+                    s3 = _get_s3_client()
+                with open(local_path, "rb") as fh:
+                    body = fh.read()
+                s3.put_object(
+                    Bucket=cache_bucket,
+                    Key=s3_key,
+                    Body=body,
+                    ContentType="application/octet-stream",
+                )
+            except _DeckBuildError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _DeckBuildError(
+                    f"failed to upload quadtree forcing file "
+                    f"{member_name}.{key} ({local_path}) to {s3_uri}: {exc}"
+                ) from exc
+            logger.info(
+                "quadtree forcing: uploaded LOCAL %s.%s %s -> %s",
+                member_name,
+                key,
+                local_path,
+                s3_uri,
+            )
+            new_member[key] = s3_uri
+        out[member_name] = new_member
+    return out
+
+
+# Parametric offshore design-storm WAVE boundary. SnapWave needs an incident
+# significant-wave-height / peak-period / direction boundary to produce a wave
+# field; without boundary POINTS the worker logs "no SnapWave boundary points in
+# spec - deck has no wave forcing" and hm0 stays flat 0 (observed run
+# 01KVRJK7333NP2XC64PBHABZ11). The peak Hs scales with the design-storm return
+# period (mirrors ``_parametric_surge_peak_m``): a major-hurricane ARI -> a real
+# multi-metre offshore sea state, a frequent event -> a modest swell. Anchored to
+# Gulf-coast hurricane offshore conditions (Michael offshore Hs ~ 8-10 m; a
+# nearshore/shelf incident boundary an order below that). Tunable via env.
+_WAVE_HS_M_AT_100YR = float(os.getenv("GRACE2_WAVE_HS_M_AT_100YR", "4.0"))
+_WAVE_HS_M_FLOOR = float(os.getenv("GRACE2_WAVE_HS_M_FLOOR", "0.5"))
+_WAVE_HS_M_CEIL = float(os.getenv("GRACE2_WAVE_HS_M_CEIL", "9.0"))
+
+
+def _parametric_wave_hs_m(return_period_yr: int | float | None) -> float:
+    """Peak incident significant wave height (m) for a design-storm ARI.
+
+    Same monotone log-scaling shape as ``_parametric_surge_peak_m``, anchored at
+    the 100-yr offshore Hs (``_WAVE_HS_M_AT_100YR``): +1 decade -> +1.0 m, clamped
+    to a sane [floor, ceil] so a degenerate / huge ARI cannot drive a negative or
+    runaway sea state. 10-yr near ~3 m, 500-yr near ~4.7 m.
+    """
+    import math
+
+    rp = float(return_period_yr) if return_period_yr else 100.0
+    rp = max(rp, 1.0)
+    hs = _WAVE_HS_M_AT_100YR + 1.0 * math.log10(rp / 100.0)
+    return max(_WAVE_HS_M_FLOOR, min(_WAVE_HS_M_CEIL, hs))
+
+
+def _synthesize_parametric_wave_boundary(
+    bbox: tuple[float, float, float, float],
+    *,
+    target_epsg: int,
+    return_period_yr: int | float | None,
+) -> dict[str, Any]:
+    """Build a parametric offshore SnapWave boundary block (incident waves).
+
+    Mirrors ``_synthesize_parametric_surge_forcing`` for the WAVE side: lays a
+    handful of offshore incident-wave boundary points along the bbox edges (so at
+    least one falls on the seaward edge) carrying a peak significant wave height
+    ``hs`` (scaled to ``return_period_yr``), a peak period ``tp`` (a deep-water
+    period-vs-height relation), and a direction ``wd`` pointed shoreward toward
+    the AOI centre. Points are emitted in the deck's PROJECTED CRS
+    (``target_epsg``) because the worker feeds them straight into
+    ``snapwave.boundary_conditions.add_point(x, y, ...)`` (grid coordinates) and
+    ``derive_seaward_open_boundary_polygon`` reasons in ``target_epsg``.
+
+    Returns ``{"points": [{"x","y","hs","tp","wd","ds"}, ...], "_prov_*": ...}``
+     -  the exact shape the worker's ``resolve_forcing_blocks(...)["snapwave_boundary"]``
+    consumes. The agent does NO cht/GIS work; it only declares the boundary.
+    """
+    import math
+
+    hs = _parametric_wave_hs_m(return_period_yr)
+    # Peak period from a deep-water steepness relation (Tp ~ 3.86*sqrt(Hs), the
+    # fully-developed-sea approximation) clamped to a realistic storm window.
+    tp = max(4.0, min(16.0, 3.86 * math.sqrt(max(hs, 0.1))))
+    # Directional spread (deg)  -  a moderately spread storm sea, not a clean swell.
+    ds = 30.0
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lon = 0.5 * (min_lon + max_lon)
+    mid_lat = 0.5 * (min_lat + max_lat)
+    inset_lon = 0.02 * (max_lon - min_lon)
+    inset_lat = 0.02 * (max_lat - min_lat)
+    # One point per edge midpoint (lon/lat)  -  the worker derives the seaward edge
+    # from whichever point sits offshore of the active extent. Direction points
+    # FROM the edge TOWARD the AOI centre (waves travel shoreward).
+    edge_pts_ll: list[tuple[float, float]] = [
+        (min_lon + inset_lon, mid_lat),  # west
+        (max_lon - inset_lon, mid_lat),  # east
+        (mid_lon, min_lat + inset_lat),  # south
+        (mid_lon, max_lat - inset_lat),  # north
+    ]
+
+    # Reproject the boundary points to the deck CRS (the worker's add_point wants
+    # grid coordinates). Fall back to lon/lat if pyproj is unavailable (the worker
+    # treats them as grid coords either way; a metric grid is the live path).
+    try:
+        from pyproj import Transformer  # type: ignore[import-not-found]
+
+        tf = Transformer.from_crs(4326, int(target_epsg), always_xy=True)
+        cx, cy = tf.transform(mid_lon, mid_lat)
+        edge_pts = [tf.transform(lon, lat) for (lon, lat) in edge_pts_ll]
+    except Exception as exc:  # noqa: BLE001  -  degrade to lon/lat (worker re-snaps)
+        logger.warning(
+            "parametric wave boundary: pyproj reproject to EPSG:%s failed (%s)  -  "
+            "emitting lon/lat points",
+            target_epsg,
+            exc,
+        )
+        cx, cy = mid_lon, mid_lat
+        edge_pts = edge_pts_ll
+
+    points: list[dict[str, Any]] = []
+    for (x, y) in edge_pts:
+        # Shoreward azimuth: degrees clockwise from north, FROM the point toward
+        # the AOI centre (the convention SnapWave's add_point wd expects).
+        dx = cx - float(x)
+        dy = cy - float(y)
+        wd = (math.degrees(math.atan2(dx, dy))) % 360.0
+        points.append(
+            {
+                "x": float(x),
+                "y": float(y),
+                "hs": round(hs, 3),
+                "tp": round(tp, 3),
+                "wd": round(wd, 2),
+                "ds": ds,
+            }
+        )
+
+    logger.info(
+        "model_flood_scenario: synthesised PARAMETRIC SnapWave wave boundary for "
+        "bbox=%s (return_period_yr=%s -> hs=%.2f m, tp=%.2f s, %d offshore points "
+        "in EPSG:%s)",
+        bbox,
+        return_period_yr,
+        hs,
+        tp,
+        len(points),
+        target_epsg,
+    )
+    return {
+        "points": points,
+        "_prov_synthetic_parametric": True,
+        "_prov_hs_m": hs,
+        "_prov_tp_s": tp,
+        "_prov_return_period_yr": return_period_yr,
+    }
+
+
 def _compose_and_upload_deckbuild_spec(
     *,
     bbox: tuple[float, float, float, float],
@@ -548,6 +792,8 @@ def _compose_and_upload_deckbuild_spec(
     refinement_levels: int = 2,
     max_cells: int = 2_000_000,
     output_dt_s: float = 600.0,
+    return_period_yr: int | float | None = None,
+    is_coastal: bool = False,
 ) -> str:
     """Build the deck-build worker's input spec JSON + upload it; return its URI.
 
@@ -689,6 +935,46 @@ def _compose_and_upload_deckbuild_spec(
     deck_dir_uri = f"{scheme}://{cache_bucket}/{base_prefix}deck/"
     deck_manifest_uri = f"{scheme}://{cache_bucket}/{base_prefix}manifest.json"
     build_spec_uri = f"{scheme}://{cache_bucket}/{base_prefix}build_spec.json"
+
+    # --- QUADTREE FIX (issue 1): upload LOCAL forcing files to S3 -------------
+    # The deck is built on a REMOTE Batch worker that can only download s3:// /
+    # gs:// URIs. The auto-wired / parametric surge (and the CO-OPS/GTSM/NWM
+    # adapter) wrote its bzs/bnd (+ dis/src) files to LOCAL agent-box paths
+    # (/tmp/grace2-sfincs-forcing/...). Upload any LOCAL forcing file URIs under
+    # this deck's prefix and rewrite the surge_forcing block to carry s3:// URIs
+    # BEFORE it goes into the build_spec  -  else the worker crashes
+    # "unsupported object URI scheme: '/tmp/...'" (run 01KVRJK7333NP2XC64...).
+    surge_forcing = _upload_local_forcing_files_to_s3(
+        surge_forcing,
+        cache_bucket=cache_bucket,
+        scheme=scheme,
+        key_prefix=f"{base_prefix}forcing/",
+    )
+
+    # --- WAVES FIX (issue 2): parametric SnapWave wave boundary --------------
+    # SnapWave needs an offshore incident wave boundary (Hs/Tp/dir) to produce a
+    # wave field; without boundary POINTS the worker logs "no SnapWave boundary
+    # points in spec - deck has no wave forcing" + "wavebnd=0" and hm0 stays flat
+    # (run 01KVRJK7333NP2XC64PBHABZ11). For a COASTAL "surge with waves" run we
+    # synthesise a parametric offshore wave boundary (mirrors the parametric surge
+    # path: peak Hs scales with return_period_yr, points along the bbox edges in
+    # the deck CRS). The worker derives the seaward open-boundary polygon from
+    # these points so wavebnd>0 and the incident wave injects. Gated on
+    # ``is_coastal`` and only when no wave boundary was already supplied  -  the
+    # inland / pluvial path emits NO wave boundary (unchanged).
+    if is_coastal:
+        existing = surge_forcing.get("snapwave_boundary") if surge_forcing else None
+        has_points = (
+            isinstance(existing, dict) and bool(existing.get("points"))
+        )
+        if not has_points:
+            wave_bc = _synthesize_parametric_wave_boundary(
+                bbox,
+                target_epsg=target_epsg,
+                return_period_yr=return_period_yr,
+            )
+            surge_forcing = dict(surge_forcing or {})
+            surge_forcing["snapwave_boundary"] = wave_bc
 
     # --- auto-refinement + cell budget (combined-worker v2) ---
     # The agent does NOT do heavy GIS or import cht — it only declares the
@@ -2440,6 +2726,11 @@ async def model_flood_scenario(
                     buildings_uri=_q_buildings_uri,
                     building_obstacle_mode=_q_build_mode,
                     rivers_uri=_q_rivers_uri,
+                    # COASTAL waves: scale the parametric SnapWave wave boundary to
+                    # the design-storm ARI + gate the wave-boundary synthesis on the
+                    # coastal flag (issue 2  -  wavebnd>0 / non-flat hm0).
+                    return_period_yr=return_period_yr,
+                    is_coastal=is_coastal,
                 )
                 # SUBMIT the ONE combined job + poll its completion -> the SOLVE
                 # RunResult (sfincs_map.nc). Invariant 8: a true cancel propagates
