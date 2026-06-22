@@ -25,6 +25,7 @@ from grace2_contracts.case import (
     CaseOpenEnvelopePayload,
     CaseSessionState,
     CaseSummary,
+    PersistedSubStepRecord,
     ToolCardRecord,
 )
 from grace2_contracts.common import new_ulid
@@ -511,8 +512,151 @@ def test_tool_card_record_field_set_matches_ts_contract() -> None:
         "response_truncated",
         "args_bytes",
         "response_bytes",
+        # task-168 nested sub-step persistence:
+        "children",
     }
     assert set(ToolCardRecord.model_fields) == expected
+
+
+# --------------------------------------------------------------------------- #
+# PersistedSubStepRecord + ToolCardRecord.children (task-168 -- read-only
+# nested sub-step persistence)
+# --------------------------------------------------------------------------- #
+
+
+def test_persisted_substep_record_field_set_matches_ts_contract() -> None:
+    """task-168: the Python child record field set EQUALS the web
+    ``PersistedSubStepRecord`` (web/src/contracts.ts) so the producer<->consumer
+    contract holds for the nested-timeline replay."""
+    expected = {
+        "schema_version",
+        "step_id",
+        "parent_step_id",
+        "name",
+        "tool_name",
+        "state",
+        "duration_ms",
+        "error_code",
+        "error_message",
+        # tool-io fields reused from ToolCardRecord / ToolIoPayload:
+        "raw_args",
+        "function_response",
+        "is_error",
+        "args_truncated",
+        "response_truncated",
+        "args_bytes",
+        "response_bytes",
+    }
+    assert set(PersistedSubStepRecord.model_fields) == expected
+
+
+def test_persisted_substep_record_roundtrip() -> None:
+    """A complete + a failed child round-trip (the failed one keeps its
+    error_code / error_message honesty-floor fields)."""
+    ok = PersistedSubStepRecord(
+        step_id=new_ulid(),
+        parent_step_id=new_ulid(),
+        name="fetch_topobathy",
+        tool_name="fetch_topobathy",
+        state="complete",
+        duration_ms=1200,
+    )
+    failed = PersistedSubStepRecord(
+        step_id=new_ulid(),
+        parent_step_id=ok.parent_step_id,
+        name="run_solver",
+        tool_name="run_solver",
+        state="failed",
+        duration_ms=4500,
+        error_code="SOLVER_TIMEOUT",
+        error_message="solver exceeded wall-clock budget",
+    )
+    ok_d = _roundtrip(ok)
+    failed_d = _roundtrip(failed)
+    assert ok_d["tool_name"] == "fetch_topobathy"
+    assert ok_d["state"] == "complete"
+    assert ok_d["error_code"] is None
+    assert failed_d["state"] == "failed"
+    assert failed_d["error_code"] == "SOLVER_TIMEOUT"
+    assert failed_d["error_message"] == "solver exceeded wall-clock budget"
+
+
+def test_persisted_substep_record_rejects_non_terminal_state() -> None:
+    """Closed enum: pending / running / cancelled children persist nothing
+    (mirrors the parent ToolCardRecord contract)."""
+    for bad in ("pending", "running", "cancelled"):
+        with pytest.raises(ValidationError):
+            PersistedSubStepRecord(
+                step_id=new_ulid(),
+                tool_name="x",
+                state=bad,  # type: ignore[arg-type]
+            )
+
+
+def test_tool_card_record_children_default_none() -> None:
+    """task-168: ``children`` defaults to None on a minimal record so every
+    pre-task-168 document (no ``children`` key) validates + replays unchanged."""
+    card = ToolCardRecord(tool_name="fetch_3dep_dem", state="complete")
+    assert card.children is None
+    # A document literally MISSING the children key validates (additive contract)
+    raw = {"schema_version": "v1", "tool_name": "x", "state": "complete"}
+    rehydrated = ToolCardRecord.model_validate(raw)
+    assert rehydrated.children is None
+
+
+def test_tool_card_record_children_roundtrip_with_failed_child_and_io() -> None:
+    """task-168: a parent card carrying ordered children (one OK, one FAILED
+    with a tool-io drop-down) round-trips with the children intact + ordered."""
+    parent = ToolCardRecord(
+        tool_name="run_model_flood_scenario",
+        state="complete",
+        duration_ms=88000,
+        label="Model flood scenario",
+        children=[
+            PersistedSubStepRecord(
+                step_id=new_ulid(),
+                parent_step_id=new_ulid(),
+                name="fetch_topobathy",
+                tool_name="fetch_topobathy",
+                state="complete",
+                duration_ms=1200,
+                raw_args='{\n  "bbox": [-82.0, 26.0, -81.0, 27.0]\n}',
+                function_response='{\n  "status": "ok"\n}',
+                is_error=False,
+            ),
+            PersistedSubStepRecord(
+                step_id=new_ulid(),
+                parent_step_id=new_ulid(),
+                name="run_solver",
+                tool_name="run_solver",
+                state="failed",
+                duration_ms=4500,
+                error_code="SOLVER_FAILED",
+                error_message="docker container exited non-zero",
+                is_error=True,
+            ),
+        ],
+    )
+    dumped = _roundtrip(parent)
+    assert [c["tool_name"] for c in dumped["children"]] == [
+        "fetch_topobathy",
+        "run_solver",
+    ]
+    assert dumped["children"][0]["state"] == "complete"
+    assert dumped["children"][0]["raw_args"].startswith("{")
+    assert dumped["children"][1]["state"] == "failed"
+    assert dumped["children"][1]["error_code"] == "SOLVER_FAILED"
+    assert dumped["children"][1]["is_error"] is True
+
+    # Re-validating the dumped dict reconstructs typed child records (the warm +
+    # cold replay path), preserving order.
+    rebuilt = ToolCardRecord.model_validate(dumped)
+    assert rebuilt.children is not None
+    assert all(isinstance(c, PersistedSubStepRecord) for c in rebuilt.children)
+    assert [c.tool_name for c in rebuilt.children] == [
+        "fetch_topobathy",
+        "run_solver",
+    ]
 
 
 def test_tool_card_record_rejects_unknown_state() -> None:

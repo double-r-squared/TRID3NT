@@ -61,6 +61,7 @@ __all__ = [
     "CaseSessionState",
     "ToolCardRecord",
     "ToolCardState",
+    "PersistedSubStepRecord",
     # Data-island thin manifest (#165 — cold-serve cases+layers from S3)
     "CaseManifestLayer",
     "CaseManifest",
@@ -137,6 +138,67 @@ class CaseSummary(GraceModel):
 ToolCardState = Literal["complete", "failed"]
 
 
+class PersistedSubStepRecord(GraceModel):
+    """Replayable record of ONE nested CHILD step under a tool-card (task-168).
+
+    The live nested sub-step cards (commit 256a587) surface a composer's INTERNAL
+    atomic-tool calls (``fetch_*`` / deck build / ``run_solver`` / ``postprocess_*``
+    / ``publish_layer`` / ``compute_*``) as CHILD rows nested under the top-level
+    workflow card, driven by wire-only ``pipeline-state`` envelopes
+    (``PipelineStep.parent_step_id``). Those envelopes were LOST on Case reopen
+    and on the box-off cold view -- the nested timeline went blank. This record
+    is the persisted twin of one child step so the rehydration replay (warm via
+    the agent AND cold via the serverless case-view snapshot) rebuilds the SAME
+    nested sub-step timeline the live feature renders, READ-ONLY (no re-dispatch).
+
+    Field names reuse ``PipelineStepSummary`` (collections.py) / ``ToolCardRecord``
+    VERBATIM (do NOT invent new names) so the web replay path can synthesize a
+    ``PipelineStepSummary`` directly off this record and mirror
+    ``web/src/contracts.ts`` ``PersistedSubStepRecord`` 1:1:
+
+    - ``step_id`` / ``parent_step_id`` -- the persisted ids. The web replay path
+      RE-PARENTS children to the synthesized replay parent step_id (the wire ids
+      are absent from the replayed snapshot), so these are carried for
+      fidelity/keying but parenting is rebuilt deterministically on replay.
+    - ``name`` / ``tool_name`` -- the child's raw tool name (the web humanizes it).
+    - ``state`` -- the CLOSED terminal two-value enum (``ToolCardState``);
+      cancelled children persist nothing, matching the parent contract.
+    - ``duration_ms`` -- authoritative wall-clock elapsed time (``None`` on old
+      docs / when the child never reached a timed terminal).
+    - ``error_code`` / ``error_message`` -- present on a FAILED child (honesty
+      floor: a failed child replays RED with its reason).
+    - the 7 tool-io fields -- the SAME ``ToolIoPayload`` field names as
+      ``ToolCardRecord`` so a child's expander rehydrates on replay too. ALL
+      optional; absent IO -> the child's chevron stays absent (no fabrication).
+
+    Additive: ``ToolCardRecord.children`` is absent/empty on every pre-task-168
+    row, which then replays as a plain top-level card (no nested timeline).
+    """
+
+    schema_version: Literal["v1"] = "v1"
+
+    step_id: ULIDStr
+    parent_step_id: ULIDStr | None = None
+    name: str | None = None
+    tool_name: str
+    state: ToolCardState
+    duration_ms: int | None = Field(default=None, ge=0)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    # task-168 child tool-io fields (same names as ``ToolIoPayload`` /
+    # ``ToolCardRecord``). Present only when the child dispatch's IO was captured;
+    # ``None`` otherwise. ``raw_args`` / ``function_response`` are pre-serialized
+    # JSON strings (same ``_json_for_tool_io`` helper the parent uses).
+    raw_args: str | None = None
+    function_response: str | None = None
+    is_error: bool | None = None
+    args_truncated: bool | None = None
+    response_truncated: bool | None = None
+    args_bytes: int | None = None
+    response_bytes: int | None = None
+
+
 class ToolCardRecord(GraceModel):
     """Replayable record of ONE tool dispatch inside a Case turn (job-0267).
 
@@ -190,6 +252,16 @@ class ToolCardRecord(GraceModel):
     response_truncated: bool | None = None
     args_bytes: int | None = None
     response_bytes: int | None = None
+
+    # task-168 nested sub-step persistence -- the ordered CHILD steps (a
+    # composer's internal atomic-tool calls) under this top-level card. Additive
+    # + optional: absent / empty on every pre-task-168 row (which then replays as
+    # a plain top-level card, no nested timeline). The replay path (warm reopen +
+    # box-off cold view) rebuilds the nested timeline from these so they nest
+    # exactly like the live render, READ-ONLY (no re-dispatch). Ordered
+    # chronologically (start order). Mirrors ``web/src/contracts.ts``
+    # ``ToolCardRecord.children`` 1:1.
+    children: list[PersistedSubStepRecord] | None = None
 
 
 class CaseChatMessage(GraceModel):

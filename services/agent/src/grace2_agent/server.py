@@ -4447,12 +4447,34 @@ async def _persist_tool_card(
                 "response_bytes": resp_bytes,
                 "is_error": bool(io_is_error),
             }
+        # task-168 (read-only persistence): carry the ordered CHILD substeps
+        # captured by the emitter at this dispatch's terminal transition. The
+        # emitter snapshots them onto ``last_tool_children`` WHILE the children
+        # still exist in ``_steps`` -- ``close_pipeline`` (run just before this
+        # hook in ``_invoke_tool_via_emitter``'s finally) has already cleared
+        # ``_steps``, so this durable snapshot is the only source. Reading it
+        # here onto ``ToolCardRecord.children`` makes the nested timeline replay
+        # READ-ONLY on a Case reopen (warm) AND ride the case-view snapshot for
+        # the box-off cold view (additive JSON -- a card with no children stays
+        # ``None`` and every prior row loads unchanged). Guard the tool match so
+        # a stale prior-dispatch snapshot can never attach to this row.
+        _children: list | None = None
+        emitter_children = (
+            state.emitter.last_tool_children if state.emitter is not None else None
+        )
+        if (
+            emitter_children
+            and emitter_step is not None
+            and emitter_step.tool_name == tool_name
+        ):
+            _children = list(emitter_children)
         record = ToolCardRecord(
             tool_name=tool_name,
             state=card_state,  # type: ignore[arg-type]
             started_at=started_at,
             duration_ms=duration_ms,
             label=label,
+            children=_children,
             **_io_fields,  # C1: typed IO on the record == the integration path
         )
         # Content JSON twin: model_dump_json now already carries the IO fields
@@ -4525,11 +4547,24 @@ async def _persist_terminal_failure_card(
         # tool the user saw running) when present, else the model-generation
         # step. ``duration_ms`` / ``started_at`` mirror the live card so the
         # replayed failed card lands where the running one was.
+        # task-168: when the failing operation IS the last live tool step (a
+        # composer the user saw running), carry its captured child substeps so
+        # the replayed failed card still nests its sub-step timeline. The
+        # synthetic ``gemini_generate`` branch (a pure model-stream failure, no
+        # in-flight tool) has no children. Guarded on the same emitter step.
+        _children: list | None = None
         if emitter_step is not None and emitter_step.tool_name:
             tool_name = emitter_step.tool_name
             label = emitter_step.name or emitter_step.tool_name
             started_at = emitter_step.started_at or now_utc()
             duration_ms = emitter_step.duration_ms
+            emitter_children = (
+                state.emitter.last_tool_children
+                if state.emitter is not None
+                else None
+            )
+            if emitter_children:
+                _children = list(emitter_children)
         else:
             tool_name = "gemini_generate"
             label = "llm_generation"
@@ -4543,6 +4578,7 @@ async def _persist_terminal_failure_card(
             # Surface the failure reason in the human-facing label so the
             # replayed card explains WHY it failed.
             label=f"{label} — {error_code}",
+            children=_children,
         )
         # The JSON-twin content carries the typed record PLUS the error_code +
         # message (the record contract cannot hold them) so non-contract

@@ -736,6 +736,47 @@ export interface CaseSummary {
   qgs_project_uri?: string | null;
 }
 
+// PersistedSubStepRecord - task-168 read-only persistence: the replayable
+// terminal record of ONE nested CHILD step (a composer's internal atomic-tool
+// call) under a top-level ToolCardRecord. Mirrors the child fields the agent
+// persists alongside the parent so Case reopen (warm via the agent) AND the
+// box-off cold view rebuild the SAME nested sub-step timeline the live feature
+// renders - with NO re-execution. Additive: a parent row with no `children`
+// (every pre-task-168 document) replays exactly as before.
+//
+// Field names reuse PipelineStepSummary (collections.py) verbatim so the replay
+// path can synthesize a PipelineStepSummary directly off this record:
+//   - step_id / parent_step_id: the persisted ids. The replay path RE-PARENTS
+//     children to the synthesized replay parent step_id (the persisted ids are
+//     wire-only and absent from the replayed snapshot), so these are carried for
+//     fidelity/keying but parenting is rebuilt deterministically on replay.
+//   - name / tool_name: the child's raw tool name (the web humanizes it).
+//   - state: the CLOSED terminal two-value enum (cancelled children persist
+//     nothing, matching the parent contract; pending/running are wire-only).
+//   - duration_ms: authoritative wall-clock elapsed time (null on old docs).
+//   - error_code / error_message: present on a failed child (honesty floor).
+//   - raw_args / function_response / is_error / *_truncated / *_bytes: the
+//     SAME tool-io fields as ToolCardRecord (reuse, do NOT invent names) so a
+//     child's IO drop-down rehydrates on replay too. All optional; absent IO ->
+//     the child's chevron stays absent (no fabrication).
+export interface PersistedSubStepRecord {
+  step_id: string;
+  parent_step_id?: string | null;
+  name?: string | null;
+  tool_name: string;
+  state: "complete" | "failed";
+  duration_ms?: number | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  raw_args?: string | null;
+  function_response?: string | null;
+  is_error?: boolean | null;
+  args_truncated?: boolean | null;
+  response_truncated?: boolean | null;
+  args_bytes?: number | null;
+  response_bytes?: number | null;
+}
+
 // ToolCardRecord — job-0267 (full-stream persistence): the replayable
 // terminal record of ONE tool dispatch inside a Case turn. Mirrors
 // `grace2_contracts.case.ToolCardRecord`. The live tool cards render from
@@ -772,6 +813,13 @@ export interface ToolCardRecord {
   response_truncated?: boolean | null;
   args_bytes?: number | null;
   response_bytes?: number | null;
+  // task-168 nested sub-step persistence - the ordered CHILD steps (a
+  // composer's internal atomic-tool calls) under this top-level card. Additive
+  // + optional: absent / empty on every pre-task-168 row (which then replays as
+  // a plain top-level card, no nested timeline). The replay path rebuilds the
+  // nested timeline from these so warm reopen + box-off cold view nest exactly
+  // like the live render, READ-ONLY (no re-dispatch). Ordered chronologically.
+  children?: PersistedSubStepRecord[] | null;
 }
 
 // CaseChatMessage — one persisted chat exchange in a Case session. The

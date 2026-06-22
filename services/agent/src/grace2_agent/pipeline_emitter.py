@@ -64,6 +64,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from grace2_contracts import new_ulid
+from grace2_contracts.case import PersistedSubStepRecord
 from grace2_contracts.collections import (
     PipelineSnapshot,
     PipelineStepSummary,
@@ -877,6 +878,17 @@ class PipelineEmitter:
         #: transition of ``emit_tool_call`` (complete / failed / cancelled);
         #: read-only everywhere else.
         self.last_tool_step: PipelineStepSummary | None = None
+
+        #: task-168 (read-only persistence): the ordered CHILD substeps of the
+        #: most-recent ``emit_tool_call`` parent step, as ``PersistedSubStepRecord``
+        #: rows. Captured at the SAME terminal points as ``last_tool_step`` (while
+        #: the children still exist in ``_steps`` -- ``server.close_pipeline``
+        #: clears them BEFORE the persist hook runs, so this snapshot is the only
+        #: durable copy). ``server._persist_tool_card`` reads it onto the
+        #: ``ToolCardRecord.children`` so a Case reopen (warm) AND the box-off cold
+        #: view rebuild the nested timeline READ-ONLY. ``[]`` for a plain top-level
+        #: dispatch with no children (every pre-task-168 path).
+        self.last_tool_children: list[PersistedSubStepRecord] = []
 
         #: task-168: the step_id of the top-level workflow step currently
         #: bracketing an ``emit_tool_call`` invocation. ``substep(...)`` mints its
@@ -1697,6 +1709,11 @@ class PipelineEmitter:
         """
         step_id = await self.add_step(name=name, tool_name=tool_name)
         await self.mark_running(step_id)
+        # task-168: this dispatch's children accumulate fresh -- reset so a prior
+        # dispatch's substeps never leak onto this card's persisted children. Set
+        # to the real snapshot at each terminal point below (while the children
+        # still exist in ``_steps`` -- ``server.close_pipeline`` clears them).
+        self.last_tool_children = []
         # Bind self as the active emitter for the lifetime of the invoke so
         # workflow bodies can fire transient map-command verbs (job-0160 —
         # zoom-on-area-first UX). reset_token ensures the binding is unwound
@@ -1718,11 +1735,19 @@ class PipelineEmitter:
                 # persistence hook skips cancelled cards, but the accessor
                 # must never carry a STALE prior step past this dispatch.
                 self.last_tool_step = self._to_summary(step_id)
+                # task-168: snapshot the children too (the cancelled parent card
+                # is not persisted, but the accessor must never carry STALE prior
+                # children either).
+                self.last_tool_children = self._collect_children(step_id)
                 raise
             except Exception as exc:  # noqa: BLE001 — classify-and-re-raise
                 code, message = self._classify_exception(exc)
                 await self.mark_failed(step_id, error_code=code, error_message=message)
                 self.last_tool_step = self._to_summary(step_id)  # job-0267
+                # task-168: a FAILED parent card IS persisted -- snapshot the
+                # children (e.g. a successful fetch then a failed solve) so the
+                # replayed failed card still nests its sub-step timeline.
+                self.last_tool_children = self._collect_children(step_id)
                 raise
             # TERMINAL FRAME FIRST (stuck-running-card fix): emit the terminal
             # pipeline-state frame (complete / failed / cancelled) BEFORE the
@@ -1763,6 +1788,13 @@ class PipelineEmitter:
             else:
                 await self.mark_complete(step_id)
             self.last_tool_step = self._to_summary(step_id)  # job-0267
+            # task-168: snapshot the ordered children of this top-level card
+            # (a composer's internal fetch/build/solve/postprocess/publish
+            # substeps) BEFORE close_pipeline clears _steps in the server's
+            # finally block. ``server._persist_tool_card`` reads this onto the
+            # persisted ``ToolCardRecord.children`` so a Case reopen (warm) AND
+            # the box-off cold view rebuild the nested timeline READ-ONLY.
+            self.last_tool_children = self._collect_children(step_id)
             # Honor LayerURI return shape — append to loaded_layers + emit
             # session-state. This runs AFTER the terminal frame above so the
             # session-state snapshot captures the step as complete/failed, never
@@ -1885,6 +1917,48 @@ class PipelineEmitter:
             substep_index=s.substep_index,
             substep_total=s.substep_total,
         )
+
+    def _collect_children(self, parent_step_id: str) -> list[PersistedSubStepRecord]:
+        """Snapshot the TERMINAL child substeps of ``parent_step_id`` (task-168).
+
+        Walks ``_step_order`` (chronological start order) and builds one
+        ``PersistedSubStepRecord`` per CHILD step (``parent_step_id`` matches)
+        that reached a PERSISTABLE terminal state (``complete`` / ``failed``).
+        Cancelled / still-running children persist NOTHING -- mirrors the parent
+        ``ToolCardRecord`` contract (Invariant 8: a cancelled dispatch has no
+        replayable card). A failed child carries its ``error_code`` /
+        ``error_message`` so the replayed child reads RED with its reason
+        (honesty floor). ``name`` / ``tool_name`` / ``duration_ms`` mirror the
+        live card; child tool-io is not captured by the substep manager today, so
+        the IO fields stay ``None`` (additive -- the child's chevron stays
+        absent, no fabrication).
+
+        MUST be called while the children still exist in ``_steps`` (i.e. before
+        ``close_pipeline``); the server captures it onto ``last_tool_children`` at
+        the SAME terminal points it sets ``last_tool_step``. Returns ``[]`` when
+        the parent had no children (every plain top-level dispatch).
+        """
+        out: list[PersistedSubStepRecord] = []
+        for sid in self._step_order:
+            child = self._steps.get(sid)
+            if child is None or child.parent_step_id != parent_step_id:
+                continue
+            if child.state not in ("complete", "failed"):
+                # cancelled / pending / running -> not a replayable child.
+                continue
+            out.append(
+                PersistedSubStepRecord(
+                    step_id=child.step_id,
+                    parent_step_id=child.parent_step_id,
+                    name=child.name,
+                    tool_name=child.tool_name,
+                    state=child.state,  # type: ignore[arg-type]
+                    duration_ms=child.duration_ms,
+                    error_code=child.error_code,
+                    error_message=child.error_message,
+                )
+            )
+        return out
 
     async def _emit_pipeline_state(self) -> None:
         if self._pipeline_id is None:

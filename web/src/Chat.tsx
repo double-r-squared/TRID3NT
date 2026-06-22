@@ -83,6 +83,7 @@ import {
   ErrorPayload,
   PayloadConfirmationDecision,
   PayloadWarningEnvelopePayload,
+  PersistedSubStepRecord,
   PipelineSnapshot,
   PipelineStatePayload,
   PipelineStepSummary,
@@ -1676,6 +1677,36 @@ export function replayStreamFromChatHistory(
     } else if (m.role === "tool" && m.tool_card) {
       const card = m.tool_card;
       const stepId = `replay-${m.message_id}`;
+      // task-168 - rebuild the nested sub-step timeline READ-ONLY. The card now
+      // persists its ordered ``children`` (each a PersistedSubStepRecord). We
+      // synthesize ONE PipelineStepSummary per child INTO the same snapshot,
+      // RE-PARENTING each to the synthesized replay parent ``stepId`` (the
+      // persisted wire-only ids are absent from the replayed snapshot, so we
+      // rebuild parenting deterministically). buildInterleavedStream then
+      // collects them under the parent + hands them to PipelineCard for the
+      // indented timeline - the EXACT path the live feature renders. A child
+      // NEVER becomes its own top-level card (it carries parent_step_id and the
+      // parent is present). No re-dispatch: these are terminal records.
+      const childSteps: PipelineStepSummary[] = [];
+      const children = card.children ?? [];
+      children.forEach((child, idx) => {
+        const childStepId = `${stepId}-child-${idx}`;
+        childSteps.push({
+          step_id: childStepId,
+          parent_step_id: stepId,
+          name: child.name ?? child.tool_name,
+          tool_name: child.tool_name,
+          state: child.state,
+          duration_ms: child.duration_ms ?? null,
+          error_code: child.error_code ?? null,
+          error_message: child.error_message ?? null,
+        });
+        // The child's own IO drop-down rehydrates the same way the parent's
+        // does - keyed by the synthesized child step_id. Absent IO -> null ->
+        // the child chevron stays absent (no fabrication).
+        const childIo = toolIoFromSubStepRecord(childStepId, child);
+        if (childIo) toolIo.set(childStepId, childIo);
+      });
       const snap: PipelineStatePayload = {
         pipeline_id: m.pipeline_id ?? `replay-${m.message_id}`,
         steps: [
@@ -1687,6 +1718,7 @@ export function replayStreamFromChatHistory(
             started_at: card.started_at ?? null,
             duration_ms: card.duration_ms ?? null,
           },
+          ...childSteps,
         ],
       };
       recordPipelineStepSeqsIn(s, snap);
@@ -1748,6 +1780,37 @@ export function toolIoFromCardRecord(
     response_truncated: card.response_truncated ?? false,
     args_bytes: card.args_bytes ?? 0,
     response_bytes: card.response_bytes ?? 0,
+  };
+}
+
+/**
+ * task-168 - build a ``ToolIoPayload`` for a replayed NESTED CHILD step's IO
+ * drop-down from a persisted ``PersistedSubStepRecord``. Same shape + semantics
+ * as ``toolIoFromCardRecord`` (a child carries the SAME tool-io field names as
+ * the top-level card), keyed by the synthesized child replay ``step_id`` so the
+ * nested timeline row's chevron rehydrates exactly like the live render.
+ * Returns ``null`` when the child persisted NO IO (old documents / IO-less
+ * children) so the child chevron stays absent (no fabrication).
+ */
+export function toolIoFromSubStepRecord(
+  stepId: string,
+  child: PersistedSubStepRecord,
+): ToolIoPayload | null {
+  const rawArgs = child.raw_args;
+  const fnResp = child.function_response;
+  const hasArgs = typeof rawArgs === "string" && rawArgs.length > 0;
+  const hasResp = typeof fnResp === "string" && fnResp.length > 0;
+  if (!hasArgs && !hasResp) return null;
+  return {
+    step_id: stepId,
+    tool_name: child.tool_name,
+    raw_args: rawArgs ?? "",
+    function_response: fnResp ?? "",
+    is_error: child.is_error ?? child.state === "failed",
+    args_truncated: child.args_truncated ?? false,
+    response_truncated: child.response_truncated ?? false,
+    args_bytes: child.args_bytes ?? 0,
+    response_bytes: child.response_bytes ?? 0,
   };
 }
 
