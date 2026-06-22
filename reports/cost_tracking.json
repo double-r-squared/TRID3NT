@@ -2326,6 +2326,13 @@
       "model": "opus",
       "subagent_tokens": 271724,
       "description": "JPSS/VIIRS Day Fire (Santa Rosa Island) delta spike (3-agent workflow w8rcq0ukg). Extended demo_spike_goes_fire_animation.md with a Demo 2 section + wrote cira_santa_rosa_jpss_fire/notes.md + a paste-ready Santa Rosa prompt. Verdict: only net-new module is fetch_viirs_day_fire.py (polar swath + overpass enumeration); workflow GENERALIZES to model_satellite_fire_animation (GOES + JPSS branches); fetch_wfigs_incident + FIRMS historical-date are shared with the GOES demo. Delta build J1-J7. SLIDER Polar (jpss) PATH A primary; raw VIIRS L1b PATH B optional."
+    },
+    {
+      "job_id": "swan-engine-phase1-build-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 291932,
+      "description": "SWAN Phase 1 standalone wave engine build (worktree agent, merged 0203a40): SwanRunArgs/WaveFieldLayerURI contracts, deterministic .swn deck-builder (GeoClaw analogue), run_swan_waves tool, model_wave_scenario + postprocess_swan (Hs/Tp/Dir COGs), file-only container + swan.tf scaffold. 31 new tests green; TOOL_REGISTRY 97->98; ASCII-clean. Also fixed a pre-existing output_interval_min schema 400-trigger surfaced by the full-suite run. Container build/ECR/Batch apply gated."
     }
   ],
   "totals_by_sprint": {
