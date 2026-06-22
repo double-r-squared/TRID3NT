@@ -1974,7 +1974,7 @@ async def model_flood_scenario(
     building_obstacle_mode: str = "exclude",
     coastal: bool = False,
     quadtree: bool = False,
-    output_interval_min: int | float | None = None,
+    output_interval_min: float | None = None,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -3613,7 +3613,7 @@ async def run_model_flood_scenario(
     quadtree: bool = False,
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
-    output_interval_min: int | float | None = None,
+    output_interval_min: float | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
