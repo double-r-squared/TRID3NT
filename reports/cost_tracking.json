@@ -2249,6 +2249,27 @@
       "model": "opus",
       "subagent_tokens": 130000,
       "description": "ESTIMATE: coastal North-Star WS-1005 root-cause + fix - traced run_model_flood_scenario coastal branch, wrapped 5 unwrapped heavy sync call sites (surge forcing adapter, OSM/NHDPlus fetches x2, quadtree rivers, deckbuild spec compose+upload) in asyncio.to_thread so the 12s WS heartbeat is not starved; wrote tests/test_coastal_forcing_offloop.py (AST + dynamic off-loop proof) + acceptance-parity telemetry design doc during the exploration window."
+    },
+    {
+      "job_id": "agent-always-offload-heavy-fetchers-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 104338,
+      "description": "REAL coastal WS-1005 root cause: fetch_topobathy 61s CUDEM merge blocked the event loop. Added in-code _ALWAYS_OFFLOAD_SYNC_TOOLS (17 hand-audited emit-free heavy fetchers) so the dispatch offloads them via asyncio.to_thread even with GRACE2_SYNC_TOOL_OFFLOAD=off; extended _assert_sync_offload_safe to scan the always-set at startup. Tests + guard green (68 passed)."
+    },
+    {
+      "job_id": "web-scrubber-legend-mobile-unify-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 126985,
+      "description": "Scrubber+legend mobile unification (NATE feedback): scrubber shares the legend aoiScaleFactor, tracks bbox width (no side padding), persists on zoom-out like the legend, z 31 under the mobile chat sheet. tsc clean, 71 web tests pass. Committed 0466ad3, web deploy held for NATE go."
+    },
+    {
+      "job_id": "workflow-coastal-apikey-audit-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 395228,
+      "description": "5-agent ultracode workflow: does the Mexico Beach coastal+waves demo need an API key? Verdict (adversarially verified, high confidence): NO - CO-OPS (no key) surge boundary + CUDEM/3DEP (no key) terrain + SnapWave internal waves; CDS key only for GTSM/ERA5 (not this path); graceful typed-missing-key -> credential card -> per-Case SSM vault -> auto-retry; never blocks."
     }
   ],
   "totals_by_sprint": {
