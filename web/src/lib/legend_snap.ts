@@ -215,18 +215,119 @@ export function layoutKeysToSides(
  * release to choose which side the key snaps back to. Distance is the
  * perpendicular gap from the point to each edge line, clamped so a point well
  * inside or outside still maps to the closest edge.
+ *
+ * LEGEND v2 (NATE 2026-06-22): `opts.excludeBottom` removes BOTTOM from the
+ * candidate sides, so a release is snapped to the nearest of {left, right, top}
+ * only. The BOTTOM band of the AOI is reserved for the sequence scrubber, so the
+ * legend never docks there. Default (no opts) keeps the original 4-side behavior
+ * so the existing `nearestSide` callers are unaffected (additive option).
  */
-export function nearestSide(aoi: ScreenRect, point: { x: number; y: number }): AoiSide {
+export interface NearestSideOptions {
+  /** When true, BOTTOM is excluded; snaps to the nearest of left/right/top. */
+  excludeBottom?: boolean;
+}
+
+export function nearestSide(
+  aoi: ScreenRect,
+  point: { x: number; y: number },
+  opts: NearestSideOptions = {},
+): AoiSide {
   const dLeft = Math.abs(point.x - aoi.left);
   const dRight = Math.abs(point.x - aoi.right);
   const dTop = Math.abs(point.y - aoi.top);
   const dBottom = Math.abs(point.y - aoi.bottom);
+  if (opts.excludeBottom) {
+    // Bottom is reserved for the scrubber; choose the nearest of left/right/top.
+    const min = Math.min(dLeft, dRight, dTop);
+    // Tie-break order: right, top, left (CCW priority minus bottom).
+    if (min === dRight) return "right";
+    if (min === dTop) return "top";
+    return "left";
+  }
   const min = Math.min(dLeft, dRight, dTop, dBottom);
   // Tie-break order matches CCW priority: bottom, right, top, left.
   if (min === dBottom) return "bottom";
   if (min === dRight) return "right";
   if (min === dTop) return "top";
   return "left";
+}
+
+/**
+ * LEGEND v2 - the VALID legend snap targets, in CCW-ish order: left, right, top.
+ * BOTTOM is intentionally absent (reserved for the sequence scrubber). This is
+ * the canonical set the drag drop-zone signals render against and the side a
+ * release snaps to (see `nearestSide({ excludeBottom: true })`).
+ */
+export const LEGEND_SNAP_SIDES: readonly AoiSide[] = ["left", "right", "top"];
+
+/**
+ * LEGEND v2 (NATE 2026-06-22) - DROP-ZONE SIGNAL geometry. On drag-start the
+ * legend paints a thin "area signal" affordance along each VALID snap target
+ * (left, right, top edges of the AOI bbox - never bottom), and highlights the
+ * one nearest the dragged card as the active target. This returns, for a given
+ * AOI rect, the screen-space rectangle of each such signal so the component can
+ * render them without recomputing geometry (Invariant 1: pure pixel math).
+ *
+ * Each signal hugs the relevant AOI edge, just OUTSIDE it by `gap` px, and is
+ * `thickness` px wide across the edge. Top spans the AOI width; left/right span
+ * the AOI height. The returned `active` flag marks the side that matches
+ * `activeSide` (the live nearest target) so the caller can highlight it.
+ */
+export interface DropZoneSignal {
+  side: AoiSide;
+  rect: ScreenRect;
+  active: boolean;
+}
+
+export interface DropZoneOptions {
+  /** Px gap OUTSIDE the AOI edge where the signal sits. Default SIDE_GAP_PX. */
+  gap?: number;
+  /** Px thickness of the signal across the edge. Default 6. */
+  thickness?: number;
+  /** The currently-nearest target side to mark active (or null/none). */
+  activeSide?: AoiSide | null;
+}
+
+export const DROP_ZONE_THICKNESS_PX = 6;
+
+export function dropZoneSignals(
+  aoi: ScreenRect,
+  opts: DropZoneOptions = {},
+): DropZoneSignal[] {
+  const gap = opts.gap ?? SIDE_GAP_PX;
+  const t = opts.thickness ?? DROP_ZONE_THICKNESS_PX;
+  const active = opts.activeSide ?? null;
+  const signals: DropZoneSignal[] = [];
+  for (const side of LEGEND_SNAP_SIDES) {
+    let rect: ScreenRect;
+    if (side === "top") {
+      // Spans the AOI width, sits just ABOVE the top edge.
+      rect = {
+        left: aoi.left,
+        right: aoi.right,
+        bottom: aoi.top - gap,
+        top: aoi.top - gap - t,
+      };
+    } else if (side === "left") {
+      // Spans the AOI height, sits just LEFT of the left edge.
+      rect = {
+        left: aoi.left - gap - t,
+        right: aoi.left - gap,
+        top: aoi.top,
+        bottom: aoi.bottom,
+      };
+    } else {
+      // right: spans the AOI height, sits just RIGHT of the right edge.
+      rect = {
+        left: aoi.right + gap,
+        right: aoi.right + gap + t,
+        top: aoi.top,
+        bottom: aoi.bottom,
+      };
+    }
+    signals.push({ side, rect, active: active === side });
+  }
+  return signals;
 }
 
 /**

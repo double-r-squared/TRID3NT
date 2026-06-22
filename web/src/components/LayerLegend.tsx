@@ -1,16 +1,23 @@
 // GRACE-2 web  -  LayerLegend (job-0065; interactive AOI-snapping keys, NATE
 // overlay-layout spec 2026-06-17).
 //
-// Renders matplotlib-style horizontal colorbar "keys", one per continuous-raster
-// layer that has a known style_preset. Each key is:
-//   1. DRAGGABLE (pointer drag); on release it AUTO-SNAPS to the nearest side of
-//      the AOI bounding box (the current bbox rectangle on the map).
-//   2. SNAP-ORDERED counter-clockwise by stack order  -  1st key bottom, 2nd
-//      right, 3rd top, 4th left  -  and STACKED (offset outward) when more than
-//      one key lands on the same side, so keys never overlap (legend_snap.ts).
-//   3. RESIZABLE per-key via a corner handle (width; height follows content).
-//   4. Collapsible to a COMPACT (flattened) mode, and hideable entirely, via a
-//      small settings toggle pinned to the key.
+// Renders matplotlib-style colorbar "keys", one per continuous-raster layer that
+// has a known style_preset. LEGEND v2 (NATE 2026-06-22): the key is ALWAYS a
+// compact, FLAT two-row card (the old collapse/expand toggle is gone). Each key:
+//   1. FLAT TWO-ROW LAYOUT - row 1 = title + hide(eye); row 2 = [min] gradient
+//      bar [max] (horizontal: min at the LEFT end, max at the RIGHT end; vertical
+//      when docked left/right: min at the BOTTOM, max at the TOP).
+//   2. DRAGGABLE by the card BODY/EDGE (no dedicated grip icon); on release it
+//      AUTO-SNAPS to the nearest VALID AOI side - LEFT, RIGHT, or TOP only.
+//      BOTTOM is reserved for the sequence scrubber, so the legend never docks
+//      there (legend_snap.nearestSide({ excludeBottom: true })).
+//   3. DROP-ZONE SIGNALS - on drag-start, thin "area signal" affordances paint
+//      along the valid snap targets (left/right/top edges of the AOI bbox) and
+//      the nearest one highlights as the active target as the user drags toward
+//      it; they clear on release/cancel (legend_snap.dropZoneSignals).
+//   4. RESIZABLE per-key via a plain corner handle (width; height follows
+//      content). SNAP-ORDERED counter-clockwise by stack order and STACKED
+//      (offset outward) when keys share a side, so they never overlap.
 //
 // Positioning / data flow:
 //   The component is rendered INSIDE the map container div (in Map.tsx) so it
@@ -45,11 +52,13 @@ import { ProjectLayerSummary } from "../contracts";
 import { getStylePreset, StylePreset, type GradientStop } from "../lib/style-presets";
 import {
   aoiScaleFactor,
+  dropZoneSignals,
   layoutKeysToSides,
   nearestSide,
   rectFromAnchorAndWidth,
   sideForIndex,
   type AoiSide,
+  type DropZoneSignal,
   type KeySize,
   type ScreenRect,
 } from "../lib/legend_snap";
@@ -184,12 +193,10 @@ interface LegendKeyModel {
   colormapStops: GradientStop[] | null;
 }
 
-/** Per-key interactive UI state the user can drive (width + compact + free pos). */
+/** Per-key interactive UI state the user can drive (width + free pos + snap). */
 interface KeyUiState {
   /** User-chosen width override (px). Undefined => default snapped width. */
   width?: number;
-  /** Compact (flattened) mode: ramp + range only, no title/labels chrome. */
-  compact?: boolean;
   /** While dragging, the free top-left screen position (overrides the snap). */
   free?: { left: number; top: number } | null;
   /**
@@ -242,10 +249,13 @@ const STATIC_LEGEND_WIDTH = 320;
 // Min/max width a user may resize a key to.
 const KEY_MIN_WIDTH = 140;
 const KEY_MAX_WIDTH = 520;
-// Estimated key heights for the snap layout (full vs compact). These only feed
-// the stacking math (so keys don't overlap); the rendered card sizes itself.
-const KEY_HEIGHT_FULL = 64;
-const KEY_HEIGHT_COMPACT = 26;
+// Estimated key heights for the snap layout. These only feed the stacking math
+// (so keys don't overlap); the rendered card sizes itself. LEGEND v2: the key is
+// always the FLAT two-row card (title row + value/bar row), so there is a single
+// horizontal-dock height; vertical-docked (left/right) keys are taller (a tall
+// bar) so we feed a separate vertical height to the stacking math.
+const KEY_HEIGHT_FLAT = 56;
+const KEY_HEIGHT_VERTICAL = 150;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
 
@@ -404,6 +414,16 @@ export function LayerLegend({
     last: { left: number; top: number };
   } | null>(null);
 
+  // LEGEND v2 (DROP-ZONE SIGNALS, NATE 2026-06-22)  -  while a key is being
+  // dragged we paint thin "area signal" affordances along the VALID snap targets
+  // (left/right/top edges of the AOI; never bottom) and HIGHLIGHT the nearest one
+  // as the live active target. `dragActive` is the layerId mid-drag (null when
+  // idle), `activeDropSide` the side currently nearest the dragged card. Both are
+  // React state (not just the drag ref) so the signals re-render as the drag
+  // moves and clear on release/cancel.
+  const [dragActive, setDragActive] = useState<string | null>(null);
+  const [activeDropSide, setActiveDropSide] = useState<AoiSide | null>(null);
+
   // The AOI rectangle in screen space that the keys SNAP against. Prefer the
   // TRUE projected rect (all four bbox corners, min/max box) threaded from
   // Map.tsx  -  it carries the real AOI aspect ratio + on-screen skew, so the
@@ -450,37 +470,6 @@ export function LayerLegend({
     [uiState, defaultWidth],
   );
 
-  const heightFor = useCallback(
-    (layerId: string): number =>
-      uiState[layerId]?.compact ? KEY_HEIGHT_COMPACT : KEY_HEIGHT_FULL,
-    [uiState],
-  );
-
-  // Compute the snapped position for every key. When an AOI rect is present we
-  // lay keys out CCW (bottom, right, top, left, stacking on repeat). With no AOI
-  // we stack them along a static bottom-center row. A key being actively dragged
-  // uses its `free` position instead of the snapped one.
-  const sizes: KeySize[] = useMemo(
-    () =>
-      keyModels.map((k) => ({
-        width: widthFor(k.layerId),
-        height: heightFor(k.layerId),
-      })),
-    [keyModels, widthFor, heightFor],
-  );
-
-  // Item f  -  extra px to push bottom-side keys past the scrubber's footprint
-  // (the scrubber pins bottom-center of the AOI box). The explicit prop wins;
-  // otherwise default to a sensible reserve WHENEVER the scrubber is active so
-  // the legend is never obscured by it. 0 when neither applies.
-  const SCRUBBER_FOOTPRINT_PX = 52; // scrubber height (~40) + its 12px gap.
-  const bottomReserve =
-    typeof bottomReservePx === "number" && bottomReservePx > 0
-      ? bottomReservePx
-      : scrubberActive
-        ? SCRUBBER_FOOTPRINT_PX
-        : 0;
-
   // ITEM 5 (NATE 2026-06-22)  -  when the SCRUBBER is showing, the bottom-center
   // band is occupied by it, so START the CCW key layout on the RIGHT side (offset
   // +1 in the bottom->right->top->left order). The first key then rails VERTICALLY
@@ -504,6 +493,46 @@ export function LayerLegend({
       ),
     [keyModels, uiState, sideStartOffset],
   );
+
+  // LEGEND v2  -  the orientation a key dock-side implies: left/right -> vertical
+  // (a tall bar), top/bottom -> horizontal. Used for BOTH the stacking-height
+  // math (a vertical key consumes a taller footprint) and the rendered bar.
+  const orientationForSide = useCallback(
+    (side: AoiSide): "vertical" | "horizontal" =>
+      side === "left" || side === "right" ? "vertical" : "horizontal",
+    [],
+  );
+
+  // Compute the snapped position for every key. When an AOI rect is present we
+  // lay keys out CCW (bottom, right, top, left, stacking on repeat). With no AOI
+  // we stack them along a static bottom-center row. A key being actively dragged
+  // uses its `free` position instead of the snapped one. LEGEND v2: the key is
+  // always the FLAT two-row card, so the stacking HEIGHT is the flat height for
+  // a horizontal dock and the taller vertical-bar height for a left/right dock.
+  const sizes: KeySize[] = useMemo(
+    () =>
+      keyModels.map((k, idx) => {
+        const side = resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset);
+        const height =
+          orientationForSide(side) === "vertical"
+            ? KEY_HEIGHT_VERTICAL
+            : KEY_HEIGHT_FLAT;
+        return { width: widthFor(k.layerId), height };
+      }),
+    [keyModels, widthFor, resolvedSides, sideStartOffset, orientationForSide],
+  );
+
+  // Item f  -  extra px to push bottom-side keys past the scrubber's footprint
+  // (the scrubber pins bottom-center of the AOI box). The explicit prop wins;
+  // otherwise default to a sensible reserve WHENEVER the scrubber is active so
+  // the legend is never obscured by it. 0 when neither applies.
+  const SCRUBBER_FOOTPRINT_PX = 52; // scrubber height (~40) + its 12px gap.
+  const bottomReserve =
+    typeof bottomReservePx === "number" && bottomReservePx > 0
+      ? bottomReservePx
+      : scrubberActive
+        ? SCRUBBER_FOOTPRINT_PX
+        : 0;
 
   const snapped = useMemo(() => {
     if (aoiRect) {
@@ -532,29 +561,47 @@ export function LayerLegend({
 
   // --- drag wiring --------------------------------------------------------- //
 
+  // LEGEND v2  -  the dropped card's CENTER mapped to the nearest VALID snap side
+  // (left/right/top; BOTTOM excluded - it is reserved for the scrubber). Returns
+  // undefined when there is no AOI rect (off-screen) so the caller leaves the
+  // AOI-less bottom-center fallback in place. Shared by the live drag (to drive
+  // the active drop-zone highlight) and the release (to set the side override).
+  const nearestLegendSide = useCallback(
+    (centerLeft: number, centerTop: number, w: number, h: number): AoiSide | undefined => {
+      const rect = aoiRectRef.current;
+      if (!rect) return undefined;
+      return nearestSide(
+        rect,
+        { x: centerLeft + w / 2, y: centerTop + h / 2 },
+        { excludeBottom: true },
+      );
+    },
+    [],
+  );
+
   const endDrag = useCallback(() => {
     const drag = dragRef.current;
     dragRef.current = null;
+    // Clear the drop-zone signals + active highlight on release/cancel.
+    setDragActive(null);
+    setActiveDropSide(null);
     if (!drag) return;
     const layerId = drag.layerId;
-    // SIDE-SNAP (NATE 2026-06-22) - on release the key SNAPS to the AOI side
-    // NEAREST where it was dropped (not back to its CCW index side). We take the
-    // dropped card's CENTER point and ask legend_snap.nearestSide which edge it
-    // is closest to, then store that as a per-key sideOverride. The layout +
-    // orientation + side label all honor the override, so dragging a key to the
-    // right edge snaps it there AND flips it to a vertical bar (NATE's "snap to
-    // sides / change orientation"). With NO AOI rect (off-screen) there is no
-    // side to snap to, so we just clear `free` and the AOI-less bottom-center
-    // fallback holds (unchanged).
-    const rect = aoiRectRef.current;
-    let snappedSide: AoiSide | undefined;
-    if (rect) {
-      const center = {
-        x: drag.last.left + drag.width / 2,
-        y: drag.last.top + drag.height / 2,
-      };
-      snappedSide = nearestSide(rect, center);
-    }
+    // SIDE-SNAP / LEGEND v2 - on release the key SNAPS to the VALID AOI side
+    // NEAREST where it was dropped (LEFT/RIGHT/TOP only - bottom is reserved for
+    // the scrubber). We take the dropped card's CENTER and ask legend_snap's
+    // bottom-excluded nearestSide which edge it is closest to, then store that as
+    // a per-key sideOverride. The layout + orientation + side label all honor the
+    // override, so dragging a key toward the right snaps it there AND flips it to
+    // a vertical bar, and a drag toward the BOTTOM snaps to the nearest of
+    // left/right/top instead. With NO AOI rect (off-screen) there is no side to
+    // snap to, so we just clear `free` and the bottom-center fallback holds.
+    const snappedSide = nearestLegendSide(
+      drag.last.left,
+      drag.last.top,
+      drag.width,
+      drag.height,
+    );
     setUiState((prev) => {
       const next = { ...prev };
       const cur = next[layerId] ?? {};
@@ -566,23 +613,30 @@ export function LayerLegend({
       };
       return next;
     });
-  }, []);
+  }, [nearestLegendSide]);
 
-  const onPointerMoveWindow = useCallback((ev: PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    const left = ev.clientX - drag.offsetX;
-    const top = ev.clientY - drag.offsetY;
-    // Track the latest free top-left on the drag ref so release can compute the
-    // card center for nearest-side snapping (the ref read is fresh; uiState is not).
-    drag.last = { left, top };
-    setUiState((prev) => {
-      const next = { ...prev };
-      const cur = next[drag.layerId] ?? {};
-      next[drag.layerId] = { ...cur, free: { left, top } };
-      return next;
-    });
-  }, []);
+  const onPointerMoveWindow = useCallback(
+    (ev: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const left = ev.clientX - drag.offsetX;
+      const top = ev.clientY - drag.offsetY;
+      // Track the latest free top-left on the drag ref so release can compute the
+      // card center for nearest-side snapping (the ref read is fresh; state is not).
+      drag.last = { left, top };
+      // LEGEND v2  -  live-highlight the drop-zone signal nearest the card center
+      // so the user sees which side it will snap to (left/right/top only).
+      const side = nearestLegendSide(left, top, drag.width, drag.height);
+      setActiveDropSide(side ?? null);
+      setUiState((prev) => {
+        const next = { ...prev };
+        const cur = next[drag.layerId] ?? {};
+        next[drag.layerId] = { ...cur, free: { left, top } };
+        return next;
+      });
+    },
+    [nearestLegendSide],
+  );
 
   // Bind window listeners once; they read the live ref so no re-bind per drag.
   useEffect(() => {
@@ -603,9 +657,9 @@ export function LayerLegend({
       // EDGE/BODY-GRAB (NATE 2026-06-22) - the whole legend card body IS the drag
       // handle (there is no separate grip icon - that was visual clutter NATE
       // asked to drop); a pointer-down anywhere on the chrome starts the drag.
-      // We only EXCLUDE the interactive controls (compact / hide buttons) and the
-      // resize handle, all tagged data-legend-no-drag, so a click on those does
-      // its own thing instead of dragging.
+      // We only EXCLUDE the interactive controls (the hide button) and the resize
+      // handle, all tagged data-legend-no-drag, so a click on those does its own
+      // thing instead of dragging.
       const target = ev.target as HTMLElement;
       if (target.closest("[data-legend-no-drag]")) return;
       const card = ev.currentTarget.getBoundingClientRect();
@@ -617,6 +671,12 @@ export function LayerLegend({
         height: card.height,
         last: { left: card.left, top: card.top },
       };
+      // LEGEND v2  -  arm the drop-zone signals for this drag and seed the active
+      // side from the card's current center, so the targets appear immediately.
+      setDragActive(layerId);
+      setActiveDropSide(
+        nearestLegendSide(card.left, card.top, card.width, card.height) ?? null,
+      );
       // Seed a free position at the current spot so the first move is smooth.
       setUiState((prev) => {
         const next = { ...prev };
@@ -628,7 +688,7 @@ export function LayerLegend({
         return next;
       });
     },
-    [],
+    [nearestLegendSide],
   );
 
   // --- resize wiring ------------------------------------------------------- //
@@ -682,17 +742,18 @@ export function LayerLegend({
     [widthFor],
   );
 
-  const toggleCompact = useCallback((layerId: string) => {
-    setUiState((prev) => {
-      const next = { ...prev };
-      const cur = next[layerId] ?? {};
-      next[layerId] = { ...cur, compact: !cur.compact };
-      return next;
-    });
-  }, []);
-
   // Nothing eligible => render nothing (preserves the old hide contract).
   if (keyModels.length === 0) return null;
+
+  // LEGEND v2 (DROP-ZONE SIGNALS)  -  while a key is being dragged, paint a thin
+  // "area signal" along each VALID snap target (left/right/top edges of the AOI;
+  // never bottom) and highlight the one nearest the dragged card. Computed here
+  // (after the hidden/empty guards) only when a drag is in flight AND an AOI rect
+  // exists; cleared automatically on release/cancel (dragActive -> null).
+  const dropSignals: DropZoneSignal[] =
+    dragActive && aoiRect
+      ? dropZoneSignals(aoiRect, { activeSide: activeDropSide })
+      : [];
 
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
   // Portal to document.body so it appears above the mobile chat panel.
@@ -766,7 +827,6 @@ export function LayerLegend({
         const preset = model.preset;
         const ui = uiState[layerId] ?? {};
         const width = widthFor(layerId);
-        const compact = !!ui.compact;
         // `snapped` is built 1:1 from `keyModels`, so this is always defined;
         // the fallback satisfies noUncheckedIndexedAccess.
         const snapPos = snapped[idx] ?? { left: 0, top: 0, side: "bottom" as AoiSide };
@@ -824,11 +884,12 @@ export function LayerLegend({
             : buildGradient(stops);
 
         // Item d  -  scaled type + chrome metrics (clamped via the scale factor).
-        const titleFont = Math.round((compact ? 10 : 11) * scale);
+        // LEGEND v2: a single FLAT key (no compact branch), so one metric set.
+        const titleFont = Math.round(11 * scale);
         const labelFont = Math.round(10 * scale);
-        const barThickness = Math.round((compact ? 8 : 14) * scale);
+        const barThickness = Math.round(12 * scale);
         // A vertical bar needs a sensible height to read as a tall colorbar.
-        const verticalBarHeight = Math.round((compact ? 90 : 130) * scale);
+        const verticalBarHeight = Math.round(120 * scale);
 
         const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
         const maxText = `${maxLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
@@ -839,13 +900,12 @@ export function LayerLegend({
             data-testid="grace2-layer-legend-key"
             data-legend-side={sideLabel}
             data-legend-orientation={orientation}
-            data-legend-compact={compact ? "1" : "0"}
             onPointerDown={(e) => startDrag(layerId, e)}
             style={{
               position: "fixed",
               ...posStyle,
               width,
-              padding: compact ? "5px 10px 6px" : "8px 12px 10px",
+              padding: "7px 10px 8px",
               background: "rgba(17,18,23,0.78)",
               backdropFilter: "blur(6px)",
               WebkitBackdropFilter: "blur(6px)",
@@ -864,82 +924,55 @@ export function LayerLegend({
               zIndex: LEGEND_Z_INDEX,
             }}
           >
-            {/* Title row (hidden in compact mode) + per-key controls. */}
-            {!compact ? (
-              <div
+            {/* LEGEND v2 - ROW 1: title + hide(eye). Always shown (flat key). */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 5,
+                gap: 6,
+              }}
+            >
+              <span
+                data-testid="layer-legend-title"
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: 5,
-                  gap: 6,
+                  fontSize: titleFont,
+                  fontWeight: 600,
+                  letterSpacing: "0.03em",
+                  color: "#ddd",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
                 }}
               >
-                <span
-                  data-testid="layer-legend-title"
-                  style={{
-                    fontSize: titleFont,
-                    fontWeight: 600,
-                    letterSpacing: "0.03em",
-                    color: "#ddd",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {preset.label}
-                </span>
-                <LegendControls
-                  idx={idx}
-                  compact={compact}
-                  onToggleCompact={() => toggleCompact(layerId)}
-                  onHide={() => setHidden(true)}
-                />
-              </div>
-            ) : (
-              // Compact: a slim header with just the controls + a short label.
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 6,
-                }}
-              >
-                <span
-                  data-testid="layer-legend-title"
-                  style={{
-                    fontSize: titleFont,
-                    fontWeight: 600,
-                    color: "#ccc",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {preset.label}
-                </span>
-                <LegendControls
-                  idx={idx}
-                  compact={compact}
-                  onToggleCompact={() => toggleCompact(layerId)}
-                  onHide={() => setHidden(true)}
-                />
-              </div>
-            )}
+                {preset.label}
+              </span>
+              <LegendControls idx={idx} onHide={() => setHidden(true)} />
+            </div>
 
+            {/* LEGEND v2 - ROW 2: the gradient bar flanked by the min/max values.
+                HORIZONTAL (top/bottom dock): [min] bar [max] in a row, min at the
+                LEFT end of the bar, max at the RIGHT. VERTICAL (left/right dock):
+                the same rotates - max at the TOP, min at the BOTTOM of a tall
+                vertical bar. The bar grows to fill so the values flank its ends. */}
             {orientation === "vertical" ? (
-              // Item g  -  VERTICAL colorbar: a tall bar with min at the bottom and
-              // max at the top, labels stacked alongside it (max on top, min at
-              // the foot). Shown for LEFT/RIGHT-docked keys.
               <div
+                data-testid="layer-legend-value-row"
                 style={{
                   display: "flex",
-                  alignItems: "stretch",
-                  gap: 6,
-                  marginTop: compact ? 3 : 2,
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 4,
+                  marginTop: 2,
                 }}
               >
+                <span
+                  data-testid="layer-legend-max-label"
+                  style={{ fontSize: labelFont, color: "#bbb" }}
+                >
+                  {maxText}
+                </span>
                 <div
                   data-testid="layer-legend-bar"
                   style={{
@@ -951,70 +984,62 @@ export function LayerLegend({
                     flexShrink: 0,
                   }}
                 />
-                {!compact ? (
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <span
-                      data-testid="layer-legend-max-label"
-                      style={{ fontSize: labelFont, color: "#bbb" }}
-                    >
-                      {maxText}
-                    </span>
-                    <span
-                      data-testid="layer-legend-min-label"
-                      style={{ fontSize: labelFont, color: "#bbb" }}
-                    >
-                      {minText}
-                    </span>
-                  </div>
-                ) : null}
+                <span
+                  data-testid="layer-legend-min-label"
+                  style={{ fontSize: labelFont, color: "#bbb" }}
+                >
+                  {minText}
+                </span>
               </div>
             ) : (
-              <>
-                {/* Item g  -  HORIZONTAL colorbar (TOP/BOTTOM-docked keys). */}
+              <div
+                data-testid="layer-legend-value-row"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginTop: 2,
+                }}
+              >
+                <span
+                  data-testid="layer-legend-min-label"
+                  style={{
+                    fontSize: labelFont,
+                    color: "#bbb",
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {minText}
+                </span>
                 <div
                   data-testid="layer-legend-bar"
                   style={{
+                    flex: 1,
+                    minWidth: 0,
                     height: barThickness,
-                    marginTop: compact ? 3 : 0,
                     borderRadius: 3,
                     background: gradient,
                     border: "1px solid rgba(255,255,255,0.12)",
                   }}
                 />
-
-                {/* Axis labels (hidden in compact mode to flatten). */}
-                {!compact ? (
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: 4,
-                    }}
-                  >
-                    <span
-                      data-testid="layer-legend-min-label"
-                      style={{ fontSize: labelFont, color: "#bbb" }}
-                    >
-                      {minText}
-                    </span>
-                    <span
-                      data-testid="layer-legend-max-label"
-                      style={{ fontSize: labelFont, color: "#bbb" }}
-                    >
-                      {maxText}
-                    </span>
-                  </div>
-                ) : null}
-              </>
+                <span
+                  data-testid="layer-legend-max-label"
+                  style={{
+                    fontSize: labelFont,
+                    color: "#bbb",
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {maxText}
+                </span>
+              </div>
             )}
 
-            {/* Resize handle (bottom-right corner). */}
+            {/* Resize handle (bottom-right corner). LEGEND v2: a plain hit-target
+                (no diagonal grip glyph - NATE asked to drop the visual clutter);
+                the card body itself is the drag handle. */}
             <div
               data-legend-no-drag=""
               data-testid="layer-legend-resize"
@@ -1026,9 +1051,6 @@ export function LayerLegend({
                 width: 12,
                 height: 12,
                 cursor: "ew-resize",
-                // A subtle corner grip (two diagonal hairlines).
-                backgroundImage:
-                  "linear-gradient(135deg, transparent 0 6px, rgba(255,255,255,0.35) 6px 7px, transparent 7px 9px, rgba(255,255,255,0.35) 9px 10px, transparent 10px)",
                 borderBottomRightRadius: 8,
               }}
               aria-label="Resize legend key"
@@ -1040,23 +1062,57 @@ export function LayerLegend({
         // container's stacking context and renders above the mobile drawer.
         return createPortal(keyCard, document.body, `legend-key-${layerId}`);
       })}
+
+      {/* LEGEND v2 (DROP-ZONE SIGNALS) - while a key is being dragged, paint a
+          thin "area signal" along each VALID snap target (left/right/top edges of
+          the AOI; never bottom) and HIGHLIGHT the one nearest the dragged card.
+          Portaled to document.body (position:fixed) like the keys so they overlay
+          the map at the AOI edges. Cleared automatically on release/cancel. */}
+      {dropSignals.map((sig) =>
+        createPortal(
+          <div
+            key={`legend-dropzone-${sig.side}`}
+            data-testid="layer-legend-dropzone"
+            data-legend-dropzone-side={sig.side}
+            data-legend-dropzone-active={sig.active ? "1" : "0"}
+            aria-hidden="true"
+            style={{
+              position: "fixed",
+              left: sig.rect.left,
+              top: sig.rect.top,
+              width: Math.max(0, sig.rect.right - sig.rect.left),
+              height: Math.max(0, sig.rect.bottom - sig.rect.top),
+              borderRadius: 3,
+              background: sig.active
+                ? "rgba(74,163,255,0.85)"
+                : "rgba(74,163,255,0.28)",
+              boxShadow: sig.active ? "0 0 8px rgba(74,163,255,0.7)" : "none",
+              pointerEvents: "none",
+              transition: "background 80ms linear",
+              zIndex: LEGEND_Z_INDEX,
+            }}
+          />,
+          document.body,
+          `legend-dropzone-${sig.side}`,
+        ),
+      )}
     </div>
   );
 }
 
-/** Per-key control cluster: compact toggle + hide. `data-legend-no-drag` so a
- * click on a control doesn't initiate a card drag. */
+/** LEGEND v2 - per-key control cluster: just the HIDE (eye) button. The compact
+ * collapse/expand toggle is GONE (the key is always a flat two-row card). Only
+ * the FIRST key carries the global hide control, to avoid clutter. Tagged
+ * `data-legend-no-drag` so a click on it does not initiate a card drag. */
 function LegendControls({
   idx,
-  compact,
-  onToggleCompact,
   onHide,
 }: {
   idx: number;
-  compact: boolean;
-  onToggleCompact: () => void;
   onHide: () => void;
-}): JSX.Element {
+}): JSX.Element | null {
+  // Only the first key carries the hide control; the rest render no controls.
+  if (idx !== 0) return null;
   return (
     <span
       data-legend-no-drag=""
@@ -1064,37 +1120,35 @@ function LegendControls({
     >
       <button
         type="button"
-        data-testid="layer-legend-compact-toggle"
+        data-testid="layer-legend-hide"
         data-legend-no-drag=""
-        onClick={onToggleCompact}
-        title={compact ? "Expand key" : "Flatten key"}
+        onClick={onHide}
+        title="Hide legend"
+        aria-label="Hide legend"
         style={controlBtnStyle}
       >
-        {compact ? "+" : "-"}
+        {/* An eye glyph for the hide affordance (NATE's "hide(eye) button"). */}
+        <span aria-hidden="true" style={{ fontSize: 11, lineHeight: "14px" }}>
+          {EYE_GLYPH}
+        </span>
       </button>
-      {/* Only the FIRST key carries the global hide control, to avoid clutter. */}
-      {idx === 0 ? (
-        <button
-          type="button"
-          data-testid="layer-legend-hide"
-          data-legend-no-drag=""
-          onClick={onHide}
-          title="Hide legend"
-          style={controlBtnStyle}
-        >
-          -
-        </button>
-      ) : null}
     </span>
   );
 }
 
+// A minimal eye glyph for the hide control (kept as a constant so the ASCII
+// source stays clean). U+1F441 = eye.
+const EYE_GLYPH = "\u{1F441}";
+
 const controlBtnStyle: React.CSSProperties = {
-  width: 16,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 18,
   height: 16,
   lineHeight: "14px",
   padding: 0,
-  fontSize: 12,
+  fontSize: 11,
   fontWeight: 700,
   color: "#bbb",
   background: "rgba(255,255,255,0.06)",

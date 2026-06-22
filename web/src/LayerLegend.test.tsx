@@ -468,30 +468,7 @@ describe("LayerLegend  -  resize", () => {
   });
 });
 
-describe("LayerLegend  -  compact / flatten + hide toggles", () => {
-  it("flattens a key: hides min/max labels in compact mode", () => {
-    render(<LayerLegend layers={[makeLayer()]} />);
-    expect(screen.getByTestId("layer-legend-min-label")).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("layer-legend-compact-toggle"));
-    expect(screen.queryByTestId("layer-legend-min-label")).toBeNull();
-    // The gradient bar + title are still present (content preserved).
-    expect(screen.getByTestId("layer-legend-bar")).toBeInTheDocument();
-    expect(screen.getByTestId("layer-legend-title")).toBeInTheDocument();
-    // Marked compact for downstream styling / verification.
-    expect(
-      screen.getByTestId("grace2-layer-legend-key").getAttribute("data-legend-compact"),
-    ).toBe("1");
-  });
-
-  it("toggles compact back to full", () => {
-    render(<LayerLegend layers={[makeLayer()]} />);
-    const toggle = screen.getByTestId("layer-legend-compact-toggle");
-    fireEvent.click(toggle);
-    expect(screen.queryByTestId("layer-legend-min-label")).toBeNull();
-    fireEvent.click(screen.getByTestId("layer-legend-compact-toggle"));
-    expect(screen.getByTestId("layer-legend-min-label")).toBeInTheDocument();
-  });
-
+describe("LayerLegend  -  hide toggle", () => {
   it("hides the whole legend and shows a re-open pill", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
     fireEvent.click(screen.getByTestId("layer-legend-hide"));
@@ -514,8 +491,9 @@ describe("LayerLegend  -  compact / flatten + hide toggles", () => {
     render(<LayerLegend layers={layers} anchor={{ left: 400, top: 300 }} barWidth={200} />);
     // Exactly one hide button across all keys.
     expect(screen.getAllByTestId("layer-legend-hide")).toHaveLength(1);
-    // But every key has its own compact toggle.
-    expect(screen.getAllByTestId("layer-legend-compact-toggle")).toHaveLength(2);
+    // LEGEND v2: there is NO compact/flatten toggle anymore (the key is always
+    // the flat two-row card), so no compact-toggle control renders on any key.
+    expect(screen.queryAllByTestId("layer-legend-compact-toggle")).toHaveLength(0);
   });
 });
 
@@ -606,15 +584,16 @@ describe("LayerLegend  -  drag", () => {
     expect(released.style.left.endsWith("px")).toBe(true);
   });
 
-  it("does not start a drag from a control button", () => {
+  it("does not start a drag from a control button (the hide eye button)", () => {
     render(
       <LayerLegend layers={[makeLayer()]} anchor={{ left: 400, top: 300 }} barWidth={200} />,
     );
     const key = screen.getByTestId("grace2-layer-legend-key");
     const snappedLeft = key.style.left;
-    const toggle = screen.getByTestId("layer-legend-compact-toggle");
-    // PointerDown on the control then move: the card should NOT follow.
-    fireEvent.pointerDown(toggle, { clientX: 410, clientY: 250 });
+    // LEGEND v2: the hide(eye) button is the only per-key control; it is tagged
+    // data-legend-no-drag, so a pointer-down on it must NOT free-drag the card.
+    const hide = screen.getByTestId("layer-legend-hide");
+    fireEvent.pointerDown(hide, { clientX: 410, clientY: 250 });
     fireEvent.pointerMove(window, { clientX: 600, clientY: 100 });
     expect(screen.getByTestId("grace2-layer-legend-key").style.left).toBe(snappedLeft);
     fireEvent.pointerUp(window);
@@ -743,6 +722,215 @@ describe("LayerLegend  -  body/edge is the drag handle, no grip icon (PART C)", 
     // The card follows the pointer (free position) while dragging from the body.
     expect(screen.getByTestId("grace2-layer-legend-key").style.left).not.toBe(startLeft);
     fireEvent.pointerUp(window);
+  });
+});
+
+// =====================================================================
+// LEGEND v2 (NATE 2026-06-22) - consolidated spec
+//   1. minimal FLATTENED two-row key (no collapsible toggle)
+//   2. edge/body drag handle, no grip glyph
+//   3. drop-zone signals on drag-start at left/right/top
+//   4. snap to LEFT/RIGHT/TOP only (bottom excluded)
+// =====================================================================
+
+// --- ITEM 1: minimal flattened two-row key, no collapse/expand toggle -------- //
+describe("LayerLegend v2  -  flattened two-row key, no collapsible toggle (item 1)", () => {
+  it("renders NO compact/flatten collapse toggle (the key is always flat)", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    // The old collapse/expand toggle is gone; the key is permanently flat.
+    expect(screen.queryByTestId("layer-legend-compact-toggle")).toBeNull();
+    // And there is no compact data-flag on the card anymore.
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-compact")).toBeNull();
+  });
+
+  it("always shows title + min/max + bar together (flat key, nothing hidden)", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    expect(screen.getByTestId("layer-legend-title")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-min-label")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-max-label")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-bar")).toBeInTheDocument();
+  });
+
+  it("HORIZONTAL key: min value at the LEFT end, max at the RIGHT end, flanking the bar", () => {
+    // Bottom-docked (no scrubber) => horizontal. The value row is [min] bar [max].
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        anchor={{ left: 400, top: 300 }}
+        barWidth={240}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    const row = within(key).getByTestId("layer-legend-value-row");
+    // DOM order within the row: min, bar, max  -  i.e. min flanks the LEFT end of
+    // the bar and max flanks the RIGHT end.
+    const kids = Array.from(row.children);
+    const minIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-min-label",
+    );
+    const barIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-bar",
+    );
+    const maxIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-max-label",
+    );
+    expect(minIdx).toBeLessThan(barIdx);
+    expect(barIdx).toBeLessThan(maxIdx);
+    expect(within(row).getByTestId("layer-legend-min-label")).toHaveTextContent("0 m");
+    expect(within(row).getByTestId("layer-legend-max-label")).toHaveTextContent("3.5 m");
+  });
+
+  it("VERTICAL key: max value at the TOP, min at the BOTTOM, flanking the bar", () => {
+    // Drag a key to the RIGHT edge so it goes vertical, then assert the rotated
+    // value placement (max above the bar, min below it).
+    const rect = { left: 100, top: 100, right: 500, bottom: 200 };
+    render(<LayerLegend layers={[makeLayer({ layer_id: "v0" })]} aoiRect={rect} />);
+    const key0 = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key0, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 490, clientY: 150 }); // near right edge
+    fireEvent.pointerUp(window);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    const row = within(key).getByTestId("layer-legend-value-row");
+    const kids = Array.from(row.children);
+    const maxIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-max-label",
+    );
+    const barIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-bar",
+    );
+    const minIdx = kids.findIndex(
+      (c) => c.getAttribute("data-testid") === "layer-legend-min-label",
+    );
+    // Vertical: max is ABOVE the bar (earlier in column flow), min is BELOW it.
+    expect(maxIdx).toBeLessThan(barIdx);
+    expect(barIdx).toBeLessThan(minIdx);
+  });
+});
+
+// --- ITEM 2: edge/body drag handle, no dedicated grip glyph ------------------ //
+describe("LayerLegend v2  -  edge/body is the drag handle, no grip glyph (item 2)", () => {
+  it("renders no drag-grip glyph element; the card body carries cursor:grab", () => {
+    render(
+      <LayerLegend layers={[makeLayer()]} aoiRect={{ left: 100, top: 100, right: 300, bottom: 250 }} />,
+    );
+    expect(screen.queryByTestId("layer-legend-drag-handle")).toBeNull();
+    expect(screen.queryByTestId("layer-legend-grip")).toBeNull();
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.style.cursor).toBe("grab");
+    // The resize handle no longer paints a diagonal grip glyph (just a hit-target).
+    const resize = within(key).getByTestId("layer-legend-resize");
+    expect(resize.style.backgroundImage === "" || resize.style.backgroundImage === "none").toBe(
+      true,
+    );
+  });
+
+  it("the hide control is excluded from drag (data-legend-no-drag)", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={{ left: 100, top: 100, right: 500, bottom: 200 }} />);
+    const hide = screen.getByTestId("layer-legend-hide");
+    // The control (or an ancestor up to the card) carries the no-drag marker.
+    expect(hide.closest("[data-legend-no-drag]")).not.toBeNull();
+  });
+});
+
+// --- ITEM 3: drop-zone signals appear on drag-start at left/right/top -------- //
+describe("LayerLegend v2  -  drop-zone signals on drag-start (item 3)", () => {
+  const rect = { left: 100, top: 100, right: 500, bottom: 300 };
+
+  it("shows NO drop-zone signals when idle (not dragging)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "d0" })]} aoiRect={rect} />);
+    expect(screen.queryAllByTestId("layer-legend-dropzone")).toHaveLength(0);
+  });
+
+  it("on drag-start renders signals at exactly left/right/top (never bottom)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "d1" })]} aoiRect={rect} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    const zones = screen.getAllByTestId("layer-legend-dropzone");
+    expect(zones).toHaveLength(3);
+    const sides = zones.map((z) => z.getAttribute("data-legend-dropzone-side")).sort();
+    expect(sides).toEqual(["left", "right", "top"]);
+    expect(sides).not.toContain("bottom");
+    fireEvent.pointerUp(window);
+  });
+
+  it("highlights the nearest target as active while dragging toward it", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "d2" })]} aoiRect={rect} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    // Drag the card center toward the RIGHT edge (x near 500, mid-height).
+    fireEvent.pointerMove(window, { clientX: 495, clientY: 200 });
+    const zones = screen.getAllByTestId("layer-legend-dropzone");
+    const active = zones.filter((z) => z.getAttribute("data-legend-dropzone-active") === "1");
+    // Exactly one is active and it is the RIGHT target.
+    expect(active).toHaveLength(1);
+    expect(active[0]!.getAttribute("data-legend-dropzone-side")).toBe("right");
+    fireEvent.pointerUp(window);
+  });
+
+  it("clears all drop-zone signals on release", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "d3" })]} aoiRect={rect} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    expect(screen.getAllByTestId("layer-legend-dropzone").length).toBeGreaterThan(0);
+    fireEvent.pointerUp(window);
+    expect(screen.queryAllByTestId("layer-legend-dropzone")).toHaveLength(0);
+  });
+
+  it("renders no drop-zone signals when there is no AOI rect to snap against", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "d4" })]} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    // No AOI => nothing to snap to => no signals.
+    expect(screen.queryAllByTestId("layer-legend-dropzone")).toHaveLength(0);
+    fireEvent.pointerUp(window);
+  });
+});
+
+// --- ITEM 4: snap to LEFT/RIGHT/TOP only (bottom excluded) ------------------- //
+describe("LayerLegend v2  -  bottom-excluded snap (item 4)", () => {
+  // Tall, narrow AOI so a drag toward the bottom is unambiguously nearer the
+  // bottom edge than left/right/top in raw pixels - proving the EXCLUSION (not
+  // just geometry) is what keeps the key off the bottom.
+  const rect = { left: 100, top: 100, right: 300, bottom: 600 };
+
+  function dragCardCenterTo(x: number, y: number): void {
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: x, clientY: y });
+    fireEvent.pointerUp(window);
+  }
+
+  it("dragging toward the BOTTOM edge snaps to the nearest of left/right/top (never bottom)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "b0" })]} aoiRect={rect} />);
+    // Drop the card center just below the bottom edge, slightly right of center:
+    // in raw px the bottom edge (y=600) is closest, but bottom is EXCLUDED, so it
+    // must snap to the nearest valid side (right, since x is closer to the right).
+    dragCardCenterTo(260, 590);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    const side = key.getAttribute("data-legend-side");
+    expect(side).not.toBe("bottom");
+    expect(["left", "right", "top"]).toContain(side);
+    expect(side).toBe("right");
+    // Right dock => vertical orientation.
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+  });
+
+  it("dragging toward the bottom-LEFT snaps to the left (not bottom)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "b1" })]} aoiRect={rect} />);
+    dragCardCenterTo(140, 590);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("left");
+  });
+
+  it("an explicit drag toward the TOP still snaps to the top (horizontal)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "b2" })]} aoiRect={rect} />);
+    dragCardCenterTo(200, 110);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("top");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
   });
 });
 

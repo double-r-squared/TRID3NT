@@ -13,6 +13,9 @@ import {
   DEFAULT_AOI_SCALE_MIN,
   DEFAULT_AOI_SCALE_MAX,
   DEFAULT_AOI_SCALE_REFERENCE_PX,
+  DROP_ZONE_THICKNESS_PX,
+  LEGEND_SNAP_SIDES,
+  dropZoneSignals,
   layoutKeysCcw,
   layoutKeysToSides,
   nearestSide,
@@ -190,6 +193,107 @@ describe("nearestSide", () => {
   });
   it("picks left for a point near the left edge", () => {
     expect(nearestSide(AOI, { x: 90, y: 200 })).toBe("left");
+  });
+});
+
+// LEGEND v2 (NATE 2026-06-22): the legend snaps to LEFT/RIGHT/TOP only - BOTTOM
+// is reserved for the sequence scrubber. The bottom-excluded nearestSide variant
+// must never return "bottom", and a release dragged toward the bottom must land
+// on the nearest of {left, right, top} instead.
+describe("nearestSide  -  excludeBottom (LEGEND v2: bottom reserved)", () => {
+  it("never returns bottom, even for a point well below the bottom edge", () => {
+    const side = nearestSide(AOI, { x: 200, y: 400 }, { excludeBottom: true });
+    expect(side).not.toBe("bottom");
+    // Directly below center -> the nearest non-bottom edge is left/right/top; for
+    // a centered-x point all three side-distances are equal-ish, but it must be a
+    // valid non-bottom side.
+    expect(["left", "right", "top"]).toContain(side);
+  });
+
+  it("a drag toward the bottom-RIGHT corner snaps to the right (not bottom)", () => {
+    // Point below the bottom edge but nearer the right edge in x.
+    const side = nearestSide(AOI, { x: 295, y: 350 }, { excludeBottom: true });
+    expect(side).toBe("right");
+  });
+
+  it("a drag toward the bottom-LEFT corner snaps to the left (not bottom)", () => {
+    const side = nearestSide(AOI, { x: 105, y: 350 }, { excludeBottom: true });
+    expect(side).toBe("left");
+  });
+
+  it("still picks top/left/right correctly when those are genuinely nearest", () => {
+    expect(nearestSide(AOI, { x: 200, y: 95 }, { excludeBottom: true })).toBe("top");
+    expect(nearestSide(AOI, { x: 305, y: 200 }, { excludeBottom: true })).toBe("right");
+    expect(nearestSide(AOI, { x: 90, y: 200 }, { excludeBottom: true })).toBe("left");
+  });
+
+  it("the default (no opts) still includes bottom (existing callers unaffected)", () => {
+    expect(nearestSide(AOI, { x: 200, y: 320 })).toBe("bottom");
+  });
+});
+
+// LEGEND v2 - the canonical valid snap target set is {left, right, top} (bottom
+// excluded). dropZoneSignals returns one signal rect per target, hugging the AOI
+// edge just outside it, with the nearest one flagged active.
+describe("LEGEND_SNAP_SIDES + dropZoneSignals (LEGEND v2 drop-zone signals)", () => {
+  it("LEGEND_SNAP_SIDES is exactly left/right/top - never bottom", () => {
+    expect([...LEGEND_SNAP_SIDES].sort()).toEqual(["left", "right", "top"]);
+    expect(LEGEND_SNAP_SIDES).not.toContain("bottom");
+  });
+
+  it("emits one signal per valid target (left/right/top), none for bottom", () => {
+    const sigs = dropZoneSignals(AOI);
+    const sides = sigs.map((s) => s.side).sort();
+    expect(sides).toEqual(["left", "right", "top"]);
+    expect(sigs.some((s) => s.side === "bottom")).toBe(false);
+  });
+
+  it("the TOP signal sits just above the top edge and spans the AOI width", () => {
+    const top = dropZoneSignals(AOI).find((s) => s.side === "top")!;
+    // Just outside (above) the top edge by the gap, thickness px tall.
+    expect(top.rect.bottom).toBe(AOI.top - SIDE_GAP_PX);
+    expect(top.rect.top).toBe(AOI.top - SIDE_GAP_PX - DROP_ZONE_THICKNESS_PX);
+    // Spans the full AOI width.
+    expect(top.rect.left).toBe(AOI.left);
+    expect(top.rect.right).toBe(AOI.right);
+  });
+
+  it("the RIGHT signal sits just right of the right edge and spans the AOI height", () => {
+    const right = dropZoneSignals(AOI).find((s) => s.side === "right")!;
+    expect(right.rect.left).toBe(AOI.right + SIDE_GAP_PX);
+    expect(right.rect.right).toBe(AOI.right + SIDE_GAP_PX + DROP_ZONE_THICKNESS_PX);
+    expect(right.rect.top).toBe(AOI.top);
+    expect(right.rect.bottom).toBe(AOI.bottom);
+  });
+
+  it("the LEFT signal sits just left of the left edge and spans the AOI height", () => {
+    const left = dropZoneSignals(AOI).find((s) => s.side === "left")!;
+    expect(left.rect.right).toBe(AOI.left - SIDE_GAP_PX);
+    expect(left.rect.left).toBe(AOI.left - SIDE_GAP_PX - DROP_ZONE_THICKNESS_PX);
+    expect(left.rect.top).toBe(AOI.top);
+    expect(left.rect.bottom).toBe(AOI.bottom);
+  });
+
+  it("flags exactly the activeSide as active and the others inactive", () => {
+    const sigs = dropZoneSignals(AOI, { activeSide: "right" });
+    expect(sigs.find((s) => s.side === "right")!.active).toBe(true);
+    expect(sigs.find((s) => s.side === "left")!.active).toBe(false);
+    expect(sigs.find((s) => s.side === "top")!.active).toBe(false);
+  });
+
+  it("flags none active when activeSide is null/bottom (no valid target highlighted)", () => {
+    expect(dropZoneSignals(AOI, { activeSide: null }).every((s) => !s.active)).toBe(true);
+    // bottom is not a valid target, so it never highlights anything.
+    expect(
+      dropZoneSignals(AOI, { activeSide: "bottom" as AoiSide }).every((s) => !s.active),
+    ).toBe(true);
+  });
+
+  it("honors custom gap + thickness", () => {
+    const sigs = dropZoneSignals(AOI, { gap: 4, thickness: 10 });
+    const top = sigs.find((s) => s.side === "top")!;
+    expect(top.rect.bottom).toBe(AOI.top - 4);
+    expect(top.rect.top).toBe(AOI.top - 4 - 10);
   });
 });
 
