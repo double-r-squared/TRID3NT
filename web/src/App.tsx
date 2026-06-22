@@ -1335,10 +1335,20 @@ export function App(): JSX.Element {
   // so mergeSnapshot passes the list through verbatim (byte-identical to before).
   useEffect(() => {
     const unsub = bus.subscribeSessionState((p) => {
+      // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  at the cases-list / root
+      // view (no Case entered) the LayerPanel-feeding `layers` list is empty, the
+      // same gate Map.tsx applies to the map overlays + legend. A Case is entered
+      // iff the shared cache's activeCaseId is non-null (App keeps it in lockstep
+      // with activeCaseId). This keeps the rail / legend / map consistent: no
+      // case layers anywhere until a Case is entered.
+      const caseId = layerCache.activeCaseId;
+      if (caseId === null) {
+        setLayers([]);
+        return;
+      }
       const incoming = p.loaded_layers ?? [];
       const authoritativeReplace =
         (p as { replace_layers?: boolean }).replace_layers !== false;
-      const caseId = layerCache.activeCaseId;
       const merged = layerCache.mergeSnapshot(caseId, incoming, {
         authoritativeReplace,
       });
@@ -1510,6 +1520,13 @@ export function App(): JSX.Element {
         legendHidden={isMobile ? legendHiddenMobile : undefined}
         onLegendHiddenChange={isMobile ? setLegendHiddenMobile : undefined}
         suppressLegendShowPill={isMobile}
+        /* CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  NATE: "no case layers
+           should be loaded when we are in the cases section; they should only be
+           rendered when we have entered a Case." When no Case is entered
+           (activeCaseId === null, the cases-list / root view) MapView renders NO
+           data overlays + an empty legend; entering a Case re-paints its layers.
+           This extends the #122 reset-AOI-on-exit concept to every data layer. */
+        caseActive={activeCaseId !== null}
         /* #170 AOI-first manual case-creation - the AoiPickerCard overlay mounts
            on the live map when this local signal is set (NOT the spatial bus). */
         aoiCaptureActive={aoiCaptureOpen}

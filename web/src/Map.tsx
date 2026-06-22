@@ -343,6 +343,18 @@ export interface MapViewProps {
    */
   suppressLegendShowPill?: boolean;
   /**
+   * CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22) - whether a Case is currently
+   * ENTERED. NATE: "no case layers should be loaded when we are in the cases
+   * section; they should only be rendered when we have entered a Case." When
+   * false (the cases-list / root view, activeCaseId === null) the map renders
+   * NO data overlays and the legend has NO content - any layers from a
+   * previously-viewed Case are torn down. When true (a Case is entered) the
+   * reconcile + legend behave exactly as before. Undefined defaults to true so
+   * older callers / unit fixtures that drive MapView directly (no Case shell)
+   * keep rendering layers as they always did.
+   */
+  caseActive?: boolean;
+  /**
    * #170 AOI-first manual case-creation. When true, the AoiPickerCard overlay
    * mounts on the live map so the user can draw / enter the AOI bbox BEFORE the
    * first prompt. This is a LOCAL App signal (NOT the spatial-input bus) - the
@@ -2174,7 +2186,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -2183,6 +2195,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const layerCache = getLayerCache();
   // useRef so this survives effect re-runs without triggering re-render (A.7).
   const addedSourceIds = useRef<Set<string>>(new Set());
+  // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  mirror `caseActive` into a ref
+  // so the session-state reconcile (a STABLE closure with deps [subscribeSessionState],
+  // deliberately not re-created on prop flips to avoid churning the subscription)
+  // reads the LIVE value. When false (cases-list / root view) the reconcile
+  // force-clears every overlay and the legend has no content. Synced below.
+  const caseActiveRef = useRef<boolean>(caseActive);
+  // Holds the reconcile effect's `applyLatest` so the caseActive sync effect can
+  // re-run the reconcile when the Case-entered state flips (root -> the overlays
+  // tear down; entered -> any persisted layers re-paint) without a new
+  // session-state push. Assigned inside the reconcile effect below.
+  const applyLatestRef = useRef<(() => void) | null>(null);
   // Per-layer geometry kind for added vector layers. Lets the update branch
   // pick the right paint property name (`circle-opacity` vs `line-opacity`
   // vs `fill-opacity`) when opacity/visibility changes on a known vector layer.
@@ -2384,7 +2407,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // reconcile, it never desyncs the source map. Keep the LAST occurrence
       // (the freshest metadata  -  matches the server's append/replace-by-id
       // merge order) while preserving overall order.
-      const rawLayers = payload.loaded_layers ?? [];
+      // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  when no Case is entered
+      // (the cases-list / root view) the map renders NO data overlays: NATE's
+      // "no case layers should be loaded when we are in the cases section; they
+      // should only be rendered when we have entered a Case." We force the
+      // reconcile target to the EMPTY set + an AUTHORITATIVE replace, so any
+      // overlay still on the map from a previously-viewed Case is torn down (the
+      // teardown loop below still defers to the cache's allowsEvict, but at root
+      // layerCache.activeCaseId is null so allowsEvict returns true  -  nothing is
+      // protected). The legend is cleared in the same spirit at the subscription.
+      const rootView = !caseActiveRef.current;
+      const rawLayers = rootView ? [] : payload.loaded_layers ?? [];
       const dedupById = new Map<string, (typeof rawLayers)[number]>();
       for (const l of rawLayers) {
         dedupById.set(l.layer_id, l);
@@ -2406,7 +2439,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       //     Case's already-rendered layers (the bug this job fixes). The
       //     agent's resume replay carries the FULL persisted layer set, so on a
       //     healthy reconnect it lands as an idempotent no-op either way.
+      // At the cases-list / root view (rootView) the clear is ALWAYS
+      // authoritative so the teardown loop runs and drops every overlay.
       const authoritativeReplace =
+        rootView ||
         (payload as { replace_layers?: boolean }).replace_layers !== false;
 
       // Remove layers that are gone (replace-not-reconcile).
@@ -2672,6 +2708,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
     };
 
+    // Expose applyLatest so the caseActive sync effect can re-run the reconcile
+    // when the Case-entered state flips (without waiting for a session-state push).
+    applyLatestRef.current = applyLatest;
+
     const unsub = subscribeSessionState((payload) => {
       latestSessionState.current = payload;
 
@@ -2684,7 +2724,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // which is already roughly top-of-stack-last -> we reverse in that case so
       // the most-recently-added (topmost) layer is first. We detect "no usable
       // z_index" as: every layer's z_index is undefined.
-      const raw = (payload.loaded_layers ?? []) as ProjectLayerSummary[];
+      // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  no legend content at the
+      // cases-list / root view (no Case entered); the legend only has content
+      // once a Case is entered, mirroring the overlay gate in applyLatest.
+      const raw = caseActiveRef.current
+        ? ((payload.loaded_layers ?? []) as ProjectLayerSummary[])
+        : [];
       const anyZ = raw.some(
         (l) => typeof (l as { z_index?: unknown }).z_index === "number",
       );
@@ -2705,6 +2750,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     });
     return unsub;
   }, [subscribeSessionState]);
+
+  // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  keep caseActiveRef in lockstep
+  // and re-reconcile when the Case-entered state flips. Returning to the cases
+  // list (caseActive false) tears down every overlay (the reconcile force-clears
+  // when rootView) AND clears the legend content directly (the legend list is
+  // owned by the subscription, which won't re-fire on a pure prop flip). Entering
+  // a Case (caseActive true) re-applies the latest session-state so any persisted
+  // layers re-paint. The applyLatest call is idempotent (replace-not-reconcile),
+  // so re-running it here never double-adds.
+  useEffect(() => {
+    caseActiveRef.current = caseActive;
+    if (!caseActive) setLegendLayers([]);
+    applyLatestRef.current?.();
+  }, [caseActive]);
 
   // Subscribe to theme prop changes and swap the basemap source+layer
   // (job-0076 bundled enhancement). The swap pattern:

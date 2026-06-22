@@ -1,12 +1,12 @@
-// GRACE-2 web — LayerLegend (job-0065; interactive AOI-snapping keys, NATE
+// GRACE-2 web  -  LayerLegend (job-0065; interactive AOI-snapping keys, NATE
 // overlay-layout spec 2026-06-17).
 //
 // Renders matplotlib-style horizontal colorbar "keys", one per continuous-raster
 // layer that has a known style_preset. Each key is:
 //   1. DRAGGABLE (pointer drag); on release it AUTO-SNAPS to the nearest side of
 //      the AOI bounding box (the current bbox rectangle on the map).
-//   2. SNAP-ORDERED counter-clockwise by stack order — 1st key bottom, 2nd
-//      right, 3rd top, 4th left — and STACKED (offset outward) when more than
+//   2. SNAP-ORDERED counter-clockwise by stack order  -  1st key bottom, 2nd
+//      right, 3rd top, 4th left  -  and STACKED (offset outward) when more than
 //      one key lands on the same side, so keys never overlap (legend_snap.ts).
 //   3. RESIZABLE per-key via a corner handle (width; height follows content).
 //   4. Collapsible to a COMPACT (flattened) mode, and hideable entirely, via a
@@ -18,23 +18,23 @@
 //     - `layers`   : ordered layer list, top-of-stack first (LayerPanel order).
 //     - `aoiRect`  : the TRUE projected AOI screen rectangle {left,top,right,
 //                    bottom} (min/max over all four projected bbox corners). This
-//                    is what the keys SNAP against — it carries the real AOI
+//                    is what the keys SNAP against  -  it carries the real AOI
 //                    aspect ratio and on-screen skew, so the colorbar rails along
 //                    the actual AOI edges, not a square-ish estimate.
-//     - `anchor`   : the AOI bbox BOTTOM-edge midpoint {left, top} (projected) —
+//     - `anchor`   : the AOI bbox BOTTOM-edge midpoint {left, top} (projected)  - 
 //                    used for the (already gap-nudged) vertical positioning the
 //                    owner resolves; not the snap geometry.
-//     - `barWidth` : the AOI bbox on-screen EAST-WEST extent in px (projected) —
+//     - `barWidth` : the AOI bbox on-screen EAST-WEST extent in px (projected)  - 
 //                    used to SIZE the default colorbar width.
 //   Snap source of truth: when `aoiRect` is provided the keys snap CCW to ITS
 //   four edges directly. When it is absent (off-screen / not yet projected) we
 //   FALL BACK to reconstructing an approximate rect from `anchor` + `barWidth`
-//   (legend_snap `rectFromAnchorAndWidth` — the bottom edge is exact, the height
+//   (legend_snap `rectFromAnchorAndWidth`  -  the bottom edge is exact, the height
 //   is a square-ish estimate). When there is no AOI at all (no rect AND no
 //   anchor/barWidth) the keys fall back to a static bottom-center stack so the
 //   legend never vanishes.
 //
-// Invariant 1: this component displays received values only — no geography is
+// Invariant 1: this component displays received values only  -  no geography is
 //   computed. minValue / maxValue / stops come from the preset registry (mirrors
 //   the QML); the layer name comes from the ProjectLayerSummary wire. The
 //   snap geometry is pure pixel math over the already-projected AOI rectangle.
@@ -45,7 +45,8 @@ import { ProjectLayerSummary } from "../contracts";
 import { getStylePreset, StylePreset, type GradientStop } from "../lib/style-presets";
 import {
   aoiScaleFactor,
-  layoutKeysCcw,
+  layoutKeysToSides,
+  nearestSide,
   rectFromAnchorAndWidth,
   sideForIndex,
   type AoiSide,
@@ -61,7 +62,7 @@ import {
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAnimationState } from "../lib/use_animation_controller";
 
-// JOB WEB-AOI-LEGEND (#157) — the collapsed "Show legend" pill must clear the
+// JOB WEB-AOI-LEGEND (#157)  -  the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
 // is portaled to document.body with position:fixed, so on mobile we lift it
 // above the composer by the device safe-area inset PLUS a fixed clearance that
@@ -72,11 +73,11 @@ export const MOBILE_LEGEND_PILL_CLEARANCE_PX = 96;
 export const MOBILE_LEGEND_PILL_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`;
 export const DESKTOP_LEGEND_PILL_BOTTOM_PX = 24;
 
-// Item a (Z-HIERARCHY, NATE 2026-06-20) — the legend must render BEHIND the chat
+// Item a (Z-HIERARCHY, NATE 2026-06-20)  -  the legend must render BEHIND the chat
 // (z=32) and the Layers/Cases panels (z=20) and the desktop hamburgers (z=30),
 // but ABOVE the map. A single low z keeps the legend in the map's chrome layer
 // so a user can always reach the chat + layers controls over it. (Previously the
-// keys used z=50, which painted OVER the chat + panels — the reported bug.)
+// keys used z=50, which painted OVER the chat + panels  -  the reported bug.)
 // On mobile the Layers drawer (z=40/41) is a transient OVERLAY; the legend
 // staying at z=15 means it sits behind the open drawer, which is correct (the
 // drawer is the focused surface). The mobile show/hide toggle moves INTO the
@@ -87,7 +88,7 @@ export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
   layers: ProjectLayerSummary[];
   /**
-   * EDGE-RAIL snap (NATE 2026-06-17) — the TRUE projected AOI screen rectangle
+   * EDGE-RAIL snap (NATE 2026-06-17)  -  the TRUE projected AOI screen rectangle
    * {left, top, right, bottom} in absolute map-container coords. The owner
    * (Map.tsx) projects ALL FOUR bbox corners each move/zoom/render and passes
    * their min/max box here (computeBboxScreenRect). When present this is the
@@ -98,7 +99,7 @@ export interface LayerLegendProps {
    */
   aoiRect?: ScreenRect | null;
   /**
-   * job-0321 (F43) — optional screen-space anchor: the AOI bbox BOTTOM-edge
+   * job-0321 (F43)  -  optional screen-space anchor: the AOI bbox BOTTOM-edge
    * midpoint {left, top} (absolute, map-container coords). The owner (Map.tsx)
    * projects it each move/zoom/render. Used as the FALLBACK snap-rect source
    * (with `barWidth`, via rectFromAnchorAndWidth) only when `aoiRect` is absent.
@@ -107,7 +108,7 @@ export interface LayerLegendProps {
    */
   anchor?: { left: number; top: number } | null;
   /**
-   * FIX 4 (NATE 2026-06-17) — the AOI bbox's ON-SCREEN east-west extent in px
+   * FIX 4 (NATE 2026-06-17)  -  the AOI bbox's ON-SCREEN east-west extent in px
    * (already clamped by Map.tsx). Used to SIZE the default colorbar width, and
    * (with `anchor`) to reconstruct the FALLBACK AOI rectangle for snapping when
    * `aoiRect` is absent. Null => no AOI bbox => static fallback width +
@@ -115,23 +116,23 @@ export interface LayerLegendProps {
    */
   barWidth?: number | null;
   /**
-   * Item f (NATE 2026-06-20) — reserve vertical px below the AOI bottom edge so
+   * Item f (NATE 2026-06-20)  -  reserve vertical px below the AOI bottom edge so
    * the bottom-side keys clear the SCRUBBER (which pins bottom-center of the AOI
    * box). When > 0 the bottom-side keys are pushed down past the scrubber's
    * footprint so the legend is never obscured by it. 0 / undefined => no reserve.
    */
   bottomReservePx?: number | null;
   /**
-   * Item b (NATE 2026-06-20) — CONTROLLED hidden state. When provided the
+   * Item b (NATE 2026-06-20)  -  CONTROLLED hidden state. When provided the
    * parent owns whether the legend is shown (the toggle lives in the Layers
    * panel on mobile). When omitted the legend keeps its own internal hidden
    * state (desktop default). Pair with `onHiddenChange`.
    */
   hidden?: boolean;
-  /** Item b — fired when the user toggles hide/show (controlled mode). */
+  /** Item b  -  fired when the user toggles hide/show (controlled mode). */
   onHiddenChange?: (hidden: boolean) => void;
   /**
-   * Item b — suppress the floating "Show legend" pill entirely. On mobile the
+   * Item b  -  suppress the floating "Show legend" pill entirely. On mobile the
    * show/hide affordance lives INSIDE the expanded Layers section (out of the
    * way of the chat composer), so the floating pill must not also render. The
    * keys themselves still render when not hidden.
@@ -140,17 +141,17 @@ export interface LayerLegendProps {
 }
 
 /**
- * Item e (NATE 2026-06-20) — the SERIES IDENTITY of a raster layer: the colormap
+ * Item e (NATE 2026-06-20)  -  the SERIES IDENTITY of a raster layer: the colormap
  * + scale it paints with. Per-frame depth COGs ("Flood depth step N") AND the
  * max/peak depth layer all share the SAME colormap + rescale, so they form ONE
  * series and must collapse to ONE legend key (not one-per-frame + a peak key).
  *
  * The key is the TiTiler colormap_name + rescale (the SOURCE OF TRUTH for what
- * the map paints) when present — this is what the depth frames + the peak depth
+ * the map paints) when present  -  this is what the depth frames + the peak depth
  * layer all carry, so they share ONE key. When a layer carries NO TiTiler
  * colormap on its URL (a plain QGIS-WMS / preset-only single raster, with no
  * frame-truth scale), it is NOT part of a TiTiler series, so we key it by its
- * own layer_id (one key per such layer — the prior behavior). This keeps
+ * own layer_id (one key per such layer  -  the prior behavior). This keeps
  * distinct preset-only rasters each legible while folding the genuine
  * same-colormap depth series into a single key (item e).
  */
@@ -162,17 +163,17 @@ function seriesKeyFor(
     const r = style.rescale ? `${style.rescale.min},${style.rescale.max}` : "";
     return `cmap:${style.colormapName}|rescale:${r}`;
   }
-  // No URL colormap → not a TiTiler series; key per-layer so each distinct
+  // No URL colormap -> not a TiTiler series; key per-layer so each distinct
   // preset-only raster keeps its own legend key.
   return `layer:${layer.layer_id}`;
 }
 
-/** A raster layer that resolved to a known preset — one legend key per entry. */
+/** A raster layer that resolved to a known preset  -  one legend key per entry. */
 interface LegendKeyModel {
   layerId: string;
   preset: StylePreset;
   /**
-   * FRAME-TRUTH (NATE 2026-06-19) — the rescale + colormap parsed from the
+   * FRAME-TRUTH (NATE 2026-06-19)  -  the rescale + colormap parsed from the
    * layer's TiTiler tile-template URL, when present. This is the SOURCE OF
    * TRUTH: when set, the key renders these bounds/colors (what the map actually
    * paints) instead of the preset guess. Null when the URL carries no such
@@ -191,6 +192,15 @@ interface KeyUiState {
   compact?: boolean;
   /** While dragging, the free top-left screen position (overrides the snap). */
   free?: { left: number; top: number } | null;
+  /**
+   * SIDE-SNAP (NATE 2026-06-22) - the AOI side this key was dragged to on the
+   * last release. When set it OVERRIDES the key's CCW index-assigned side, so
+   * dragging a key to (say) the right edge SNAPS it there AND flips its
+   * orientation to vertical (left/right -> vertical, top/bottom -> horizontal).
+   * Undefined => the key keeps its default CCW side. Cleared is not needed; a
+   * later drag overwrites it. Only meaningful when an AOI rect is present.
+   */
+  sideOverride?: AoiSide;
 }
 
 /** Builds a CSS linear-gradient string from gradient stops (sorted by caller). */
@@ -202,10 +212,10 @@ function buildGradient(stops: GradientStop[]): string {
 }
 
 /**
- * FRAME-TRUTH (NATE 2026-06-19) — parses the TiTiler rescale + colormap out of a
+ * FRAME-TRUTH (NATE 2026-06-19)  -  parses the TiTiler rescale + colormap out of a
  * layer's tile-template URL. The AWS frame layers carry the truth (rescale +
  * colormap_name) as query params on the XYZ template. We check `wms_url` first
- * (the field Map.tsx registers the tile source from — it holds the `{z}`
+ * (the field Map.tsx registers the tile source from  -  it holds the `{z}`
  * template for TiTiler layers) and fall back to `uri`. Returns null fields when
  * neither carries the params (QGIS WMS / non-animated single raster), so the
  * caller keeps the style_preset behavior. Never throws.
@@ -253,7 +263,7 @@ const FALLBACK_STACK_GAP = 10;
  * SERIES DEDUP (item e, NATE 2026-06-20): beyond sequential groups, ANY two
  * layers that share the SAME series identity (colormap + rescale, see
  * seriesKeyFor) collapse to ONE key. This folds the max/PEAK depth layer into
- * the same series as the per-frame depth COGs — they all paint with the same
+ * the same series as the per-frame depth COGs  -  they all paint with the same
  * colormap + scale, so they read off one legend, not one-per-frame + a peak.
  * The FIRST eligible layer (group or standalone) to claim a series key wins;
  * later layers with the same series key are skipped.
@@ -268,7 +278,7 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
     for (const l of g.layers) groupedIds.add(l.layer_id);
   }
 
-  // Item e — every series identity already emitted (by a group OR a standalone
+  // Item e  -  every series identity already emitted (by a group OR a standalone
   // layer). A later layer sharing one of these is the same colormap/scale, so it
   // dedups into the existing key rather than spawning a duplicate.
   const emittedSeries = new Set<string>();
@@ -293,7 +303,7 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
       if (!rep) continue;
       const repPreset = getStylePreset(rep.style_preset ?? "");
       const repStyle = parseLayerTitilerStyle(rep);
-      // Item e — register the group's series so a standalone peak/max layer with
+      // Item e  -  register the group's series so a standalone peak/max layer with
       // the same colormap + rescale folds INTO this key instead of adding its own.
       const repSeries = seriesKeyFor(rep, {
         rescale: repStyle.rescale,
@@ -310,7 +320,7 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
       });
     } else {
       const style = parseLayerTitilerStyle(l);
-      // Item e — one key per SERIES. A standalone layer sharing a series with an
+      // Item e  -  one key per SERIES. A standalone layer sharing a series with an
       // already-emitted group/layer (e.g. the peak depth alongside depth frames)
       // dedups into that existing key.
       const series = seriesKeyFor(l, {
@@ -331,7 +341,7 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
 }
 
 /**
- * Item b/e (NATE 2026-06-20) — does the legend have ANY content for these
+ * Item b/e (NATE 2026-06-20)  -  does the legend have ANY content for these
  * layers? Exported so the Layers panel can decide whether to render the mobile
  * "show/hide legend" toggle (only when there's a legend to toggle).
  */
@@ -352,11 +362,11 @@ export function LayerLegend({
   // One key per eligible raster layer, in stack order.
   const keyModels = useMemo(() => selectKeyModels(layers), [layers]);
 
-  // JOB WEB-AOI-LEGEND (#157) — lift the collapsed "Show legend" pill above the
+  // JOB WEB-AOI-LEGEND (#157)  -  lift the collapsed "Show legend" pill above the
   // mobile chat composer so it does not overlap the bottom-sheet input form.
   const isMobile = useIsMobile();
 
-  // Item f — is the SCRUBBER currently showing? The scrubber pins bottom-center
+  // Item f  -  is the SCRUBBER currently showing? The scrubber pins bottom-center
   // of the AOI box (just below its bottom edge), exactly where the legend's
   // bottom-side key would otherwise sit. The scrubber renders whenever the
   // shared AnimationController has an active group, so we read that here to
@@ -368,7 +378,7 @@ export function LayerLegend({
   // Per-key interactive state, keyed by layer_id so it survives reorders.
   const [uiState, setUiState] = useState<Record<string, KeyUiState>>({});
   // Whether the whole legend is hidden (the eye toggle on the first key).
-  // Item b — CONTROLLED when `hidden` is supplied (the parent owns it so the
+  // Item b  -  CONTROLLED when `hidden` is supplied (the parent owns it so the
   // toggle can live in the Layers panel on mobile); else internal state.
   const [hiddenInternal, setHiddenInternal] = useState(false);
   const isControlled = hiddenProp !== undefined;
@@ -382,17 +392,21 @@ export function LayerLegend({
   );
 
   // Live drag bookkeeping. Tracks the key being dragged, the pointer offset
-  // inside the card, and the latest pointer position. Stored in a ref so the
+  // inside the card, the card size (so release can compute its CENTER for
+  // nearest-side snapping), and the latest free top-left. Stored in a ref so the
   // window listeners read fresh values without re-binding each render.
   const dragRef = useRef<{
     layerId: string;
     offsetX: number;
     offsetY: number;
+    width: number;
+    height: number;
+    last: { left: number; top: number };
   } | null>(null);
 
   // The AOI rectangle in screen space that the keys SNAP against. Prefer the
   // TRUE projected rect (all four bbox corners, min/max box) threaded from
-  // Map.tsx — it carries the real AOI aspect ratio + on-screen skew, so the
+  // Map.tsx  -  it carries the real AOI aspect ratio + on-screen skew, so the
   // CCW edge-rail follows the actual AOI edges. Only when the true rect is
   // absent (off-screen / not yet projected) do we fall back to reconstructing
   // an APPROXIMATE rect from anchor + barWidth (square-ish height estimate).
@@ -401,11 +415,16 @@ export function LayerLegend({
     () => trueRect ?? rectFromAnchorAndWidth(anchor, barWidth),
     [trueRect, anchor, barWidth],
   );
+  // SIDE-SNAP (NATE 2026-06-22) - mirror the snap rect into a ref so the window
+  // pointer-up handler (endDrag, a stable useCallback) can read the CURRENT rect
+  // to compute the nearest AOI side on release without re-binding per render.
+  const aoiRectRef = useRef<ScreenRect | null>(aoiRect);
+  aoiRectRef.current = aoiRect;
 
-  // Item d (SCALE WITH AOI, NATE 2026-06-20) — the legend chrome (font, padding,
+  // Item d (SCALE WITH AOI, NATE 2026-06-20)  -  the legend chrome (font, padding,
   // bar height) scales with the AOI's on-screen size so a zoomed-out tiny bbox
   // gets a proportionally small legend (not a fixed-px one that dwarfs it) and a
-  // zoomed-in big bbox gets a larger one — both clamped to [min, max] so the
+  // zoomed-in big bbox gets a larger one  -  both clamped to [min, max] so the
   // legend is never unusably tiny or absurdly huge. Recomputes whenever the rect
   // changes (Map.tsx re-projects on every move/zoom and re-threads aoiRect).
   const scale = useMemo(() => aoiScaleFactor(aoiRect), [aoiRect]);
@@ -450,7 +469,7 @@ export function LayerLegend({
     [keyModels, widthFor, heightFor],
   );
 
-  // Item f — extra px to push bottom-side keys past the scrubber's footprint
+  // Item f  -  extra px to push bottom-side keys past the scrubber's footprint
   // (the scrubber pins bottom-center of the AOI box). The explicit prop wins;
   // otherwise default to a sensible reserve WHENEVER the scrubber is active so
   // the legend is never obscured by it. 0 when neither applies.
@@ -470,9 +489,27 @@ export function LayerLegend({
   // 0 (the canonical bottom-first placement is unchanged).
   const sideStartOffset = scrubberActive ? 1 : 0;
 
+  // SIDE-SNAP (NATE 2026-06-22) - the side each key docks on: the user's
+  // drag-snap override when present (set by endDrag via nearestSide), else the
+  // canonical CCW index side (with the scrubber start offset). This single array
+  // is the source of truth for BOTH the snapped position AND the orientation /
+  // side label below, so a dragged key snaps to its side with the matching
+  // orientation. Keyed off keyModels so it stays in lockstep with the rendered keys.
+  const resolvedSides: AoiSide[] = useMemo(
+    () =>
+      keyModels.map(
+        (k, idx) =>
+          uiState[k.layerId]?.sideOverride ??
+          sideForIndex(idx + sideStartOffset),
+      ),
+    [keyModels, uiState, sideStartOffset],
+  );
+
   const snapped = useMemo(() => {
     if (aoiRect) {
-      const base = layoutKeysCcw(aoiRect, sizes, sideStartOffset);
+      // Lay each key against its RESOLVED side (override or CCW), stacking keys
+      // that share a side so they never overlap.
+      const base = layoutKeysToSides(aoiRect, sizes, resolvedSides);
       // Item f  -  shove any bottom-side keys down past the scrubber so the legend
       // is never obscured by it (the scrubber sits just below the AOI bottom
       // edge). Top/right/left keys are untouched. With sideStartOffset=1 the
@@ -491,7 +528,7 @@ export function LayerLegend({
       consumed += s.height + FALLBACK_STACK_GAP;
       return { left: -s.width / 2, top, side: "bottom" as AoiSide };
     });
-  }, [aoiRect, sizes, bottomReserve, sideStartOffset]);
+  }, [aoiRect, sizes, bottomReserve, resolvedSides]);
 
   // --- drag wiring --------------------------------------------------------- //
 
@@ -500,16 +537,33 @@ export function LayerLegend({
     dragRef.current = null;
     if (!drag) return;
     const layerId = drag.layerId;
-    // On release: drop the free position so the key SNAPS back via the CCW
-    // layout. If we have an AOI rect we could re-pick the nearest side, but the
-    // CCW stack order is the spec's canonical arrangement, so we honor it (the
-    // drag is a gesture to re-trigger the snap, matching NATE's "snap to the
-    // nearest side" intent — the nearest-side hint is used only for AOI-less
-    // ordering hold). Clearing `free` is the snap.
+    // SIDE-SNAP (NATE 2026-06-22) - on release the key SNAPS to the AOI side
+    // NEAREST where it was dropped (not back to its CCW index side). We take the
+    // dropped card's CENTER point and ask legend_snap.nearestSide which edge it
+    // is closest to, then store that as a per-key sideOverride. The layout +
+    // orientation + side label all honor the override, so dragging a key to the
+    // right edge snaps it there AND flips it to a vertical bar (NATE's "snap to
+    // sides / change orientation"). With NO AOI rect (off-screen) there is no
+    // side to snap to, so we just clear `free` and the AOI-less bottom-center
+    // fallback holds (unchanged).
+    const rect = aoiRectRef.current;
+    let snappedSide: AoiSide | undefined;
+    if (rect) {
+      const center = {
+        x: drag.last.left + drag.width / 2,
+        y: drag.last.top + drag.height / 2,
+      };
+      snappedSide = nearestSide(rect, center);
+    }
     setUiState((prev) => {
       const next = { ...prev };
       const cur = next[layerId] ?? {};
-      next[layerId] = { ...cur, free: null };
+      next[layerId] = {
+        ...cur,
+        free: null,
+        // Only record an override when we actually resolved a side (AOI present).
+        ...(snappedSide ? { sideOverride: snappedSide } : {}),
+      };
       return next;
     });
   }, []);
@@ -519,6 +573,9 @@ export function LayerLegend({
     if (!drag) return;
     const left = ev.clientX - drag.offsetX;
     const top = ev.clientY - drag.offsetY;
+    // Track the latest free top-left on the drag ref so release can compute the
+    // card center for nearest-side snapping (the ref read is fresh; uiState is not).
+    drag.last = { left, top };
     setUiState((prev) => {
       const next = { ...prev };
       const cur = next[drag.layerId] ?? {};
@@ -543,7 +600,12 @@ export function LayerLegend({
 
   const startDrag = useCallback(
     (layerId: string, ev: React.PointerEvent<HTMLElement>) => {
-      // Don't start a drag from the resize handle or a button.
+      // EDGE/BODY-GRAB (NATE 2026-06-22) - the whole legend card body IS the drag
+      // handle (there is no separate grip icon - that was visual clutter NATE
+      // asked to drop); a pointer-down anywhere on the chrome starts the drag.
+      // We only EXCLUDE the interactive controls (compact / hide buttons) and the
+      // resize handle, all tagged data-legend-no-drag, so a click on those does
+      // its own thing instead of dragging.
       const target = ev.target as HTMLElement;
       if (target.closest("[data-legend-no-drag]")) return;
       const card = ev.currentTarget.getBoundingClientRect();
@@ -551,6 +613,9 @@ export function LayerLegend({
         layerId,
         offsetX: ev.clientX - card.left,
         offsetY: ev.clientY - card.top,
+        width: card.width,
+        height: card.height,
+        last: { left: card.left, top: card.top },
       };
       // Seed a free position at the current spot so the first move is smooth.
       setUiState((prev) => {
@@ -632,7 +697,7 @@ export function LayerLegend({
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
   // Portal to document.body so it appears above the mobile chat panel.
   //
-  // Item b — when `suppressShowPill` is set the floating pill is NOT rendered:
+  // Item b  -  when `suppressShowPill` is set the floating pill is NOT rendered:
   // the show/hide affordance lives inside the expanded Layers section instead
   // (the parent renders <MobileLegendToggle/>), so the pill must not also float
   // over the chat. We render nothing in that case (the parent owns re-showing).
@@ -645,7 +710,7 @@ export function LayerLegend({
         onClick={() => setHidden(false)}
         style={{
           position: "fixed",
-          // JOB WEB-AOI-LEGEND (#157) — on mobile, sit ABOVE the chat composer
+          // JOB WEB-AOI-LEGEND (#157)  -  on mobile, sit ABOVE the chat composer
           // (safe-area inset + clearance for the collapsed sheet); on desktop
           // keep the original low bottom-center position (no bottom sheet).
           bottom: isMobile
@@ -665,7 +730,7 @@ export function LayerLegend({
           fontWeight: 600,
           cursor: "pointer",
           pointerEvents: "auto",
-          // Item a — BELOW the chat (z=32) + panels (z=20); the pill is part of
+          // Item a  -  BELOW the chat (z=32) + panels (z=20); the pill is part of
           // the legend's map-chrome layer, never over the chat/layers controls.
           zIndex: LEGEND_Z_INDEX,
         }}
@@ -684,7 +749,7 @@ export function LayerLegend({
   //
   // position:fixed keys use the SAME snapped coordinates as before because
   // the map container is position:absolute;inset:0 relative to the app shell
-  // which is position:fixed;inset:0 — so map-container coords == viewport coords.
+  // which is position:fixed;inset:0  -  so map-container coords == viewport coords.
   return (
     <div
       data-testid="grace2-layer-legend"
@@ -692,7 +757,7 @@ export function LayerLegend({
         position: "absolute",
         inset: 0,
         pointerEvents: "none",
-        // Zero z-index on the anchor wrapper — the actual keys are portaled.
+        // Zero z-index on the anchor wrapper  -  the actual keys are portaled.
         zIndex: 0,
       }}
     >
@@ -708,7 +773,7 @@ export function LayerLegend({
 
         // Position: free (dragging) > snapped (AOI) > fallback bottom-center.
         // Keys use position:fixed (portaled to document.body) so coords map
-        // 1:1 to viewport space (map container is inset:0 → same origin).
+        // 1:1 to viewport space (map container is inset:0 -> same origin).
         let posStyle: React.CSSProperties;
         if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
@@ -724,7 +789,7 @@ export function LayerLegend({
           };
         }
 
-        // FRAME-TRUTH (NATE 2026-06-19) — the gradient + numeric bounds match
+        // FRAME-TRUTH (NATE 2026-06-19)  -  the gradient + numeric bounds match
         // what the map actually paints. The parsed-from-URL colormap/rescale are
         // the SOURCE OF TRUTH when present; the style_preset is the FALLBACK.
         const minLabel = model.rescale ? model.rescale.min : preset.minValue;
@@ -733,14 +798,16 @@ export function LayerLegend({
         // the bounds come from the URL rescale (an arbitrary layer), drop the
         // unit so we never mislabel (e.g. tagging a temperature ramp with "m").
         const unitLabel = model.rescale ? "" : preset.unit;
-        // ITEM 5  -  the side label MUST match the snapped layout, including the
-        // scrubber-active CCW start offset (so the first key reads as a vertical
-        // RIGHT-side bar, not bottom). AOI-less fallback stays bottom-horizontal.
+        // SIDE-SNAP / ITEM 5  -  the side label MUST match the snapped layout: it
+        // reads from the SAME resolvedSides array (the user's drag-snap override
+        // when present, else the CCW index side incl. the scrubber-active start
+        // offset). So a key dragged to the right reads as a vertical RIGHT bar.
+        // AOI-less fallback stays bottom-horizontal.
         const sideLabel: AoiSide = aoiRect
-          ? sideForIndex(idx + sideStartOffset)
+          ? resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset)
           : "bottom";
 
-        // Item g (ORIENTATION, NATE 2026-06-20) — the colorbar is VERTICAL (a
+        // Item g (ORIENTATION, NATE 2026-06-20)  -  the colorbar is VERTICAL (a
         // tall bar) when the key docks on the LEFT or RIGHT side of the AOI, and
         // HORIZONTAL when it docks on TOP or BOTTOM (and in the AOI-less
         // bottom-center fallback). The gradient direction follows: bottom->top
@@ -756,7 +823,7 @@ export function LayerLegend({
                 .join(", ")})`
             : buildGradient(stops);
 
-        // Item d — scaled type + chrome metrics (clamped via the scale factor).
+        // Item d  -  scaled type + chrome metrics (clamped via the scale factor).
         const titleFont = Math.round((compact ? 10 : 11) * scale);
         const labelFont = Math.round(10 * scale);
         const barThickness = Math.round((compact ? 8 : 14) * scale);
@@ -791,9 +858,9 @@ export function LayerLegend({
               cursor: "grab",
               userSelect: "none",
               touchAction: "none",
-              // Item a — BELOW the chat (z=32) + Layers/Cases panels (z=20) +
+              // Item a  -  BELOW the chat (z=32) + Layers/Cases panels (z=20) +
               // hamburgers (z=30); above the map. (Was z=50, which painted OVER
-              // the chat + layers — the reported bug.)
+              // the chat + layers  -  the reported bug.)
               zIndex: LEGEND_Z_INDEX,
             }}
           >
@@ -862,7 +929,7 @@ export function LayerLegend({
             )}
 
             {orientation === "vertical" ? (
-              // Item g — VERTICAL colorbar: a tall bar with min at the bottom and
+              // Item g  -  VERTICAL colorbar: a tall bar with min at the bottom and
               // max at the top, labels stacked alongside it (max on top, min at
               // the foot). Shown for LEFT/RIGHT-docked keys.
               <div
@@ -909,7 +976,7 @@ export function LayerLegend({
               </div>
             ) : (
               <>
-                {/* Item g — HORIZONTAL colorbar (TOP/BOTTOM-docked keys). */}
+                {/* Item g  -  HORIZONTAL colorbar (TOP/BOTTOM-docked keys). */}
                 <div
                   data-testid="layer-legend-bar"
                   style={{
@@ -1003,7 +1070,7 @@ function LegendControls({
         title={compact ? "Expand key" : "Flatten key"}
         style={controlBtnStyle}
       >
-        {compact ? "+" : "–"}
+        {compact ? "+" : "-"}
       </button>
       {/* Only the FIRST key carries the global hide control, to avoid clutter. */}
       {idx === 0 ? (
@@ -1015,7 +1082,7 @@ function LegendControls({
           title="Hide legend"
           style={controlBtnStyle}
         >
-          ×
+          -
         </button>
       ) : null}
     </span>
@@ -1037,7 +1104,7 @@ const controlBtnStyle: React.CSSProperties = {
 };
 
 /**
- * Item b (NATE 2026-06-20) — the MOBILE legend show/hide control, rendered
+ * Item b (NATE 2026-06-20)  -  the MOBILE legend show/hide control, rendered
  * INSIDE the expanded Layers section (the LayerPanel) instead of floating over
  * the chat composer. It is a plain inline row (no portal), so it sits in the
  * panel's normal flow, out of the way. The legend's own floating pill is

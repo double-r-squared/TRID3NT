@@ -1,4 +1,4 @@
-// GRACE-2 web — Map.tsx subscription + WMS source wiring tests (job-0068).
+// GRACE-2 web  -  Map.tsx subscription + WMS source wiring tests (job-0068).
 //
 // Verifies:
 //   1. subscribeSessionState populates raster sources from loaded_layers.
@@ -15,13 +15,13 @@
 //
 // Type note: The agent wire format uses `uri` (not `source_url`), and the
 // map-command bus carries zoom-to which is not in the frozen contracts.ts
-// union. Tests use `as unknown as <T>` where needed — this is correct since
+// union. Tests use `as unknown as <T>` where needed  -  this is correct since
 // we are testing the wire path, not the TS type system.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { MapView, type MapCommandSubscribeFunc, type SessionStateSubscriber } from "./Map";
-// JOB WEB-ANIM (#157.1) — the module-level controller whose frame-visibility
+// JOB WEB-ANIM (#157.1)  -  the module-level controller whose frame-visibility
 // emitter Map.tsx registers, so frames drive MapLibre visibility independent of
 // the LayerPanel's lifetime.
 import {
@@ -29,7 +29,7 @@ import {
   setAnimationController,
   getAnimationController,
 } from "./lib/animation_controller";
-// job-0179 — drive the shared LayerCache singleton MapView reads for the
+// job-0179  -  drive the shared LayerCache singleton MapView reads for the
 // teardown gate (allowsEvict) + persisted view-override re-apply.
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
 
@@ -56,7 +56,7 @@ interface MapMock {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
-  // job-0321 (F43) — legend-anchor projection.
+  // job-0321 (F43)  -  legend-anchor projection.
   project: ReturnType<typeof vi.fn>;
   getCanvas: ReturnType<typeof vi.fn>;
   getStyle: ReturnType<typeof vi.fn>;
@@ -116,13 +116,13 @@ vi.mock("maplibre-gl", () => {
         : null,
     );
     remove = vi.fn();
-    // Event handlers — applyLatest attaches `once("idle", ...)` after every
+    // Event handlers  -  applyLatest attaches `once("idle", ...)` after every
     // session-state push; the mock just no-ops (synchronous apply path is
     // what tests verify).
     on = vi.fn();
     off = vi.fn();
     once = vi.fn();
-    // job-0321 (F43) — the legend-anchor projection effect calls project() to
+    // job-0321 (F43)  -  the legend-anchor projection effect calls project() to
     // map bbox corners to screen space and getCanvas() to read the viewport
     // size for the off-screen test. Deterministic stubs so the anchor lands
     // on-screen for the tests that exercise it.
@@ -171,7 +171,7 @@ interface WireSessionState {
     uri: string;
     visible?: boolean;
     opacity?: number;
-    // job-0139 — vector additions.
+    // job-0139  -  vector additions.
     style_preset?: string | null;
     bbox?: [number, number, number, number] | null;
   }>;
@@ -213,7 +213,7 @@ function makeWireLayer(id: string, uri = `https://qgis.example.com/wms?LAYERS=${
 
 // --- Tests ---------------------------------------------------------------- //
 
-describe("MapView — session-state WMS source wiring (job-0068 change 4)", () => {
+describe("MapView  -  session-state WMS source wiring (job-0068 change 4)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -253,7 +253,7 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
     // flood-depth COG cells across screen pixels at z=13, hiding the per-cell
     // alignment between the flood overlay and the basemap street grid. The
     // user read this as misalignment. The fix is `raster-resampling: nearest`
-    // so each source cell shows as a discrete block — making it visually
+    // so each source cell shows as a discrete block  -  making it visually
     // obvious that each flood cell is positioned over the correct street/lot.
     const sessionBus = makeSessionBus();
 
@@ -315,7 +315,7 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
       />,
     );
 
-    // First push — layer added.
+    // First push  -  layer added.
     act(() => {
       sessionBus.push({
         loaded_layers: [{ ...makeWireLayer("flood-demo"), opacity: 1 }],
@@ -326,7 +326,7 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
     // Layer is now "known" to MapLibre.
     m.getLayer.mockReturnValue({ id: "flood-demo" });
 
-    // Second push — opacity changed.
+    // Second push  -  opacity changed.
     act(() => {
       sessionBus.push({
         loaded_layers: [{ ...makeWireLayer("flood-demo"), opacity: 0.5 }],
@@ -337,7 +337,79 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
   });
 });
 
-describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)", () => {
+// --- PART B (NATE 2026-06-22): no case layers render at the cases-list / root
+// view (caseActive=false). Layers only paint once a Case is ENTERED. -------- //
+describe("MapView  -  cases-root no-layers gate (caseActive, PART B)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("renders NO overlay when a layer arrives while caseActive is false (root view)", () => {
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+        caseActive={false}
+      />,
+    );
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+    const m = lastMapMock!;
+    // At the cases-list / root view the map paints no data overlay.
+    expect(m.addSource).not.toHaveBeenCalled();
+    expect(m.addLayer).not.toHaveBeenCalled();
+  });
+
+  it("paints the overlay once a Case is ENTERED (caseActive flips to true)", () => {
+    const sessionBus = makeSessionBus();
+    const { rerender } = render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+        caseActive
+      />,
+    );
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+    const m = lastMapMock!;
+    expect(m.addSource).toHaveBeenCalledWith("flood-demo", expect.anything());
+    expect(m.addLayer).toHaveBeenCalled();
+    // Returning to the cases list (caseActive=false) tears the overlay down.
+    m.getLayer.mockReturnValue({ id: "flood-demo" });
+    m.getSource.mockReturnValue({ type: "raster" });
+    act(() => {
+      rerender(
+        <MapView
+          subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+          caseActive={false}
+        />,
+      );
+    });
+    expect(m.removeLayer).toHaveBeenCalledWith("flood-demo");
+    expect(m.removeSource).toHaveBeenCalledWith("flood-demo");
+  });
+
+  it("does not render layers pushed while at root, even after they were set before entering", () => {
+    // A layer arrives at root (caseActive false) -> nothing painted. This is the
+    // exact PART B bug: a previous Case's layers must not persist at the list view.
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+        caseActive={false}
+      />,
+    );
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("old-case-layer")] });
+      sessionBus.push({ loaded_layers: [makeWireLayer("old-case-layer")] });
+    });
+    const m = lastMapMock!;
+    expect(m.addSource).not.toHaveBeenCalled();
+  });
+});
+
+describe("MapView  -  per-Case layer DURABILITY across WS reconnect (job-0357)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -390,7 +462,7 @@ describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)",
     expect(m.removeSource).not.toHaveBeenCalled();
   });
 
-  it("reconnect resume snapshot RECONCILES without duplicate sources (idempotent — REQ 4)", () => {
+  it("reconnect resume snapshot RECONCILES without duplicate sources (idempotent  -  REQ 4)", () => {
     // The agent's resume replay carries the FULL persisted layer set. A
     // re-delivered snapshot with the same layer must update-in-place (paint
     // props), never re-add the source.
@@ -421,14 +493,14 @@ describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)",
         replace_layers: false,
       });
     });
-    // No duplicate source/layer — the existing slot is reconciled in place.
+    // No duplicate source/layer  -  the existing slot is reconciled in place.
     expect(m.addSource).not.toHaveBeenCalled();
     expect(m.addLayer).not.toHaveBeenCalled();
   });
 
   it("non-authoritative reconnect snapshot still ADDS a newly-rendered layer (top-up)", () => {
     // A reconnect resume that carries a layer the client doesn't have yet must
-    // still register it — additive reconcile adds, it only declines to remove.
+    // still register it  -  additive reconcile adds, it only declines to remove.
     const sessionBus = makeSessionBus();
     render(
       <MapView
@@ -512,7 +584,7 @@ describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)",
   });
 });
 
-describe("MapView — per-Case client cache seatbelt (job-0179)", () => {
+describe("MapView  -  per-Case client cache seatbelt (job-0179)", () => {
   type DurableSession = WireSessionState & { replace_layers?: boolean };
   const pushDurable = (
     bus: ReturnType<typeof makeSessionBus>,
@@ -659,7 +731,7 @@ describe("MapView — per-Case client cache seatbelt (job-0179)", () => {
   });
 });
 
-describe("MapView — map-command zoom-to handler (job-0068 change 5 client side)", () => {
+describe("MapView  -  map-command zoom-to handler (job-0068 change 5 client side)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -704,7 +776,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     });
 
     const m = lastMapMock!;
-    // job-0321 (F40) — OUTLINE-ONLY: the extent source + the dashed line layer
+    // job-0321 (F40)  -  OUTLINE-ONLY: the extent source + the dashed line layer
     // are added alongside fitBounds. The translucent fill layer is NO LONGER
     // added (it tinted the layers beneath the AOI).
     const addedSourceIds = m.addSource.mock.calls.map((c) => c[0]);
@@ -740,9 +812,9 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       mapCmdBus.push({ command: "clear-analysis-extent" } as never);
     });
 
-    // job-0321 (F40) — OUTLINE-ONLY: only the dashed line layer + the source are
+    // job-0321 (F40)  -  OUTLINE-ONLY: only the dashed line layer + the source are
     // removed now (the fill is never added, so the clear's existence-guarded
-    // fill removal is a no-op — the guard stays for stale-style cleanup).
+    // fill removal is a no-op  -  the guard stays for stale-style cleanup).
     const removedLayerIds = m.removeLayer.mock.calls.map((c) => c[0]);
     expect(removedLayerIds).not.toContain("grace2-analysis-extent-fill");
     expect(removedLayerIds).toContain("grace2-analysis-extent-line");
@@ -769,7 +841,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     const m = lastMapMock!;
 
     // Make the FIRST addLayer throw (the live mid-style-mutation race). The
-    // throw must NOT be swallowed permanently — the handler must arm a retry.
+    // throw must NOT be swallowed permanently  -  the handler must arm a retry.
     m.addLayer.mockImplementationOnce(() => {
       throw new Error("Style is not done loading");
     });
@@ -788,8 +860,8 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     ) as MockCallArgs | undefined;
     expect(idleRetry).toBeDefined();
 
-    // On the retry, addLayer no longer throws — the dashed outline lands.
-    // job-0321 (F40) — OUTLINE-ONLY: only the line layer is (re-)added.
+    // On the retry, addLayer no longer throws  -  the dashed outline lands.
+    // job-0321 (F40)  -  OUTLINE-ONLY: only the line layer is (re-)added.
     m.addLayer.mockClear();
     act(() => {
       (idleRetry![1] as () => void)();
@@ -825,7 +897,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     expect(moveend).toBeDefined();
 
     // Running it is idempotent: the source already exists so it setData-replaces
-    // and re-asserts (heals) any missing layers — never double-adds the source.
+    // and re-asserts (heals) any missing layers  -  never double-adds the source.
     m.addSource.mockClear();
     act(() => {
       (moveend![1] as () => void)();
@@ -836,7 +908,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       ).length,
     ).toBe(0);
     // The extent source + the dashed outline are present after the flight.
-    // job-0321 (F40) — OUTLINE-ONLY: the fill layer is never added.
+    // job-0321 (F40)  -  OUTLINE-ONLY: the fill layer is never added.
     expect(m._addedSources.has("grace2-analysis-extent")).toBe(true);
     expect(m._addedLayers.has("grace2-analysis-extent-fill")).toBe(false);
     expect(m._addedLayers.has("grace2-analysis-extent-line")).toBe(true);
@@ -879,7 +951,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     const layerIds = m.addLayer.mock.calls.map(
       (c) => (c[0] as { id: string }).id,
     );
-    // job-0321 (F40) — OUTLINE-ONLY: dashed line lands, no fill.
+    // job-0321 (F40)  -  OUTLINE-ONLY: dashed line lands, no fill.
     expect(layerIds).not.toContain("grace2-analysis-extent-fill");
     expect(layerIds).toContain("grace2-analysis-extent-line");
   });
@@ -916,7 +988,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       });
     });
 
-    // No second source add — the existing source's data is swapped (one extent
+    // No second source add  -  the existing source's data is swapped (one extent
     // at a time, v0.1). setData carries the NEW bbox's first corner.
     expect(
       m.addSource.mock.calls.filter(
@@ -930,11 +1002,11 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     expect(swapped.geometry.coordinates[0]![0]).toEqual([-122.5, 37.7]);
   });
 
-  // JOB WEB-AOI-LEGEND (#159) — SINGLE rectangle: a STALE moveend/idle redraw
+  // JOB WEB-AOI-LEGEND (#159)  -  SINGLE rectangle: a STALE moveend/idle redraw
   // queued by an EARLIER (smaller) zoom-to must NOT redraw its old corners over
   // a newer (floored, larger) zoom-to's extent. The redraw closure now reads the
   // CURRENT corners (lastZoomToCorners), so a late callback re-asserts the LATEST
-  // extent — not the stale small box (the "small box + large box both show" bug).
+  // extent  -  not the stale small box (the "small box + large box both show" bug).
   it("a stale moveend redraw from an earlier zoom-to draws the CURRENT (latest) corners, not the old ones", () => {
     const mapCmdBus = makeMapCmdBus();
     render(
@@ -944,7 +1016,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     );
     const m = lastMapMock!;
 
-    // First (SMALL) zoom-to — arms a moveend redraw closing over the small bbox.
+    // First (SMALL) zoom-to  -  arms a moveend redraw closing over the small bbox.
     act(() => {
       mapCmdBus.push({
         command: "zoom-to",
@@ -967,7 +1039,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
 
     // Now fire the FIRST (stale) zoom-to's queued moveend callback. It must
     // redraw the CURRENT large corners (lastZoomToCorners), never the stale
-    // small ones — so the map only ever shows the latest single rectangle.
+    // small ones  -  so the map only ever shows the latest single rectangle.
     setData.mockClear();
     act(() => {
       (staleMoveend![1] as () => void)();
@@ -1039,7 +1111,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
   });
 });
 
-describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
+describe("MapView  -  buildWmsTileUrl (job-0076 diagnosis)", () => {
   it("produces a tile URL with all WMS GetMap params MapLibre needs", async () => {
     // Reimport to grab the exported helper for direct assertion.
     const { buildWmsTileUrl } = await import("./Map");
@@ -1050,7 +1122,7 @@ describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
     // source to substitute per-tile.
     expect(url).toContain("{bbox-epsg-3857}");
     // All required WMS GetMap params must be present (else QGIS Server 400s
-    // and MapLibre paints nothing — the job-0076 hypothesis #1 chain).
+    // and MapLibre paints nothing  -  the job-0076 hypothesis #1 chain).
     expect(url).toContain("SERVICE=WMS");
     expect(url).toContain("VERSION=1.3.0");
     expect(url).toContain("REQUEST=GetMap");
@@ -1073,7 +1145,7 @@ describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
       "nexrad_n0r",
     );
     // The first param-separator after the .cgi must be '?', not '&'. The
-    // pre-job-0171 code produced `…n0r.cgi&SERVICE=…` which is malformed.
+    // pre-job-0171 code produced `...n0r.cgi&SERVICE=...` which is malformed.
     expect(url).toMatch(/n0r\.cgi\?SERVICE=WMS/);
   });
 
@@ -1112,7 +1184,7 @@ describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
   });
 });
 
-describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () => {
+describe("MapView  -  session-state idle-retry (job-0076 root-cause fix)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -1127,7 +1199,7 @@ describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () =>
     );
 
     const m = lastMapMock!;
-    // Simulate style NOT loaded at the moment the bus event arrives — the
+    // Simulate style NOT loaded at the moment the bus event arrives  -  the
     // job-0066-through-0075 silent-drop race condition.
     m.isStyleLoaded.mockReturnValue(false);
 
@@ -1190,7 +1262,7 @@ describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () =>
     const idleCallsAfter = m.once.mock.calls.filter((c) => (c as MockCallArgs)[0] === "idle");
     expect(idleCallsAfter.length).toBeGreaterThan(idleCallsBefore.length);
 
-    // Style settles → the re-armed callback applies the batch.
+    // Style settles -> the re-armed callback applies the batch.
     m.isStyleLoaded.mockReturnValue(true);
     const rearmed = idleCallsAfter[idleCallsAfter.length - 1] as MockCallArgs;
     act(() => {
@@ -1201,7 +1273,7 @@ describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () =>
   });
 });
 
-describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
+describe("MapView  -  dark-theme swap (job-0076 bundled enhancement)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -1237,7 +1309,7 @@ describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
     );
     expect(m.addLayer).toHaveBeenCalledWith(
       expect.objectContaining({ id: "carto-dark-basemap", type: "raster" }),
-      undefined, // no flood overlays yet → beforeId is undefined (top of stack)
+      undefined, // no flood overlays yet -> beforeId is undefined (top of stack)
     );
     expect(m.removeLayer).toHaveBeenCalledWith("qgis-basemap");
   });
@@ -1267,7 +1339,7 @@ describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
       />,
     );
 
-    // Toggle back to light — the QGIS WMS basemap layer must re-mount
+    // Toggle back to light  -  the QGIS WMS basemap layer must re-mount
     // UNDER the flood overlay (beforeId = "flood-demo").
     m.addLayer.mockClear();
     rerender(
@@ -1284,16 +1356,16 @@ describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
   });
 });
 
-// --- job-0152 — NavigationControl + attribution removal tests ----------- //
+// --- job-0152  -  NavigationControl + attribution removal tests ----------- //
 //
 // Asserts that neither the zoom/compass buttons nor the OSM attribution tag
 // are injected into the DOM. Both were removed per user direction 2026-06-08:
 // users scroll/pinch to zoom; the attribution tag overlays other UI.
 //
 // See audit.md OQ: attribution removal is technically against OSM tile-use
-// terms — production hosting should re-enable it.
+// terms  -  production hosting should re-enable it.
 
-describe("MapView — nav controls + attribution hidden (job-0152)", () => {
+describe("MapView  -  nav controls + attribution hidden (job-0152)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -1311,7 +1383,7 @@ describe("MapView — nav controls + attribution hidden (job-0152)", () => {
   });
 });
 
-// --- job-0139 — vector layer rendering tests ---------------------------- //
+// --- job-0139  -  vector layer rendering tests ---------------------------- //
 //
 // Resolves OQ-PAY-MAP-VECTOR-UNSUPPORTED: Map.tsx now branches on
 // layer_type. Vector layers go through `addVectorLayer` which fetches GeoJSON
@@ -1352,7 +1424,7 @@ function makeWireVectorLayer(
   };
 }
 
-describe("MapView — vector layer rendering (job-0139)", () => {
+describe("MapView  -  vector layer rendering (job-0139)", () => {
   beforeEach(() => {
     lastMapMock = null;
     vi.restoreAllMocks();
@@ -1377,7 +1449,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
       });
     });
 
-    // Vector path is async — wait a microtask for the fetch to resolve.
+    // Vector path is async  -  wait a microtask for the fetch to resolve.
     await new Promise((r) => setTimeout(r, 0));
 
     const m = lastMapMock!;
@@ -1435,8 +1507,8 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(layerDef.type).toBe("fill");
     expect(layerDef.paint).toHaveProperty("fill-color");
     expect(layerDef.paint).toHaveProperty("fill-opacity");
-    // wdpa_polygon style_preset → slate #708090 per the job-0146 curated palette
-    // (WDPA areas are admin-boundary context overlays, not focal layers — slate
+    // wdpa_polygon style_preset -> slate #708090 per the job-0146 curated palette
+    // (WDPA areas are admin-boundary context overlays, not focal layers  -  slate
     // reads clearly against the dark basemap without competing with species layers).
     expect(layerDef.paint["fill-color"]).toBe("#708090");
   });
@@ -1480,7 +1552,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
       type: "FeatureCollection",
       features: [{ type: "Feature", geometry: { type: "Point", coordinates: [lng, 26.0] }, properties: {} }],
     });
-    // Sequential fetch responses — vi.spyOn().mockResolvedValueOnce chain.
+    // Sequential fetch responses  -  vi.spyOn().mockResolvedValueOnce chain.
     const fetchSpy = vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(makeFetchResponse(makeFc(-81.0)))
       .mockResolvedValueOnce(makeFetchResponse(makeFc(-81.1)))
@@ -1586,7 +1658,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     const m = lastMapMock!;
     const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "nws-alerts");
     const def = (layerCall as MockCallArgs)[0] as { paint: Record<string, unknown> };
-    // job-0146 curated palette: nws_alert → fire red #FF4444
+    // job-0146 curated palette: nws_alert -> fire red #FF4444
     expect(def.paint["circle-color"]).toBe("#FF4444");
   });
 
@@ -1620,10 +1692,10 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(m.removeSource).toHaveBeenCalledWith("panther");
   });
 
-  // --- F84 — Case-switch / Case-exit must drop POLYGON (WDPA) vectors ------- //
+  // --- F84  -  Case-switch / Case-exit must drop POLYGON (WDPA) vectors ------- //
   //
   // ROOT-CAUSE REGRESSION: a polygon vector (e.g. WDPA protected areas) is
-  // painted by registerVectorOnMap as TWO MapLibre layers per geojson source —
+  // painted by registerVectorOnMap as TWO MapLibre layers per geojson source  - 
   // `${id}` (fill) + `${id}-outline` (line). The pre-F84 reconcile removed only
   // `${id}` then called removeSource(id), which THROWS in real MapLibre because
   // `${id}-outline` still references the source; the uncaught throw aborted the
@@ -1707,7 +1779,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     const m = lastMapMock!;
     // Make removeSource model real MapLibre: throw if any layer of this source
     // still exists. With the fix, both layers are removed first, so this never
-    // throws; pre-fix the outline lingered and this would throw → abort.
+    // throws; pre-fix the outline lingered and this would throw -> abort.
     const order: string[] = [];
     m.removeLayer.mockImplementation((id: string) => {
       order.push(`layer:${id}`);
@@ -1726,7 +1798,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
       sessionBus.push({ loaded_layers: [] });
     });
 
-    // Both layers removed, THEN the source — and the source removal succeeded
+    // Both layers removed, THEN the source  -  and the source removal succeeded
     // (it appears in `order`), proving no throw aborted the loop.
     expect(order).toContain("layer:wdpa");
     expect(order).toContain("layer:wdpa-outline");
@@ -1735,7 +1807,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(m._addedSources.has("wdpa")).toBe(false);
   });
 
-  it("F84: an EMPTY loaded_layers set removes ALL overlays — raster AND polygon vector (fresh slate)", async () => {
+  it("F84: an EMPTY loaded_layers set removes ALL overlays  -  raster AND polygon vector (fresh slate)", async () => {
     const fc = {
       type: "FeatureCollection",
       features: [
@@ -1776,7 +1848,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
 
     // The raster overlay AND every vector group member + source are gone. The
     // basemap layers (qgis-basemap / osm-fallback-basemap) are NOT tracked in
-    // addedSourceIds, so they remain — the map keeps its basemap, just no data.
+    // addedSourceIds, so they remain  -  the map keeps its basemap, just no data.
     expect(m._addedLayers.has("flood-demo")).toBe(false);
     expect(m._addedSources.has("flood-demo")).toBe(false);
     expect(m._addedLayers.has("wdpa")).toBe(false);
@@ -1854,9 +1926,9 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     act(() => {
       sessionBus.push({
         loaded_layers: [
-          // Raster — flood depth COG.
+          // Raster  -  flood depth COG.
           { layer_id: "flood-demo", name: "Flood depth", layer_type: "raster", uri: "https://qgis.example.com/wms?LAYERS=flood-demo", visible: true },
-          // Vector — species points.
+          // Vector  -  species points.
           makeWireVectorLayer("panther", "https://ex.com/p.geojson"),
         ],
       });
@@ -1877,7 +1949,7 @@ describe("MapView — vector layer rendering (job-0139)", () => {
 
 // --- vector_rendering helper unit tests ---------------------------------- //
 
-describe("vector_rendering — pure helpers", () => {
+describe("vector_rendering  -  pure helpers", () => {
   it("detectGeomKind returns 'point' for Point and MultiPoint", () => {
     expect(detectGeomKind({ type: "FeatureCollection", features: [
       { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] }, properties: {} },
@@ -1903,7 +1975,7 @@ describe("vector_rendering — pure helpers", () => {
     expect(detectGeomKind({ type: "FeatureCollection", features: [] })).toBe("unknown");
   });
 
-  it("paletteColorFor is deterministic across calls (same id → same colour)", () => {
+  it("paletteColorFor is deterministic across calls (same id -> same colour)", () => {
     expect(paletteColorFor("panther")).toBe(paletteColorFor("panther"));
     expect(paletteColorFor("alligator")).toBe(paletteColorFor("alligator"));
     // (Note: with a 12-colour palette + FNV-1a, distinct IDs may share a
@@ -1919,7 +1991,7 @@ describe("vector_rendering — pure helpers", () => {
   });
 
   it("presetColorFor maps WDPA to slate and NWS alert to fire red (job-0146 curated palette)", () => {
-    // job-0146: WDPA → slate #708090 (admin-boundary context), NWS alert → fire red #FF4444
+    // job-0146: WDPA -> slate #708090 (admin-boundary context), NWS alert -> fire red #FF4444
     expect(presetColorFor("wdpa_polygon")).toBe("#708090");
     expect(presetColorFor("nws_alert")).toBe("#FF4444");
     expect(presetColorFor("totally_unknown")).toBeUndefined();
@@ -1928,15 +2000,15 @@ describe("vector_rendering — pure helpers", () => {
   });
 
   it("resolveVectorColor prefers preset over palette", () => {
-    // job-0146: WDPA → slate #708090
+    // job-0146: WDPA -> slate #708090
     expect(resolveVectorColor("panther", "wdpa_polygon")).toBe("#708090");
     expect(resolveVectorColor("panther", null)).toBe(paletteColorFor("panther"));
   });
 });
 
-// --- addVectorLayer race-guards (job-0139 — cleanup-on-remove) --------- //
+// --- addVectorLayer race-guards (job-0139  -  cleanup-on-remove) --------- //
 
-describe("addVectorLayer — race guards", () => {
+describe("addVectorLayer  -  race guards", () => {
   function makeMockMap() {
     return {
       addSource: vi.fn(),
@@ -1990,7 +2062,7 @@ describe("addVectorLayer — race guards", () => {
 
 // --- inline GeoJSON path (job-0175) ------------------------------------ //
 
-describe("addVectorLayer — inline GeoJSON (job-0175)", () => {
+describe("addVectorLayer  -  inline GeoJSON (job-0175)", () => {
   function makeMockMap() {
     return {
       addSource: vi.fn(),
@@ -2134,7 +2206,7 @@ import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import type { ProjectLayerSummary, SessionStatePayload, MapCommandPayload } from "./contracts";
 
-/** Minimal fake map for the pure helpers — existence-set driven. */
+/** Minimal fake map for the pure helpers  -  existence-set driven. */
 function makeHelperMap(existing: string[]) {
   const layers = new Set(existing);
   return {
@@ -2172,7 +2244,7 @@ describe("layer-control helpers (job-0258)", () => {
   it("applyLayerOpacity polygon covers fill AND the -outline sublayer", () => {
     const m = makeHelperMap(["poly", "poly-outline"]);
     applyLayerOpacity(m, "poly", 0.5, "polygon", null);
-    // 0.5 × POLYGON_FILL_OPACITY (0.4) = 0.2
+    // 0.5 - POLYGON_FILL_OPACITY (0.4) = 0.2
     expect(m.setPaintProperty).toHaveBeenCalledWith("poly", "fill-opacity", 0.2);
     expect(m.setPaintProperty).toHaveBeenCalledWith("poly-outline", "line-opacity", 0.5 * 0.6);
   });
@@ -2206,7 +2278,7 @@ describe("layer-control helpers (job-0258)", () => {
     const m = makeHelperMap(["a", "b", "b-outline"]);
     // Panel order (top-first): a above b.
     applyLayerOrder(m, ["a", "b"]);
-    // moveLayer(id) pulls to top — so b's group moves first, a last.
+    // moveLayer(id) pulls to top  -  so b's group moves first, a last.
     expect(m.moveLayer.mock.calls.map((c) => c[0])).toEqual(["b", "b-outline", "a"]);
   });
 });
@@ -2256,7 +2328,7 @@ describe("drawAnalysisExtent (job-0294)", () => {
     drawAnalysisExtent(m, BBOX);
     expect(m.addSource).toHaveBeenCalledOnce();
     expect(m.addSource.mock.calls[0]![0]).toBe("grace2-analysis-extent");
-    // job-0321 (F40) — OUTLINE-ONLY: the translucent fill layer is NOT added;
+    // job-0321 (F40)  -  OUTLINE-ONLY: the translucent fill layer is NOT added;
     // only the dashed outline. (The fill tinted everything beneath the AOI.)
     const layerIds = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
     expect(layerIds).toEqual(["grace2-analysis-extent-line"]);
@@ -2290,12 +2362,12 @@ describe("drawAnalysisExtent (job-0294)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     expect(m.addSource).toHaveBeenCalledOnce();
-    // job-0321 (F40) — OUTLINE-ONLY: a single (line) layer is added now.
+    // job-0321 (F40)  -  OUTLINE-ONLY: a single (line) layer is added now.
     expect(m.addLayer).toHaveBeenCalledTimes(1);
 
     const NEXT: [number, number, number, number] = [-122.5, 37.7, -122.3, 37.85];
     drawAnalysisExtent(m, NEXT);
-    // No second source / layer adds — the existing source's data is swapped.
+    // No second source / layer adds  -  the existing source's data is swapped.
     expect(m.addSource).toHaveBeenCalledOnce();
     expect(m.addLayer).toHaveBeenCalledTimes(1);
     const src = m.sources.get("grace2-analysis-extent")!;
@@ -2306,7 +2378,7 @@ describe("drawAnalysisExtent (job-0294)", () => {
     expect(swapped.geometry.coordinates[0]![0]).toEqual([NEXT[0], NEXT[1]]);
   });
 
-  it("self-heals a half-built extent: source present but line layer missing → re-adds the line", () => {
+  it("self-heals a half-built extent: source present but line layer missing -> re-adds the line", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     // Simulate a prior attempt that threw mid-mutation: the source survived but
@@ -2339,7 +2411,7 @@ describe("drawAnalysisExtent (job-0294)", () => {
     drawAnalysisExtent(m, BBOX);
     m.addLayer.mockClear();
     drawAnalysisExtent(m, BBOX);
-    // Source + line layer intact → no addLayer, just a setData replace.
+    // Source + line layer intact -> no addLayer, just a setData replace.
     expect(m.addLayer).not.toHaveBeenCalled();
     expect(m.sources.get("grace2-analysis-extent")!.setData).toHaveBeenCalled();
   });
@@ -2351,7 +2423,7 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
   it("removes the line layer then the source (inverse of drawAnalysisExtent)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
-    // job-0321 (F40) — OUTLINE-ONLY: the fill is never drawn; only the line.
+    // job-0321 (F40)  -  OUTLINE-ONLY: the fill is never drawn; only the line.
     expect(m.layers.has("grace2-analysis-extent-fill")).toBe(false);
     expect(m.layers.has("grace2-analysis-extent-line")).toBe(true);
     expect(m.sources.has("grace2-analysis-extent")).toBe(true);
@@ -2367,7 +2439,7 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
   });
 
   it("still tears down a STALE fill left over from a previous (filled) style (guard kept)", () => {
-    // job-0321 (F40) — the fill LAYER ID constant + the clearAnalysisExtent
+    // job-0321 (F40)  -  the fill LAYER ID constant + the clearAnalysisExtent
     // removal guard are KEPT so a fill drawn by an older app version (before the
     // outline-only switch) lingering in a persisted/restyled map still clears.
     const m = makeExtentMap();
@@ -2423,7 +2495,7 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
   });
 });
 
-// --- job-0321 (F43) — legend bbox anchor projection --------------------- //
+// --- job-0321 (F43)  -  legend bbox anchor projection --------------------- //
 
 describe("computeBboxBottomAnchor (job-0321 F43)", () => {
   const BBOX: [number, number, number, number] = [-100, 30, -90, 40];
@@ -2465,7 +2537,7 @@ describe("computeBboxBottomAnchor (job-0321 F43)", () => {
   });
 
   it("returns null when the projected midpoint is OFF-SCREEN (legend falls back)", () => {
-    // Canvas is 1000×800; force the midpoint x beyond the right edge.
+    // Canvas is 1000-800; force the midpoint x beyond the right edge.
     const m = makeProjectMap({
       project: () => ({ x: 5000, y: 400 }),
       canvas: { clientWidth: 1000, clientHeight: 800 },
@@ -2486,7 +2558,7 @@ describe("computeBboxBottomAnchor (job-0321 F43)", () => {
       project: () => ({ x: 9999, y: 9999 }),
       canvas: null,
     });
-    // No canvas → cannot run the off-screen test → returns the raw anchor.
+    // No canvas -> cannot run the off-screen test -> returns the raw anchor.
     expect(computeBboxBottomAnchor(m, BBOX)).toEqual({ left: 9999, top: 9999 });
   });
 
@@ -2501,7 +2573,7 @@ describe("computeBboxBottomAnchor (job-0321 F43)", () => {
   });
 });
 
-describe("MapView — legend lives inside the map container (job-0321 F43)", () => {
+describe("MapView  -  legend lives inside the map container (job-0321 F43)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -2534,7 +2606,7 @@ describe("MapView — legend lives inside the map container (job-0321 F43)", () 
     const mapEl = getByTestId("grace2-map");
     const legend = getByTestId("grace2-layer-legend");
     // The legend is a DESCENDANT of the map container (so it can anchor to the
-    // AOI box) — previously it lived in App.tsx as a map sibling.
+    // AOI box)  -  previously it lived in App.tsx as a map sibling.
     expect(mapEl.contains(legend)).toBe(true);
   });
 
@@ -2602,14 +2674,14 @@ describe("MapView — legend lives inside the map container (job-0321 F43)", () 
       });
     });
 
-    // The topmost (z_index 2) layer has the preset → legend shows its title.
+    // The topmost (z_index 2) layer has the preset -> legend shows its title.
     expect(getByTestId("layer-legend-title")).toHaveTextContent(
       "Max flood depth (m)",
     );
   });
 });
 
-describe("MapView — onAoiScreenRectChange lift (scrubber AOI snap)", () => {
+describe("MapView  -  onAoiScreenRectChange lift (scrubber AOI snap)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -2637,9 +2709,9 @@ describe("MapView — onAoiScreenRectChange lift (scrubber AOI snap)", () => {
         onAoiScreenRectChange={onRect}
       />,
     );
-    // Initial: no AOI → null (the guard fires once for the initial null state
+    // Initial: no AOI -> null (the guard fires once for the initial null state
     // only if it changes; since the ref starts null and legendRect starts null,
-    // no spurious null call is expected — assert nothing fired yet).
+    // no spurious null call is expected  -  assert nothing fired yet).
     expect(onRect).not.toHaveBeenCalled();
 
     act(() => {
@@ -2676,14 +2748,14 @@ describe("MapView — onAoiScreenRectChange lift (scrubber AOI snap)", () => {
     const callsAfterFirst = onRect.mock.calls.length;
     expect(callsAfterFirst).toBeGreaterThanOrEqual(1);
 
-    // Re-push the SAME bbox: the rect is identical → the guard suppresses it.
+    // Re-push the SAME bbox: the rect is identical -> the guard suppresses it.
     act(() => {
       mapCmdBus.push({ command: "zoom-to", args: { bbox: [-100, 30, -90, 40] } });
     });
     await flushRaf();
     expect(onRect.mock.calls.length).toBe(callsAfterFirst);
 
-    // A DIFFERENT bbox → a fresh call with the new rect.
+    // A DIFFERENT bbox -> a fresh call with the new rect.
     act(() => {
       mapCmdBus.push({ command: "zoom-to", args: { bbox: [-80, 20, -70, 25] } });
     });
@@ -2695,7 +2767,7 @@ describe("MapView — onAoiScreenRectChange lift (scrubber AOI snap)", () => {
   });
 });
 
-describe("MapView — map-command layer controls (job-0258)", () => {
+describe("MapView  -  map-command layer controls (job-0258)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -2761,7 +2833,7 @@ describe("MapView — map-command layer controls (job-0258)", () => {
   });
 });
 
-describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => {
+describe("LayerPanel - MapView end-to-end over the App bus (job-0258)", () => {
   beforeEach(() => {
     lastMapMock = null;
   });
@@ -2816,7 +2888,7 @@ describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => 
     m.setLayoutProperty.mockClear();
 
     const checkbox = screen.getByTestId("layer-visibility");
-    fireEvent.click(checkbox); // initial visible:true → toggles off
+    fireEvent.click(checkbox); // initial visible:true -> toggles off
 
     expect(m.setLayoutProperty).toHaveBeenCalledWith("flood-demo", "visibility", "none");
   });
@@ -2831,7 +2903,7 @@ describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => 
     // Same payload LayerPanel.onDragEnd emits after the user drags layer-b
     // above layer-a (top-first list). jsdom cannot synthesize the dnd-kit
     // pointer drag reliably; the Playwright evidence run covers the real
-    // mouse drag. This pins the bus→map half of the path.
+    // mouse drag. This pins the bus->map half of the path.
     act(() => {
       bus.pushMapCommand({ command: "set-layer-order", layer_ids: ["layer-b", "layer-a"] });
     });
@@ -2840,7 +2912,7 @@ describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => 
   });
 });
 
-describe("MapView ↔ AnimationController frame-visibility emitter (JOB WEB-ANIM #157.1)", () => {
+describe("MapView - AnimationController frame-visibility emitter (JOB WEB-ANIM #157.1)", () => {
   beforeEach(() => {
     lastMapMock = null;
     // Fresh controller per test (process-global singleton).
@@ -2887,7 +2959,7 @@ describe("MapView ↔ AnimationController frame-visibility emitter (JOB WEB-ANIM
     for (const [id, prop, val] of calls) {
       if (prop === "visibility") visById.set(id as string, val as string);
     }
-    // f03 visible; f01 + f06 hidden — the single-visible-frame contract.
+    // f03 visible; f01 + f06 hidden  -  the single-visible-frame contract.
     expect(visById.get("f03")).toBe("visible");
     expect(visById.get("f01")).toBe("none");
     expect(visById.get("f06")).toBe("none");
@@ -2924,11 +2996,11 @@ describe("MapView ↔ AnimationController frame-visibility emitter (JOB WEB-ANIM
   });
 });
 
-// clipFeaturesToBbox — RELAXED 2026-06-21. The agent (Lane C) now clips vectors
+// clipFeaturesToBbox  -  RELAXED 2026-06-21. The agent (Lane C) now clips vectors
 // to the pinned AOI server-side, so an incoming server-provided layer is already
 // AOI-scoped. The client clip must therefore NEVER drop a feature when the AOI
 // bbox stashed on the map (__grace2AoiBbox, the last zoom-to camera extent) is
-// SMALLER than the layer's own data extent — that stale/smaller bbox would
+// SMALLER than the layer's own data extent  -  that stale/smaller bbox would
 // silently drop legitimate buildings/rivers. It only trims a far-flung stray
 // when the AOI genuinely encloses the data.
 import { clipFeaturesToBbox, CLIP_CONTAINMENT_TOLERANCE } from "./Map";
@@ -2950,7 +3022,7 @@ function fcOfPoints(pts: Array<[number, number]>) {
   } as unknown as Parameters<typeof clipFeaturesToBbox>[0];
 }
 
-describe("clipFeaturesToBbox — relaxed AOI clip (server already AOI-scopes)", () => {
+describe("clipFeaturesToBbox  -  relaxed AOI clip (server already AOI-scopes)", () => {
   it("passes the collection through untouched when aoi is null (no-AOI path)", () => {
     const fc = fcOfPoints([
       [0, 0],
@@ -2961,7 +3033,7 @@ describe("clipFeaturesToBbox — relaxed AOI clip (server already AOI-scopes)", 
 
   it("NEVER drops features when __grace2AoiBbox is SMALLER than the layer extent", () => {
     // The layer's data spans [0..10] in both axes; the (stale/smaller) AOI is a
-    // tiny [4..6] camera extent. The relax must keep EVERYTHING — the server
+    // tiny [4..6] camera extent. The relax must keep EVERYTHING  -  the server
     // already AOI-scoped this layer; the smaller stale bbox must not clip it.
     const fc = fcOfPoints([
       [0, 0], // far corner, well outside the small AOI
@@ -3007,7 +3079,7 @@ describe("clipFeaturesToBbox — relaxed AOI clip (server already AOI-scopes)", 
 
   it("returns the same ref (no drop) when the AOI encloses the whole data extent", () => {
     // Data extent [2..8] is fully inside the AOI [0..10] (within tolerance), so
-    // the clip is active — but because the data is contained, EVERY feature
+    // the clip is active  -  but because the data is contained, EVERY feature
     // overlaps the AOI, so nothing is dropped and the same collection is
     // returned. This is the safe invariant: the relaxed clip never strips a
     // feature the server provided.
@@ -3045,7 +3117,7 @@ describe("clipFeaturesToBbox — relaxed AOI clip (server already AOI-scopes)", 
     expect(CLIP_CONTAINMENT_TOLERANCE).toBeGreaterThan(0);
     // A layer whose extent grazes JUST past the AOI edge (within the tolerance
     // band) still counts as "contained", so the clip stays active rather than
-    // bailing — and because the data is (within tolerance) inside the AOI, all
+    // bailing  -  and because the data is (within tolerance) inside the AOI, all
     // its features are kept. AOI width 10 -> tol = 1.0; a 10.5 feature is past
     // the edge by 0.5 (< tol) so the extent is treated as contained, and that
     // grazing feature is RETAINED (the bias is toward keeping).

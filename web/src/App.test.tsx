@@ -1,4 +1,4 @@
-// GRACE-2 web — App collapse-toggle tests (job-0065, tweak 3).
+// GRACE-2 web  -  App collapse-toggle tests (job-0065, tweak 3).
 //
 // Verifies:
 //   1. Left collapse toggle updates DOM state (button aria-label flips).
@@ -10,18 +10,19 @@
 // which cannot run in happy-dom. We therefore test the collapse behaviour via
 // a minimal CollapseShell component extracted from App.tsx that captures only
 // the collapse-toggle logic and localStorage wiring. This is acceptable per
-// AGENTS.md "Live E2E validation required" — the collapse UI toggle is
+// AGENTS.md "Live E2E validation required"  -  the collapse UI toggle is
 // separately verified by the browser screenshot evidence; unit tests here
 // cover state correctness and localStorage round-trip.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { useState, useEffect, useRef } from "react";
-// JOB WEB-AOI-LEGEND (#159) — the case-open snap uses the SAME pure helpers
+// JOB WEB-AOI-LEGEND (#159)  -  the case-open snap uses the SAME pure helpers
 // App.tsx imports: asBbox validates the persisted (floored) case.bbox; when it
 // is null/malformed the snap falls through to extractLastZoomTo (the LATEST,
 // floored zoom-to in the rehydrated chat history).
 import { asBbox, extractLastZoomTo } from "./lib/case_zoom";
+import { LayerCache } from "./lib/layer_cache";
 import type { CaseChatMessage } from "./contracts";
 
 // --- Minimal test harness ------------------------------------------------ //
@@ -70,7 +71,7 @@ function CollapseShell(): JSX.Element {
           aria-label={leftCollapsed ? "Expand layer panel" : "Collapse layer panel"}
           onClick={toggleLeft}
         >
-          {leftCollapsed ? "›" : "‹"}
+          {leftCollapsed ? "-" : "-"}
         </button>
       </div>
       <div data-testid="right-panel" data-collapsed={String(rightCollapsed)}>
@@ -79,7 +80,7 @@ function CollapseShell(): JSX.Element {
           aria-label={rightCollapsed ? "Expand chat panel" : "Collapse chat panel"}
           onClick={toggleRight}
         >
-          {rightCollapsed ? "‹" : "›"}
+          {rightCollapsed ? "-" : "-"}
         </button>
       </div>
     </div>
@@ -240,7 +241,7 @@ function AppShell({ initialLayers = 0, startLeftCollapsed = false }: {
             data-testid="grace2-layer-panel-close"
             onClick={() => setLeftCollapsed(true)}
           >
-            ×
+            -
           </button>
         </div>
       )}
@@ -251,7 +252,7 @@ function AppShell({ initialLayers = 0, startLeftCollapsed = false }: {
           aria-label="Show layers"
           onClick={() => setLeftCollapsed(false)}
         >
-          ☰
+          -
         </button>
       )}
 
@@ -261,7 +262,7 @@ function AppShell({ initialLayers = 0, startLeftCollapsed = false }: {
             data-testid="grace2-chat-close"
             onClick={() => setRightCollapsed(true)}
           >
-            ×
+            -
           </button>
         </div>
       )}
@@ -272,14 +273,14 @@ function AppShell({ initialLayers = 0, startLeftCollapsed = false }: {
           aria-label="Show chat"
           onClick={() => setRightCollapsed(false)}
         >
-          ☰
+          -
         </button>
       )}
     </div>
   );
 }
 
-describe("App overlay layout — conditional mount + hamburger (job-0068 changes 1-3)", () => {
+describe("App overlay layout  -  conditional mount + hamburger (job-0068 changes 1-3)", () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -288,13 +289,13 @@ describe("App overlay layout — conditional mount + hamburger (job-0068 changes
     localStorage.clear();
   });
 
-  it("no layers → LayerPanel NOT mounted AND Layers hamburger NOT rendered", () => {
+  it("no layers -> LayerPanel NOT mounted AND Layers hamburger NOT rendered", () => {
     render(<AppShell initialLayers={0} />);
     expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
     expect(screen.queryByTestId("grace2-layers-hamburger")).toBeNull();
   });
 
-  it("layers > 0 → LayerPanel mounts (left overlay)", () => {
+  it("layers > 0 -> LayerPanel mounts (left overlay)", () => {
     render(<AppShell initialLayers={1} />);
     expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
   });
@@ -322,7 +323,7 @@ describe("App overlay layout — conditional mount + hamburger (job-0068 changes
     expect(screen.queryByTestId("grace2-layers-hamburger")).toBeNull();
   });
 
-  it("layers present + leftCollapsed → hamburger top-left renders, panel hidden", () => {
+  it("layers present + leftCollapsed -> hamburger top-left renders, panel hidden", () => {
     render(<AppShell initialLayers={1} startLeftCollapsed />);
     expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
     expect(screen.getByTestId("grace2-layers-hamburger")).toBeInTheDocument();
@@ -344,7 +345,7 @@ describe("App overlay layout — conditional mount + hamburger (job-0068 changes
     expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
   });
 
-  it("clicking × close in LayerPanel collapses panel and shows hamburger", () => {
+  it("clicking - close in LayerPanel collapses panel and shows hamburger", () => {
     render(<AppShell initialLayers={1} />);
     expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
 
@@ -361,7 +362,7 @@ describe("App overlay layout — conditional mount + hamburger (job-0068 changes
     expect(screen.getByTestId("grace2-chat")).toBeInTheDocument();
   });
 
-  it("clicking Chat × hides chat; chat hamburger appears top-right", () => {
+  it("clicking Chat - hides chat; chat hamburger appears top-right", () => {
     render(<AppShell initialLayers={0} />);
     act(() => {
       fireEvent.click(screen.getByTestId("grace2-chat-close"));
@@ -404,7 +405,7 @@ function ThemeShell(): JSX.Element {
         aria-pressed={theme === "dark"}
         onClick={toggle}
       >
-        {theme === "light" ? "☾" : "☀"}
+        {theme === "light" ? "-" : "-"}
       </button>
     </div>
   );
@@ -600,7 +601,7 @@ describe("__grace2InjectPayloadWarning dev seam (job-0140)", () => {
     delete (window as Window & { __grace2InjectPayloadWarning?: unknown }).__grace2InjectPayloadWarning;
   });
 
-  it("seam absent before shell mounts → no warning card", () => {
+  it("seam absent before shell mounts -> no warning card", () => {
     render(<div data-testid="empty" />);
     expect(screen.queryByTestId("payload-warning-inline")).toBeNull();
   });
@@ -633,27 +634,27 @@ describe("__grace2InjectPayloadWarning dev seam (job-0140)", () => {
     });
     // After onDecide the shell removes it from the warnings list; the inline
     // card shows the 'Sent' footer for a brief moment but the shell removes
-    // the entry — the card no longer has buttons.
+    // the entry  -  the card no longer has buttons.
     expect(screen.queryByTestId("payload-warning-button-proceed")).toBeNull();
   });
 });
 
-// --- Map pan unlock — LayerPanel wrap pointer-events confinement (job-0173 Part 3) //
+// --- Map pan unlock  -  LayerPanel wrap pointer-events confinement (job-0173 Part 3) //
 //
 // REGRESSION the kickoff diagnosed: after a flood/raster layer renders, the
 // user couldn't pan/drag the map. Root cause: the inner div inside
 // `grace2-case-view-layer-panel-wrap` had pointerEvents:"auto" with
-// width:100% height:100%, blanketing the full (top:64 → bottom:60,
-// left:0 → right:0) region above the map. That zone covers virtually the
+// width:100% height:100%, blanketing the full (top:64 -> bottom:60,
+// left:0 -> right:0) region above the map. That zone covers virtually the
 // entire map viewport, so MapLibre never sees pointerdown/move events on the
 // raster overlay area.
 //
 // Fix verified structurally: the pointer-events:auto region must be column-
-// sized (left:0, width ≤ 320px — i.e. left:16 offset + 280 panel + 16 right
+// sized (left:0, width - 320px  -  i.e. left:16 offset + 280 panel + 16 right
 // padding = 312px), not full-bleed. Outside that column the wrap is
-// pointer-events:none → click-through to the map below.
+// pointer-events:none -> click-through to the map below.
 
-describe("Map pan unlock — LayerPanel wrap pointer-events confined to column (job-0173 Part 3)", () => {
+describe("Map pan unlock  -  LayerPanel wrap pointer-events confined to column (job-0173 Part 3)", () => {
   // Inline mirror of the App.tsx LayerPanel wrap fragment. This is the
   // exact structure App.tsx emits when activeCaseId !== null && layers.length > 0.
   function LayerPanelWrapFragment(): JSX.Element {
@@ -698,7 +699,7 @@ describe("Map pan unlock — LayerPanel wrap pointer-events confined to column (
     expect(s.pointerEvents).toBe("auto");
     // Width must be a finite pixel value <= 320px, NOT "100%". The prior buggy
     // implementation used width:100% + height:100% which blanketed the entire
-    // (top:64 → bottom:60, left:0 → right:0) area and blocked map pan.
+    // (top:64 -> bottom:60, left:0 -> right:0) area and blocked map pan.
     expect(s.width).not.toBe("100%");
     expect(s.width).not.toBe("");
     const widthPx = parseInt(s.width, 10);
@@ -727,7 +728,7 @@ describe("Map pan unlock — LayerPanel wrap pointer-events confined to column (
 // session-state.
 //
 // We can't mount the real App (WebSocket/WebGL), so we mirror the EXACT App.tsx
-// wiring — `onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}` — with a
+// wiring  -  `onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}`  -  with a
 // mocked GraceWs in a useRef and a fake LayerPanel whose delete row invokes the
 // passed-in onDeleteLayer (mirroring LayerPanel.tsx's `onDeleteLayer?.(layerId)`
 // call). This pins that BOTH mounts receive a working callback that reaches the
@@ -739,7 +740,7 @@ interface FakeLayerPanelProps {
   onDeleteLayer?: (id: string) => void;
 }
 
-/** Fake LayerPanel: mirrors only the delete-row → onDeleteLayer call path. */
+/** Fake LayerPanel: mirrors only the delete-row -> onDeleteLayer call path. */
 function FakeLayerPanel({ testid, onDeleteLayer }: FakeLayerPanelProps): JSX.Element {
   return (
     <div data-testid={testid}>
@@ -788,7 +789,7 @@ function DeleteWiringShell({ ws }: { ws: FakeWs | null }): JSX.Element {
   );
 }
 
-describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-0322)", () => {
+describe("App F53 wiring  -  onDeleteLayer reaches GraceWs.sendDeleteLayer (job-0322)", () => {
   it("desktop LayerPanel mount receives a non-null onDeleteLayer", () => {
     const ws: FakeWs = { sendDeleteLayer: vi.fn() };
     render(<DeleteWiringShell ws={ws} />);
@@ -833,7 +834,7 @@ describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-
 });
 
 // ---------------------------------------------------------------------------
-// FLAG (a) — the AOI screen rect flows Map(mock) -> App -> LayerPanel so the
+// FLAG (a)  -  the AOI screen rect flows Map(mock) -> App -> LayerPanel so the
 // SequenceScrubber (inside LayerPanel) can pin to the AOI bbox. App holds the
 // rect in state and wires `onAoiScreenRectChange={setAoiScreenRect}` on MapView
 // + `aoiRect={aoiScreenRect}` on LayerPanel. We can't mount the real App
@@ -888,7 +889,7 @@ function AoiRectShell({ rect }: { rect: FakeScreenRect | null }): JSX.Element {
   );
 }
 
-describe("App FLAG (a) wiring — AOI rect flows Map -> App -> LayerPanel", () => {
+describe("App FLAG (a) wiring  -  AOI rect flows Map -> App -> LayerPanel", () => {
   it("LayerPanel starts with no rect (null) before Map reports one", () => {
     render(<AoiRectShell rect={{ left: 10, top: 20, right: 110, bottom: 220 }} />);
     expect(screen.getByTestId("fake-layer-panel-rect")).toHaveTextContent("none");
@@ -924,7 +925,7 @@ describe("App FLAG (a) wiring — AOI rect flows Map -> App -> LayerPanel", () =
 // ---------------------------------------------------------------------------
 // job-0322 F31 (resume-repaint, iOS zombie-socket): App.tsx registers a
 // `visibilitychange` listener; on `visible` it branches on isMobile:
-//   - MOBILE: wsRef.current?.forceReconnect() — UNCONDITIONALLY tears the
+//   - MOBILE: wsRef.current?.forceReconnect()  -  UNCONDITIONALLY tears the
 //     (possibly zombie-OPEN) socket down and re-opens; the fresh open handler
 //     re-sends session-resume, so NO separate requestSessionState() call.
 //   - DESKTOP: wsRef.current?.reconnect() (revive a dropped socket) then
@@ -937,7 +938,7 @@ describe("App FLAG (a) wiring — AOI rect flows Map -> App -> LayerPanel", () =
 // ---------------------------------------------------------------------------
 
 interface FakeResumeWs {
-  // BUG 4a (Wave 4.9) — the handler now reads `isOpen` first to avoid tearing
+  // BUG 4a (Wave 4.9)  -  the handler now reads `isOpen` first to avoid tearing
   // down an already-OPEN socket on resume (the cycling the fix targets). Default
   // falsy when omitted (= not OPEN) so the pre-existing "dropped socket" tests
   // keep exercising the forceReconnect / reconnect teardown paths.
@@ -963,7 +964,7 @@ function ResumeShell({
       if (document.visibilityState !== "visible") return;
       const sock = wsRef.current;
       if (!sock) return;
-      // BUG 4a — an already-OPEN socket only needs a state re-pull; do NOT tear
+      // BUG 4a  -  an already-OPEN socket only needs a state re-pull; do NOT tear
       // it down (the keepalive owns the zombie case now).
       if (sock.isOpen) {
         sock.requestSessionState();
@@ -1001,7 +1002,7 @@ function makeResumeWs(): FakeResumeWs {
   };
 }
 
-describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
+describe("App F31 resume-repaint  -  visibilitychange (job-0322)", () => {
   afterEach(() => {
     // Restore a sane default so later suites aren't affected.
     Object.defineProperty(document, "visibilityState", {
@@ -1010,7 +1011,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     });
   });
 
-  it("DESKTOP visible → reconnect() then requestSessionState() (NOT forceReconnect)", () => {
+  it("DESKTOP visible -> reconnect() then requestSessionState() (NOT forceReconnect)", () => {
     const ws = makeResumeWs();
     render(<ResumeShell ws={ws} isMobile={false} />);
     act(() => {
@@ -1035,7 +1036,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(order).toEqual(["reconnect", "request"]);
   });
 
-  it("MOBILE visible → forceReconnect() ONLY (zombie-socket: no reconnect / no requestSessionState)", () => {
+  it("MOBILE visible -> forceReconnect() ONLY (zombie-socket: no reconnect / no requestSessionState)", () => {
     const ws = makeResumeWs();
     render(<ResumeShell ws={ws} isMobile={true} />);
     act(() => {
@@ -1046,7 +1047,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.requestSessionState).not.toHaveBeenCalled();
   });
 
-  it("hidden → nothing fires (mobile or desktop)", () => {
+  it("hidden -> nothing fires (mobile or desktop)", () => {
     const desktop = makeResumeWs();
     const { unmount } = render(<ResumeShell ws={desktop} isMobile={false} />);
     act(() => {
@@ -1065,7 +1066,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(mobile.forceReconnect).not.toHaveBeenCalled();
   });
 
-  it("null wsRef → visible event is a harmless no-op (no throw, mobile + desktop)", () => {
+  it("null wsRef -> visible event is a harmless no-op (no throw, mobile + desktop)", () => {
     const { unmount } = render(<ResumeShell ws={null} isMobile={true} />);
     expect(() => {
       act(() => {
@@ -1093,10 +1094,10 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.forceReconnect).not.toHaveBeenCalled();
   });
 
-  // BUG 4a (Wave 4.9) — an already-OPEN socket must NOT be torn down on resume
+  // BUG 4a (Wave 4.9)  -  an already-OPEN socket must NOT be torn down on resume
   // (that churn was part of the ~10-45s WS cycling). It only gets a lighter
   // state re-pull; the keepalive's missed-pong detector owns the zombie case.
-  it("MOBILE + socket OPEN → requestSessionState() ONLY (NO forceReconnect)", () => {
+  it("MOBILE + socket OPEN -> requestSessionState() ONLY (NO forceReconnect)", () => {
     const ws = { ...makeResumeWs(), isOpen: true };
     render(<ResumeShell ws={ws} isMobile={true} />);
     act(() => {
@@ -1107,7 +1108,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.reconnect).not.toHaveBeenCalled();
   });
 
-  it("DESKTOP + socket OPEN → requestSessionState() ONLY (NO reconnect teardown)", () => {
+  it("DESKTOP + socket OPEN -> requestSessionState() ONLY (NO reconnect teardown)", () => {
     const ws = { ...makeResumeWs(), isOpen: true };
     render(<ResumeShell ws={ws} isMobile={false} />);
     act(() => {
@@ -1118,7 +1119,7 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.forceReconnect).not.toHaveBeenCalled();
   });
 
-  it("MOBILE + socket NOT OPEN → forceReconnect() (dropped-socket revive)", () => {
+  it("MOBILE + socket NOT OPEN -> forceReconnect() (dropped-socket revive)", () => {
     const ws = { ...makeResumeWs(), isOpen: false };
     render(<ResumeShell ws={ws} isMobile={true} />);
     act(() => {
@@ -1130,11 +1131,11 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// BUG 4a (Wave 4.9) — GraceWs-creation effect STABILITY.
+// BUG 4a (Wave 4.9)  -  GraceWs-creation effect STABILITY.
 //
 // App.tsx mounts the GraceWs in a useEffect keyed on
 // [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen,
-//  handleChartEmission, authEpoch] — all STABLE references. An unrelated state
+//  handleChartEmission, authEpoch]  -  all STABLE references. An unrelated state
 // change (a re-render) must NOT re-run that effect (which would close + re-open
 // the socket = the cycling this fix targets). We mirror the effect's deps +
 // lifecycle in a shell with a mock GraceWs whose connect/close are spies, then
@@ -1150,7 +1151,7 @@ interface FakeConnectWs {
  * Mirror of App.tsx's GraceWs-creation effect lifecycle. The deps mimic the
  * production array: a stable `bus` (useMemo) + stable callbacks (useCallback)
  * + `authEpoch`. `bump` drives an UNRELATED re-render (mirrors a chat-width /
- * theme / layers state change) — it is NOT in the effect deps, so the effect
+ * theme / layers state change)  -  it is NOT in the effect deps, so the effect
  * must not re-run.
  */
 function ConnectStabilityShell({
@@ -1189,7 +1190,7 @@ describe("App GraceWs creation effect stability (BUG 4a)", () => {
     render(<ConnectStabilityShell factory={factory} authEpoch={0} />);
     expect(connect).toHaveBeenCalledTimes(1);
 
-    // Three unrelated re-renders (bump state changes — not an effect dep).
+    // Three unrelated re-renders (bump state changes  -  not an effect dep).
     act(() => {
       fireEvent.click(screen.getByTestId("bump"));
     });
@@ -1225,24 +1226,24 @@ describe("App GraceWs creation effect stability (BUG 4a)", () => {
   });
 });
 
-// --- F84 — Case-exit fresh slate (AOI cleared + layers emptied) ---------- //
+// --- F84  -  Case-exit fresh slate (AOI cleared + layers emptied) ---------- //
 //
 // The full App mounts Chat (WebSocket) + MapView (WebGL), which cannot run in
-// happy-dom, so — per the CollapseShell / AppShell convention above — we mirror
+// happy-dom, so  -  per the CollapseShell / AppShell convention above  -  we mirror
 // App.tsx's `activeSession` case-rehydration effect (App.tsx:681-764) in a
 // minimal harness over a mock bus and assert the emission CONTRACT:
 //
 //   - Exiting to the Cases root (activeSession -> null) pushes an EMPTY
 //     session-state (loaded_layers:[]) so Map.tsx removes ALL overlays (raster
-//     AND vector — the F84 Map.tsx fix), AND a `clear-analysis-extent` command
+//     AND vector  -  the F84 Map.tsx fix), AND a `clear-analysis-extent` command
 //     so the prior Case's AOI rectangle does not linger (fresh slate), AND a
 //     `reset-view` so the camera snaps back to CONUS.
 //   - Opening a Case WITH a bbox pushes the Case's layers AND a `zoom-to`
 //     command carrying that bbox so the new/auto-gen Case shows its bounding
 //     box via the existing zoom-to/extent path.
 //
-// This pins the App side of F84 (the Map.tsx side — vector removal on an empty
-// set — is covered by Map.test.tsx).
+// This pins the App side of F84 (the Map.tsx side  -  vector removal on an empty
+// set  -  is covered by Map.test.tsx).
 
 interface MockBusCommand {
   command: string;
@@ -1272,8 +1273,8 @@ type HarnessSession = {
 
 /**
  * Mirror of App.tsx's activeSession effect (the F84-relevant branches only:
- * empty-session clear on exit, and bbox→zoom-to on open). Charts/Impact resets
- * and the chat-history zoom-to replay fallback are intentionally omitted — they
+ * empty-session clear on exit, and bbox->zoom-to on open). Charts/Impact resets
+ * and the chat-history zoom-to replay fallback are intentionally omitted  -  they
  * are unrelated to the F84 fresh-slate contract under test.
  */
 function CaseExitShell({
@@ -1302,12 +1303,12 @@ function CaseExitShell({
   return <div data-testid="case-exit-shell" />;
 }
 
-describe("App — Case-exit fresh slate contract (F84)", () => {
-  it("exiting to Cases (activeSession → null) pushes empty layers + clears the AOI + resets the view", () => {
+describe("App  -  Case-exit fresh slate contract (F84)", () => {
+  it("exiting to Cases (activeSession -> null) pushes empty layers + clears the AOI + resets the view", () => {
     const bus = makeRecordingBus();
     render(<CaseExitShell bus={bus} activeSession={null} />);
 
-    // Empty session-state → Map.tsx removes ALL overlays (raster + vector).
+    // Empty session-state -> Map.tsx removes ALL overlays (raster + vector).
     expect(bus.sessionPushes).toHaveLength(1);
     expect(bus.sessionPushes[0]!.loaded_layers).toEqual([]);
     // The AOI rectangle (not part of loaded_layers) is explicitly cleared.
@@ -1338,7 +1339,7 @@ describe("App — Case-exit fresh slate contract (F84)", () => {
     const zoom = bus.commandPushes.find((c) => c.command === "zoom-to");
     expect(zoom).toBeDefined();
     expect(zoom!.args!.bbox).toEqual([-122.5, 37.7, -122.3, 37.85]);
-    // A Case WITH an AOI does NOT clear — the zoom-to replaces the extent.
+    // A Case WITH an AOI does NOT clear  -  the zoom-to replaces the extent.
     expect(bus.commandPushes.map((c) => c.command)).not.toContain("clear-analysis-extent");
   });
 
@@ -1359,11 +1360,11 @@ describe("App — Case-exit fresh slate contract (F84)", () => {
   });
 });
 
-// --- JOB WEB-AOI-LEGEND (#159) — case-open snaps to the FINAL/floored bbox -- //
+// --- JOB WEB-AOI-LEGEND (#159)  -  case-open snaps to the FINAL/floored bbox -- //
 //
 // App.tsx's case-open snap (App.tsx ~line 1000) now snaps to the FLOORED AOI:
 //   1. Prefer activeSession.case.bbox VALIDATED via asBbox (the agent-AOI job
-//      now persists the floored bbox there) — a null / malformed / non-finite
+//      now persists the floored bbox there)  -  a null / malformed / non-finite
 //      persisted bbox must NOT produce a broken fitBounds.
 //   2. Else replay the LAST zoom-to (extractLastZoomTo walks newest-first, so
 //      it returns the latest floored zoom-to, never the first/small pre-floor).
@@ -1416,7 +1417,7 @@ function snapMsg(emissions: unknown[]): CaseChatMessage {
   } as CaseChatMessage;
 }
 
-describe("App — case-open snaps to the FINAL/floored bbox (#159)", () => {
+describe("App  -  case-open snaps to the FINAL/floored bbox (#159)", () => {
   const SMALL: [number, number, number, number] = [-82.0, 26.55, -81.95, 26.6];
   const FLOORED: [number, number, number, number] = [-82.2, 26.4, -81.7, 26.8];
 
@@ -1488,19 +1489,19 @@ describe("App — case-open snaps to the FINAL/floored bbox (#159)", () => {
   });
 });
 
-// --- job-0357 — per-Case layer DURABILITY across a WS reconnect ---------- //
+// --- job-0357  -  per-Case layer DURABILITY across a WS reconnect ---------- //
 //
 // App.tsx stamps a client-only `replace_layers` flag onto every session-state
 // it pushes onto the LayerPanel bus, derived from the live WebSocket status:
-//   - server snapshot received while `connected`  → replace_layers:true
-//     (authoritative — live layer add AND delete apply via replace-not-
+//   - server snapshot received while `connected`  -> replace_layers:true
+//     (authoritative  -  live layer add AND delete apply via replace-not-
 //     reconcile);
 //   - server snapshot received while NOT `connected` (the disconnect /
-//     reconnect window) → replace_layers:false (additive top-up — Map.tsx
+//     reconnect window) -> replace_layers:false (additive top-up  -  Map.tsx
 //     never tears down the active Case's already-rendered layers).
 //
-// The full App can't mount in happy-dom (WebSocket + WebGL), so — per the
-// CollapseShell / ResumeShell / CaseExitShell convention above — this mirrors
+// The full App can't mount in happy-dom (WebSocket + WebGL), so  -  per the
+// CollapseShell / ResumeShell / CaseExitShell convention above  -  this mirrors
 // App.tsx's onStatus + onSessionState stamping over a recording bus and drives
 // a simulated WS close + reopen to the SAME Case. The Map.tsx consumer side
 // (additive-vs-replace reconcile) is pinned in Map.test.tsx.
@@ -1521,7 +1522,7 @@ interface StampedSession {
  * held in a ref, and every server session-state is stamped
  * `replace_layers: status === "connected"` before being pushed onto the bus.
  * The harness exposes imperative `setStatus` / `deliverSessionState` seams so
- * the test can script a close → reconnect → resume sequence deterministically.
+ * the test can script a close -> reconnect -> resume sequence deterministically.
  */
 function DurabilityShell({
   onReady,
@@ -1567,7 +1568,7 @@ function DurabilityShell({
   return <div data-testid="durability-shell" />;
 }
 
-describe("App — per-Case layer durability across WS reconnect (job-0357)", () => {
+describe("App  -  per-Case layer durability across WS reconnect (job-0357)", () => {
   it("stamps replace_layers:true on a server snapshot while CONNECTED", () => {
     const pushes: StampedSession[] = [];
     let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
@@ -1596,7 +1597,7 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     });
 
     // 2. The socket drops (close) then starts reconnecting. During this
-    //    window any server snapshot is NON-authoritative — an empty/partial
+    //    window any server snapshot is NON-authoritative  -  an empty/partial
     //    one must NOT be allowed to wipe the durable layer.
     act(() => {
       api.setStatus("disconnected");
@@ -1610,7 +1611,7 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
 
     // 3. Reconnect completes and the agent replays the FULL persisted layer
     //    set as a normal session-state. By the time it is processed the
-    //    socket is `connected` again, so it lands authoritative — and because
+    //    socket is `connected` again, so it lands authoritative  -  and because
     //    it carries the same layer it reconciles idempotently (no wipe).
     act(() => {
       api.setStatus("connected");
@@ -1620,7 +1621,7 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     expect(resume.loaded_layers).toEqual([{ layer_id: "flood-demo" }]);
     expect(resume.replace_layers).toBe(true);
     // No snapshot in the whole sequence both EMPTIED layers AND claimed to be
-    // an authoritative replace — i.e. nothing could have blanked the map.
+    // an authoritative replace  -  i.e. nothing could have blanked the map.
     const blanking = pushes.find(
       (p) => p.replace_layers === true && p.loaded_layers.length === 0,
     );
@@ -1702,6 +1703,56 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
   });
 });
 
+// --- PART B (NATE 2026-06-22): no case layers at the cases-list / root view -- //
+//
+// NATE: "no case layers should be loaded when we are in the cases section; they
+// should only be rendered when we have entered a Case." App.tsx's layer-lift
+// effect now gates on the shared cache's activeCaseId: at root (null) it forces
+// the LayerPanel-feeding `layers` list EMPTY regardless of the incoming snapshot;
+// inside a Case it merges through the seatbelt as before. This shell mirrors the
+// EXACT gate (App.tsx layer-lift) over the REAL LayerCache so the contract is
+// pinned without WebSocket/WebGL deps. (The Map.tsx overlay/legend side of the
+// gate is pinned in Map.test.tsx.)
+describe("App  -  cases-root layer gate (PART B)", () => {
+  function liftLayers(
+    cache: LayerCache,
+    incoming: Array<{ layer_id: string }>,
+    replaceLayers = true,
+  ): Array<{ layer_id: string }> {
+    // EXACT mirror of App.tsx's bus.subscribeSessionState layer-lift.
+    const caseId = cache.activeCaseId;
+    if (caseId === null) return [];
+    const authoritativeReplace = replaceLayers !== false;
+    return cache.mergeSnapshot(
+      caseId,
+      incoming as unknown as Parameters<LayerCache["mergeSnapshot"]>[1],
+      { authoritativeReplace },
+    ) as unknown as Array<{ layer_id: string }>;
+  }
+
+  it("returns EMPTY layers when no Case is active (root view), even with incoming layers", () => {
+    const cache = new LayerCache();
+    cache.activeCaseId = null; // cases-list / root view
+    expect(liftLayers(cache, [{ layer_id: "old-case-flood" }])).toEqual([]);
+  });
+
+  it("returns the merged layers once a Case is entered (activeCaseId set)", () => {
+    const cache = new LayerCache();
+    cache.activeCaseId = "case-A";
+    const out = liftLayers(cache, [{ layer_id: "flood-demo" }]);
+    expect(out.map((l) => l.layer_id)).toEqual(["flood-demo"]);
+  });
+
+  it("clears the lifted layers the instant the Case is exited (active -> null)", () => {
+    const cache = new LayerCache();
+    cache.activeCaseId = "case-A";
+    expect(liftLayers(cache, [{ layer_id: "flood-demo" }]).length).toBe(1);
+    // Exit to the cases list.
+    cache.activeCaseId = null;
+    expect(liftLayers(cache, [{ layer_id: "flood-demo" }])).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19).
 //
@@ -1758,7 +1809,7 @@ function CaseFilterShell({
   return <div data-testid="case-filter-shell" />;
 }
 
-describe("App — case-switch layer leak (NATE 2026-06-19)", () => {
+describe("App  -  case-switch layer leak (NATE 2026-06-19)", () => {
   it("DROPS a trailing snapshot tagged with the PREVIOUS Case after switching", () => {
     const pushes: StampedSession[] = [];
     let api!: Parameters<Parameters<typeof CaseFilterShell>[0]["onReady"]>[0];
@@ -1781,13 +1832,13 @@ describe("App — case-switch layer leak (NATE 2026-06-19)", () => {
     expect(pushes).toHaveLength(2);
     expect(pushes[0]!.loaded_layers).toEqual([{ layer_id: "urban-flood" }]);
     expect(pushes[1]!.loaded_layers).toEqual([{ layer_id: "mexico-beach" }]);
-    // The map's last authoritative state is Case B's layers — never re-asserted
+    // The map's last authoritative state is Case B's layers  -  never re-asserted
     // back to Case A.
     const last = pushes[pushes.length - 1]!;
     expect(last.loaded_layers).toEqual([{ layer_id: "mexico-beach" }]);
   });
 
-  it("APPLIES an untagged snapshot (older builds / root view) — durability unaffected", () => {
+  it("APPLIES an untagged snapshot (older builds / root view)  -  durability unaffected", () => {
     const pushes: StampedSession[] = [];
     let api!: Parameters<Parameters<typeof CaseFilterShell>[0]["onReady"]>[0];
     render(
@@ -1796,7 +1847,7 @@ describe("App — case-switch layer leak (NATE 2026-06-19)", () => {
     act(() => {
       api.setStatus("connected");
       api.setActiveCase("caseB");
-      // An UNTAGGED frame (caseId null) for the active Case must still apply —
+      // An UNTAGGED frame (caseId null) for the active Case must still apply  - 
       // a reconnect resume for the SAME Case is either tagged caseB or untagged.
       api.deliverSessionState({ loaded_layers: [{ layer_id: "mexico-beach" }] }, null);
     });

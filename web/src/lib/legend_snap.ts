@@ -1,13 +1,13 @@
-// GRACE-2 web — legend snap geometry (draggable + resizable AOI-snapping keys).
+// GRACE-2 web  -  legend snap geometry (draggable + resizable AOI-snapping keys).
 //
 // NATE's overlay-layout spec: the gradient legend "keys" are draggable, and on
 // release they AUTO-SNAP to the nearest side of the AOI bounding box. Multiple
-// keys arrange COUNTER-CLOCKWISE by stack order — 1st key bottom, 2nd right,
-// 3rd top, 4th left — and stack (offset along the side) when more than one key
+// keys arrange COUNTER-CLOCKWISE by stack order  -  1st key bottom, 2nd right,
+// 3rd top, 4th left  -  and stack (offset along the side) when more than one key
 // lands on the same side so they never overlap.
 //
 // This module is PURE geometry only (Invariant 1: the client renders, it never
-// computes geography). Every input is already in screen/pixel space — the AOI
+// computes geography). Every input is already in screen/pixel space  -  the AOI
 // rectangle is the bbox already projected by Map.tsx; the key sizes are pixel
 // box sizes. Nothing here touches MapLibre, React, or the DOM, so it is
 // trivially and exhaustively unit-testable.
@@ -63,7 +63,7 @@ export function sideForIndex(index: number): AoiSide {
 
 /**
  * How many keys come BEFORE `index` that share the same side (used to stack).
- * Because sides repeat every 4, the keys on a side are index, index+4, ... —
+ * Because sides repeat every 4, the keys on a side are index, index+4, ...  - 
  * so the stack position is floor(index / 4).
  */
 export function stackPositionForIndex(index: number): number {
@@ -81,7 +81,7 @@ export function stackPositionForIndex(index: number): number {
  *
  * `priorExtentOnSide` is the total pixel extent (height for top/bottom sides,
  * width for left/right sides) already consumed by keys stacked closer to the
- * AOI on this same side — the caller accumulates it so keys of differing sizes
+ * AOI on this same side  -  the caller accumulates it so keys of differing sizes
  * still never overlap.
  */
 export function snapKeyToSide(
@@ -120,7 +120,7 @@ export function snapKeyToSide(
       return { left, top, side };
     }
     default: {
-      // Exhaustive — unreachable, but keep TS happy and degrade gracefully.
+      // Exhaustive  -  unreachable, but keep TS happy and degrade gracefully.
       return { left: cx, top: cy, side: "bottom" };
     }
   }
@@ -169,6 +169,48 @@ export function layoutKeysCcw(
 }
 
 /**
+ * Lays out a list of keys against the AOI rect when each key's SIDE is given
+ * EXPLICITLY (e.g. some keys carry a user drag-snap override, the rest fall
+ * back to their CCW index side). Same stacking discipline as layoutKeysCcw -
+ * keys sharing a side march outward by their cumulative cross-axis extent so
+ * heterogeneous sizes never overlap - but the side assignment is the caller's,
+ * not derived from the index. Returns one SnapResult per input key, in order.
+ *
+ * SIDE-SNAP (NATE 2026-06-22): this powers "drag a legend key to a side and it
+ * snaps there with the matching orientation". The stack order on each side is
+ * the input order of the keys assigned to that side.
+ */
+export function layoutKeysToSides(
+  aoi: ScreenRect,
+  sizes: KeySize[],
+  sides: AoiSide[],
+): SnapResult[] {
+  const usedExtent: Record<AoiSide, number> = {
+    bottom: 0,
+    right: 0,
+    top: 0,
+    left: 0,
+  };
+  // How many keys already placed on each side (drives the per-stack gap).
+  const stackCount: Record<AoiSide, number> = {
+    bottom: 0,
+    right: 0,
+    top: 0,
+    left: 0,
+  };
+  return sizes.map((size, index) => {
+    const side = sides[index] ?? sideForIndex(index);
+    const prior = usedExtent[side];
+    const stackPos = stackCount[side];
+    const result = snapKeyToSide(aoi, side, size, stackPos, prior);
+    const consumed = side === "bottom" || side === "top" ? size.height : size.width;
+    usedExtent[side] = prior + consumed;
+    stackCount[side] = stackPos + 1;
+    return result;
+  });
+}
+
+/**
  * Picks the AOI side nearest to a free-dragged key's CENTER point. Used on drag
  * release to choose which side the key snaps back to. Distance is the
  * perpendicular gap from the point to each edge line, clamped so a point well
@@ -188,13 +230,13 @@ export function nearestSide(aoi: ScreenRect, point: { x: number; y: number }): A
 }
 
 /**
- * Item d (NATE 2026-06-20) — derive a SCALE FACTOR for the AOI-anchored overlays
+ * Item d (NATE 2026-06-20)  -  derive a SCALE FACTOR for the AOI-anchored overlays
  * (legend keys + scrubber) from the AOI bbox's ON-SCREEN size, so that when the
  * map is zoomed out and the bbox is tiny the overlays shrink with it (instead of
- * dwarfing the box in fixed screen-px), and when zoomed in they grow — both
+ * dwarfing the box in fixed screen-px), and when zoomed in they grow  -  both
  * clamped so they never become unusably tiny or absurdly huge.
  *
- * The factor is the AOI's smaller on-screen dimension (min of width/height — the
+ * The factor is the AOI's smaller on-screen dimension (min of width/height  -  the
  * limiting axis the overlay must not overwhelm) divided by a REFERENCE size at
  * which the overlays render at their natural 1.0 scale. It is then clamped to
  * [min, max].
@@ -245,7 +287,7 @@ export function aoiScaleFactor(
 // aoiScaleFactor for its inner chrome, so the two are consistent by construction.
 
 /**
- * FALLBACK ESTIMATOR — only used when the TRUE projected AOI rect is unavailable.
+ * FALLBACK ESTIMATOR  -  only used when the TRUE projected AOI rect is unavailable.
  *
  * Reconstructs an *approximate* AOI ScreenRect from `anchor` (the bbox
  * BOTTOM-edge midpoint {left, top}) and `barWidth` (the bbox on-screen EAST-WEST
@@ -256,7 +298,7 @@ export function aoiScaleFactor(
  * non-square or skewed AOIs.
  *
  * Map.tsx now threads the real {left,top,right,bottom} rect (computeBboxScreenRect
- * — min/max over all four projected corners) straight into LayerLegend, which
+ *  -  min/max over all four projected corners) straight into LayerLegend, which
  * snaps off THAT when present. This estimator is retained ONLY as the fallback
  * for when the true rect is absent (off-screen / not yet projected) and for unit
  * tests that exercise the anchor+width reconstruction path.

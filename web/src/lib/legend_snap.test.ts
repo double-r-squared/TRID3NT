@@ -1,4 +1,4 @@
-// GRACE-2 web — legend_snap pure-geometry unit tests.
+// GRACE-2 web  -  legend_snap pure-geometry unit tests.
 //
 // Verifies the CCW side assignment, stacking, single-side snap math, nearest-
 // side picking, and the anchor+width -> AOI rect reconstruction. All inputs are
@@ -14,18 +14,20 @@ import {
   DEFAULT_AOI_SCALE_MAX,
   DEFAULT_AOI_SCALE_REFERENCE_PX,
   layoutKeysCcw,
+  layoutKeysToSides,
   nearestSide,
   rectFromAnchorAndWidth,
   sideForIndex,
   snapKeyToSide,
   stackPositionForIndex,
+  type AoiSide,
   type ScreenRect,
 } from "./legend_snap";
 
 const AOI: ScreenRect = { left: 100, top: 100, right: 300, bottom: 300 };
 // center = (200, 200)
 
-describe("sideForIndex — CCW order, wrapping", () => {
+describe("sideForIndex  -  CCW order, wrapping", () => {
   it("maps 0..3 to bottom, right, top, left", () => {
     expect(sideForIndex(0)).toBe("bottom");
     expect(sideForIndex(1)).toBe("right");
@@ -140,6 +142,42 @@ describe("layoutKeysCcw", () => {
   });
 });
 
+describe("layoutKeysToSides  -  explicit per-key side assignment (SIDE-SNAP)", () => {
+  const sizes = [
+    { width: 100, height: 40 },
+    { width: 100, height: 40 },
+    { width: 100, height: 40 },
+  ];
+
+  it("places each key on the side the caller passes (not the CCW index side)", () => {
+    const sides: AoiSide[] = ["right", "left", "top"];
+    const out = layoutKeysToSides(AOI, sizes, sides);
+    expect(out.map((r) => r.side)).toEqual(["right", "left", "top"]);
+    // Right key sits past the right edge; left key past the left edge.
+    expect(out[0]!.left).toBeGreaterThan(AOI.right);
+    expect(out[1]!.left).toBeLessThan(AOI.left);
+    // Top key sits above the top edge.
+    expect(out[2]!.top).toBeLessThan(AOI.top);
+  });
+
+  it("stacks two keys that share a side so they do not overlap", () => {
+    const sides: AoiSide[] = ["right", "right"];
+    const out = layoutKeysToSides(AOI, sizes.slice(0, 2), sides);
+    expect(out[0]!.side).toBe("right");
+    expect(out[1]!.side).toBe("right");
+    // The second right key is pushed further out (greater left) than the first.
+    expect(out[1]!.left).toBeGreaterThan(out[0]!.left);
+  });
+
+  it("falls back to the CCW index side when a side is missing", () => {
+    // Pass an array shorter than sizes; the gap defaults to sideForIndex.
+    const out = layoutKeysToSides(AOI, sizes, ["top"]);
+    expect(out[0]!.side).toBe("top");
+    expect(out[1]!.side).toBe(sideForIndex(1)); // "right"
+    expect(out[2]!.side).toBe(sideForIndex(2)); // "top"
+  });
+});
+
 describe("nearestSide", () => {
   it("picks bottom for a point just below the bottom edge", () => {
     expect(nearestSide(AOI, { x: 200, y: 320 })).toBe("bottom");
@@ -186,11 +224,11 @@ describe("rectFromAnchorAndWidth", () => {
   });
 });
 
-// Item d (SCALE WITH AOI, NATE 2026-06-20) — the AOI-anchored overlays (legend
+// Item d (SCALE WITH AOI, NATE 2026-06-20)  -  the AOI-anchored overlays (legend
 // keys + scrubber) scale with the AOI bbox's on-screen size so a tiny zoomed-out
 // box does not get a fixed-px overlay that dwarfs it, and a big zoomed-in box
-// gets a larger one — both clamped to [min, max].
-describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () => {
+// gets a larger one  -  both clamped to [min, max].
+describe("aoiScaleFactor  -  scales with the AOI on-screen size, clamped", () => {
   it("returns the natural 1.0 scale at the reference on-screen size", () => {
     // A square AOI whose limiting (min) extent == the reference px => scale 1.0.
     const ref = DEFAULT_AOI_SCALE_REFERENCE_PX;
@@ -199,16 +237,16 @@ describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () =>
   });
 
   it("shrinks (but never below min) when the AOI is tiny on-screen (zoomed out)", () => {
-    // A 20px x 20px box: raw = 20/360 ≈ 0.056, clamped UP to the min floor.
+    // A 20px x 20px box: raw = 20/360 - 0.056, clamped UP to the min floor.
     const rect: ScreenRect = { left: 0, top: 0, right: 20, bottom: 20 };
     const s = aoiScaleFactor(rect);
     expect(s).toBe(DEFAULT_AOI_SCALE_MIN);
-    // Strictly smaller than the natural scale — the overlay shrinks with the box.
+    // Strictly smaller than the natural scale  -  the overlay shrinks with the box.
     expect(s).toBeLessThan(1);
   });
 
   it("grows (but never above max) when the AOI is huge on-screen (zoomed in)", () => {
-    // A 4000px box: raw = 4000/360 ≈ 11, clamped DOWN to the max ceiling.
+    // A 4000px box: raw = 4000/360 - 11, clamped DOWN to the max ceiling.
     const rect: ScreenRect = { left: 0, top: 0, right: 4000, bottom: 4000 };
     const s = aoiScaleFactor(rect);
     expect(s).toBe(DEFAULT_AOI_SCALE_MAX);

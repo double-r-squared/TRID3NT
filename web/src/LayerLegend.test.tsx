@@ -1,4 +1,4 @@
-// GRACE-2 web — LayerLegend unit tests.
+// GRACE-2 web  -  LayerLegend unit tests.
 //
 // Covers the interactive AOI-snapping legend (NATE overlay-layout spec
 // 2026-06-17), built on top of the original content contract:
@@ -53,7 +53,7 @@ function makeLayer(overrides: Partial<ProjectLayerSummary> = {}): ProjectLayerSu
   };
 }
 
-describe("LayerLegend — content contract (preserved)", () => {
+describe("LayerLegend  -  content contract (preserved)", () => {
   it("renders a key when a raster layer with a known preset is loaded", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
     expect(screen.getByTestId("grace2-layer-legend")).toBeInTheDocument();
@@ -118,7 +118,7 @@ describe("LayerLegend — content contract (preserved)", () => {
   });
 });
 
-describe("LayerLegend — one key per eligible raster layer", () => {
+describe("LayerLegend  -  one key per eligible raster layer", () => {
   it("renders one key for each continuous-raster layer with a known preset", () => {
     const layers: ProjectLayerSummary[] = [
       makeLayer({ layer_id: "a", style_preset: "continuous_flood_depth", z_index: 3 }),
@@ -155,9 +155,9 @@ function makeFrameLayer(hour: number, run = "run-a"): ProjectLayerSummary {
   };
 }
 
-describe("LayerLegend — ONE key per sequential group (item 1)", () => {
+describe("LayerLegend  -  ONE key per sequential group (item 1)", () => {
   it("collapses N frame layers into a single legend key (not N keys)", () => {
-    // 3 HRRR forecast frames — all same preset, all form a sequential group.
+    // 3 HRRR forecast frames  -  all same preset, all form a sequential group.
     const layers = [makeFrameLayer(1), makeFrameLayer(3), makeFrameLayer(6)];
     render(<LayerLegend layers={layers} />);
     // Item 1: exactly ONE key for the whole group, not 3.
@@ -188,7 +188,7 @@ describe("LayerLegend — ONE key per sequential group (item 1)", () => {
   });
 });
 
-describe("LayerLegend — AOI-less fallback placement", () => {
+describe("LayerLegend  -  AOI-less fallback placement", () => {
   it("places the key bottom-center when no anchor/barWidth is given", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
     const key = screen.getByTestId("grace2-layer-legend-key");
@@ -236,7 +236,7 @@ describe("LayerLegend — AOI-less fallback placement", () => {
   });
 });
 
-describe("LayerLegend — CCW snapping to AOI sides", () => {
+describe("LayerLegend  -  CCW snapping to AOI sides", () => {
   // AOI rect reconstructed from anchor (bottom-edge midpoint) + barWidth.
   const anchor = { left: 500, top: 400 };
   const barWidth = 200;
@@ -333,7 +333,7 @@ describe("LayerLegend  -  scrubber-active right-side vertical rail (ITEM 5)", ()
   });
 });
 
-describe("LayerLegend — snaps to the TRUE projected AOI rect (aoiRect)", () => {
+describe("LayerLegend  -  snaps to the TRUE projected AOI rect (aoiRect)", () => {
   // A deliberately NON-SQUARE AOI rect: width 400, height 100. If the keys snap
   // off the real rect, the TOP key rails just above top=100; if they fell back to
   // the anchor+width square-ish ESTIMATE (height = width = 400) the top key would
@@ -380,14 +380,14 @@ describe("LayerLegend — snaps to the TRUE projected AOI rect (aoiRect)", () =>
     // (keyHeight is the full ~64px stacking height.) This lands NEAR +26, i.e.
     // close to the real top edge (100). The square ESTIMATE (height=400) would put
     // the top edge at bottom-400 = -200, so the top key would sit far negative
-    // (~-274) — so a non-negative-ish value here proves the true rect path.
+    // (~-274)  -  so a non-negative-ish value here proves the true rect path.
     const top = parseFloat(topKey.style.top);
     expect(top).toBeGreaterThan(0);
     expect(top).toBeLessThan(100);
   });
 
   it("prefers aoiRect over anchor+width when both are supplied", () => {
-    // Same anchor+width, but two DIFFERENT true rects → the top key must move with
+    // Same anchor+width, but two DIFFERENT true rects -> the top key must move with
     // the rect height, proving aoiRect (not the collapsed scalars) drives snapping.
     const shortRect = { left: 100, top: 100, right: 500, bottom: 200 }; // h=100
     const tallRect = { left: 100, top: -300, right: 500, bottom: 200 }; // h=500
@@ -420,12 +420,12 @@ describe("LayerLegend — snaps to the TRUE projected AOI rect (aoiRect)", () =>
         .find((k) => k.getAttribute("data-legend-side") === "top")!.style.top,
     );
 
-    // Taller rect → top edge is higher (smaller/negative y) → top key sits higher.
+    // Taller rect -> top edge is higher (smaller/negative y) -> top key sits higher.
     expect(topTall).toBeLessThan(topShort);
   });
 
   it("falls back to the anchor+width estimate when aoiRect is absent", () => {
-    // No aoiRect → reconstruct a square-ish rect from anchor + barWidth so the
+    // No aoiRect -> reconstruct a square-ish rect from anchor + barWidth so the
     // legend still snaps (never silently breaks). Bottom key still rails the
     // exact bottom edge (anchor.top = 200).
     render(
@@ -441,7 +441,7 @@ describe("LayerLegend — snaps to the TRUE projected AOI rect (aoiRect)", () =>
   });
 });
 
-describe("LayerLegend — resize", () => {
+describe("LayerLegend  -  resize", () => {
   it("widens a key when the resize handle is dragged right", () => {
     render(
       <LayerLegend layers={[makeLayer()]} anchor={{ left: 400, top: 300 }} barWidth={200} />,
@@ -468,7 +468,7 @@ describe("LayerLegend — resize", () => {
   });
 });
 
-describe("LayerLegend — compact / flatten + hide toggles", () => {
+describe("LayerLegend  -  compact / flatten + hide toggles", () => {
   it("flattens a key: hides min/max labels in compact mode", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
     expect(screen.getByTestId("layer-legend-min-label")).toBeInTheDocument();
@@ -519,12 +519,12 @@ describe("LayerLegend — compact / flatten + hide toggles", () => {
   });
 });
 
-// --- JOB WEB-AOI-LEGEND (#157) — "Show legend" pill clears the chat composer  //
+// --- JOB WEB-AOI-LEGEND (#157)  -  "Show legend" pill clears the chat composer  //
 //
 // The collapsed re-open pill must NOT overlap the mobile chat composer (the
 // bottom-sheet input form). On mobile it lifts above the composer (safe-area
 // inset + clearance); on desktop (no bottom sheet) it keeps the low position.
-describe("LayerLegend — Show-legend pill position vs mobile composer (#157)", () => {
+describe("LayerLegend  -  Show-legend pill position vs mobile composer (#157)", () => {
   /** Mock useIsMobile's media query (max-width:767px) match for one render. */
   function mockIsMobile(mobile: boolean): () => void {
     const original = window.matchMedia;
@@ -547,7 +547,7 @@ describe("LayerLegend — Show-legend pill position vs mobile composer (#157)", 
     // Source-of-truth: a calc() over the device safe-area inset plus a fixed
     // clearance that lifts the pill clear of the bottom-sheet composer. (jsdom's
     // CSSOM drops calc(env(...)) from an inline `bottom`, so we pin the exported
-    // constant directly — the same convention Chat's SHEET_BOTTOM_OFFSET_CSS uses.)
+    // constant directly  -  the same convention Chat's SHEET_BOTTOM_OFFSET_CSS uses.)
     expect(MOBILE_LEGEND_PILL_CLEARANCE_PX).toBeGreaterThan(DESKTOP_LEGEND_PILL_BOTTOM_PX);
     expect(MOBILE_LEGEND_PILL_BOTTOM_CSS).toBe(
       `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`,
@@ -575,7 +575,7 @@ describe("LayerLegend — Show-legend pill position vs mobile composer (#157)", 
       render(<LayerLegend layers={[makeLayer()]} />);
       fireEvent.click(screen.getByTestId("layer-legend-hide"));
       const pill = screen.getByTestId("grace2-layer-legend-show");
-      // The mobile branch sets a calc(env(...)) value; jsdom drops it to "" — the
+      // The mobile branch sets a calc(env(...)) value; jsdom drops it to ""  -  the
       // key invariant is it is NOT the desktop 24px that overlapped the form.
       expect(pill.style.bottom).not.toBe(`${DESKTOP_LEGEND_PILL_BOTTOM_PX}px`);
     } finally {
@@ -584,8 +584,8 @@ describe("LayerLegend — Show-legend pill position vs mobile composer (#157)", 
   });
 });
 
-describe("LayerLegend — drag", () => {
-  it("moves a key to a free position while dragging, then snaps back on release", () => {
+describe("LayerLegend  -  drag", () => {
+  it("moves a key to a free position while dragging, then snaps to a side on release", () => {
     render(
       <LayerLegend layers={[makeLayer()]} anchor={{ left: 400, top: 300 }} barWidth={200} />,
     );
@@ -595,11 +595,15 @@ describe("LayerLegend — drag", () => {
     fireEvent.pointerDown(key, { clientX: 410, clientY: 250 });
     fireEvent.pointerMove(window, { clientX: 600, clientY: 100 });
     const dragging = screen.getByTestId("grace2-layer-legend-key");
-    // While dragging the key follows the pointer (free position) — left changes.
+    // While dragging the key follows the pointer (free position)  -  left changes.
     expect(dragging.style.left).not.toBe(snappedLeft);
     fireEvent.pointerUp(window);
-    // On release it snaps back to the CCW-derived position.
-    expect(screen.getByTestId("grace2-layer-legend-key").style.left).toBe(snappedLeft);
+    // On release it SNAPS to a side (free position is dropped -> absolute snapped
+    // coords, not the 50%/bottom fallback). SIDE-SNAP: it lands on whichever AOI
+    // side it was dropped nearest, which is a settled absolute position.
+    const released = screen.getByTestId("grace2-layer-legend-key");
+    expect(released.style.left).not.toBe("50%");
+    expect(released.style.left.endsWith("px")).toBe(true);
   });
 
   it("does not start a drag from a control button", () => {
@@ -615,13 +619,138 @@ describe("LayerLegend — drag", () => {
     expect(screen.getByTestId("grace2-layer-legend-key").style.left).toBe(snappedLeft);
     fireEvent.pointerUp(window);
   });
+
+  it("does not start a drag from the resize handle (it resizes, not free-drags)", () => {
+    render(
+      <LayerLegend layers={[makeLayer()]} anchor={{ left: 400, top: 300 }} barWidth={200} />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.style.width).toBe("200px");
+    const handle = within(key).getByTestId("layer-legend-resize");
+    // Pointer-down on the resize handle then drag right: this RESIZES (width
+    // grows), it does NOT free-drag the card to the pointer position.
+    fireEvent.pointerDown(handle, { clientX: 100, clientY: 250 });
+    fireEvent.pointerMove(window, { clientX: 260, clientY: 100 });
+    const after = screen.getByTestId("grace2-layer-legend-key");
+    // Width grew by the drag delta (200 + 160 = 360)  -  the resize gesture ran.
+    expect(after.style.width).toBe("360px");
+    // The card stayed snapped (absolute top below the AOI bottom edge), not
+    // teleported to the pointer's y (100) as a free-drag would.
+    expect(parseFloat(after.style.top)).toBeGreaterThanOrEqual(300);
+    fireEvent.pointerUp(window);
+  });
 });
 
-// FRAME-TRUTH (NATE 2026-06-19) — the legend gradient + numeric bounds must
+// --- PART C (NATE 2026-06-22): drag the legend to a side -> it SNAPS there with
+// the matching orientation (left/right -> vertical, top/bottom -> horizontal).
+// The card BODY/EDGE is the drag handle (no dedicated grip icon); the snap +
+// reorientation happen on release via legend_snap.nearestSide. -------------- //
+describe("LayerLegend  -  drag-to-side snap + reorientation (PART C)", () => {
+  // A wide, short AOI rect so the four sides are far apart and a dropped card
+  // center maps unambiguously to the nearest edge. jsdom getBoundingClientRect
+  // returns zeros, so the dropped card top-left == its center == (move - down).
+  const rect = { left: 100, top: 100, right: 500, bottom: 200 };
+
+  function dragCardCenterTo(x: number, y: number): void {
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // pointerDown at the origin so offsetX/offsetY are 0 (zeroed bbox), then the
+    // move sets the free top-left to exactly (x, y) == the card center.
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: x, clientY: y });
+    fireEvent.pointerUp(window);
+  }
+
+  it("dragging a bottom key to the RIGHT edge snaps it to the right + goes vertical", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "s0" })]} aoiRect={rect} />);
+    // Default key lands on the BOTTOM (horizontal).
+    let key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    // Drop the card center near the RIGHT edge (x-right=500, mid-height).
+    dragCardCenterTo(490, 150);
+    key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    // It snapped to an absolute position (not the free drag spot, not the fallback).
+    expect(key.style.left).not.toBe("50%");
+    // Right side: left = aoi.right(500) + gap. So it sits to the right of the box.
+    expect(parseFloat(key.style.left)).toBeGreaterThan(500);
+  });
+
+  it("dragging to the TOP edge snaps to the top + stays horizontal", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "s1" })]} aoiRect={rect} />);
+    // Drop the card center near the TOP edge (y-top=100, mid-width).
+    dragCardCenterTo(300, 110);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("top");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+  });
+
+  it("dragging to the LEFT edge snaps to the left + goes vertical", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "s2" })]} aoiRect={rect} />);
+    dragCardCenterTo(110, 150);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("left");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+  });
+
+  it("the side override persists (the key stays where it was dragged)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "s3" })]} aoiRect={rect} />);
+    dragCardCenterTo(490, 150); // -> right
+    expect(
+      screen.getByTestId("grace2-layer-legend-key").getAttribute("data-legend-side"),
+    ).toBe("right");
+    // A no-op rerender (same props) must not reset the snapped side.
+    dragCardCenterTo(490, 150);
+    expect(
+      screen.getByTestId("grace2-layer-legend-key").getAttribute("data-legend-side"),
+    ).toBe("right");
+  });
+
+  it("with NO AOI rect, a drag just clears free (no side override, stays bottom-center)", () => {
+    render(<LayerLegend layers={[makeLayer({ layer_id: "s4" })]} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // AOI-less fallback bottom-center.
+    expect(key.style.left).toBe("50%");
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 50 });
+    fireEvent.pointerUp(window);
+    // No AOI to snap to -> back to the bottom-center fallback, no override.
+    const after = screen.getByTestId("grace2-layer-legend-key");
+    expect(after.style.left).toBe("50%");
+    expect(after.getAttribute("data-legend-orientation")).toBe("horizontal");
+  });
+});
+
+// --- PART C: the card body/edge IS the drag handle (no dedicated grip icon) -- //
+describe("LayerLegend  -  body/edge is the drag handle, no grip icon (PART C)", () => {
+  it("renders no dedicated drag-grip element (the body is grabbable)", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={{ left: 100, top: 100, right: 300, bottom: 250 }} />);
+    // There must be no separate drag-handle/grip testid; the card itself drags.
+    expect(screen.queryByTestId("layer-legend-drag-handle")).toBeNull();
+    expect(screen.queryByTestId("layer-legend-grip")).toBeNull();
+    // The card body carries grab affordance (cursor:grab) so an edge/body grab works.
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.style.cursor).toBe("grab");
+  });
+
+  it("a pointer-down on the card body (not a control) starts the drag", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={{ left: 100, top: 100, right: 500, bottom: 200 }} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    const startLeft = key.style.left;
+    fireEvent.pointerDown(key, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 400 });
+    // The card follows the pointer (free position) while dragging from the body.
+    expect(screen.getByTestId("grace2-layer-legend-key").style.left).not.toBe(startLeft);
+    fireEvent.pointerUp(window);
+  });
+});
+
+// FRAME-TRUTH (NATE 2026-06-19)  -  the legend gradient + numeric bounds must
 // match what the map actually paints, i.e. the TiTiler rescale + colormap_name
 // embedded in the frame layer's XYZ tile-template URL (the SOURCE OF TRUTH),
 // falling back to style_preset only when those params are absent / unknown.
-describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame truth)", () => {
+describe("LayerLegend  -  TiTiler rescale + colormap from the tile URL (frame truth)", () => {
   // An AWS frame layer whose wms_url is a TiTiler XYZ template carrying the
   // truth as query params (rescale=lo,hi + colormap_name).
   function makeTitilerLayer(
@@ -641,7 +770,7 @@ describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame tr
       />,
     );
     // The preset default for continuous_flood_depth is 0..3.5 m WITH a unit;
-    // the URL rescale drops the unit (arbitrary-layer bounds) — assert exact.
+    // the URL rescale drops the unit (arbitrary-layer bounds)  -  assert exact.
     expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0");
     expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("3.5");
   });
@@ -672,7 +801,7 @@ describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame tr
 
   it("falls back to the style_preset gradient + bounds when the URL has no params", () => {
     // wms_url is a plain QGIS WMS endpoint (no rescale / colormap_name), and
-    // uri is a gs:// pointer — neither carries TiTiler params.
+    // uri is a gs:// pointer  -  neither carries TiTiler params.
     render(
       <LayerLegend
         layers={[
@@ -752,12 +881,12 @@ describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame tr
   });
 });
 
-// --- Item a (Z-HIERARCHY, NATE 2026-06-20) — legend renders BELOW chat/layers - //
+// --- Item a (Z-HIERARCHY, NATE 2026-06-20)  -  legend renders BELOW chat/layers - //
 //
 // The legend keys + the collapsed show-pill must paint BEHIND the chat panel
 // (z=32) and the Layers/Cases panels (z=20) so they never cover the user's
-// controls. (They previously used z=50, which painted OVER the chat — the bug.)
-describe("LayerLegend — z-index below the chat + layers panels (item a)", () => {
+// controls. (They previously used z=50, which painted OVER the chat  -  the bug.)
+describe("LayerLegend  -  z-index below the chat + layers panels (item a)", () => {
   it("the key card z-index is below the chat (32) and layers panels (20)", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
     const key = screen.getByTestId("grace2-layer-legend-key");
@@ -778,12 +907,12 @@ describe("LayerLegend — z-index below the chat + layers panels (item a)", () =
   });
 });
 
-// --- Item e (ONE LEGEND per flood-depth series) — peak folds into the frames -- //
+// --- Item e (ONE LEGEND per flood-depth series)  -  peak folds into the frames -- //
 //
 // The per-frame depth COGs ("Flood depth step N") AND the max/peak depth layer
 // all paint with the SAME colormap + rescale, so they form ONE series and must
-// collapse to ONE legend key — not one-per-frame + a separate peak key.
-describe("LayerLegend — one legend per depth series incl. the peak (item e)", () => {
+// collapse to ONE legend key  -  not one-per-frame + a separate peak key.
+describe("LayerLegend  -  one legend per depth series incl. the peak (item e)", () => {
   function depthFrame(hour: number): ProjectLayerSummary {
     const hh = String(hour).padStart(2, "0");
     return makeLayer({
@@ -811,7 +940,7 @@ describe("LayerLegend — one legend per depth series incl. the peak (item e)", 
 
   it("a layer with a DIFFERENT colormap/scale still gets its own key", () => {
     const depthSeries = [depthFrame(1), depthFrame(3), peakDepth()];
-    // A velocity raster — different colormap + rescale => different series.
+    // A velocity raster  -  different colormap + rescale => different series.
     const velocity = makeLayer({
       layer_id: "run-a-velocity",
       name: "Flow velocity",
@@ -824,8 +953,8 @@ describe("LayerLegend — one legend per depth series incl. the peak (item e)", 
   });
 });
 
-// --- Item g (ORIENTATION) — vertical on left/right, horizontal on top/bottom -- //
-describe("LayerLegend — orientation flips by docked side (item g)", () => {
+// --- Item g (ORIENTATION)  -  vertical on left/right, horizontal on top/bottom -- //
+describe("LayerLegend  -  orientation flips by docked side (item g)", () => {
   const anchor = { left: 500, top: 400 };
   const barWidth = 200;
 
@@ -866,8 +995,8 @@ describe("LayerLegend — orientation flips by docked side (item g)", () => {
   });
 });
 
-// --- Item d (SCALE WITH AOI) — overlay scales with the AOI on-screen px size -- //
-describe("LayerLegend — scales the default key width with the AOI px size (item d)", () => {
+// --- Item d (SCALE WITH AOI)  -  overlay scales with the AOI on-screen px size -- //
+describe("LayerLegend  -  scales the default key width with the AOI px size (item d)", () => {
   it("a tiny on-screen AOI yields a SMALLER default key than a large one", () => {
     // No barWidth override => the default width is sized off STATIC * scale,
     // which tracks the aoiRect's on-screen size (clamped). A tiny rect shrinks it.
@@ -886,8 +1015,8 @@ describe("LayerLegend — scales the default key width with the AOI px size (ite
   });
 });
 
-// --- Item f (legend not obscured by the scrubber) — bottom-reserve push ------- //
-describe("LayerLegend — bottom key clears the scrubber footprint (item f)", () => {
+// --- Item f (legend not obscured by the scrubber)  -  bottom-reserve push ------- //
+describe("LayerLegend  -  bottom key clears the scrubber footprint (item f)", () => {
   it("pushes the bottom-side key down by the supplied bottomReservePx", () => {
     const rect = { left: 100, top: 100, right: 500, bottom: 200 };
     const { rerender } = render(
@@ -913,7 +1042,7 @@ describe("LayerLegend — bottom key clears the scrubber footprint (item f)", ()
 });
 
 // --- Item b (mobile controlled hide + suppressed pill) ------------------------ //
-describe("LayerLegend — controlled hide + suppressed floating pill (item b)", () => {
+describe("LayerLegend  -  controlled hide + suppressed floating pill (item b)", () => {
   it("renders nothing for the pill when hidden + suppressShowPill (mobile)", () => {
     render(
       <LayerLegend layers={[makeLayer()]} hidden suppressShowPill />,
