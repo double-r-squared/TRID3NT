@@ -2291,6 +2291,13 @@
       "model": "opus",
       "subagent_tokens": 374118,
       "description": "5-agent ultracode engine spike (NATE proposed SWAN). Verdict GO_WITH_CAVEATS, additive higher-fidelity (NOT redundant w/ SnapWave), A-tier drivability. Wrote reports/design/engine_spike_swan.md (S1-S10 integration ladder). Caveats: standalone v0.1 (no direct SFINCS ingest), CDS-key dependency for ERA5 boundary+wind, coarse 0.5deg ERA5 waves. GPL no-license-blocker."
+    },
+    {
+      "job_id": "workflow-delft3d-engine-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 397893,
+      "description": "5-agent ultracode engine go/no-go (NATE proposed Delft3D). Verdict GO_WITH_CAVEATS scoped-narrowly (adversarially verified, high confidence): Delft3D-WAVE IS SWAN + Delft3D-FLOW overlaps SFINCS, so the ONLY additive value is morphology/sediment + DELWAQ water-quality + online flow-wave coupling. Do NOT adopt the monolith; scope to the sediment/dye North Star, self-host single-node 2D D-Flow FM (Inductiva.AI managed = escape-hatch only). Open (AGPL/GPL/LGPL, no license server). Wrote engine_spike_delft3d.md (D0-D8) + archived video notes. NOTE: NATE's ranking lists Delft3D-FM A-tier; spike scopes B for coupled/multi-node (single-node 2D = A once a deck_builder exists)."
     }
   ],
   "totals_by_sprint": {
