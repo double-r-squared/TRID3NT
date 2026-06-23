@@ -80,7 +80,7 @@ RUN apt-get update \
 # GATED-BUILD PLACEHOLDER: replace SWAN_SRC_SHA256 + SWAN_SRC_URL with the real
 # pinned values at the first build (the sha256sum -c gate fails until then -- the
 # intended interlock so an unverified binary never ships).
-ENV SWAN_SRC_SHA256=REPLACE_WITH_PINNED_SHA256_AT_GATED_BUILD_STEP \
+ENV SWAN_SRC_SHA256=5e30107af500cadf9d6d1b6076403cc85793fd4db113d6a487fede5f74f41f77 \
     SWAN_SRC_URL=https://swanmodel.sourceforge.io/download/zip/swan4151.tar.gz
 RUN mkdir -p "$SWAN_HOME/src" \
     && curl -fsSL -o /tmp/swan-src.tar.gz "$SWAN_SRC_URL" \
