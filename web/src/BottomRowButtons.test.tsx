@@ -62,15 +62,27 @@ describe("BottomRowButtons", () => {
     expect(screen.getByTestId("grace2-bottom-row-settings")).toBeTruthy();
   });
 
-  // job-0283 — desktop sleekness pass: the floating pills moved to the
-  // panel surface family.
-  it("floating variant pills use the desktop family (full-pill radius + hairline border)", () => {
+  // NATE 2026-06-22 — desktop Settings is now a SQUARE icon-only button (drop
+  // the label, match the square button / expander-icon family), still on the
+  // rail-surface hairline border. Supersedes the job-0283 full-pill assertion.
+  it("floating variant Settings is a square icon-only button (no label, hairline border)", () => {
     render(<BottomRowButtons onOpenSettings={vi.fn()} />);
-    const pill = screen.getByTestId("grace2-bottom-row-settings");
-    expect(pill.style.borderRadius).toBe("999px");
-    expect(pill.style.border.replace(/\s/g, "")).toContain(
+    const btn = screen.getByTestId("grace2-bottom-row-settings");
+    expect(btn.style.borderRadius).toBe("8px");
+    expect(btn.style.width).toBe("34px");
+    expect(btn.style.height).toBe("34px");
+    expect(btn.style.border.replace(/\s/g, "")).toContain(
       "rgba(255,255,255,0.08)",
     );
+    // Icon-only on desktop: no "Settings" text label rendered.
+    expect(screen.queryByText("Settings")).toBeNull();
+    // The accessible name is preserved via aria-label.
+    expect(btn.getAttribute("aria-label")).toBe("Open settings");
+  });
+
+  it("inline (mobile drawer) variant KEEPS the Settings text label", () => {
+    render(<BottomRowButtons onOpenSettings={vi.fn()} variant="inline" />);
+    expect(screen.getByText("Settings")).toBeTruthy();
   });
 
   // job-0284 — mobile map-centric pass: the inline (drawer footer) pills

@@ -68,20 +68,26 @@ const inlinePillStyle: React.CSSProperties = {
 // job-0283 — desktop sleekness: the floating pills join the rail's surface
 // family (hairline border, full-pill radius, blur) and step up to the 12px
 // meta type size for legibility. Visual only; same controls, ids, handlers.
-const floatingPillStyle: React.CSSProperties = {
+// NATE 2026-06-22 — on DESKTOP the Settings control is now a SQUARE icon-only
+// button (no "Settings" label) so it matches the rest of the square button /
+// expander-icon family. Same rail-surface treatment (hairline border + blur),
+// just a fixed square box with a centered icon. The inline (mobile drawer)
+// variant keeps the labeled pill so the drawer footer stays readable.
+const floatingSquareStyle: React.CSSProperties = {
   background: "rgba(18,19,24,0.92)",
   border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 999,
+  borderRadius: 8,
   boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
   backdropFilter: "blur(6px)",
   WebkitBackdropFilter: "blur(6px)",
   color: "#cfd4db",
-  padding: "6px 14px",
-  fontSize: 12,
+  width: 34,
+  height: 34,
+  padding: 0,
   cursor: "pointer",
   display: "inline-flex",
   alignItems: "center",
-  gap: 6,
+  justifyContent: "center",
   fontFamily: "inherit",
 };
 
@@ -90,22 +96,25 @@ export function BottomRowButtons({
   onOpenSecrets,
   variant = "floating",
 }: BottomRowButtonsProps): JSX.Element {
-  const pillStyle =
-    variant === "inline" ? inlinePillStyle : floatingPillStyle;
+  const isInline = variant === "inline";
+  // Desktop (floating) = square icon-only; mobile drawer (inline) = labeled pill.
+  const pillStyle = isInline ? inlinePillStyle : floatingSquareStyle;
+  const iconSize = isInline ? 14 : 16;
   return (
     <div
       data-testid="grace2-bottom-row-buttons"
       data-variant={variant}
-      style={variant === "inline" ? inlineRowStyle : rowStyle}
+      style={isInline ? inlineRowStyle : rowStyle}
     >
       <button
         data-testid="grace2-bottom-row-settings"
         onClick={onOpenSettings}
         style={pillStyle}
         aria-label="Open settings"
+        title="Settings"
       >
-        <IconSettings size={14} />
-        <span>Settings</span>
+        <IconSettings size={iconSize} />
+        {isInline && <span>Settings</span>}
       </button>
       {/* job-0321 F29 — the standalone Secrets pill is retired (API keys now
           live inside Settings). Rendered ONLY for legacy callers that still
@@ -116,9 +125,10 @@ export function BottomRowButtons({
           onClick={onOpenSecrets}
           style={pillStyle}
           aria-label="Open API keys"
+          title="API keys"
         >
-          <IconKey size={14} />
-          <span>Secrets</span>
+          <IconKey size={iconSize} />
+          {isInline && <span>Secrets</span>}
         </button>
       )}
     </div>
