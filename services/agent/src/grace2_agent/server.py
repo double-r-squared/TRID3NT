@@ -7075,6 +7075,14 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "fetch_viirs_day_fire",
         "fetch_cama_flood_discharge",
         "fetch_gtsm_tide_surge",
+        # conservation micro-North-Star: PC STAC raster fetchers that do
+        # multi-second sync work (SAS sign + windowed /vsicurl warp-read +
+        # COG-write). Bodies are emit-free (the surrounding emit_tool_call
+        # wrapper does the emit), so off-load so they never stall the WS
+        # heartbeat (feedback_no_sync_blocking_on_asyncio_loop).
+        "compute_ndvi",
+        "fetch_naip",
+        "fetch_mobi",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /

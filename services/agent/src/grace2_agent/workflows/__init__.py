@@ -57,5 +57,6 @@ from . import model_groundwater_contamination_scenario as _model_groundwater_con
 from . import model_news_event_ingest as _model_news_event_ingest  # noqa: F401  — job-0119 Case 2 composer
 from . import model_nws_flood_event_scenario as _model_nws_flood_event_scenario  # noqa: F401  — job-0229 Case 3 composer
 from . import pelicun_damage_with_buildings as _pelicun_damage_with_buildings  # noqa: F401  — job-0147 buildings→Pelicun composer
+from . import model_conservation_priority as _model_conservation_priority  # noqa: F401  -- conservation micro-North-Star composer (NAIP base + NDVI + MoBI + GBIF + IUCN); registers run_model_conservation_priority
 
 __all__: list[str] = []
