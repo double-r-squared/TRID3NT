@@ -158,35 +158,37 @@ export function BboxProgressOverlay({
     );
   }
 
-  // mode === "scan": a bright segment that sweeps AROUND the bbox edge (never
-  // covers the interior, so existing layers stay visible). We draw a pulsing
-  // border + a single sweeping highlight bar that travels along the top edge
-  // (the most legible sweep on a rectangle); the pulsing border carries the
-  // around-the-edge feel without obscuring the box. Reduced-motion -> a faint
-  // static border only.
+  // mode === "scan": a single sweeping highlight bar that travels across the
+  // FULL bbox extent (never covers the interior persistently, so existing
+  // layers stay visible). The cue is the sweep ON the existing AOI box.
   //
-  // NATE 2026-06-22 (item 4): for the SIM tone (purple) the on-map analysis-
-  // extent rectangle ITSELF recolors to purple (Map.setAnalysisExtentSimColor),
-  // so the overlay must NOT also draw its own solid border - that read as a
-  // SECOND box. For the sim tone we drop the static border and keep ONLY the
-  // sweeping highlight bar (which now crosses the full extent, item 3) running on
-  // the recolored single box. The blue (loading / connecting) tone has no map
-  // recolor, so it keeps its pulsing border as the on-map cue.
-  const isSim = tone === "purple";
+  // SINGLE BOX (NATE 2026-06-23, item 5): the on-map analysis-extent rectangle
+  // (Map.drawAnalysisExtent) is the ONE AOI box, and this overlay arms ONLY when
+  // that box is projected (aoiScreenRect). So the overlay must NOT draw its OWN
+  // outline - a solid/pulsing border read as a SECOND box stacked on the AOI
+  // rectangle (the reported "doubled box"). We drop the overlay border for BOTH
+  // tones and apply the effect (the sweep + a soft glow, no outline) directly
+  // over the single on-map box:
+  //   - SIM (purple): the on-map box ALSO recolors purple
+  //     (Map.setAnalysisExtentSimColor); the overlay adds only the sweep.
+  //   - LOADING / CONNECTING (blue): the on-map box keeps its normal blue; the
+  //     overlay adds the sweep + a faint glow on the SAME box.
+  // Either way there is exactly ONE rectangle, and the scan sweeps its full
+  // extent (the keyframe travels -100% -> 250% so the bar clears the right edge).
   const scanBorderStyle: React.CSSProperties = reduced
     ? {
+        // Reduced-motion: a faint static glow on the single box (no outline,
+        // no sweep) so the "working" cue still reads without motion.
         ...frameStyle,
-        ...(isSim ? {} : { border: `1.5px solid ${color}`, opacity: 0.5 }),
+        boxShadow: `0 0 10px ${color}40`,
+        opacity: 0.7,
       }
     : {
+        // No border (single box); a soft pulsing GLOW conveys "working" on the
+        // existing AOI rectangle without drawing a second outline.
         ...frameStyle,
-        ...(isSim
-          ? {}
-          : {
-              border: `1.5px solid ${color}`,
-              animation: "grace2-bbox-border-pulse 1.6s ease-in-out infinite",
-              boxShadow: `0 0 8px ${color}55`,
-            }),
+        boxShadow: `0 0 8px ${color}55`,
+        animation: "grace2-bbox-border-pulse 1.6s ease-in-out infinite",
       };
 
   return (

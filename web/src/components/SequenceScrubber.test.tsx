@@ -316,6 +316,96 @@ describe("SequenceScrubber - z-order vs the mobile chat sheet", () => {
   });
 });
 
+// ITEM 6 (NATE 2026-06-23) - the x/N counter must stay CONTAINED within the
+// pill bounds (it used to leak past the right edge on both mobile + desktop).
+describe("SequenceScrubber - x/N counter contained within the pill (ITEM 6)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("clips overflow so children stay within the rounded pill (box-sizing + overflow:hidden)", () => {
+    renderScrubber({ aoiRect: { left: 100, top: 50, right: 700, bottom: 400 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // The pill contains its content; box-sizing + overflow:hidden keep the x/N
+    // counter (and the buttons) WITHIN the rounded bounds.
+    expect(el.style.overflow).toBe("hidden");
+    expect(el.style.boxSizing).toBe("border-box");
+  });
+
+  it("the x/N counter is a child of the pill (not floated outside it)", () => {
+    renderScrubber({ activeIndex: 1 });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    const counter = screen.getByTestId("scrubber-frame-label");
+    // The counter is INSIDE the pill element, so overflow:hidden contains it.
+    expect(el.contains(counter)).toBe(true);
+    expect(counter).toHaveTextContent("2/3");
+  });
+
+  it("contains the counter on a tiny (min-width-clamped) pill too", () => {
+    // A tiny box clamps the pill to 200px; the slider yields (min-width 24) so
+    // the buttons + counter still fit within the clipped pill.
+    renderScrubber({ aoiRect: { left: 500, top: 500, right: 512, bottom: 540 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.width).toBe("200px");
+    expect(el.style.overflow).toBe("hidden");
+    expect(el.contains(screen.getByTestId("scrubber-frame-label"))).toBe(true);
+  });
+});
+
+// ITEM 7 (NATE 2026-06-23) - the AOI-anchored scrubber's mount/visibility on
+// zoom-out must be IDENTICAL on mobile and desktop. The product decision (NATE
+// 2026-06-22) is that NEITHER platform hides on zoom-out (the old
+// scrubberVisibleForAoi hide was retired); these tests pin that parity so the
+// scrubber does not "disappear at a zoom distance" on one platform but not the
+// other. Only POSITION/z-index differ by platform, never whether it mounts.
+describe("SequenceScrubber - zoom-out visibility parity mobile vs desktop (ITEM 7)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubPlatform(mobile: boolean): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: mobile,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+  }
+
+  const tiny: React.ComponentProps<typeof SequenceScrubber>["aoiRect"] = {
+    left: 500,
+    top: 500,
+    right: 512,
+    bottom: 540,
+  };
+
+  it("stays MOUNTED on a tiny zoomed-out AOI on DESKTOP", () => {
+    stubPlatform(false);
+    renderScrubber({ aoiRect: tiny });
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+
+  it("stays MOUNTED on the SAME tiny zoomed-out AOI on MOBILE (same as desktop)", () => {
+    stubPlatform(true);
+    renderScrubber({ aoiRect: tiny });
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+
+  it("stays MOUNTED with NO aoiRect (off-screen) on BOTH platforms", () => {
+    stubPlatform(false);
+    const a = renderScrubber();
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+    a.unmount();
+    stubPlatform(true);
+    renderScrubber();
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+});
+
 // ITEM 6 (NATE 2026-06-22)  -  on mobile the scrubber must sit UNDER the chat
 // bottom-sheet in POSITION too (not just z-order), so it never covers the
 // composer even when the AOI sits low on screen.

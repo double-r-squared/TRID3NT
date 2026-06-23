@@ -2538,7 +2538,15 @@ export function App(): JSX.Element {
           Layers panel is open/collapsed. It pins bottom-center of the AOI box via
           aoiScreenRect. Carries its own play/pause button (item 3) wired to the
           controller, so closing the panel never drops the scrubber or playback. */}
-      <AppSequenceScrubber aoiRect={aoiScreenRect} />
+      <AppSequenceScrubber
+        aoiRect={aoiScreenRect}
+        /* ITEM 2 (NATE 2026-06-23) - the scrubber is a MAP overlay; while the
+           full-screen mobile Layers drawer is open it would float OVER the layer
+           rows (reported: a scrubber pill mid-list). Hide it whenever the mobile
+           drawer is open - it belongs to the map view, not over the list. Desktop
+           is unaffected (the drawer is mobile-only). */
+        hidden={isMobile && mobileDrawerOpen}
+      />
     </div>
     </AuthGuard>
   );
@@ -2554,8 +2562,15 @@ export function App(): JSX.Element {
 // the LayerPanel, when open, mirrors the controller's frame into its own rows.
 function AppSequenceScrubber({
   aoiRect,
+  hidden = false,
 }: {
   aoiRect: ScreenRect | null;
+  /**
+   * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open). The
+   * scrubber is a map overlay; when the full-screen drawer covers the map it
+   * must not float over the layer rows. Hooks still run above this guard.
+   */
+  hidden?: boolean;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -2564,6 +2579,10 @@ function AppSequenceScrubber({
       ? anim.groups.find((g) => g.key === anim.activeGroupKey) ?? null
       : null;
   if (!activeGroup) return null;
+  // ITEM 2 - the mobile Layers drawer is open over the map; do not paint the
+  // scrubber over the layer list. (Placed AFTER the hooks above so hook order
+  // is stable across renders.)
+  if (hidden) return null;
   const activeIndex = controller.frameIndexFor(activeGroup.key);
   return (
     <SequenceScrubber

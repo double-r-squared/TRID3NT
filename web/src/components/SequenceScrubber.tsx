@@ -277,6 +277,15 @@ export function SequenceScrubber({
         alignItems: "center",
         gap: 8,
         padding: "7px 12px",
+        // ITEM 6 (NATE 2026-06-23): the x/N counter used to LEAK past the right
+        // edge of the pill. The pill has an explicit width; with the buttons +
+        // counter all flex-shrink:0 and the slider's old min-width (80), the
+        // content min-size could exceed the pill width and push the counter
+        // OUTSIDE the rounded bounds. box-sizing + overflow:hidden contains
+        // every child WITHIN the pill (on mobile + desktop alike); the slider
+        // (flex:1, min-width lowered below) yields so nothing overflows.
+        boxSizing: "border-box",
+        overflow: "hidden",
         // Joins the panel surface family (matches LayerLegend chrome).
         background: "rgba(17,18,23,0.82)",
         backdropFilter: "blur(6px)",
@@ -329,7 +338,10 @@ export function SequenceScrubber({
         data-testid="scrubber-slider"
         style={{
           flex: 1,
-          minWidth: 80,
+          // ITEM 6: a smaller min-width lets the slider YIELD so the buttons +
+          // x/N counter always fit WITHIN the pill (no overflow that pushed the
+          // counter past the right edge). Still wide enough to grab on a tiny box.
+          minWidth: 24,
           height: 16,
           accentColor: "#4aa3ff",
           cursor: "pointer",

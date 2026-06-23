@@ -9,6 +9,10 @@ import { createRoot } from "react-dom/client";
 //   "/app"     → the app, always.
 //   "/privacy" → privacy policy, always.
 import { EntryRouter } from "./EntryRouter";
+// White-screen-of-death guard: any uncaught render throw inside the app tree
+// must degrade to a DARK fallback (ErrorBoundary), never blank the root to
+// white. Wraps EntryRouter (-> App) so the whole tree is covered.
+import { ErrorBoundary } from "./components/ErrorBoundary";
 // job-0166 — global sans-serif font baseline for body + form controls so
 // the Cases / CaseView / ConfirmationDialog surfaces (and any future
 // browser-default text) don't fall back to UA serif. See styles/global.css
@@ -20,6 +24,8 @@ if (!root) throw new Error("missing #root element");
 
 createRoot(root).render(
   <StrictMode>
-    <EntryRouter />
+    <ErrorBoundary>
+      <EntryRouter />
+    </ErrorBoundary>
   </StrictMode>,
 );

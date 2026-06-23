@@ -25,6 +25,7 @@ import {
   legendHasContent,
 } from "./components/LayerLegend";
 import { ProjectLayerSummary } from "./contracts";
+import { getStylePreset } from "./lib/style-presets";
 // ITEM 5 (NATE 2026-06-22)  -  the legend reads the shared AnimationController to
 // know whether the SCRUBBER is showing (so it rails to the right of the bbox,
 // vertically). Reset the process-global controller before every test so a group
@@ -350,6 +351,92 @@ describe("LayerLegend  -  scrubber-active right-side vertical rail (ITEM 5)", ()
     // Narrow: well under both the 200px barWidth and the 140px horizontal min.
     expect(w).toBeLessThan(120);
     expect(w).toBeGreaterThan(0);
+  });
+});
+
+// --- ITEM 3 + ITEM 4 (NATE 2026-06-23): a VERTICAL key rotates its title to
+// read vertically (no truncation) and moves the X (hide) to the BOTTOM, inline
+// with the colorbar. The horizontal key is unchanged. ----------------------- //
+describe("LayerLegend  -  vertical key: rotated title + bottom X (ITEM 3/4)", () => {
+  const anchor = { left: 500, top: 400 };
+  const barWidth = 200;
+
+  // Drive scrubber-active so the (only) key rails RIGHT -> vertical orientation.
+  function activateScrubber(): void {
+    const c = getAnimationController();
+    c.setGroups([
+      {
+        key: "seq-v",
+        label: "HRRR precip",
+        layerIds: ["f01", "f03", "f06"],
+        frameLabels: ["F+01h", "F+03h", "F+06h"],
+      },
+    ]);
+    c.setActiveGroup("seq-v");
+  }
+
+  it("ITEM 3: the vertical title rotates to read vertically with NO ellipsis truncation", () => {
+    activateScrubber();
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    const title = within(key).getByTestId("layer-legend-title");
+    // Rotated to read vertically (writing-mode), not laid out horizontally.
+    expect(title.style.writingMode).toBe("vertical-rl");
+    // NO horizontal-ellipsis clamp (the bug was "Ma..." truncation).
+    expect(title.style.whiteSpace).not.toBe("nowrap");
+    expect(title.style.textOverflow).not.toBe("ellipsis");
+    // The FULL label text is present (not clipped at the DOM level).
+    const preset = getStylePreset("continuous_flood_depth");
+    expect(title).toHaveTextContent(preset!.label);
+  });
+
+  it("ITEM 4: the X (hide) sits at the BOTTOM of the vertical key, inline with the bar", () => {
+    activateScrubber();
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    // The X lives INSIDE the value-row column (with the bar + labels), at the
+    // bottom - not in a top title row.
+    const valueRow = within(key).getByTestId("layer-legend-value-row");
+    const hide = within(key).getByTestId("layer-legend-hide");
+    expect(valueRow.contains(hide)).toBe(true);
+    // It is AFTER the min label in DOM order (bottom of the column). The min
+    // label and the X are both children of the value-row column.
+    const minLabel = within(key).getByTestId("layer-legend-min-label");
+    const children = Array.from(valueRow.children);
+    const minIdx = children.findIndex((c) => c.contains(minLabel));
+    const hideIdx = children.findIndex((c) => c.contains(hide));
+    expect(minIdx).toBeGreaterThanOrEqual(0);
+    expect(hideIdx).toBeGreaterThan(minIdx);
+  });
+
+  it("the HORIZONTAL key keeps its top title row + X (unchanged)", () => {
+    // No scrubber -> bottom/horizontal key. Title is in the top row (not rotated)
+    // and the X is in that top row too.
+    render(<LayerLegend layers={[makeLayer({ layer_id: "h0" })]} anchor={anchor} barWidth={barWidth} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    const title = within(key).getByTestId("layer-legend-title");
+    // Horizontal title is NOT rotated and keeps its ellipsis clamp.
+    expect(title.style.writingMode === "" || title.style.writingMode === "horizontal-tb").toBe(true);
+    expect(title.style.whiteSpace).toBe("nowrap");
+    // The X is NOT inside the value row for a horizontal key.
+    const valueRow = within(key).getByTestId("layer-legend-value-row");
+    const hide = within(key).getByTestId("layer-legend-hide");
+    expect(valueRow.contains(hide)).toBe(false);
   });
 });
 

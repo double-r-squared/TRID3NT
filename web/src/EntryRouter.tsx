@@ -35,6 +35,7 @@
 
 import { lazy, Suspense } from "react";
 import { Landing } from "./pages/Landing";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const App = lazy(() => import("./App").then((m) => ({ default: m.App })));
 const Privacy = lazy(() =>
@@ -111,8 +112,13 @@ export function EntryRouter(): JSX.Element {
     );
   }
   return (
-    <Suspense fallback={<RouteFallback />}>
-      <App />
-    </Suspense>
+    // Inner boundary: an App render throw degrades to the dark fallback even
+    // when this router is mounted without the main.tsx outer boundary (e.g. a
+    // future host). main.tsx still wraps the whole tree as the outer guard.
+    <ErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>
+        <App />
+      </Suspense>
+    </ErrorBoundary>
   );
 }

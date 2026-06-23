@@ -101,7 +101,15 @@ const FRAMES = [makeFrame(1), makeFrame(3), makeFrame(6)];
 
 // Mirror of App.tsx's AppSequenceScrubber: render the scrubber from the shared
 // controller whenever a group is active, independent of the LayerPanel.
-function AppScrubberHarness(): JSX.Element | null {
+//
+// ITEM 2 (NATE 2026-06-23): App passes `hidden={isMobile && mobileDrawerOpen}`
+// so the scrubber (a MAP overlay) does NOT float over the full-screen mobile
+// Layers drawer's rows. The harness mirrors that gate.
+function AppScrubberHarness({
+  hidden = false,
+}: {
+  hidden?: boolean;
+}): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
   const active =
@@ -109,6 +117,7 @@ function AppScrubberHarness(): JSX.Element | null {
       ? anim.groups.find((g) => g.key === anim.activeGroupKey) ?? null
       : null;
   if (!active) return null;
+  if (hidden) return null;
   return (
     <SequenceScrubber
       label={active.label}
@@ -369,6 +378,50 @@ describe("scrubber+legend scaling unification (NATE 2026-06-22)", () => {
     // is identical by construction -> they 'share scaling' (NATE's ask 4).
     const rect: ScreenRect = { left: 0, top: 0, right: 360, bottom: 360 };
     expect(aoiScaleFactor(rect)).toBe(aoiScaleFactor(rect));
+  });
+});
+
+// --- ITEM 2 (NATE 2026-06-23) - hide the scrubber over the mobile Layers drawer //
+describe("Item 2 - scrubber hidden while the mobile Layers drawer is open", () => {
+  beforeEach(() => {
+    installFakeTimerController();
+  });
+
+  it("renders the scrubber when the drawer is CLOSED (hidden=false)", () => {
+    render(<AppScrubberHarness hidden={false} />);
+    act(() => {
+      getAnimationController().setGroups([
+        {
+          key: "grp",
+          label: "HRRR precip",
+          layerIds: ["run-a-f01", "run-a-f03", "run-a-f06"],
+          frameLabels: ["F+01h", "F+03h", "F+06h"],
+        },
+      ]);
+    });
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+
+  it("HIDES the scrubber when the mobile drawer is OPEN (hidden=true)", () => {
+    const { rerender } = render(<AppScrubberHarness hidden={false} />);
+    act(() => {
+      getAnimationController().setGroups([
+        {
+          key: "grp",
+          label: "HRRR precip",
+          layerIds: ["run-a-f01", "run-a-f03", "run-a-f06"],
+          frameLabels: ["F+01h", "F+03h", "F+06h"],
+        },
+      ]);
+    });
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+    // Open the mobile Layers drawer -> the scrubber (a map overlay) must vanish
+    // so it does not float over the layer rows.
+    rerender(<AppScrubberHarness hidden={true} />);
+    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+    // Closing the drawer again restores it (the group is still active).
+    rerender(<AppScrubberHarness hidden={false} />);
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
   });
 });
 

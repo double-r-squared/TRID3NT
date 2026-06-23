@@ -256,7 +256,12 @@ const KEY_MAX_WIDTH = 520;
 // horizontal-dock height; vertical-docked (left/right) keys are taller (a tall
 // bar) so we feed a separate vertical height to the stacking math.
 const KEY_HEIGHT_FLAT = 56;
-const KEY_HEIGHT_VERTICAL = 150;
+// ITEM 3/4 (NATE 2026-06-23): the vertical card now stacks a ROTATED title
+// (top) + max label + tall bar + min label + the X (bottom), so its footprint
+// is taller than the old 150 (title-on-top-row + bar). Bump the stacking height
+// so stacked vertical keys don't overlap. (Feeds only the snap-stacking math;
+// the rendered card sizes itself.)
+const KEY_HEIGHT_VERTICAL = 220;
 // NATE 2026-06-22 (item 2): a VERTICAL-docked key (left/right side) is a TALL,
 // NARROW bar - the wide horizontal width made it render nearly square. The card
 // only has to fit the thin gradient bar + the centered min/max labels + padding,
@@ -940,38 +945,50 @@ export function LayerLegend({
               zIndex: LEGEND_Z_INDEX,
             }}
           >
-            {/* LEGEND v2 - ROW 1: title + hide(eye). Always shown (flat key). */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 5,
-                gap: 6,
-              }}
-            >
-              <span
-                data-testid="layer-legend-title"
+            {/* LEGEND v2 - ROW 1 (HORIZONTAL only): title + hide(X). On a VERTICAL
+                key the title is rotated to read vertically and the X moves to the
+                BOTTOM of the column (item 3 + item 4), so the top title row is
+                skipped here for vertical. */}
+            {orientation !== "vertical" ? (
+              <div
                 style={{
-                  fontSize: titleFont,
-                  fontWeight: 600,
-                  letterSpacing: "0.03em",
-                  color: "#ddd",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: 5,
+                  gap: 6,
                 }}
               >
-                {preset.label}
-              </span>
-              <LegendControls idx={idx} onHide={() => setHidden(true)} />
-            </div>
+                <span
+                  data-testid="layer-legend-title"
+                  style={{
+                    fontSize: titleFont,
+                    fontWeight: 600,
+                    letterSpacing: "0.03em",
+                    color: "#ddd",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {preset.label}
+                </span>
+                <LegendControls idx={idx} onHide={() => setHidden(true)} />
+              </div>
+            ) : null}
 
             {/* LEGEND v2 - ROW 2: the gradient bar flanked by the min/max values.
                 HORIZONTAL (top/bottom dock): [min] bar [max] in a row, min at the
                 LEFT end of the bar, max at the RIGHT. VERTICAL (left/right dock):
                 the same rotates - max at the TOP, min at the BOTTOM of a tall
-                vertical bar. The bar grows to fill so the values flank its ends. */}
+                vertical bar. The bar grows to fill so the values flank its ends.
+
+                ITEM 3 (NATE 2026-06-23): on a VERTICAL key the title used to
+                ellipsize to "Ma..." in the cramped slim card. Instead we ROTATE
+                the title to read VERTICALLY (writing-mode: vertical-rl) so the
+                FULL label is legible alongside the bar - NO truncation.
+                ITEM 4: the close (X) sits at the BOTTOM of the column, inline
+                with the colorbar (below the min label), not at the top. */}
             {orientation === "vertical" ? (
               <div
                 data-testid="layer-legend-value-row"
@@ -983,6 +1000,26 @@ export function LayerLegend({
                   marginTop: 2,
                 }}
               >
+                <span
+                  data-testid="layer-legend-title"
+                  style={{
+                    fontSize: titleFont,
+                    fontWeight: 600,
+                    letterSpacing: "0.03em",
+                    color: "#ddd",
+                    // ITEM 3: rotate to read vertically (writing-mode:
+                    // vertical-rl reads naturally top->bottom). The FULL label
+                    // shows - no ellipsis/nowrap truncation. Cap the rotated run
+                    // to the bar height so a very long label wraps onto a second
+                    // vertical column (vertical-rl flows columns right->left)
+                    // rather than pushing the card past the stacking-height math.
+                    writingMode: "vertical-rl",
+                    maxHeight: verticalBarHeight,
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {preset.label}
+                </span>
                 <span
                   data-testid="layer-legend-max-label"
                   style={{ fontSize: labelFont, color: "#bbb" }}
@@ -1006,6 +1043,8 @@ export function LayerLegend({
                 >
                   {minText}
                 </span>
+                {/* ITEM 4 - the X lives at the BOTTOM, inline with the bar. */}
+                <LegendControls idx={idx} onHide={() => setHidden(true)} />
               </div>
             ) : (
               <div

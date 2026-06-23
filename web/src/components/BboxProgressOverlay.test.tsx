@@ -44,7 +44,7 @@ describe("BboxProgressOverlay", () => {
     expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
   });
 
-  it("renders a PURPLE scan for a sim with NO static border box (item 4)", () => {
+  it("renders a PURPLE scan for a sim with NO static border box (item 4 + item 5)", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -62,7 +62,7 @@ describe("BboxProgressOverlay", () => {
     expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
   });
 
-  it("the BLUE (loading) scan KEEPS its border (no map recolor for it)", () => {
+  it("the BLUE (loading) scan draws NO border either - single box (item 5)", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -72,9 +72,13 @@ describe("BboxProgressOverlay", () => {
       />,
     );
     const el = screen.getByTestId("grace2-bbox-progress-overlay");
-    // The blue loading/connecting cue has no on-map recolor, so it keeps the
-    // pulsing border as its on-map signal.
-    expect(el.style.border).toContain("solid");
+    // NATE item 5 (2026-06-23): the overlay arms only when the on-map AOI
+    // rectangle is projected, so it must NOT draw its own outline for the blue
+    // tone either - that read as a SECOND box stacked on the AOI rectangle. The
+    // cue is the sweep + a soft GLOW (box-shadow) on the SAME box, no border.
+    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
+    expect(el.style.boxShadow).not.toBe("");
+    expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
   });
 
   it("the scan sweep keyframe travels the FULL extent (translateX 250%) - item 3", () => {
@@ -88,7 +92,7 @@ describe("BboxProgressOverlay", () => {
     expect(style?.textContent ?? "").not.toContain("translateX(100%)");
   });
 
-  it("reduced-motion: scan degrades to a static border (no sweep bar)", () => {
+  it("reduced-motion: scan degrades to a static glow (no sweep bar, no border) - item 5", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -101,8 +105,11 @@ describe("BboxProgressOverlay", () => {
     expect(el.getAttribute("data-reduced")).toBe("true");
     // No animated sweep bar under reduced motion.
     expect(screen.queryByTestId("grace2-bbox-progress-sweep")).toBeNull();
-    // No CSS animation on the static border.
+    // No CSS animation, and (item 5) no second-box outline - a faint static
+    // glow on the single on-map box is the only cue.
     expect(el.style.animation === "" || el.style.animation === undefined).toBe(true);
+    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
+    expect(el.style.boxShadow).not.toBe("");
   });
 
   it("reduced-motion: fill degrades to a static tint (no animation)", () => {
