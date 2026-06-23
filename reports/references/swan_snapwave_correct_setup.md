@@ -381,3 +381,186 @@ Files inspected (read-only):
 
 For the SnapWave boundary: D4 (direction convention) is the load-bearing
 correctness check; D5 (boundary-point depth) is the robustness follow-up.
+
+--------------------------------------------------------------------------------
+## 5. Workshop 2025 (Roelvink) - practical SFINCS+SnapWave setup
+
+New primary source (resolves the OPEN RISK D4 above):
+- SOURCE 3 -- D. Roelvink, M. van Ormondt, J. Reyns, M. van der Lugt, T. Leijnse
+  (2025), "SnapWave: a fast wave component in coastal model systems", 18th Waves
+  Workshop 2025 presentation (IHE Delft / Deltares).
+  PDF: https://www.waveworkshop.org/18thWaves/Presentations/E1-Waves%20Workshop%202025%20Roelvink.pdf
+  (42-page slide deck; slides are rasterised images, so text was read from the
+  rendered slides, not extracted.) Companion paper = the GMD article already cited
+  as SOURCE 2 (doi:10.5194/gmd-18-9469-2025).
+- SOURCE 4 (CODE EVIDENCE, on this machine) -- the live cht_sfincs package and the
+  SnapWave<->SFINCS coupling Fortran:
+    - services/workers/sfincs_quadtree_spike/.venv/.../cht_sfincs/snapwave.py
+      (the Python boundary writer behind add_point / write_boundary_*).
+    - /tmp/sfincs_snapwave.f90 (the SFINCS-side SnapWave coupling module that
+      consumes the boundary direction and writes the output direction).
+    - Live decks: services/workers/sfincs_quadtree_spike/deck_cht/snapwave.{bnd,bwd,bhs}
+      and services/workers/sfincs_snapwave_spike/deck/snapwave.{bnd,bwd}.
+
+### 5.1 The DIRECTION-CONVENTION VERDICT (the load-bearing finding)
+
+VERDICT: SnapWave's boundary `wd` is **nautical "coming FROM", degrees clockwise
+from North**. GRACE-2's `_synthesize_parametric_wave_boundary` emits the OPPOSITE
+sense (a "going-to" azimuth toward the AOI centre), so **our `wd` is exactly 180
+degrees WRONG on every boundary edge.** Three independent lines of evidence, all
+agreeing:
+
+EVIDENCE 1 -- the cht_sfincs Python layer is a PASS-THROUGH (so it does NOT define
+the convention). `SnapWaveBoundaryConditions.add_point(x, y, hs, tp, wd, ds)` and
+`set_timeseries_uniform(...)` store `wd` verbatim into the point time series, and
+`write_boundary_conditions_timeseries` writes that same `wd` to `snapwave.bwd`
+unchanged (cht_sfincs/snapwave.py lines ~821-905 and ~1040-1056; the `.bwd` write
+is a plain fixed-width dump with NO trig, NO 270-minus, NO sign flip). Therefore
+whatever number GRACE-2 puts in `wd` is the number the SnapWave solver reads -- the
+convention is defined entirely by the SOLVER, not by the Python API. (This is why
+the GMD paper could not settle it and why reading the Python alone is insufficient.)
+
+EVIDENCE 2 -- the SnapWave<->SFINCS Fortran states the convention in its own
+comments, for BOTH the input (wind) and the output (mean wave direction):
+- Input side, /tmp/sfincs_snapwave.f90 line 398 (the wind-direction ingest, the
+  same directional convention SnapWave uses for all directional inputs):
+    `snapwave_u10dir(nm) = u10dir / 180.0 * pi`
+    `! from nautical coming from in degrees to cartesian going to in radians`
+  i.e. SnapWave's EXTERNAL directional inputs are nautical "coming from" in degrees,
+  and the solver converts them to an internal CARTESIAN "going to" angle in radians
+  (`theta`/`thetam`).
+- Output side, line 551:
+    `snapwave_mean_direction = modulo(270.0 - thetam * 180 / pi + 360.0, 360.0)`
+  i.e. the internal cartesian-going-to `thetam` (radians) is mapped BACK to a
+  nautical "coming from" degree via `dir = 270 - theta_deg`. Inverting that gives
+  the input mapping `theta_deg = 270 - wd`, the standard oceanographic
+  nautical-coming-from <-> cartesian-going-to transform. So the boundary `wd` that
+  feeds `update_boundary_conditions` (line 543) is unambiguously nautical
+  "coming from", degrees clockwise from North.
+  (`update_boundary_conditions` itself lives in SnapWave's internal
+  snapwave_boundaries.f90, which is not vendored on this machine, but the symmetric
+  output mapping at line 551 plus the input comment at line 398 pin the convention
+  beyond doubt.)
+
+EVIDENCE 3 -- the workshop slides show the convention on axis labels and a
+controlled test:
+- "Circular island, sweeping process" slide: the four directional-spectrum panels
+  have the x-axis labelled "direction (oN)" (degrees North). The WEST boundary
+  point (located at x<0, y=0, where the incident sea must arrive FROM the west and
+  travel east toward the island) has its energy peak at ~270 oN. 270 oN = "coming
+  from the west" = nautical coming-from. (A "going-to" reading of 270 would be waves
+  travelling west, i.e. AWAY from the island -- contradicted by the figure.)
+- "Wave direction" slide (Dutch coast Hm0 run): the colour bar is "Mean wave
+  direction (deg N)" with field values ~250-290 for a North-Sea sea state arriving
+  from the W/WNW -- again nautical coming-from.
+- LIVE DECK CROSS-CHECK: both working spike decks force `wd = 270.000` on a
+  Gulf-of-Mexico boundary (sfincs_quadtree_spike/deck_cht/snapwave.bwd and
+  sfincs_snapwave_spike/deck/snapwave.bwd). 270 nautical-coming-from = waves from
+  the west, a physically sensible offshore incident condition; the same 270 read as
+  "going-to" would send waves offshore. The decks were authored to the
+  nautical-coming-from convention.
+
+QUANTIFIED ERROR (numerically verified against the actual GRACE-2 formula
+`wd = degrees(atan2(dx, dy)) % 360`, with `(dx, dy) = (cx - x, cy - y)` pointing
+FROM the boundary point TOWARD the centre):
+
+| boundary edge | physically-correct nautical wd (FROM) | GRACE-2 wd (going-to) | error |
+|---------------|---------------------------------------|-----------------------|-------|
+| South edge    | 180 (waves come from the south)       | 0                     | 180   |
+| North edge    | 0 / 360                               | 180                   | 180   |
+| West edge     | 270 (waves come from the west)        | 90                    | 180   |
+| East edge     | 90                                    | 270                   | 180   |
+
+The error is a CONSTANT 180 degrees on every edge. Consequence in the solver: every
+incident boundary spectrum is aimed back OFFSHORE (and the sweep is seeded from the
+wrong "mean wave direction"), so refraction and shoaling develop on the wrong side
+and the nearshore Hm0 over the AOI is wrong (in the worst case near-zero where the
+mis-aimed energy immediately leaves the domain). This is a real correctness bug for
+the SnapWave field, independent of the SWAN all-dry bug.
+
+### 5.2 Boundary-point DEPTH + PLACEMENT rule (confirms/quantifies D5)
+
+- WHERE: boundary points sit on the SEAWARD/offshore edge of the SnapWave grid, on
+  the open-boundary (mask == 2) cells. The workshop "NL example" and "Netherlands
+  coastal model" slides show the offshore condition taken from ERA5 grid points (the
+  red/green dots) along the seaward polygon and interpolated onto the boundary; the
+  "Main conclusions" slide states the offshore points are "typically 50-100 km
+  offshore". The grid "can be arbitrarily cut out of [an] unstructured mesh", and a
+  large-to-local nesting (kms -> 40 m -> 5 m on Coast3D; 800 -> 100 m on the NL run)
+  is the normal pattern.
+- DEPTH (the active-cell threshold): SnapWave inactivates any cell with depth below
+  1.1 * hmin, hmin = 0.1 m by default (GMD Sec 2.4, already cited in Section 3.2).
+  So a boundary point must land on a cell with **water depth > ~0.11 m** to
+  contribute any forcing; a too-shallow point is silently dropped -> flat-zero hm0
+  (the documented failure our code comment already cites). In practice the
+  workshop/paper place the boundary in genuine offshore water (tens of metres on the
+  ERA5 take-off points), well clear of the breaking zone, so depth-induced breaking
+  does not corrupt the boundary value -- a much stronger requirement than the bare
+  0.11 m floor. Treat 0.11 m as the HARD floor and "deep enough to not break at the
+  boundary" as the practical rule.
+
+### 5.3 Coupling into SFINCS + the 2-3 most useful practical facts for Mexico Beach
+
+How SnapWave couples (workshop + Sec 3.3 above): SnapWave runs ON the SFINCS
+(quadtree) grid as the integrated stationary wave solver, sharing the SFINCS water
+levels and depths; it solves the directionally-resolved wave-energy balance (XBeach
+form) implicitly via the ordered 4-direction sweep, and returns the nearshore Hm0,
+Tp and mean wave direction plus the wave-force / radiation-stress contribution that
+SFINCS turns into wave setup. The "New developments" slide notes the coupling is now
+"robust ... (water levels) including prediction of IG waves" (todo: current
+refraction) -- so IG/setup are in, current refraction is not yet.
+
+Most useful practical facts for making OUR Mexico Beach (Hurricane Michael) SFINCS
++ SnapWave waves render correctly:
+1. DIRECTION IS NAUTICAL COMING-FROM (5.1). Force the offshore `wd` as the compass
+   bearing the swell ARRIVES FROM. For the Michael / Mexico Beach panhandle coast
+   that is a SOUTH-to-SSE sea (roughly 160-200 oN), NOT a going-to azimuth. With the
+   current code our boundary points the waves offshore -- fix per 5.4.
+2. PUT THE BOUNDARY IN REAL OFFSHORE WATER, ONE SEAWARD EDGE, NOT FOUR. The
+   workshop forces only the seaward polygon (ERA5 dots along the offshore edge) with
+   Neumann (no-longshore-gradient) lateral boundaries; it does not ring the domain.
+   Our 4-edge-midpoint scatter only works because the worker "derives the seaward
+   edge from whichever point sits offshore" -- it is fragile. Ensure at least one
+   point lands on a mask==2 cell with depth >> 0.11 m (tens of metres), seaward of
+   the surf zone.
+3. SINGLE REPRESENTATIVE Hm0/Tp/spreading IS ENOUGH. The slides drive whole coasts
+   from one offshore Hm0/Tp/dir/spread per boundary point (directional spreading is
+   "important but frequency can be parameterized"; ds ~ 20 deg in the circular-island
+   test, our 30 deg is fine for a storm sea). Our parametric single-peak Hs/Tp design
+   storm is the right shape; only the DIRECTION is wrong.
+
+### 5.4 EXACT recommended change to _synthesize_parametric_wave_boundary
+
+(Specification only -- do NOT edit here; this is for the agent specialist.)
+File: services/agent/src/grace2_agent/workflows/model_flood_scenario.py, in
+`_synthesize_parametric_wave_boundary`, the per-point loop (~lines 821-837).
+
+CURRENT (going-to toward centre -- 180 deg wrong):
+```
+dx = cx - float(x)
+dy = cy - float(y)
+wd = (math.degrees(math.atan2(dx, dy))) % 360.0
+```
+FIX (nautical "coming FROM": the azimuth FROM the AOI centre OUT TO the boundary
+point, i.e. the bearing the waves arrive from = reverse the vector):
+```
+# Nautical "coming-from" azimuth (deg clockwise from N): bearing from the AOI
+# centre toward the offshore boundary point, which is the direction the incident
+# waves TRAVEL FROM. SnapWave / snapwave.bwd expects nautical coming-from
+# (sfincs_snapwave.f90: input "nautical coming from", output dir = 270 - theta).
+dx = float(x) - cx
+dy = float(y) - cy
+wd = (math.degrees(math.atan2(dx, dy))) % 360.0
+```
+Equivalently, keep the old vector and add 180: `wd = (old_wd + 180.0) % 360.0`.
+Either form turns every edge from the wrong (going-to) value into the correct
+nautical coming-from value (S edge 0->180, W edge 90->270, etc. per the table in
+5.1). Also update the two misleading comments that assert the going-to azimuth "is
+the convention SnapWave's add_point wd expects" (the module docstring ~L768 and the
+inline comment ~L823) -- it is the OPPOSITE.
+
+Robustness follow-up (D5, now quantified): after building the points, assert at
+least one boundary point lands on a SnapWave active/open cell with depth > 1.1*hmin
+(0.11 m) and ideally well offshore; if none do, raise a typed error rather than
+emitting a flat-zero hm0 field. (This is worker-side, since the agent does no GIS;
+specify it as a guard in the deck-build worker that consumes `snapwave_boundary`.)
