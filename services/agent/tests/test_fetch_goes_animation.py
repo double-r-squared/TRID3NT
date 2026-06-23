@@ -139,6 +139,117 @@ def test_frame_labels_carry_real_utc():
     assert ts_int_to_datetime(ts).tzinfo == timezone.utc
 
 
+# ---- emitted name token: "GOES <ProductLabel> step <N> <ISO> (<SAT>)" -----
+#
+# The scrubber-group contract: each frame name carries (a) a "step <N>" MONOTONIC
+# token (the web detectSequentialGroups grouping value -- a raw ISO is NOT a
+# recognized token), (b) the product label so GeoColor / Fire Temperature form
+# TWO distinct stems (two scrubber groups), and (c) the real UTC valid-time as
+# the per-frame display label. ``<N>`` is the position in the shared windowed
+# frame list, so the same step maps to the same SLIDER timestamp across both GOES
+# products -> the two scrubbers stay time-synchronized.
+
+
+class _FakeReadResult:
+    def __init__(self, uri):
+        self.uri = uri
+
+
+def _patch_slider_for_three_frames(monkeypatch, product_seen):
+    """Stub the SLIDER substrate so fetch_goes_animation emits 3 deterministic frames."""
+    from grace2_agent.tools import fetch_goes_animation as mod
+
+    frame_ts = [
+        _ts(2026, 6, 22, 18, 0),
+        _ts(2026, 6, 22, 18, 5),
+        _ts(2026, 6, 22, 18, 10),
+    ]
+
+    def _fake_timestamps(satellite, sector, product):
+        product_seen.append(product)
+        return list(frame_ts)
+
+    def _fake_read_through(metadata, params, ext, fetch_fn):
+        # Never actually fetch tiles; return a deterministic per-frame URI.
+        return _FakeReadResult(uri=f"s3://fake/{params['product']}-{params['ts_int']}.tif")
+
+    monkeypatch.setattr(mod, "fetch_slider_timestamps", _fake_timestamps)
+    monkeypatch.setattr(mod, "read_through", _fake_read_through)
+    monkeypatch.setattr(mod, "pick_zoom_for_aoi", lambda *a, **k: 5)
+    return frame_ts
+
+
+def test_emitted_name_carries_step_token_and_iso(monkeypatch):
+    seen: list[str] = []
+    frame_ts = _patch_slider_for_three_frames(monkeypatch, seen)
+    layers = fetch_goes_animation(
+        bbox=_UT_BBOX,
+        band="fire_temperature",
+        satellite="goes-18",
+        start_utc="2026-06-22T17:30:00Z",
+        end_utc="2026-06-22T18:30:00Z",
+    )
+    assert len(layers) == len(frame_ts) == 3
+    # Each name: "GOES Fire Temperature step <N> <ISO> (GOES-18)".
+    for n, (layer, ts) in enumerate(zip(layers, frame_ts), start=1):
+        iso = ts_int_to_iso(ts)
+        assert layer.name == f"GOES Fire Temperature step {n} {iso} (GOES-18)"
+    # Monotonic, distinct step values 1..3 in order.
+    import re
+
+    steps = [int(re.search(r"step (\d+)", lyr.name).group(1)) for lyr in layers]
+    assert steps == [1, 2, 3]
+    # Shared style preset (scrubber-group contract).
+    assert {lyr.style_preset for lyr in layers} == {"goes_rgb_animation"}
+
+
+def test_two_goes_products_are_time_synchronized_by_step(monkeypatch):
+    """GeoColor + Fire Temperature over the SAME window share the same step->ISO
+    mapping, so step <N> picks the SAME valid-time in both -> synchronized."""
+    seen: list[str] = []
+    frame_ts = _patch_slider_for_three_frames(monkeypatch, seen)
+
+    def _names_for(band):
+        layers = fetch_goes_animation(
+            bbox=_UT_BBOX,
+            band=band,
+            satellite="goes-18",
+            start_utc="2026-06-22T17:30:00Z",
+            end_utc="2026-06-22T18:30:00Z",
+        )
+        # step value -> ISO valid-time it points at, per product.
+        out = {}
+        import re
+
+        for lyr in layers:
+            step = int(re.search(r"step (\d+)", lyr.name).group(1))
+            iso = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", lyr.name).group(1)
+            out[step] = iso
+        return out
+
+    geocolor = _names_for("geocolor")
+    fire = _names_for("fire_temperature")
+    # Same step keys.
+    assert set(geocolor) == set(fire) == {1, 2, 3}
+    # CO-TEMPORAL: step N is the SAME valid-time in both products.
+    for step in (1, 2, 3):
+        assert geocolor[step] == fire[step]
+    # And the two products produce DISTINCT product labels (-> two stems/groups).
+    # (verified at the name level above; here assert the labels differ)
+    assert geocolor[1] == fire[1]  # same time
+    # The product token differs in the stem (GeoColor vs Fire Temperature):
+    g_layers = fetch_goes_animation(
+        bbox=_UT_BBOX, band="geocolor", satellite="goes-18",
+        start_utc="2026-06-22T17:30:00Z", end_utc="2026-06-22T18:30:00Z",
+    )
+    f_layers = fetch_goes_animation(
+        bbox=_UT_BBOX, band="fire_temperature", satellite="goes-18",
+        start_utc="2026-06-22T17:30:00Z", end_utc="2026-06-22T18:30:00Z",
+    )
+    assert "GeoColor" in g_layers[0].name
+    assert "Fire Temperature" in f_layers[0].name
+
+
 # ---- typed-error surface --------------------------------------------------
 
 
