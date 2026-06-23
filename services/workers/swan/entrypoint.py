@@ -18,10 +18,13 @@ The SWAN-specific differences from the GeoClaw shim:
      ``INPUT`` command file + the bottom (bathymetry) input array, sampling the
      staged DEM onto the SWAN bottom grid via a ``depth_fn``.
 
-  2. THE SOLVE. ``swanrun -input INPUT -omp $OMP_NUM_THREADS`` runs the headless
-     OpenMP SWAN binary; SWAN reads the file named ``INPUT`` literally (its
-     convention), writes the gridded BLOCK output to ``swan_out.mat``, plus a
-     ``PRINT`` diagnostics file and (on warnings/errors) an ``Errfile``.
+  2. THE SOLVE. ``swanrun -input <casename> -omp $OMP_NUM_THREADS`` runs the
+     headless OpenMP SWAN binary. ``swanrun`` APPENDS ``.swn`` to the case name,
+     copies ``<casename>.swn`` to the file named ``INPUT``, then invokes
+     ``swan.exe`` (which reads ``INPUT`` literally). The deck author writes
+     ``swan_run.swn`` (``deck_builder.SWN_FILENAME``), so the case name is
+     ``swan_run``. SWAN writes the gridded BLOCK output to ``swan_out.mat``, plus
+     a ``PRINT`` diagnostics file and (on warnings/errors) an ``Errfile``.
 
   3. THE HONESTY GATE. SWAN often exits 0 even on a non-converged / errored run,
      and writes nonfatal warnings to the PRINT/Errfile. We classify the
@@ -258,19 +261,32 @@ def _author_deck(build_spec: dict, cwd: Path, bathy_path: Path) -> Any:
 def _run_swan(cwd: Path) -> tuple[int, Path, Path]:
     """Run SWAN headless in ``cwd``; capture stdout/stderr.
 
-    Runs ``swanrun -input INPUT -omp $OMP_NUM_THREADS`` (the canonical headless
-    SWAN launch; ``swanrun`` copies the named input to the file SWAN reads and
-    invokes ``swan.exe``). Returns ``(exit_code, stdout_path, stderr_path)``: 0 on
-    a clean solve, non-zero on a solver failure. The deck author already wrote the
-    command file as the file literally named ``INPUT`` (the SWAN convention), so
-    ``-input INPUT`` is the case name.
+    Runs ``swanrun -input <casename> -omp $OMP_NUM_THREADS`` (the canonical
+    headless SWAN launch). CRITICAL: the TU Delft ``swanrun`` launcher APPENDS
+    ``.swn`` to the ``-input`` argument -- it looks for ``<casename>.swn``, copies
+    it to the file literally named ``INPUT``, then invokes ``swan.exe`` (which
+    reads ``INPUT``). So the argument MUST be the bare case name (NO ``.swn``, and
+    NOT ``INPUT``). The deck author writes ``deck_builder.SWN_FILENAME``
+    (``swan_run.swn``), so the case name is ``deck_builder.SWN_CASENAME``
+    (``swan_run``).
+
+    The earlier ``-input INPUT`` made swanrun hunt for the nonexistent
+    ``INPUT.swn`` and abort with "file INPUT.swn does not exist" (exit 1) BEFORE
+    SWAN ever solved -- the live 2026-06-23 Mexico Beach failure. We import the
+    case name from the deck author so the runner + the authored ``.swn`` filename
+    can never drift apart again.
+
+    Returns ``(exit_code, stdout_path, stderr_path)``: 0 on a clean solve,
+    non-zero on a solver failure.
     """
+    from services.workers.swan.deck_builder import SWN_CASENAME
+
     stdout_path = cwd / "swan.stdout"
     stderr_path = cwd / "swan.stderr"
 
     omp = os.environ.get("OMP_NUM_THREADS", "1").strip() or "1"
     # GRACE2_SWAN_RUN overrides the launch for test/alternative drivers.
-    default_cmd = f"swanrun -input INPUT -omp {omp}"
+    default_cmd = f"swanrun -input {SWN_CASENAME} -omp {omp}"
     swan_cmd = os.environ.get("GRACE2_SWAN_RUN", default_cmd)
 
     out_fh = stdout_path.open("wb")

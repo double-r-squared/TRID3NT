@@ -20,6 +20,9 @@ string render (mirrors the GeoClaw deck-author test).
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +30,8 @@ import pytest
 from services.workers.swan.deck_builder import (
     INPUT_FILENAME,
     OUTPUT_MAT_FILENAME,
+    SWN_CASENAME,
+    SWN_FILENAME,
     SwanBuildSpec,
     SwanDeckError,
     build_swan_deck,
@@ -230,12 +235,40 @@ def test_render_bottom_input_uses_depth_fn():
 # ===========================================================================
 # (4) full deck build into a tmp dir + SwanDeckManifest provenance.
 # ===========================================================================
+def test_swn_casename_and_filename_are_consistent():
+    """REGRESSION (live 2026-06-23): ``swanrun -input <SWN_CASENAME>`` appends
+    ``.swn`` and reads ``<SWN_CASENAME>.swn`` -- which MUST be the file the deck
+    author writes (``SWN_FILENAME``). The case name must NOT be ``INPUT`` (that
+    made swanrun hunt for the nonexistent ``INPUT.swn`` and abort before solving).
+    """
+    assert SWN_FILENAME == f"{SWN_CASENAME}.swn"
+    assert SWN_CASENAME != INPUT_FILENAME
+    assert not SWN_CASENAME.endswith(".swn")  # bare case name, swanrun adds .swn
+
+
+def test_build_swan_deck_writes_swn_file_swanrun_reads(tmp_path: Path):
+    """The deck author MUST write the ``<SWN_CASENAME>.swn`` file that
+    ``swanrun -input <SWN_CASENAME>`` reads (the load-bearing convention the live
+    Mexico Beach run violated). It ALSO writes a literal ``INPUT`` for fallback.
+    """
+    manifest = build_swan_deck(_spec(mode="stationary"), tmp_path)
+    # The .swn file swanrun actually copies to INPUT MUST exist.
+    assert (tmp_path / SWN_FILENAME).exists()
+    assert SWN_FILENAME in manifest.files_written
+    # The fallback literal INPUT command file is also present + identical bytes.
+    assert (tmp_path / INPUT_FILENAME).exists()
+    assert INPUT_FILENAME in manifest.files_written
+    assert (tmp_path / SWN_FILENAME).read_text() == (
+        tmp_path / INPUT_FILENAME
+    ).read_text()
+
+
 def test_build_swan_deck_writes_input_and_bottom(tmp_path: Path):
     manifest = build_swan_deck(_spec(mode="stationary"), tmp_path)
     # The command file MUST be written as the file literally named INPUT (the SWAN
-    # convention swanrun reads) -- this is the load-bearing convention.
+    # convention) AND as the .swn swanrun reads -- both are load-bearing.
     assert (tmp_path / INPUT_FILENAME).exists()
-    assert (tmp_path / "swan_run.swn").exists()
+    assert (tmp_path / SWN_FILENAME).exists()
     assert (tmp_path / "bottom.bot").exists()
     assert (tmp_path / "deck_manifest.json").exists()
     assert INPUT_FILENAME in manifest.files_written
@@ -258,3 +291,79 @@ def test_build_swan_deck_wind_enabled_manifest(tmp_path: Path):
     assert manifest.wind_enabled is True
     assert "ERA5 wind" in manifest.driver_descriptor
     assert "READINP WIND" in (tmp_path / INPUT_FILENAME).read_text()
+
+
+# ===========================================================================
+# (5) REGRESSION: the entrypoint's swanrun invocation finds the authored .swn.
+# ===========================================================================
+# A fake ``swanrun`` that replicates the TU Delft launcher's load-bearing behavior:
+# it APPENDS ``.swn`` to the ``-input`` argument and ABORTS if that file is
+# missing (the exact "file <name>.swn does not exist" path that killed the live
+# 2026-06-23 Mexico Beach run). It does NOT need SWAN -- it only proves the
+# entrypoint hands swanrun a case name whose ``.swn`` the deck author wrote.
+_FAKE_SWANRUN = """#!/usr/bin/env python3
+import sys
+inp = None
+argv = sys.argv[1:]
+for i, a in enumerate(argv):
+    if a == "-input" and i + 1 < len(argv):
+        inp = argv[i + 1]
+print("swan.exe is /opt/swan/swan.exe")
+if inp is None:
+    print("no -input argument"); sys.exit(1)
+import os
+swn = inp + ".swn"
+if not os.path.isfile(swn):
+    # The exact swanrun failure mode from the live log.
+    print("file %s does not exist" % swn); sys.exit(1)
+# swanrun copies <name>.swn -> INPUT, then runs swan.exe (which reads INPUT).
+with open(swn) as fh:
+    data = fh.read()
+with open("INPUT", "w") as fh:
+    fh.write(data)
+# Stand in for swan.exe: write a trivial swan_out.mat so the run looks complete.
+open("swan_out.mat", "wb").write(b"FAKE-SWAN-MAT")
+sys.exit(0)
+"""
+
+
+def test_entrypoint_swanrun_invocation_finds_authored_swn(tmp_path: Path):
+    """REGRESSION (live 2026-06-23): the entrypoint's default swanrun command must
+    reference the case name whose ``.swn`` the deck author actually wrote. The old
+    ``swanrun -input INPUT`` made the launcher hunt for ``INPUT.swn`` (never
+    written) and abort with exit 1 BEFORE SWAN solved. This authors a real deck,
+    then runs the entrypoint's ``_run_swan`` against a fake ``swanrun`` that
+    replicates the launcher's ``.swn``-append-or-die behavior -- proving the file
+    is found and the run reaches a 0 exit.
+    """
+    # Author a real deck into the scratch dir (writes swan_run.swn + INPUT + bottom).
+    build_swan_deck(_spec(mode="nonstationary", sim_duration_s=3600.0), tmp_path)
+    assert (tmp_path / SWN_FILENAME).exists()
+
+    # Drop a fake swanrun on PATH that fails exactly like the real launcher would
+    # if the <case>.swn file is missing.
+    fake_swanrun = tmp_path / "swanrun"
+    fake_swanrun.write_text(_FAKE_SWANRUN.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
+    fake_swanrun.chmod(fake_swanrun.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    from services.workers.swan.entrypoint import _run_swan
+
+    old_path = os.environ.get("PATH", "")
+    old_swan_run = os.environ.pop("GRACE2_SWAN_RUN", None)  # exercise the DEFAULT cmd
+    try:
+        os.environ["PATH"] = f"{tmp_path}{os.pathsep}{old_path}"
+        rc, stdout_path, _stderr_path = _run_swan(tmp_path)
+    finally:
+        os.environ["PATH"] = old_path
+        if old_swan_run is not None:
+            os.environ["GRACE2_SWAN_RUN"] = old_swan_run
+
+    stdout = stdout_path.read_text()
+    # The launcher must NOT have aborted on a missing .swn (the live failure).
+    assert "does not exist" not in stdout, (
+        f"swanrun could not find the authored .swn -- the live bug recurred: {stdout!r}"
+    )
+    assert rc == 0
+    # swanrun copied the authored deck to INPUT + produced the (fake) wave output.
+    assert (tmp_path / "swan_out.mat").exists()
+    assert "CGRID REGULAR" in (tmp_path / INPUT_FILENAME).read_text()
