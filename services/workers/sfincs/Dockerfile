@@ -51,13 +51,26 @@ RUN apt-get update \
     && pip3 install --no-cache-dir \
         "google-cloud-storage>=2.18,<4" \
         "boto3>=1.34,<2" \
-    && python3 -c "from google.cloud import storage; import boto3; print('storage SDKs import OK (gcs + boto3)')"
+        "numpy>=1.24,<3" \
+        "scipy>=1.10" \
+        "xarray>=2023.1" \
+        "rasterio>=1.3,<2" \
+        "pyproj>=3.4" \
+        "h5netcdf>=1.1" \
+    && python3 -c "from google.cloud import storage; import boto3; print('storage SDKs import OK (gcs + boto3)')" \
+    && python3 -c "import xarray; from scipy.interpolate import griddata; import rasterio, pyproj; from pyproj import Transformer; print('raster_postprocess geo stack + GDAL/PROJ tripwire OK')"
 
 # COPY the entrypoint into a stable runtime path. Build context is the repo
 # root (see infra/sfincs/cloudbuild.yaml); paths below are relative to repo
 # root.
 RUN mkdir -p /opt/grace2/services/workers/sfincs
 COPY services/workers/sfincs/ /opt/grace2/services/workers/sfincs/
+
+# The shared GPL-free NetCDF -> COG postprocess substrate (postprocess-offload
+# spike). COPY'd into BOTH SFINCS images so the regular-grid path does NOT
+# regress to raw-NetCDF (the quadtree worker carries the same package).
+RUN mkdir -p /opt/grace2/services/workers/_raster_postprocess
+COPY services/workers/_raster_postprocess/ /opt/grace2/services/workers/_raster_postprocess/
 
 # WORKDIR controls where SFINCS writes its scratch outputs before the
 # entrypoint uploads them. /opt/grace2/work is a writable scratch dir; the
@@ -93,7 +106,8 @@ ENV GRACE2_OBJECT_STORE=s3 \
 # Python import mistake at build time instead of at Cloud Run Job exec time.
 RUN test -x /usr/local/bin/sfincs \
     && echo "SFINCS binary OK at /usr/local/bin/sfincs" \
-    && python3 -c "from services.workers.sfincs.entrypoint import main; print('entrypoint import OK')"
+    && python3 -c "from services.workers.sfincs.entrypoint import main, run_raster_postprocess; print('entrypoint import OK')" \
+    && python3 -c "from services.workers._raster_postprocess import postprocess, cog, sfincs_reader, manifest, band_stats; print('raster_postprocess substrate import OK')"
 
 # ENTRYPOINT overrides the upstream sfincs default so this image runs as a
 # one-shot solver Job, not an interactive container. CMD is empty so Cloud

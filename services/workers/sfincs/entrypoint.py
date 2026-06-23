@@ -242,6 +242,64 @@ def _expand_outputs(patterns: list[str], cwd: Path) -> list[Path]:
     return sorted(seen)
 
 
+# --------------------------------------------------------------------------- #
+# POSTPROCESS — NetCDF -> COG on the LOCAL solve output (no S3 download). Moves
+# the heavy raster postprocess OFF the always-on agent box (postprocess-offload
+# spike, Phases 0+1). Shares the GPL-free substrate in
+# services/workers/_raster_postprocess/ with the quadtree (sfincs_deckbuilder)
+# worker, so the regular-grid SFINCS path does NOT regress to raw-NetCDF.
+# --------------------------------------------------------------------------- #
+
+
+def run_raster_postprocess(
+    run_id: str,
+    scratch: Path,
+) -> tuple[dict | None, str | None, str | None]:
+    """Run the shared depth postprocess on the LOCAL ``sfincs_map.nc``.
+
+    Writes overview-bearing COGs into ``scratch`` (so the entrypoint's ``*.tif``
+    sweep ships them — the regular-grid manifest's outputs glob already includes
+    ``*.tif``), builds the publish manifest, and applies the empty-field honesty
+    gate. The regular-grid path reads its bbox off the NetCDF 1D x/y coords (no
+    spec bbox needed). The wave pass is skipped (the regular-grid SFINCS worker
+    has no SnapWave field).
+
+    Returns ``(manifest_dict | None, status_override | None, error_code | None)``.
+    NEVER raises: any failure logs + returns ``(None, None, None)`` so the raw
+    sfincs_map.nc still uploads and the agent's legacy on-box path can run
+    (transition fallback).
+    """
+    local_nc = scratch / "sfincs_map.nc"
+    if not local_nc.exists():
+        LOG.warning(
+            "raster postprocess: no local sfincs_map.nc in %s — skipping.", scratch
+        )
+        return None, None, None
+    try:
+        from services.workers._raster_postprocess import postprocess as _pp
+    except Exception as exc:  # noqa: BLE001 — shared pkg missing -> legacy fallback
+        LOG.warning("raster postprocess: shared package import failed (%s)", exc)
+        return None, None, None
+
+    runs_uri_for = lambda rel: _runs_uri(run_id, rel)  # noqa: E731
+    try:
+        depth = _pp.run_postprocess(
+            local_nc, run_id=run_id, deck_dir=scratch, runs_uri_for=runs_uri_for,
+            kind="depth", engine="sfincs",
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive; legacy fallback
+        LOG.exception("raster postprocess: depth pass crashed (%s)", exc)
+        return None, None, None
+
+    if depth.status == "error":
+        return depth.manifest, "error", depth.error_code
+    LOG.info(
+        "raster postprocess: built manifest with %d layer(s) (%d frames)",
+        len(depth.manifest.get("layers", [])), depth.manifest.get("frame_count", 0),
+    )
+    return depth.manifest, None, None
+
+
 def _build_argv_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="grace2-sfincs-entrypoint",
@@ -269,6 +327,7 @@ def _write_completion(
     stderr_uri: str | None,
     started_at: str,
     error: str | None,
+    publish_manifest_uri: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -277,6 +336,7 @@ def _write_completion(
         "sfincs_stdout_uri": stdout_uri,
         "sfincs_stderr_uri": stderr_uri,
         "output_uris": output_uris,
+        "publish_manifest_uri": publish_manifest_uri,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
@@ -328,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     output_uris: list[str] = []
     stdout_uri: str | None = None
     stderr_uri: str | None = None
+    publish_manifest_uri: str | None = None
     error_msg: str | None = None
     exit_code = 1
     status = "error"
@@ -353,15 +414,59 @@ def main(argv: list[str] | None = None) -> int:
         stdout_uri = _upload(stdout_path, _runs_uri(run_id, "sfincs.stdout"))
         stderr_uri = _upload(stderr_path, _runs_uri(run_id, "sfincs.stderr"))
 
+        # ---- RASTER POSTPROCESS (NetCDF -> COG on the LOCAL scratch) --------
+        # Runs ON THE WORKER (postprocess-offload spike): write overview-bearing
+        # COGs into scratch BEFORE the output sweep (so the *.tif glob ships
+        # them), build the publish manifest, apply the empty-field honesty gate.
+        # Only attempted on a clean solve; best-effort.
+        pp_status_override: str | None = None
+        pp_error_code: str | None = None
+        if rc == 0:
+            pp_manifest, pp_status_override, pp_error_code = run_raster_postprocess(
+                run_id, scratch
+            )
+            if pp_manifest is not None:
+                # Manifest written BEFORE completion.json (Spot-reclaim atomicity).
+                from services.workers._raster_postprocess import (
+                    manifest as _manifest_mod,
+                )
+
+                body = json.dumps(pp_manifest, indent=2)
+                uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+                _scheme, _bucket, _key = _split_object_uri(uri)
+                if _scheme == "s3":
+                    _s3_client().put_object(
+                        Bucket=_bucket, Key=_key,
+                        Body=body.encode("utf-8"),
+                        ContentType="application/json",
+                    )
+                else:
+                    _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+                        body, content_type="application/json"
+                    )
+                publish_manifest_uri = uri
+                LOG.info("raster postprocess: wrote %s", publish_manifest_uri)
+
         for path in _expand_outputs(list(outputs), scratch):
             rel = path.relative_to(scratch).as_posix()
             uri = _upload(path, _runs_uri(run_id, rel))
             output_uris.append(uri)
+        if publish_manifest_uri:
+            output_uris.append(publish_manifest_uri)
 
         exit_code = rc
-        status = "ok" if rc == 0 else "error"
         if rc != 0:
+            status = "error"
             error_msg = f"sfincs exited with non-zero code {rc}"
+        elif pp_status_override == "error":
+            # Clean solve but an empty flood field -> honesty gate (Invariant 1).
+            status = "error"
+            error_msg = (
+                f"raster postprocess honesty gate: {pp_error_code} "
+                "(solve clean but the flood field is empty)"
+            )
+        else:
+            status = "ok"
 
     except Exception as exc:  # pragma: no cover — defensive, logged + emitted
         LOG.exception("solver entrypoint failed")
@@ -378,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         stderr_uri=stderr_uri,
         started_at=started_at,
         error=error_msg,
+        publish_manifest_uri=publish_manifest_uri,
     )
     return exit_code
 

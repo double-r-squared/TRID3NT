@@ -111,6 +111,12 @@ RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
 RUN mkdir -p /opt/grace2/services/workers/sfincs_deckbuilder
 COPY services/workers/sfincs_deckbuilder/ /opt/grace2/services/workers/sfincs_deckbuilder/
 
+# The shared GPL-free NetCDF -> COG postprocess substrate (postprocess-offload
+# spike). COPY'd into BOTH SFINCS images (and any future raster worker) so the
+# heavy raster postprocess runs ON the worker, not the always-on agent box.
+RUN mkdir -p /opt/grace2/services/workers/_raster_postprocess
+COPY services/workers/_raster_postprocess/ /opt/grace2/services/workers/_raster_postprocess/
+
 WORKDIR /opt/grace2
 
 ENV PYTHONPATH=/opt/grace2 \
@@ -137,7 +143,8 @@ ENV GRACE2_OBJECT_STORE=s3 \
 RUN test -x /usr/local/bin/sfincs \
     && echo "SFINCS binary OK at /usr/local/bin/sfincs" \
     && python -c "from cht_sfincs import SFINCS; import rasterio, geopandas; print('cht_sfincs + geo OK')" \
-    && python -c "from services.workers.sfincs_deckbuilder.entrypoint import main, validate_build_spec, compose_manifest, build_deck, _run_sfincs, derive_refinement_polygons, apply_cell_budget, normalize_snapwave_time_columns, emit_quadtree_mesh_geojson, build_mesh_geodataframe, extract_quadtree_faces; print('combined entrypoint import OK')"
+    && python -c "from services.workers.sfincs_deckbuilder.entrypoint import main, validate_build_spec, compose_manifest, build_deck, _run_sfincs, derive_refinement_polygons, apply_cell_budget, normalize_snapwave_time_columns, emit_quadtree_mesh_geojson, build_mesh_geodataframe, extract_quadtree_faces, run_raster_postprocess; print('combined entrypoint import OK')" \
+    && python -c "import xarray; from scipy.interpolate import griddata; import rasterio, pyproj; from pyproj import Transformer; from services.workers._raster_postprocess import postprocess, cog, sfincs_reader, manifest, band_stats; print('raster_postprocess substrate + GDAL/PROJ tripwire OK')"
 
 # One-shot Batch worker: argv flows straight to the entrypoint module; env-var
 # fallbacks (GRACE2_RUN_ID, GRACE2_BUILD_SPEC_URI) are parsed if no CLI flags.

@@ -1903,6 +1903,115 @@ def _expand_outputs(patterns: list[str], cwd: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------- #
+# POSTPROCESS — NetCDF -> COG on the LOCAL deck output (no S3 download). Moves
+# the heavy raster postprocess OFF the always-on agent box (postprocess-offload
+# spike, Phases 0+1). The shared, GPL-free substrate lives in
+# services/workers/_raster_postprocess/ and is imported by BOTH SFINCS workers.
+# --------------------------------------------------------------------------- #
+
+
+def _spec_bbox_4326(spec: dict) -> tuple[float, float, float, float] | None:
+    """Pull the EPSG:4326 AOI bbox from the build spec (bounds the quadtree grid)."""
+    try:
+        bb = (spec.get("aoi") or {}).get("bbox")
+        if bb and len(bb) == 4:
+            return (float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3]))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def run_raster_postprocess(
+    run_id: str,
+    deck_dir: Path,
+    spec: dict,
+) -> tuple[dict | None, str | None, str | None, list[str]]:
+    """Run the shared depth + wave postprocess on the LOCAL ``sfincs_map.nc``.
+
+    Writes the display-ready, overview-bearing COGs straight into ``deck_dir``
+    (so the entrypoint's existing ``*.tif`` upload sweep ships them), builds the
+    typed publish manifest (depth layers + optional SnapWave wave layers merged),
+    and applies the empty-field honesty gate.
+
+    Returns ``(manifest_dict | None, status_override | None, error_code | None,
+    extra_output_rels)``:
+      * ``manifest_dict`` — the publish_manifest.json body (None if the local
+        sfincs_map.nc is missing, e.g. a failed solve).
+      * ``status_override`` — "error" when the DEPTH honesty gate fires (empty
+        flood field); else None (the entrypoint keeps the solve status).
+      * ``error_code`` — the typed code for the gate (RUN_OUTPUT_EMPTY).
+      * ``extra_output_rels`` — deck-relative COG filenames written (for logging;
+        the sweep uploads them by glob).
+
+    NEVER raises (best-effort): any postprocess failure logs + returns
+    ``(None, None, None, [])`` so the raw sfincs_map.nc still uploads and the
+    agent's legacy on-box path can still run (transition fallback).
+    """
+    local_nc = deck_dir / "sfincs_map.nc"
+    if not local_nc.exists():
+        LOG.warning(
+            "raster postprocess: no local sfincs_map.nc in %s — skipping "
+            "(solve produced no map output).", deck_dir,
+        )
+        return None, None, None, []
+
+    try:
+        from services.workers._raster_postprocess import postprocess as _pp
+        from services.workers._raster_postprocess import manifest as _manifest_mod
+    except Exception as exc:  # noqa: BLE001 — shared pkg missing -> legacy fallback
+        LOG.warning("raster postprocess: shared package import failed (%s)", exc)
+        return None, None, None, []
+
+    bbox = _spec_bbox_4326(spec)
+    runs_uri_for = lambda rel: _runs_uri(run_id, rel)  # noqa: E731
+
+    try:
+        depth = _pp.run_postprocess(
+            local_nc, run_id=run_id, deck_dir=deck_dir,
+            runs_uri_for=runs_uri_for, kind="depth", engine="sfincs_quadtree",
+            bbox=bbox,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive; legacy fallback
+        LOG.exception("raster postprocess: depth pass crashed (%s)", exc)
+        return None, None, None, []
+
+    # DEPTH honesty gate: an empty flood field sinks the run (Invariant 1).
+    if depth.status == "error":
+        return (
+            depth.manifest, "error", depth.error_code,
+            [],
+        )
+
+    layers = list(depth.manifest.get("layers", []))
+    frame_count = int(depth.manifest.get("frame_count", 0))
+    rels = [Path(lyr["cog_uri"]).name for lyr in layers]
+
+    # WAVE pass (SnapWave) — best-effort; absence is the honest depth-only degrade.
+    try:
+        waves = _pp.run_postprocess(
+            local_nc, run_id=run_id, deck_dir=deck_dir,
+            runs_uri_for=runs_uri_for, kind="waves", engine="sfincs_quadtree",
+            bbox=bbox,
+        )
+        if waves.status == "ok" and waves.manifest.get("layers"):
+            layers.extend(waves.manifest["layers"])
+            frame_count += int(waves.manifest.get("frame_count", 0))
+            rels.extend(Path(lyr["cog_uri"]).name for lyr in waves.manifest["layers"])
+    except Exception as exc:  # noqa: BLE001 — waves are optional
+        LOG.warning("raster postprocess: wave pass failed (%s) — depth-only", exc)
+
+    manifest = _manifest_mod.build_manifest(
+        engine="sfincs_quadtree", run_id=run_id, status="ok",
+        frame_count=frame_count, metrics=depth.metrics, layers=layers,
+    )
+    LOG.info(
+        "raster postprocess: built manifest with %d layer(s) (%d frames)",
+        len(layers), frame_count,
+    )
+    return manifest, None, None, rels
+
+
+# --------------------------------------------------------------------------- #
 # Completion + main
 # --------------------------------------------------------------------------- #
 
@@ -1917,6 +2026,7 @@ def _write_completion(
     deck_provenance: dict | None,
     started_at: str,
     error: str | None,
+    publish_manifest_uri: str | None = None,
 ) -> str:
     """Write the combined completion.json — a UNION of the deck + solve schemas.
 
@@ -1924,6 +2034,10 @@ def _write_completion(
     standalone solve worker's completion: the keys it reads (status, exit_code,
     output_uris, sfincs_stdout_uri/sfincs_stderr_uri, started/finished_at, error)
     are all present; ``deck`` is the extra build-provenance block.
+
+    ``publish_manifest_uri`` (postprocess-offload spike) is an EXPLICIT pointer to
+    the worker-written publish_manifest.json so the agent never globs for it. It
+    is present only when the raster postprocess produced a manifest.
     """
     payload = {
         "run_id": run_id,
@@ -1933,6 +2047,7 @@ def _write_completion(
         "sfincs_stderr_uri": stderr_uri,
         "output_uris": output_uris,
         "deck": deck_provenance,
+        "publish_manifest_uri": publish_manifest_uri,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
@@ -1992,6 +2107,7 @@ def main(argv: list[str] | None = None) -> int:
     stdout_uri: str | None = None
     stderr_uri: str | None = None
     deck_provenance: dict | None = None
+    publish_manifest_uri: str | None = None
     error_msg: str | None = None
     exit_code = 1
     status = "error"
@@ -2019,7 +2135,38 @@ def main(argv: list[str] | None = None) -> int:
         stdout_uri = _upload(stdout_path, _runs_uri(run_id, "sfincs.stdout"))
         stderr_uri = _upload(stderr_path, _runs_uri(run_id, "sfincs.stderr"))
 
-        # Upload the SFINCS outputs (sfincs_map.nc is the load-bearing one).
+        # ---- RASTER POSTPROCESS (NetCDF -> COG on the LOCAL deck) -----------
+        # Runs ON THE WORKER (postprocess-offload spike): write display-ready
+        # overview-bearing COGs into the deck dir BEFORE the output sweep below
+        # (so the *.tif glob ships them), build the publish manifest, and apply
+        # the empty-field honesty gate. Only attempted on a clean solve (rc==0
+        # AND a local sfincs_map.nc); a failed solve falls straight through to
+        # the raw-NetCDF upload + the agent's legacy on-box path. Best-effort:
+        # never sinks the run by itself.
+        pp_status_override: str | None = None
+        pp_error_code: str | None = None
+        if rc == 0:
+            manifest, pp_status_override, pp_error_code, pp_rels = (
+                run_raster_postprocess(run_id, deck_dir, spec)
+            )
+            if manifest is not None:
+                # Write the manifest BEFORE completion.json (Spot-reclaim
+                # atomicity): status=ok in completion.json implies the manifest
+                # + every listed COG already exist.
+                from services.workers._raster_postprocess import (
+                    manifest as _manifest_mod,
+                )
+
+                publish_manifest_uri = _put_json(
+                    manifest, _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+                )
+                LOG.info(
+                    "raster postprocess: wrote %s (%d COG(s))",
+                    publish_manifest_uri, len(pp_rels),
+                )
+
+        # Upload the SFINCS outputs (sfincs_map.nc is the load-bearing one; the
+        # postprocess COGs written above are caught by the *.tif glob).
         for path in _expand_outputs(list(SOLVE_OUTPUT_PATTERNS), deck_dir):
             rel = path.relative_to(deck_dir).as_posix()
             # Skip stdout/stderr re-upload (handled above); keep map + tifs.
@@ -2041,15 +2188,26 @@ def main(argv: list[str] | None = None) -> int:
                     _upload(f, _runs_uri(run_id, f"deck/{rel}"))
                 )
         output_uris.append(manifest_uri)
+        if publish_manifest_uri:
+            output_uris.append(publish_manifest_uri)
 
         # status is OK only if BOTH the build succeeded (we got here) AND the
-        # solve exited 0.
+        # solve exited 0 AND the raster honesty gate did not fire (the depth
+        # field was non-empty). An empty flood field on an otherwise-clean solve
+        # is a status=error (RUN_OUTPUT_EMPTY) so the agent never registers a
+        # status=ok-but-empty layer (Invariant 1 / FR-AS-7).
         exit_code = rc
-        if rc == 0:
-            status = "ok"
-        else:
+        if rc != 0:
             status = "error"
             error_msg = f"sfincs exited with non-zero code {rc}"
+        elif pp_status_override == "error":
+            status = "error"
+            error_msg = (
+                f"raster postprocess honesty gate: {pp_error_code} "
+                "(solve clean but the flood field is empty)"
+            )
+        else:
+            status = "ok"
         LOG.info(
             "combined run finished: build OK (nr_cells=%s nr_levels=%s), "
             "solve exit=%d, %d output(s)",
@@ -2074,6 +2232,7 @@ def main(argv: list[str] | None = None) -> int:
         deck_provenance=deck_provenance,
         started_at=started_at,
         error=error_msg,
+        publish_manifest_uri=publish_manifest_uri,
     )
     return exit_code
 
