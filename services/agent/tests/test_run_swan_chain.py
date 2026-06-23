@@ -343,6 +343,116 @@ def test_postprocess_swan_end_to_end_shape(tmp_path: Path):
     assert len(uris) == len(frames)  # distinct keys -> no dedup collapse
 
 
+# ===========================================================================
+# (4b) RENDER FIX: the Hs COG must be upsampled so it carries internal OVERVIEWS.
+# ===========================================================================
+# Root cause of the live 2026-06-23 "SWAN solves but the wave layer never paints"
+# (run 01KVSNNBKSHXAWPGGVD5DKV1C9): the SWAN mesh is coarse (a 101x101 BLOCK
+# output), so the Hs COG was too small for the GDAL COG driver to build internal
+# overviews. A no-overview COG makes TiTiler report a 1-level (min==max) tilejson
+# zoom window, so the MapLibre raster source paints only inside that narrow band /
+# times out cold -- the layer row appears in the panel but no raster lands on the
+# map. The fix upsamples the masked Hs grid (nearest-neighbour, no data invented)
+# so the COG crosses the overview-build threshold.
+def test_upsample_for_cog_preserves_values_and_mask():
+    from grace2_agent.workflows.postprocess_swan import _upsample_for_cog
+
+    # a tiny 4x4 grid with a calm/wave NaN edge.
+    g = np.array(
+        [
+            [1.0, 2.0, np.nan, np.nan],
+            [1.0, 2.0, np.nan, np.nan],
+            [3.0, 4.0, np.nan, np.nan],
+            [3.0, 4.0, np.nan, np.nan],
+        ],
+        dtype="float32",
+    )
+    up = _upsample_for_cog(g, min_dim_px=16)
+    assert max(up.shape) >= 16
+    # nearest-neighbour invents NO new values: the value set is unchanged.
+    finite_in = set(np.round(g[np.isfinite(g)], 6).tolist())
+    finite_out = set(np.round(up[np.isfinite(up)], 6).tolist())
+    assert finite_out == finite_in
+    # the NaN (calm) mask is preserved proportionally (no wave bled into calm).
+    assert np.isnan(up).any()
+    # no-op when already large enough.
+    big = np.ones((20, 20), dtype="float32")
+    assert _upsample_for_cog(big, min_dim_px=16).shape == (20, 20)
+
+
+def test_written_hs_cog_has_overviews(tmp_path: Path):
+    """A coarse SWAN grid must still produce a COG WITH internal overviews + a
+    multi-level zoom span (the no-overview COG is what made the layer not paint)."""
+    import rasterio
+
+    from grace2_agent.workflows.postprocess_swan import (
+        _COG_MIN_DIM_PX,
+        _write_hs_cog_4326,
+    )
+
+    # a coarse 100x100 wave field (matches the live SWAN deck mesh).
+    hs = np.full((100, 100), 0.0, dtype="float32")
+    hs[40:, :] = 3.0  # a wave-bearing band
+    cog = _write_hs_cog_4326(hs, _AOI)
+    try:
+        with rasterio.open(cog) as ds:
+            assert str(ds.crs) == "EPSG:4326"
+            # upsampled past the overview-build threshold.
+            assert max(ds.width, ds.height) >= _COG_MIN_DIM_PX
+            # the decisive assertion: band-1 carries internal overviews, so
+            # TiTiler reports a real multi-level tilejson zoom window.
+            assert len(ds.overviews(1)) >= 1
+    finally:
+        cog.unlink(missing_ok=True)
+
+
+def test_postprocess_swan_peak_cog_renderable_with_overviews(tmp_path: Path):
+    """End-to-end: the published peak COG is a /tiles-renderable raster carrying
+    overviews + the wave-height style preset (the full no-paint fix)."""
+    import rasterio
+
+    from grace2_agent.workflows import postprocess_swan as ps
+
+    mat = tmp_path / "swan_out.mat"
+    _synthetic_swan_mat(mat, 100, 100, lambda i, j, f: 3.0 if j >= 40 else 0.0)
+
+    captured: dict = {}
+
+    def _verify_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="x.tif"):
+        with rasterio.open(local_cog) as ds:
+            assert str(ds.crs) == "EPSG:4326"
+            captured.setdefault("overviews", []).append(len(ds.overviews(1)))
+            captured.setdefault("dims", []).append(max(ds.width, ds.height))
+        return f"s3://fake-runs/{run_id}/{dest_filename}"
+
+    with patch.object(ps, "_upload_cog_to_runs_bucket", _verify_upload):
+        layers, _metrics = ps.postprocess_swan(
+            tmp_path, _AOI, run_id="RIDOVR", mode="stationary"
+        )
+
+    peak = layers[0]
+    # the layer carries the wave-height preset -> publish_layer resolves it to
+    # &rescale=0,6&colormap_name=gnbu (the SWAN wave ramp), NOT a raw s3://.
+    assert peak.style_preset == "continuous_wave_height"
+    assert peak.uri.startswith("s3://fake-runs/RIDOVR/swan_wave_height_peak.tif")
+    # every written COG carried overviews.
+    assert captured["overviews"] and all(n >= 1 for n in captured["overviews"])
+    assert all(d >= 512 for d in captured["dims"])
+
+
+def test_swan_wave_height_preset_resolves_to_titiler_rescale_colormap():
+    """The SWAN wave-height preset must resolve to a TiTiler /tiles URL with a
+    valid rescale + colormap (gnbu over 0..6 m) -- never a washed-out empty style
+    or a raw s3://. This is the publish-side half of the render contract."""
+    from grace2_agent.tools.publish_layer import _registry_style_params
+
+    assert SWAN_WAVE_HEIGHT_STYLE_PRESET == "continuous_wave_height"
+    params = _registry_style_params("continuous_wave_height")
+    assert params is not None
+    assert "rescale=0,6" in params
+    assert "colormap_name=gnbu" in params
+
+
 def test_postprocess_swan_empty_output_raises(tmp_path: Path):
     from grace2_agent.workflows.postprocess_swan import (
         PostprocessSwanError,
