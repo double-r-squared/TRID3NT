@@ -35,6 +35,7 @@ import math
 import weakref
 import logging
 import os
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -7754,9 +7755,25 @@ async def _invoke_tool_via_emitter(
         # the wire write failed. Never raises (and never masks the original
         # exception) — persistence is a side-effect, not the happy path.
         if turn_case_id and state.emitter is not None:
+            # DURABILITY (layer-publish-survives-disconnect, 2026-06-23): run the
+            # layer persist UNDER A SHIELD so a cancellation of the (possibly
+            # detached) turn cannot interrupt the DynamoDB write of a fully-
+            # computed layer. A bare ``await`` here is cancel-fragile: a
+            # same-stream re-prompt supersede / stop / any cancel re-raises the
+            # pending CancelledError at the persist's first suspension point and
+            # SKIPS the write -- the exact mechanism by which SFINCS run
+            # 01KVSTC80F wrote 100+ COGs to S3 yet the Case persisted 0 layers
+            # after a transient WS drop. ``_run_to_completion_shielded`` keeps the
+            # write running to completion and THEN re-raises the cancel (Invariant
+            # 8 preserved). The persist swallows its own errors (never raises), so
+            # the only interruption this guard absorbs is the parent cancel.
             try:
-                await _persist_case_loaded_layers(state, case_id=turn_case_id)
-            except Exception:  # noqa: BLE001 — best-effort, never mask
+                await _run_to_completion_shielded(
+                    _persist_case_loaded_layers(state, case_id=turn_case_id)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - best-effort, never mask
                 logger.exception(
                     "case-layer-persist (finally) failed case=%s",
                     turn_case_id,
@@ -7779,12 +7796,28 @@ async def _invoke_tool_via_emitter(
             # and run blocking I/O via asyncio.to_thread internally, so awaiting
             # them does not pin the loop. Both swallow their own errors (return
             # False / never raise), so the await never breaks the dispatch.
-            await _persist_case_view_snapshot(state, case_id=turn_case_id)
-            # #165 dual-write: persist the thin manifest ALONGSIDE the snapshot
-            # (same durability requirement -- a published layer must be
-            # cold-renderable from either index before the box can stop). The
-            # manifest swallows its own errors (returns False, never raises).
-            await _persist_case_manifest(state, case_id=turn_case_id)
+            #
+            # DURABILITY: the snapshot + manifest are the COLD-view faces of the
+            # same just-persisted layer -- they take the SAME shield so a cancel
+            # in this finally cannot leave the cold faces stale-empty while the
+            # Dynamo record carries the layer (or vice versa).
+            try:
+                await _run_to_completion_shielded(
+                    _persist_case_view_snapshot(state, case_id=turn_case_id)
+                )
+                # #165 dual-write: persist the thin manifest ALONGSIDE the
+                # snapshot (same durability requirement -- a published layer must
+                # be cold-renderable from either index before the box can stop).
+                await _run_to_completion_shielded(
+                    _persist_case_manifest(state, case_id=turn_case_id)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - best-effort, never mask
+                logger.exception(
+                    "case-coldview-persist (finally) failed case=%s",
+                    turn_case_id,
+                )
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
@@ -7998,6 +8031,50 @@ async def _invoke_tool_via_emitter(
     if tool_name == "web_fetch" and isinstance(result, dict):
         await _maybe_emit_mode2_candidate(websocket, state, result)
     return result
+
+
+async def _run_to_completion_shielded(coro: Awaitable[Any]) -> None:
+    """Await ``coro`` so it COMPLETES even if the surrounding task is cancelled.
+
+    DURABILITY (layer-publish-survives-disconnect): the per-tool dispatch
+    ``finally`` persists the completed layer accumulator to DynamoDB. That
+    ``finally`` runs on EVERY exit path -- including ``asyncio.CancelledError``
+    (a same-stream re-prompt supersede, the stop button, or any cancel that
+    reaches the detached turn). A bare ``await persist(...)`` in a ``finally``
+    is NOT safe under cancellation: the first real suspension point inside the
+    persist re-raises the pending ``CancelledError``, so the DynamoDB write is
+    SKIPPED and a fully-computed layer is lost (live 2026-06-23: SFINCS run
+    01KVSTC80F wrote 100+ COGs to S3 but the Case persisted 0 layers after a
+    transient WS drop during the ~9-min solve).
+
+    The fix wraps the persist in a real task + ``asyncio.shield`` so a cancel
+    of the parent does NOT cancel the write; if a ``CancelledError`` does arrive
+    while we wait, we keep awaiting the shielded task to completion, THEN re-raise
+    the cancellation (Invariant 8: the cancel still propagates, the write still
+    lands). The persist coroutines swallow their own errors (never raise), so the
+    only thing that can interrupt them is the parent cancel this guard absorbs.
+    """
+    task = asyncio.ensure_future(coro)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.cancelled():
+                # The inner task itself was cancelled (not just our shield) --
+                # nothing more to wait on; propagate.
+                raise
+            # Parent was cancelled but the shielded write is NOT cancelled.
+            # Remember the cancel, and keep waiting on the still-running write
+            # (the next loop awaits the same shielded task) so the DynamoDB write
+            # COMPLETES before the cancel propagates. If the write already
+            # finished, the next ``await shield(task)`` returns immediately.
+            cancelled = True
+            continue
+    if cancelled:
+        # Invariant 8: the write landed; now honor the parent cancellation.
+        raise asyncio.CancelledError
 
 
 async def _persist_case_loaded_layers(
