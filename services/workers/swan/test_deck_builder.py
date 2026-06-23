@@ -156,7 +156,9 @@ def test_render_swn_stationary_has_load_bearing_blocks():
     assert "-85.750000 29.550000" in text
     # Bottom input grid + read of the staged bottom file.
     assert "INPGRID BOTTOM REGULAR" in text
-    assert "READINP BOTTOM 1.0 'bottom.bot' 1 0 FREE" in text
+    # idla=3 (SW/lower-left, rows south->north) matches render_bottom_input's
+    # south-first write order; idla=1 (NW) mirrored the bed N<->S -> all-dry no-op.
+    assert "READINP BOTTOM 1.0 'bottom.bot' 3 0 FREE" in text
     # Physics: GEN3 + friction + breaking + triads.
     assert "GEN3 WESTHUYSEN" in text
     assert "FRICTION JONSWAP" in text

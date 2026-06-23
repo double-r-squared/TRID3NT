@@ -456,8 +456,15 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
         f"{g['xpc']:.6f} {g['ypc']:.6f} 0.0 {inp_mx} {inp_my} "
         f"{dx:.8f} {dy:.8f}"
     )
-    # fac=1.0 (no scale), idla=1 (SW corner, x fastest), 0 header lines, FREE format.
-    lines.append(f"READINP BOTTOM 1.0 '{spec.bottom_file}' 1 0 FREE")
+    # fac=1.0 (no scale), idla=3, 0 header lines, FREE format.
+    # idla=3 = SWAN reads the grid starting in the LOWER-LEFT (SW) corner, x
+    # fastest, rows running SOUTH->NORTH -- which is EXACTLY how render_bottom_input
+    # writes the array (outer loop j ascending: lat = ypc + j*dy, south-first).
+    # The old value 1 was WRONG: the SWAN manual (node26) defines idla=1 as the
+    # UPPER-LEFT (NW) corner (rows north-first), so idla=1 against our south-first
+    # data MIRRORED the bathymetry N<->S -- stranding the forced seaward boundary
+    # over land, leaving zero wet cells -> the 32ms "Normal end of run" no-op.
+    lines.append(f"READINP BOTTOM 1.0 '{spec.bottom_file}' 3 0 FREE")
 
     # Optional wind input grid (enables GEN3 wind-sea growth).
     wind_enabled = spec.wind_file is not None
@@ -540,9 +547,11 @@ def render_bottom_input(
     """Render a SWAN BOTTOM input array (a ``READINP BOTTOM`` FREE-format grid).
 
     SWAN reads the bottom as positive-DOWN depths (metres below the still-water
-    level) on the ``INPGRID BOTTOM`` mesh, idla=1 (SW corner, x fastest, rows of
-    constant y ascending). This renders an ``(inp_my+1) x (inp_mx+1)`` grid of
-    depth values, one row of x per line.
+    level) on the ``INPGRID BOTTOM`` mesh. We write rows of constant y ASCENDING
+    (south-first), so the deck declares ``idla=3`` (SWAN lower-left/SW corner, x
+    fastest, rows south->north) to match -- NOT idla=1, which the manual defines as
+    the NW corner and would mirror the bed N<->S. This renders an
+    ``(inp_my+1) x (inp_mx+1)`` grid of depth values, one row of x per line.
 
     ``depth_fn(lon, lat) -> depth_m`` supplies the depth (positive down) at a grid
     node; when ``None`` a flat demo bathymetry (a uniform 10 m depth) is written so
