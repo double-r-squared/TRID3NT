@@ -382,6 +382,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "generate_choropleth_legend": "geographic_primitives",
     "generate_time_series": "geographic_primitives",
     "generate_damage_distribution": "geographic_primitives",
+    # cross-section / profile tool - the distance-along-a-line chart companion
+    # to the time-series / histogram charts above (samples raster value(s) at N
+    # stations along a drawn-or-derived line; multi-layer overlay). Filed in the
+    # same conversational-analysis surface as the other chart-emission tools.
+    "compute_cross_section": "geographic_primitives",
     # job-0233 (sprint-13 Stage 2): user-confirmed Python sandbox — the ad-hoc
     # computation escape hatch behind the conversational data-analysis layer.
     # The kickoff named a "data_analysis" category; no such category exists, so
