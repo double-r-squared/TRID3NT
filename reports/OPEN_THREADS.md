@@ -21,10 +21,16 @@ Last updated: 2026-06-23.
   because applyTerrain3d never pitches the camera. Fix: P1 auto-pitch + dramatic terrain (v4, must-land),
   P2 MapLibre v5 + globe projection (terra-draw adapter peerDep >=4 so v5 ok). Commit, NOT deploy; I
   review + merge + deploy + NATE live-verifies.
-- **[Focus 2: Engine full-coverage levers] foundation STEP 1-2** — agent `a9191a0f` RUNNING (worktree).
-  Shared cog_io.py + frames.py (pure refactor) + OutputQuantitySpec registry + publish_quantities agent
-  executor + EngineRunArgsMixin (temporal_mode/advanced_physics) + physics_registry. Plan:
-  reports/design/engine_coverage_levers_plan.md. On land -> STEP 3 fan-out (5 non-SFINCS engines).
+- **[Focus 2: Engine full-coverage levers] STEPS 1-3 LANDED on main** (foundation 3d6591e + STEP 3
+  9d25d74). Foundation: shared cog_io/frames + OutputQuantitySpec registry + publish_quantities executor
+  + EngineRunArgsMixin + physics_registry. STEP 3: MODFLOW/Landlab/OpenQuake/SWMM migrated onto the
+  registry with NEW published quantities (MODFLOW plume-ts + water-table; Landlab drainage/slope/wetness/
+  discharge/FoS; OpenQuake hazard-curves+UHS scalars; SWMM flooding-losses/ponded/conduit flow+velocity)
+  + per-engine advanced_physics toggles, all gated DEFAULT-OFF (GRACE2_<ENGINE>_REGISTRY_QUANTITIES).
+  Agent suite 7023 / contracts 524 green; existing quantities byte-identical. ACTIVATION (deferred, not
+  urgent, gated off): MODFLOW/Landlab/OpenQuake need worker rebuilds + env flips to turn the new
+  quantities on; SWMM is agent-only. STEP 4 (SFINCS/SWAN producers + manifest schema 1->2) still gates
+  on the SFINCS wave fix. GeoClaw STEP 3 still needs the STEP 0 topo-handoff fix first.
 
 ## DEPLOYED / COMMITTED THIS SESSION (prune after verify)
 - **Mobile polish-2 batch** — 946d263, web DEPLOYED (S3 + CF invalidation I6AGMYV4OONMT9KFAG25LMMKTK).
