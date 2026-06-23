@@ -73,6 +73,8 @@ __all__ = [
     "DEFAULT_OUTPUT_QUANTITIES",
     "OUTPUT_MAT_FILENAME",
     "INPUT_FILENAME",
+    "SWN_CASENAME",
+    "SWN_FILENAME",
 ]
 
 #: The output Matlab file the BLOCK command writes (the portable default the
@@ -80,6 +82,19 @@ __all__ = [
 #: to INPUT (the SWAN convention).
 OUTPUT_MAT_FILENAME: str = "swan_out.mat"
 INPUT_FILENAME: str = "INPUT"
+
+#: The SWAN *case name* the entrypoint hands to ``swanrun -input <SWN_CASENAME>``.
+#: The TU Delft ``swanrun`` launcher APPENDS ``.swn`` to this argument: it looks
+#: for ``<SWN_CASENAME>.swn``, copies it to the file literally named ``INPUT``,
+#: then runs ``swan.exe`` (which reads ``INPUT``). So the deck author MUST write
+#: ``<SWN_CASENAME>.swn`` and the entrypoint MUST pass the bare case name (NO
+#: ``.swn``, NO ``INPUT``). Passing ``-input INPUT`` made swanrun hunt for the
+#: nonexistent ``INPUT.swn`` and abort ("file INPUT.swn does not exist", exit 1)
+#: BEFORE SWAN ever solved -- the live 2026-06-23 Mexico Beach failure. This
+#: constant is the single source of truth shared by the deck author + the runner.
+SWN_CASENAME: str = "swan_run"
+#: The actual ``.swn`` command file the deck author writes (``swanrun`` reads it).
+SWN_FILENAME: str = f"{SWN_CASENAME}.swn"
 
 #: The default gridded output quantities the BLOCK writes / the postprocess reads.
 DEFAULT_OUTPUT_QUANTITIES: tuple[str, ...] = ("HSIGN", "RTP", "DIR")
@@ -561,13 +576,18 @@ def build_swan_deck(
 
     written: list[str] = []
 
-    # The command file -- written as INPUT (the SWAN convention) AND as a .swn for
-    # provenance / debugging.
+    # The command file. SWAN's ``swanrun`` launcher is fed ``-input SWN_CASENAME``,
+    # which APPENDS ``.swn`` -> it reads ``SWN_FILENAME`` (``swan_run.swn``), copies
+    # it to the file literally named ``INPUT``, then runs ``swan.exe`` (which reads
+    # ``INPUT``). So ``SWN_FILENAME`` is the load-bearing file swanrun needs. We
+    # ALSO write the identical text to ``INPUT`` directly so a bare
+    # ``swan.exe``-style fallback (or a swanrun that pre-seeds INPUT) still finds a
+    # valid command file -- swanrun simply overwrites it with the same bytes.
     swn_text = render_swn_command_file(spec)
+    (deck / SWN_FILENAME).write_text(swn_text, encoding="utf-8")
+    written.append(SWN_FILENAME)
     (deck / INPUT_FILENAME).write_text(swn_text, encoding="utf-8")
     written.append(INPUT_FILENAME)
-    (deck / "swan_run.swn").write_text(swn_text, encoding="utf-8")
-    written.append("swan_run.swn")
 
     # The bottom (bathymetry) input array.
     bottom_text = render_bottom_input(spec, depth_fn=depth_fn)
