@@ -5281,6 +5281,191 @@ async def _build_swmm_granularity_envelope(params: dict) -> tuple[Any, Any, str]
     return envelope, auto, dem_path
 
 
+async def _build_flood_run_settings_envelope(
+    tool_name: str, params: dict
+) -> tuple[Any, Any, float | None, float]:
+    """Build the COMBINED run-settings confirm card for the flood solvers.
+
+    The combined run-settings gate (sprint-16) extends the flood solver-confirm
+    gate into ONE card the user reviews + overrides before the heavy SFINCS run,
+    carrying BOTH:
+
+    * a ``GranularitySuggestion`` (SPATIAL resolution — the SFINCS
+      ``grid_resolution_m`` ladder + estimated cells / solve time / compute
+      class), built from the bbox via
+      :func:`suggest_sfincs_resolution_from_bbox` (no DEM read — loop-safe; the
+      real cell count comes from ``build_sfincs_model``'s DEM autoscale at run
+      time, so the card numbers are labelled ESTIMATES), and
+    * a ``TimeScaleSuggestion`` (TEMPORAL cadence + window — the resolved
+      animation ``output_interval_min`` + ``duration_hr`` + a frame-count
+      estimate) for a COASTAL/wave run (the "looks like rain" fix). PLUVIAL
+      runs animate hourly with a fixed cadence, so ``time_scale`` is None and
+      the card degrades to the granularity-only resolution gate.
+
+    Returns ``(envelope, granularity_suggestion, resolved_interval_min,
+    duration_hr)`` — the granularity result is the raw ``GridAutoscaleResult``
+    so the decision tail can pin the suggested resolution on ``proceed``;
+    ``resolved_interval_min`` is the resolved coastal cadence (None for pluvial)
+    pinned on ``proceed``; ``duration_hr`` is the simulation window.
+
+    Raises on ANY failure — the caller's try/except fails OPEN (proceeds with
+    the original params) so a gate problem never blocks or orphans a solve.
+    """
+    from grace2_contracts.payload_warning import (
+        GranularitySuggestion,
+        PayloadWarningEnvelopePayload,
+        TimeScaleSuggestion,
+    )
+    from .tool_arg_normalizer import coerce_bbox_value
+    from .workflows.model_flood_scenario import (
+        _estimate_frame_count,
+        _resolve_output_interval_min,
+    )
+    from .workflows.postprocess_flood import MAX_FLOOD_FRAMES
+    from .workflows.sfincs_builder import (
+        SFINCS_RES_LADDER,
+        suggest_sfincs_resolution_from_bbox,
+    )
+
+    where = params.get("location_query") or params.get("bbox") or "?"
+
+    # is_coastal mirrors the workflow signal (coastal/quadtree/surge -> fine
+    # minute-scale animation; pluvial -> hourly).
+    flood_is_coastal = bool(
+        params.get("coastal")
+        or params.get("quadtree")
+        or params.get("surge_forcing")
+    )
+    try:
+        flood_duration_hr = float(
+            params.get("duration_hr")
+            if params.get("duration_hr") is not None
+            else params.get("duration_hours", 24)
+        )
+    except (TypeError, ValueError):
+        flood_duration_hr = 24.0
+    if flood_duration_hr <= 0:
+        flood_duration_hr = 24.0
+
+    # --- TIME-SCALE suggestion (coastal only) -----------------------------
+    resolved_interval_min = _resolve_output_interval_min(
+        is_coastal=flood_is_coastal,
+        output_interval_min=params.get("output_interval_min"),
+        duration_hr=flood_duration_hr,
+    )
+    frame_count = _estimate_frame_count(
+        output_interval_min=resolved_interval_min,
+        duration_hr=flood_duration_hr,
+    )
+    time_scale: Any = None
+    if resolved_interval_min is not None:
+        # Coastal: a fine minute-scale cadence the user can override. The chip
+        # ladder is a small set of sensible strides; free-edit is also allowed.
+        interval_choices = sorted(
+            {1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, float(resolved_interval_min)}
+        )
+        time_scale = TimeScaleSuggestion(
+            cadence_param="output_interval_min",
+            suggested_interval_min=float(resolved_interval_min),
+            interval_choices=[float(c) for c in interval_choices if c > 0],
+            duration_param="duration_hr",
+            suggested_duration_hr=float(flood_duration_hr),
+            estimated_frame_count=int(frame_count),
+            max_frames=int(MAX_FLOOD_FRAMES),
+            min_interval_min=1.0,
+            is_coastal=True,
+            reason=(
+                f"Coastal/wave: ~{resolved_interval_min:g}-min frames over a "
+                f"{flood_duration_hr:g} h window animate the water roll-in "
+                f"(~{frame_count} frames)."
+            )[:512],
+        )
+
+    # --- GRANULARITY (spatial resolution) suggestion ----------------------
+    granularity: Any = None
+    auto: Any = None
+    coerced = coerce_bbox_value(params.get("bbox"))
+    if coerced is not None:
+        # suggest is PURE arithmetic (no DEM read) -> safe on the loop, but keep
+        # it off-thread for symmetry with the SWMM path / no-blocking norm.
+        auto = await asyncio.to_thread(
+            suggest_sfincs_resolution_from_bbox,
+            tuple(coerced),  # type: ignore[arg-type]
+        )
+        compute_class = params.get("compute_class", "standard") or "standard"
+        rungs = sorted(
+            {r for r in SFINCS_RES_LADDER if r > 0}
+            | {float(auto.grid_resolution_m)}
+        )
+        granularity = GranularitySuggestion(
+            engine="sfincs",
+            resolution_param="grid_resolution_m",
+            suggested_resolution_m=float(auto.grid_resolution_m),
+            resolution_choices=[float(r) for r in rungs if r > 0],
+            estimated_active_cells=int(auto.estimated_active_cells),
+            estimated_solve_seconds=float(auto.estimated_solve_seconds),
+            vcpus=int(auto.vcpus),
+            compute_class=str(compute_class),
+            cell_cap=int(auto.cell_cap),
+            coarsened=bool(auto.coarsened),
+            reason=str(auto.reason)[:512],
+            spot_label=None,
+        )
+
+    # --- recommendation prose (the card's caption) ------------------------
+    if resolved_interval_min is not None:
+        cadence_phrase = (
+            f" Animation: ~{frame_count} frames every "
+            f"{resolved_interval_min:g} min (fine wave cadence)."
+        )
+    else:
+        cadence_phrase = f" Animation: ~{frame_count} hourly frames."
+    res_phrase = ""
+    if auto is not None:
+        res_phrase = (
+            f" Grid ~{auto.grid_resolution_m:.0f} m "
+            f"(~{auto.estimated_active_cells} active cells est)."
+        )
+
+    envelope = PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name=tool_name,
+        tool_args={
+            "location": str(where),
+            "return_period_yr": params.get("return_period_yr"),
+            "duration_hr": flood_duration_hr,
+            "forcing_raster_uri": params.get("forcing_raster_uri"),
+            "compute_class": params.get("compute_class", "standard"),
+            "grid_resolution_m": (
+                float(auto.grid_resolution_m) if auto is not None else None
+            ),
+            # cadence lever  -  visible + overridable in the card.
+            "output_interval_min": resolved_interval_min,
+            "animation_frames": frame_count,
+        },
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation=(
+            f"Run a SFINCS flood simulation for {where} "
+            "(cloud solve, typically 5-20 minutes)."
+            + res_phrase
+            + cadence_phrase
+            + " Review the run settings, then confirm to start."
+        )[:512],
+        # narrow_scope is meaningful here whenever ANY override (resolution or
+        # cadence/window) is offered, i.e. whenever the card carries a
+        # granularity OR a time_scale block.
+        options=(
+            ["proceed", "cancel", "narrow_scope"]
+            if (granularity is not None or time_scale is not None)
+            else ["proceed", "cancel"]
+        ),
+        granularity=granularity,
+        time_scale=time_scale,
+    )
+    return envelope, auto, resolved_interval_min, flood_duration_hr
+
+
 def _clamp_swmm_resolution_to_cap(
     chosen_res_m: float, auto: Any, requested_res_m: float
 ) -> tuple[float, bool]:
@@ -5348,6 +5533,18 @@ async def _gate_on_solver_confirm(
     # for every non-flood gated tool.
     flood_output_interval_min: float | None = None
     flood_cadence_gated: bool = False
+    # Combined run-settings gate (sprint-16): the flood SFINCS resolution
+    # suggestion (bbox-area estimate) so the decision tail can pin the suggested
+    # grid_resolution_m on ``proceed`` or honour the user's chosen rung on a
+    # ``narrow_scope`` override. None for the pluvial-only path (no bbox) and for
+    # every non-flood gated tool.
+    flood_grid_autoscale: Any = None
+    flood_duration_hr: float = 24.0
+    # True only when the flood card actually advertised an override (a
+    # GranularitySuggestion and/or a TimeScaleSuggestion) i.e. ``narrow_scope``
+    # was offered. A pluvial/no-bbox flood card offers ONLY proceed/cancel, so a
+    # narrow_scope reply to it stays fail-closed (the card never offered it).
+    flood_override_offered: bool = False
     try:
         if tool_name == "run_model_groundwater_contamination_scenario":
             from .workflows.model_groundwater_contamination_scenario import (
@@ -5382,78 +5579,24 @@ async def _gate_on_solver_confirm(
         elif tool_name in ("run_model_flood_scenario",
                            "run_model_flood_habitat_scenario"):
             # job-0256 (live finding: a flood solver ran in a sandbox-only
-            # session): a ~10-20 min SFINCS solve is a consequence — show
-            # the user what is about to run. Card built straight from the
-            # call args (no extraction needed).
-            from grace2_contracts.payload_warning import (
-                PayloadWarningEnvelopePayload,
-            )
-            from .workflows.model_flood_scenario import (
-                _estimate_frame_count,
-                _resolve_output_interval_min,
-            )
-
-            where = params.get("location_query") or params.get("bbox") or "?"
-            # #154 cadence lever ("looks like rain" fix): surface the resolved
-            # animation cadence (interval + frame count) the run will use so the
-            # user can SEE "N frames every M min" and override before the solve.
-            # Coastal/wave -> a FINE minute-scale stride (water rolls in); pluvial
-            # -> hourly (unchanged). is_coastal mirrors the workflow signal.
-            flood_is_coastal = bool(
-                params.get("coastal")
-                or params.get("quadtree")
-                or params.get("surge_forcing")
-            )
-            try:
-                flood_duration_hr = float(
-                    params.get("duration_hr")
-                    if params.get("duration_hr") is not None
-                    else params.get("duration_hours", 24)
-                )
-            except (TypeError, ValueError):
-                flood_duration_hr = 24.0
-            resolved_interval_min = _resolve_output_interval_min(
-                is_coastal=flood_is_coastal,
-                output_interval_min=params.get("output_interval_min"),
-                duration_hr=flood_duration_hr,
-            )
-            flood_output_interval_min = resolved_interval_min
+            # session): a ~10-20 min SFINCS solve is a consequence — show the
+            # user what is about to run. Combined run-settings gate (sprint-16):
+            # the card now carries BOTH a GranularitySuggestion (SFINCS grid
+            # resolution) AND a TimeScaleSuggestion (animation cadence + window)
+            # so the user reviews + overrides BOTH in ONE interaction. The
+            # bbox-area resolution estimate + cadence resolve happen in the
+            # helper (off the loop). Coastal/wave -> a fine minute-scale stride
+            # + a time-scale row; pluvial -> hourly (no time-scale row) and the
+            # card degrades to the granularity-only resolution gate.
+            (
+                envelope,
+                flood_grid_autoscale,
+                flood_output_interval_min,
+                flood_duration_hr,
+            ) = await _build_flood_run_settings_envelope(tool_name, params)
             flood_cadence_gated = True
-            frame_count = _estimate_frame_count(
-                output_interval_min=resolved_interval_min,
-                duration_hr=flood_duration_hr,
-            )
-            if resolved_interval_min is not None:
-                cadence_phrase = (
-                    f" Animation: ~{frame_count} frames every "
-                    f"{resolved_interval_min:g} min (fine wave cadence)."
-                )
-            else:
-                cadence_phrase = (
-                    f" Animation: ~{frame_count} hourly frames."
-                )
-            envelope = PayloadWarningEnvelopePayload(
-                warning_id=new_ulid(),
-                tool_name=tool_name,
-                tool_args={
-                    "location": str(where),
-                    "return_period_yr": params.get("return_period_yr"),
-                    "duration_hr": params.get("duration_hr"),
-                    "forcing_raster_uri": params.get("forcing_raster_uri"),
-                    "compute_class": params.get("compute_class", "standard"),
-                    # #154 cadence lever  -  visible + overridable in the card.
-                    "output_interval_min": resolved_interval_min,
-                    "animation_frames": frame_count,
-                },
-                estimated_mb=0.0,
-                threshold_mb=0.0,
-                recommendation=(
-                    f"Run a SFINCS flood simulation for {where} "
-                    "(cloud solve, typically 5-20 minutes)." + cadence_phrase
-                    + " Confirm to start."
-                )[:512],
-                options=["proceed", "cancel"],
-            )
+            # narrow_scope is offered iff the card carried an override block.
+            flood_override_offered = "narrow_scope" in envelope.options
         elif tool_name == "run_swmm_urban_flood":
             # #154 granularity gate (sprint-16): make mesh resolution a USER
             # lever (memory: feedback_user_controlled_granularity). The enriched
@@ -5536,6 +5679,71 @@ async def _gate_on_solver_confirm(
         return False, params
 
     if decision_payload.decision == "narrow_scope":
+        # Combined run-settings override (sprint-16): the flood gate advertises a
+        # GranularitySuggestion (grid_resolution_m) AND a TimeScaleSuggestion
+        # (output_interval_min / duration_hr) — the user can override EITHER (or
+        # both) in ONE revised_args dict. Pin whatever the user changed; fall
+        # back to the suggested value for anything they left alone. Distinct from
+        # the SWMM real-cap-clamp path below (the flood resolution is a bbox-area
+        # ESTIMATE; the real DEM autoscale re-runs at build time, so we honour the
+        # chosen rung directly without a re-probe). This branch is taken for the
+        # flood solvers; the SWMM branch below for run_swmm_urban_flood. Only
+        # honoured when an override was actually advertised (a pluvial/no-bbox
+        # flood card offers only proceed/cancel -> a narrow_scope reply falls
+        # through to the fail-closed path below).
+        if flood_cadence_gated and flood_override_offered:
+            revised = decision_payload.revised_args or {}
+            approved = dict(params)
+            approved["confirmed"] = True
+            # Resolution override: honour the chosen grid_resolution_m; pin the
+            # suggested rung when the user left it alone (so the build matches the
+            # card). enable_autoscale=False so the builder honours the explicit
+            # value rather than re-deriving its own.
+            if flood_grid_autoscale is not None:
+                try:
+                    chosen_grid_res = float(
+                        revised.get(
+                            "grid_resolution_m",
+                            flood_grid_autoscale.grid_resolution_m,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    chosen_grid_res = float(flood_grid_autoscale.grid_resolution_m)
+                if chosen_grid_res > 0:
+                    approved["grid_resolution_m"] = chosen_grid_res
+                    approved["enable_autoscale"] = False
+            # Cadence override: honour the chosen output_interval_min (floored at
+            # 1 min, matching the deck floor); pin the resolved cadence the card
+            # showed when the user left it alone (coastal only — None on pluvial
+            # leaves the legacy hourly default untouched).
+            chosen_interval: float | None = flood_output_interval_min
+            if "output_interval_min" in revised and revised["output_interval_min"] is not None:
+                try:
+                    chosen_interval = max(1.0, float(revised["output_interval_min"]))
+                except (TypeError, ValueError):
+                    chosen_interval = flood_output_interval_min
+            if chosen_interval is not None:
+                approved["output_interval_min"] = float(chosen_interval)
+            # Window/duration override: honour an edited simulation window
+            # (positive hours only); leave params untouched otherwise.
+            if "duration_hr" in revised and revised["duration_hr"] is not None:
+                try:
+                    chosen_duration = float(revised["duration_hr"])
+                    if chosen_duration > 0:
+                        approved["duration_hr"] = chosen_duration
+                except (TypeError, ValueError):
+                    pass
+            logger.info(
+                "flood run-settings narrow_scope session=%s warning_id=%s "
+                "grid_res=%r output_interval_min=%r duration_hr=%r",
+                state.session_id,
+                warning_id,
+                approved.get("grid_resolution_m"),
+                approved.get("output_interval_min"),
+                approved.get("duration_hr"),
+            )
+            return True, approved
+
         # #154 granularity override: ONLY meaningful for the SWMM gate (it
         # advertised a GranularitySuggestion). For any other gated solver a
         # narrow_scope reply is meaningless -> fail-closed (existing behavior).
@@ -5644,6 +5852,15 @@ async def _gate_on_solver_confirm(
     if swmm_autoscale is not None:
         approved["target_resolution_m"] = float(swmm_autoscale.resolution_m)
         approved["enable_autoscale"] = False
+    # Combined run-settings gate (sprint-16): pin the SUGGESTED SFINCS grid
+    # resolution the card showed so the run matches the card the user approved
+    # (bbox-area estimate; enable_autoscale stays default so the real DEM
+    # autoscale still refines it at build time — pinning the rung only sets the
+    # ladder start). None when the gate had no bbox.
+    if flood_cadence_gated and flood_grid_autoscale is not None:
+        approved["grid_resolution_m"] = float(
+            flood_grid_autoscale.grid_resolution_m
+        )
     # #154 cadence lever: pin the resolved flood animation interval the card
     # showed so the run emits exactly the "N frames every M min" the user
     # approved (coastal/wave only; None on the pluvial path leaves the legacy

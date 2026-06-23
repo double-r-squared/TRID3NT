@@ -89,6 +89,7 @@ __all__ = [
     # Adaptive grid autoscale (sprint-16 SFINCS per-job autoscale)
     "GridAutoscaleResult",
     "autoscale_grid_resolution",
+    "suggest_sfincs_resolution_from_bbox",
     "estimate_active_cells_at_resolution",
     "estimate_solve_seconds",
     "compute_cell_cap",
@@ -1601,6 +1602,96 @@ def autoscale_grid_resolution(
         est_solve_s,
         reason,
     )
+
+    return GridAutoscaleResult(
+        grid_resolution_m=chosen_res,
+        estimated_active_cells=chosen_est,
+        cell_cap=cap,
+        vcpus=vcpus,
+        base_resolution_m=base_resolution_m,
+        estimated_active_cells_at_base=est_at_base,
+        estimated_solve_seconds=est_solve_s,
+        coarsened=coarsened,
+        reason=reason,
+    )
+
+
+def suggest_sfincs_resolution_from_bbox(
+    bbox: tuple[float, float, float, float],
+    *,
+    base_resolution_m: float = 30.0,
+    compute_class: str = "medium",
+) -> GridAutoscaleResult:
+    """Lightweight SFINCS resolution suggestion from the AOI bbox alone (no DEM).
+
+    The combined run-settings gate (sprint-16) surfaces a SUGGESTED SFINCS grid
+    resolution + active-cell count + estimated solve time BEFORE the run so the
+    user can override the spatial resolution. The full :func:`autoscale_grid_resolution`
+    reads a staged DEM to count cells inside the active elevation window — too
+    heavy for a PRE-dispatch gate (it would block the WS loop and require a DEM
+    fetch the gate has not done yet). This helper instead uses the SAME
+    bbox-area fallback the autoscaler falls back to when the DEM is unreadable:
+    treat the whole bbox as active at ``base_resolution_m`` and scale the count
+    across the ladder. It is an ESTIMATE (labelled as such on the card); the real
+    cell count comes from ``build_sfincs_model``'s DEM-active autoscale at run
+    time. It NEVER reads a file and is safe to call on the event loop.
+
+    Mirrors the ladder walk + cap logic of :func:`autoscale_grid_resolution` so
+    the suggested rung the user SEES matches what the real autoscale would pick
+    for an all-active AOI. Returns the same :class:`GridAutoscaleResult` shape so
+    the gate builds the ``GranularitySuggestion`` block uniformly with the SWMM
+    path.
+    """
+    import math
+
+    base_resolution_m = float(base_resolution_m) if base_resolution_m > 0 else 30.0
+    vcpus = resolve_solve_vcpus(compute_class)
+    cap = compute_cell_cap(vcpus)
+
+    # bbox-area active-cell model at the base resolution (matches the autoscaler's
+    # ``bbox-area-fallback`` branch). ``_bbox_area_km2`` is the same WGS84 approx.
+    min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lat = 0.5 * (min_lat + max_lat)
+    dlat_km = (max_lat - min_lat) * 111.320
+    dlon_km = (max_lon - min_lon) * 111.320 * math.cos(math.radians(mid_lat))
+    area_m2 = abs(dlat_km * dlon_km) * 1_000_000.0
+    native_res_m = base_resolution_m
+    active_native = max(1, int(area_m2 / (base_resolution_m * base_resolution_m)))
+
+    est_at_base = estimate_active_cells_at_resolution(
+        active_native, native_res_m, base_resolution_m
+    )
+
+    ladder = sorted({base_resolution_m, *SFINCS_RES_LADDER})
+    chosen_res = ladder[0]
+    chosen_est = est_at_base
+    coarsened = False
+    for res in ladder:
+        est = estimate_active_cells_at_resolution(active_native, native_res_m, res)
+        chosen_res = res
+        chosen_est = est
+        coarsened = res > base_resolution_m
+        if est <= cap:
+            break
+
+    est_solve_s = estimate_solve_seconds(chosen_est, vcpus)
+
+    if chosen_est > cap:
+        reason = (
+            f"AOI exceeds cap even at coarsest rung {chosen_res:.0f}m "
+            f"(est {chosen_est} > cap {cap}); clamped to coarsest rung "
+            f"(bbox-area estimate)"
+        )
+    elif coarsened:
+        reason = (
+            f"coarsened {base_resolution_m:.0f}m->{chosen_res:.0f}m to fit cap "
+            f"{cap} (est {est_at_base}@base -> {chosen_est}@chosen; bbox-area estimate)"
+        )
+    else:
+        reason = (
+            f"base {base_resolution_m:.0f}m fits cap {cap} "
+            f"(est {chosen_est}; bbox-area estimate)"
+        )
 
     return GridAutoscaleResult(
         grid_resolution_m=chosen_res,

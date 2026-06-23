@@ -24,8 +24,10 @@ from grace2_contracts import new_ulid
 from grace2_contracts.payload_warning import (
     HARD_CAP_MB_DEFAULT,
     WARNING_THRESHOLD_MB_DEFAULT,
+    GranularitySuggestion,
     PayloadConfirmationEnvelopePayload,
     PayloadWarningEnvelopePayload,
+    TimeScaleSuggestion,
 )
 from grace2_contracts.ws import (
     AGENT_TO_CLIENT_PAYLOADS,
@@ -245,6 +247,107 @@ def test_warning_envelope_carries_no_cost_field() -> None:
 def test_confirmation_envelope_carries_no_cost_field() -> None:
     """Invariant 9: no cost / dollar / latency / quota field anywhere."""
     fields = PayloadConfirmationEnvelopePayload.model_fields
+    banned = {"cost", "dollar", "dollars", "price", "quota", "latency_ms", "usd"}
+    assert banned.isdisjoint(fields.keys())
+
+
+# --- TimeScaleSuggestion (combined run-settings gate, sprint-16) ----------- #
+
+
+def _time_scale(**over) -> TimeScaleSuggestion:
+    base = dict(
+        suggested_interval_min=5.0,
+        interval_choices=[1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
+        suggested_duration_hr=6.0,
+        estimated_frame_count=72,
+        max_frames=240,
+    )
+    base.update(over)
+    return TimeScaleSuggestion(**base)
+
+
+def test_time_scale_round_trips_through_json() -> None:
+    ts = _time_scale()
+    wire = ts.model_dump(mode="json")
+    rt = TimeScaleSuggestion.model_validate(json.loads(json.dumps(wire)))
+    assert rt.model_dump(mode="json") == wire
+    # Defaults
+    assert rt.cadence_param == "output_interval_min"
+    assert rt.duration_param == "duration_hr"
+    assert rt.min_interval_min == 1.0
+    assert rt.is_coastal is True
+
+
+def test_combined_envelope_carries_both_suggestions() -> None:
+    """A combined run-settings warning carries BOTH granularity + time_scale."""
+    g = GranularitySuggestion(
+        engine="sfincs",
+        resolution_param="grid_resolution_m",
+        suggested_resolution_m=30.0,
+        resolution_choices=[30.0, 50.0, 100.0, 200.0],
+        estimated_active_cells=46000,
+        estimated_solve_seconds=70.0,
+        vcpus=8,
+        compute_class="standard",
+        cell_cap=250000,
+        coarsened=False,
+        reason="base 30m fits cap",
+    )
+    env = PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name="run_model_flood_scenario",
+        tool_args={"bbox": [-82.05, 26.5, -81.95, 26.6]},
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation="Review run settings.",
+        options=["proceed", "cancel", "narrow_scope"],
+        granularity=g,
+        time_scale=_time_scale(),
+    )
+    wire = env.model_dump(mode="json")
+    rt = PayloadWarningEnvelopePayload.model_validate(json.loads(json.dumps(wire)))
+    assert rt.granularity is not None and rt.granularity.engine == "sfincs"
+    assert rt.time_scale is not None
+    assert rt.time_scale.estimated_frame_count == 72
+
+
+def test_time_scale_absent_by_default_back_compat() -> None:
+    """A warning without a time_scale block defaults to None (back-compat)."""
+    env = PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name="fetch_dem",
+        tool_args={},
+        estimated_mb=50.0,
+        threshold_mb=25.0,
+        recommendation="narrow",
+    )
+    assert env.time_scale is None
+    assert env.granularity is None
+
+
+def test_time_scale_rejects_nonpositive_interval() -> None:
+    with pytest.raises(ValidationError):
+        _time_scale(suggested_interval_min=0.0)
+
+
+def test_time_scale_rejects_nonpositive_duration() -> None:
+    with pytest.raises(ValidationError):
+        _time_scale(suggested_duration_hr=-1.0)
+
+
+def test_time_scale_rejects_zero_frame_count() -> None:
+    with pytest.raises(ValidationError):
+        _time_scale(estimated_frame_count=0)
+
+
+def test_time_scale_rejects_nonpositive_choice() -> None:
+    with pytest.raises(ValidationError):
+        _time_scale(interval_choices=[1.0, -5.0])
+
+
+def test_time_scale_carries_no_cost_field() -> None:
+    """Invariant 9: no cost / dollar / latency / quota field anywhere."""
+    fields = TimeScaleSuggestion.model_fields
     banned = {"cost", "dollar", "dollars", "price", "quota", "latency_ms", "usd"}
     assert banned.isdisjoint(fields.keys())
 
