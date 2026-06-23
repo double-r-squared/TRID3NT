@@ -33,11 +33,18 @@ from grace2_agent.tools.fetch_goes_archive_animation import (
     FIRE_TEMP_BLUE_REFL_MAX,
     FIRE_TEMP_GREEN_REFL_MAX,
     FIRE_TEMP_RED_KELVIN_RANGE,
+    ARCHIVE_BANDS,
+    FIRE_BT_C07_MIN_K,
+    FIRE_BT_DIFF_MIN_K,
+    FIRE_DETECT_BANDS,
     GOESArchiveBboxRequiredError,
     GOESArchiveEmptyError,
     GOESArchiveInputError,
     GOESArchiveUpstreamError,
     _band_valid_dn_range,
+    _bake_fire_over_base,
+    _detect_active_fire_mask,
+    _fire_hotspots_rgba,
     _fire_temperature_rgb,
     _key_start_datetime,
     _list_archive_keys_in_window,
@@ -624,3 +631,446 @@ def test_start_after_end_raises():
             start_utc="2026-06-22T20:00:00Z",
             end_utc="2026-06-22T13:00:00Z",
         )
+
+
+# ===========================================================================
+# Active-fire ISOLATION ("fire-only") product + BAKE composite (the new work).
+# ===========================================================================
+
+
+# ---- the active-fire detection threshold logic ----------------------------
+
+
+def test_detect_active_fire_uses_standard_thresholds():
+    """The detector uses the STANDARD shortwave-vs-longwave discriminator, NOT a
+    single-band brightness threshold:
+
+      active_fire = (C07 BT >= bt_c07_min_k) AND (C07 - C13 BT >= bt_diff_min_k)
+
+    Synthetic 3-pixel row, with the DEFAULT thresholds (320 K / 10 K):
+      - fire pixel:     C07=345 K, C13=300 K -> hot (>=320) AND diff=45 (>=10) -> FIRE
+      - warm land:      C07=320 K, C13=315 K -> hot (>=320) BUT diff=5 (<10)   -> NOT
+      - cool pixel:     C07=290 K, C13=288 K -> not hot (<320)                 -> NOT
+    The warm-land pixel is the crux: a single-band C07 threshold (320 K) would
+    FLAG it (it IS hot), but the small C07-C13 split rejects it as warm land.
+    """
+    c07 = np.array([[345.0, 320.0, 290.0]], dtype=np.float32)
+    c13 = np.array([[300.0, 315.0, 288.0]], dtype=np.float32)
+    mask = _detect_active_fire_mask(c07, c13)
+    assert mask.dtype == bool
+    assert mask.shape == (1, 3)
+    assert bool(mask[0, 0]) is True, "fire pixel (hot + big split) must flag"
+    assert bool(mask[0, 1]) is False, "warm land (hot but small split) must NOT flag"
+    assert bool(mask[0, 2]) is False, "cool pixel must NOT flag"
+
+
+def test_detect_active_fire_fire_pixel_passes():
+    """A canonical fire pixel C07=345 K / C13=300 K passes (the kickoff case)."""
+    mask = _detect_active_fire_mask(
+        np.array([[345.0]], dtype=np.float32), np.array([[300.0]], dtype=np.float32)
+    )
+    assert bool(mask[0, 0]) is True
+
+
+def test_detect_active_fire_warm_land_small_diff_fails():
+    """Warm daytime land C07=320 K / C13=315 K (small diff) FAILS (the kickoff
+    case): it is absolutely hot but the 5 K split is below the 10 K floor, so the
+    difference test rejects it -- exactly what a single-band threshold can't do."""
+    mask = _detect_active_fire_mask(
+        np.array([[320.0]], dtype=np.float32), np.array([[315.0]], dtype=np.float32)
+    )
+    assert bool(mask[0, 0]) is False
+
+
+def test_detect_active_fire_cool_pixel_fails():
+    """A cool pixel (below the absolute floor) FAILS even with a moderate split."""
+    mask = _detect_active_fire_mask(
+        np.array([[305.0]], dtype=np.float32), np.array([[290.0]], dtype=np.float32)
+    )
+    # diff is 15 K (>=10) but C07 305 K < 320 K floor -> NOT fire.
+    assert bool(mask[0, 0]) is False
+
+
+def test_detect_active_fire_nan_pixels_are_not_fire():
+    """A NaN in either band (no-data / off-disk) yields NOT-fire (no false flag)."""
+    c07 = np.array([[np.nan, 345.0]], dtype=np.float32)
+    c13 = np.array([[300.0, np.nan]], dtype=np.float32)
+    mask = _detect_active_fire_mask(c07, c13)
+    assert bool(mask[0, 0]) is False
+    assert bool(mask[0, 1]) is False
+
+
+def test_detect_active_fire_thresholds_are_tunable():
+    """Raising bt_diff_min_k makes the detector STRICTER; lowering bt_c07_min_k
+    makes it more permissive -- both gates are tunable params."""
+    c07 = np.array([[330.0]], dtype=np.float32)
+    c13 = np.array([[318.0]], dtype=np.float32)  # diff = 12 K
+    # Default (10 K diff floor): 12 K passes -> fire.
+    assert bool(_detect_active_fire_mask(c07, c13)[0, 0]) is True
+    # Stricter (20 K diff floor): 12 K fails -> NOT fire.
+    assert bool(_detect_active_fire_mask(c07, c13, bt_diff_min_k=20.0)[0, 0]) is False
+    # A cool-but-high-split pixel: lowering the absolute floor admits it.
+    cool = np.array([[312.0]], dtype=np.float32)
+    cool_lw = np.array([[295.0]], dtype=np.float32)  # diff = 17 K
+    assert bool(_detect_active_fire_mask(cool, cool_lw)[0, 0]) is False  # 312<320
+    assert bool(
+        _detect_active_fire_mask(cool, cool_lw, bt_c07_min_k=310.0)[0, 0]
+    ) is True
+
+
+def test_detect_active_fire_shape_mismatch_raises():
+    with pytest.raises(GOESArchiveUpstreamError):
+        _detect_active_fire_mask(
+            np.zeros((2, 3), dtype=np.float32), np.zeros((2, 4), dtype=np.float32)
+        )
+
+
+def test_default_thresholds_are_defensible():
+    """The shipped defaults match the documented derivation: 320 K absolute floor
+    (above warm-land BT, below ~330 K C07 saturation) + 10 K MODIS delta-T
+    heritage difference floor; C07/C13 are the detection bands."""
+    assert FIRE_BT_C07_MIN_K == pytest.approx(320.0)
+    assert FIRE_BT_DIFF_MIN_K == pytest.approx(10.0)
+    assert FIRE_DETECT_BANDS["shortwave"] == "CMI_C07"
+    assert FIRE_DETECT_BANDS["longwave"] == "CMI_C13"
+    assert set(ARCHIVE_BANDS) == {"fire_temperature", "fire_hotspots", "fire_baked"}
+
+
+# ---- the fire-only RGBA isolation: alpha 0 off-fire, >0 only at fire -------
+
+
+def test_fire_hotspots_rgba_alpha_transparent_off_fire():
+    """The fire-only RGBA layer: alpha == 0 (fully transparent) on EVERY non-fire
+    pixel and alpha > 0 ONLY where active fire is detected. 3-pixel row
+    [fire, warm-land, cool]."""
+    c07 = np.array([[345.0, 320.0, 290.0]], dtype=np.float32)
+    c13 = np.array([[300.0, 315.0, 288.0]], dtype=np.float32)
+    rgba = _fire_hotspots_rgba(c07, c13)
+    assert rgba.shape == (4, 1, 3)
+    assert rgba.dtype == np.uint8
+    alpha = rgba[3]
+    # Fire pixel: alpha opaque (>0).
+    assert int(alpha[0, 0]) > 0
+    # Warm-land + cool: fully transparent (alpha 0).
+    assert int(alpha[0, 1]) == 0
+    assert int(alpha[0, 2]) == 0
+    # And the COLOR is zeroed on transparent pixels (no leaked color under a=0).
+    assert tuple(int(v) for v in rgba[:3, 0, 1]) == (0, 0, 0)
+    assert tuple(int(v) for v in rgba[:3, 0, 2]) == (0, 0, 0)
+
+
+def test_fire_hotspots_rgba_fire_pixel_is_opaque_hot_color():
+    """A detected fire pixel is OPAQUE (alpha 255) on the hot ramp -- red present
+    (R high), and the hottest cores climb toward yellow/white."""
+    # A very hot core (C07=348 K saturating) and a cooler-but-real fire (C07=325).
+    c07 = np.array([[348.0, 325.0]], dtype=np.float32)
+    c13 = np.array([[300.0, 305.0]], dtype=np.float32)  # diffs 48, 20 -> both fire
+    rgba = _fire_hotspots_rgba(c07, c13)
+    assert int(rgba[3, 0, 0]) == 255  # opaque fire
+    assert int(rgba[3, 0, 1]) == 255
+    # R is saturated across the hot ramp (fire is always red-dominant).
+    assert int(rgba[0, 0, 0]) == 255
+    assert int(rgba[0, 0, 1]) == 255
+    # The hotter pixel (348 K) is closer to white -> its GREEN >= the cooler one's.
+    assert int(rgba[1, 0, 0]) >= int(rgba[1, 0, 1])
+
+
+def test_fire_hotspots_rgba_all_transparent_when_no_fire():
+    """A frame with NO active fire (all warm land) is a fully-transparent RGBA --
+    alpha 0 everywhere; not an error at the pure-function layer."""
+    c07 = np.full((3, 3), 318.0, dtype=np.float32)  # warm but below 320 floor
+    c13 = np.full((3, 3), 316.0, dtype=np.float32)  # small split
+    rgba = _fire_hotspots_rgba(c07, c13)
+    assert int(rgba[3].max()) == 0  # alpha 0 everywhere
+    assert int(rgba[:3].max()) == 0  # no color anywhere
+
+
+# ---- the BAKE alpha-composite ---------------------------------------------
+
+
+def test_bake_fire_over_base_alpha_composite():
+    """Bake = fire RGBA over a base RGB. Where fire alpha is 0 the base shows
+    through UNCHANGED; where alpha is 255 the fire color fully replaces the base.
+    3-pixel base row, fire only on pixel 1."""
+    # Base: a neutral grey scene, (3 bands, H=1, W=3).
+    base = np.full((3, 1, 3), 100, dtype=np.uint8)
+    # Fire RGBA: pixel 1 opaque orange (255,140,0,255); others transparent.
+    fire = np.zeros((4, 1, 3), dtype=np.uint8)
+    fire[:, 0, 1] = (255, 140, 0, 255)
+    out = _bake_fire_over_base(base, fire)
+    assert out.shape == (3, 1, 3)
+    assert out.dtype == np.uint8
+    # Pixel 0 + 2 (fire alpha 0): base grey shows through UNCHANGED.
+    assert tuple(int(v) for v in out[:, 0, 0]) == (100, 100, 100)
+    assert tuple(int(v) for v in out[:, 0, 2]) == (100, 100, 100)
+    # Pixel 1 (fire alpha 255): the fire color fully replaces the base.
+    assert tuple(int(v) for v in out[:, 0, 1]) == (255, 140, 0)
+
+
+def test_bake_fire_over_base_partial_alpha_blends():
+    """A partial alpha blends base and fire: out = base*(1-a) + fire*a."""
+    base = np.full((3, 1, 1), 100, dtype=np.uint8)
+    fire = np.zeros((4, 1, 1), dtype=np.uint8)
+    fire[:, 0, 0] = (200, 0, 0, 128)  # ~50% alpha
+    out = _bake_fire_over_base(base, fire)
+    a = 128 / 255.0
+    expected_r = round(100 * (1 - a) + 200 * a)
+    assert int(out[0, 0, 0]) == expected_r
+    # G/B: base 100 fades toward fire 0.
+    assert int(out[1, 0, 0]) == round(100 * (1 - a))
+
+
+def test_bake_shape_mismatch_raises():
+    with pytest.raises(GOESArchiveUpstreamError):
+        _bake_fire_over_base(
+            np.zeros((3, 2, 2), dtype=np.uint8), np.zeros((4, 2, 3), dtype=np.uint8)
+        )
+
+
+def test_bake_end_to_end_fire_over_fire_temp_base():
+    """End-to-end: detect+isolate fire RGBA, then bake over a Fire-Temp base.
+    The baked pixel at the fire core carries fire color; non-fire pixels keep the
+    Fire-Temp base."""
+    # Build a Fire-Temp base + a co-registered detection pair: pixel 0 fire,
+    # pixel 1 warm land.
+    c07 = np.array([[346.0, 320.0]], dtype=np.float32)
+    c13 = np.array([[300.0, 316.0]], dtype=np.float32)
+    c06 = np.array([[0.2, 0.2]], dtype=np.float32)
+    c05 = np.array([[0.1, 0.1]], dtype=np.float32)
+    base = _fire_temperature_rgb(c07, c06, c05)
+    fire = _fire_hotspots_rgba(c07, c13)
+    baked = _bake_fire_over_base(base, fire)
+    assert baked.shape == (3, 1, 2)
+    # Fire pixel: baked color == the fire color (alpha 255 fully replaced base).
+    assert tuple(int(v) for v in baked[:, 0, 0]) == tuple(int(v) for v in fire[:3, 0, 0])
+    # Warm-land pixel: baked == the untouched Fire-Temp base (fire alpha 0).
+    assert tuple(int(v) for v in baked[:, 0, 1]) == tuple(int(v) for v in base[:, 0, 1])
+
+
+# ---- the new band/product surface on the tool -----------------------------
+
+
+def test_fire_hotspots_band_emits_rgba_preset_and_name(monkeypatch):
+    """band='fire_hotspots' emits the isolated layer: its own product label +
+    style preset + id slug, threshold params in the cache key, the SAME step/ISO
+    scrubber contract."""
+    times = [datetime(2026, 6, 23, 19, m, tzinfo=timezone.utc) for m in (0, 5)]
+    pairs = [(t, _mk_key(t)) for t in times]
+    monkeypatch.setattr(mod, "_list_archive_keys_in_window", lambda *a, **k: list(pairs))
+
+    captured_params = []
+
+    def _fake_read_through(metadata, params, ext, fetch_fn):
+        captured_params.append(params)
+        return _FakeReadResult(uri=f"s3://fake/{params['product']}-{params['ts_start']}.tif")
+
+    monkeypatch.setattr(mod, "read_through", _fake_read_through)
+
+    layers = fetch_goes_archive_animation(
+        bbox=_UT_BBOX,
+        satellite="goes-18",
+        start_utc="2026-06-23T18:30:00Z",
+        end_utc="2026-06-23T19:30:00Z",
+        band="fire_hotspots",
+        bt_c07_min_k=322.0,
+        bt_diff_min_k=12.0,
+    )
+    assert len(layers) == 2
+    for n, (layer, t) in enumerate(zip(layers, times), start=1):
+        iso = t.strftime("%Y-%m-%dT%H:%M:%SZ")
+        assert layer.name == f"GOES Active Fire Hotspots (Archive) step {n} {iso} (GOES-18)"
+        assert layer.style_preset == "goes_fire_hotspots_rgba"
+        assert "firehot" in layer.layer_id
+        assert layer.layer_type == "raster"
+        assert layer.role == "context"
+    # The tunable thresholds entered the cache key.
+    assert captured_params[0]["product"] == "fire_hotspots"
+    assert captured_params[0]["bt_c07_min_k"] == pytest.approx(322.0)
+    assert captured_params[0]["bt_diff_min_k"] == pytest.approx(12.0)
+
+
+def test_fire_baked_band_emits_rgb_preset_and_name(monkeypatch):
+    """band='fire_baked' emits the baked composite: its own label + the RGB
+    passthrough preset (no new style) + its own id slug."""
+    times = [datetime(2026, 6, 23, 19, m, tzinfo=timezone.utc) for m in (0,)]
+    pairs = [(t, _mk_key(t)) for t in times]
+    monkeypatch.setattr(mod, "_list_archive_keys_in_window", lambda *a, **k: list(pairs))
+    monkeypatch.setattr(
+        mod, "read_through",
+        lambda metadata, params, ext, fetch_fn: _FakeReadResult(uri="s3://fake/baked.tif"),
+    )
+    layers = fetch_goes_archive_animation(
+        bbox=_UT_BBOX,
+        band="fire_baked",
+        start_utc="2026-06-23T18:55:00Z",
+        end_utc="2026-06-23T19:05:00Z",
+    )
+    assert len(layers) == 1
+    assert layers[0].name.startswith("GOES Fire Baked on Imagery (Archive) step 1 ")
+    assert layers[0].style_preset == "goes_rgb_animation"
+    assert "firebaked" in layers[0].layer_id
+
+
+def test_fire_temperature_band_unchanged(monkeypatch):
+    """The original fire_temperature product is UNCHANGED: same label, preset, id
+    slug, and cache-key product value -- both products coexist."""
+    times = [datetime(2026, 6, 23, 19, 0, tzinfo=timezone.utc)]
+    pairs = [(t, _mk_key(t)) for t in times]
+    monkeypatch.setattr(mod, "_list_archive_keys_in_window", lambda *a, **k: list(pairs))
+
+    seen = {}
+
+    def _fake(metadata, params, ext, fetch_fn):
+        seen.update(params)
+        return _FakeReadResult(uri="s3://fake/ft.tif")
+
+    monkeypatch.setattr(mod, "read_through", _fake)
+    layers = fetch_goes_archive_animation(
+        bbox=_UT_BBOX,
+        band="fire_temperature",
+        start_utc="2026-06-23T18:55:00Z",
+        end_utc="2026-06-23T19:05:00Z",
+    )
+    assert layers[0].name.startswith("GOES Fire Temperature (Archive) step 1 ")
+    assert layers[0].style_preset == "goes_rgb_animation"
+    assert "firetemp" in layers[0].layer_id
+    # Fire-Temp does NOT inject threshold params into the cache key (its key stays
+    # stable vs the pre-change Fire-Temp objects).
+    assert seen["product"] == "fire_temperature"
+    assert "bt_c07_min_k" not in seen
+
+
+def test_unknown_band_still_raises_with_new_set():
+    with pytest.raises(GOESArchiveInputError):
+        fetch_goes_archive_animation(bbox=_UT_BBOX, band="geocolor")
+
+
+def test_non_finite_thresholds_raise():
+    with pytest.raises(GOESArchiveInputError):
+        fetch_goes_archive_animation(
+            bbox=_UT_BBOX, band="fire_hotspots", bt_c07_min_k=float("nan")
+        )
+
+
+# ---- the I/O reproject path for the new products (stubbed netCDF/rasterio) -
+
+
+def _install_fake_nc_rasterio(monkeypatch, dn_by_var, cf_by_var):
+    """Install fake netCDF4 + rasterio + rasterio.warp so the reproject helpers
+    fill each band's destination with a fixed raw DN (keyed by variable). Mirrors
+    the existing CF-scaling test's harness, generalized over the band set."""
+    import sys
+    import types
+
+    import grace2_agent.tools.fetch_goes_archive_animation as m
+
+    class _FakeVar:
+        def __init__(self, scale, offset, fill, valid_range):
+            self.scale_factor = scale
+            self.add_offset = offset
+            self._FillValue = fill
+            self.valid_range = valid_range
+
+    class _FakeDataset:
+        def __init__(self, path):
+            self.variables = {
+                var: _FakeVar(*cf_by_var[var]) for var in cf_by_var
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeNetCDF4:
+        Dataset = _FakeDataset
+
+    monkeypatch.setattr(m, "netCDF4", _FakeNetCDF4, raising=False)
+    monkeypatch.setitem(sys.modules, "netCDF4", _FakeNetCDF4)
+
+    class _FakeSrc:
+        def __init__(self, var):
+            self.var = var
+            self.crs = "GEOSTATIONARY"
+            self.nodata = None
+            self.transform = object()
+
+        def close(self):
+            pass
+
+    class _FakeRasterio:
+        @staticmethod
+        def open(uri):
+            return _FakeSrc(uri.rsplit(":", 1)[-1])
+
+        @staticmethod
+        def band(src, n):
+            return src.var
+
+    def _fake_reproject(source=None, destination=None, **kw):
+        destination[:] = dn_by_var[source]
+
+    from rasterio.transform import from_bounds as _real_from_bounds
+
+    class _FakeWarp:
+        Resampling = type("R", (), {"nearest": 0})()
+        reproject = staticmethod(_fake_reproject)
+
+    monkeypatch.setattr(m, "rasterio", _FakeRasterio, raising=False)
+    monkeypatch.setitem(sys.modules, "rasterio", _FakeRasterio)
+    monkeypatch.setitem(sys.modules, "rasterio.warp", _FakeWarp)
+    _transform_mod = types.SimpleNamespace(from_bounds=_real_from_bounds)
+    monkeypatch.setitem(sys.modules, "rasterio.transform", _transform_mod)
+    return m
+
+
+def test_reproject_fire_hotspots_flags_only_fire(monkeypatch):
+    """``_reproject_fire_hotspots`` reads C07 + C13, CF-scales them, and isolates
+    fire. A warm-land DN pair (C07 ~322 K, C13 ~319 K, small split) yields a
+    FULLY TRANSPARENT frame; a fire DN pair (C07 ~345 K, C13 ~300 K) yields an
+    opaque hotspot. Uses CF scale 1.0 / offset 0.0 so DN == Kelvin for clarity."""
+    cf = {
+        "CMI_C07": (1.0, 0.0, -1, [0, 16383]),
+        "CMI_C13": (1.0, 0.0, -1, [0, 16383]),
+    }
+    bbox = (-112.0, 39.0, -111.9, 39.08)
+
+    # Warm land: C07 322, C13 319 -> diff 3 K < 10 -> NO fire -> all transparent.
+    m = _install_fake_nc_rasterio(
+        monkeypatch, {"CMI_C07": 322, "CMI_C13": 319}, cf
+    )
+    rgba, transform, w, h = m._reproject_fire_hotspots("/fake/path.nc", bbox)
+    assert rgba.shape[0] == 4
+    assert int(rgba[3].max()) == 0, "warm land must be fully transparent"
+
+    # Fire: C07 345, C13 300 -> diff 45 K -> fire -> opaque hotspot.
+    m = _install_fake_nc_rasterio(
+        monkeypatch, {"CMI_C07": 345, "CMI_C13": 300}, cf
+    )
+    rgba2, _, _, _ = m._reproject_fire_hotspots("/fake/path.nc", bbox)
+    assert int(rgba2[3].max()) == 255, "fire pixel must be opaque"
+    assert int(rgba2[0].max()) == 255, "fire pixel red must saturate"
+
+
+def test_reproject_fire_baked_bakes_fire_over_base(monkeypatch):
+    """``_reproject_fire_baked`` reads C07/C06/C05 + C13 in ONE pass and bakes the
+    fire over the Fire-Temp base -> a 3-band RGB. A fire DN set yields a non-black
+    baked frame whose fire pixel is red-dominant."""
+    cf = {
+        "CMI_C07": (1.0, 0.0, -1, [0, 16383]),
+        "CMI_C06": (0.0001, 0.0, -1, [0, 4095]),
+        "CMI_C05": (0.0001, 0.0, -1, [0, 4095]),
+        "CMI_C13": (1.0, 0.0, -1, [0, 16383]),
+    }
+    bbox = (-112.0, 39.0, -111.9, 39.08)
+    m = _install_fake_nc_rasterio(
+        monkeypatch,
+        {"CMI_C07": 345, "CMI_C06": 2000, "CMI_C05": 1500, "CMI_C13": 300},
+        cf,
+    )
+    rgb, transform, w, h = m._reproject_fire_baked("/fake/path.nc", bbox)
+    assert rgb.shape[0] == 3  # baked is 3-band RGB
+    assert rgb.any(), "baked frame must not be all-black"
+    # The fire pixel red saturates (fire baked over the base).
+    assert int(rgb[0].max()) == 255
