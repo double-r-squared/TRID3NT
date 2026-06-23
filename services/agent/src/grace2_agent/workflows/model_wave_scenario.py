@@ -67,6 +67,10 @@ from ..pipeline_emitter import (
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_swan import PostprocessSwanError, postprocess_swan
+from .register_published_manifest import (
+    read_publish_manifest,
+    register_swan_wave_layers,
+)
 from .run_swan import (
     SWAN_SOLVER_NAME,
     SwanWorkflowError,
@@ -370,7 +374,64 @@ async def model_wave_scenario(
             },
         )
 
-    # --- Step 4: download the Batch SWAN output ----------------------------
+    # --- Postprocess-offload branch (Phase 4): worker-written manifest -------
+    # When the SWAN Batch worker rebuilds with the raster-postprocess offload it
+    # runs the heavy .mat -> COG conversion ITSELF (display-ready overview-bearing
+    # COGs) and writes a thin typed publish_manifest.json (pointed to by
+    # completion.json.publish_manifest_uri). ``read_publish_manifest`` reads +
+    # SCHEMA-GATEs it; a present, schema_version==1 manifest activates the
+    # REGISTER-ONLY path below - SHORT-CIRCUITing the on-box heavy tail entirely
+    # (NO _download_batch_swan_outputs, NO postprocess_swan, NO _ensure_raster_
+    # has_overviews). The publish-or-honest-drop gate (GRACE2_TILE_SERVER_BASE) +
+    # the render-chokepoint registration are preserved per layer.
+    #
+    # ONE-RELEASE SAFETY: manifest absent OR unknown schema_version ->
+    # ``read_publish_manifest`` returns None and the EXISTING on-box path below
+    # runs unchanged (the raw swan_out.mat is still uploaded). Clean if/else.
+    # (The SWAN worker does NOT emit a manifest yet, so today this always falls
+    # back; the branch is forward-ready for when the SWAN worker side lands.)
+    manifest = await asyncio.to_thread(read_publish_manifest, run_result)
+    if manifest is not None:
+        logger.info(
+            "model_wave_scenario: REGISTER-ONLY path (worker postprocess offload) "
+            "run_id=%s engine=%s layers=%d",
+            staging.run_id, manifest.engine, len(manifest.layers),
+        )
+        async with substep(emitter, "publish_layer"):
+            wave_layers, _top_metrics, _dropped = await asyncio.to_thread(
+                register_swan_wave_layers,
+                manifest,
+                run_id=staging.run_id,
+                mode=run_args.mode,
+                bbox=bbox,
+            )
+        if not wave_layers:
+            raise SwanComposerError(
+                "SWAN_NO_LAYERS",
+                "publish manifest produced no renderable wave layers "
+                "(no tile server configured, or empty manifest).",
+            )
+        peak = wave_layers[0]
+        frame_layers = wave_layers[1:]
+        emitted_frames = await _emit_frame_layers(
+            emitter, frame_layers, staging.run_id
+        )
+        logger.info(
+            "model_wave_scenario complete (register-only) run_id=%s mode=%s "
+            "max_hs_m=%.4g frames_emitted=%d/%d peak_uri=%s",
+            staging.run_id, run_args.mode, peak.max_hs_m,
+            emitted_frames, len(frame_layers), peak.uri,
+        )
+        if emitter is not None:
+            try:
+                await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "model_wave_scenario: register-only zoom-to failed: %s", exc
+                )
+        return peak
+
+    # --- Step 4: download the Batch SWAN output (ON-BOX FALLBACK) ----------
     batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
     out_dir = await asyncio.to_thread(_download_batch_swan_outputs, batch_run_id)
 

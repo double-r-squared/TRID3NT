@@ -36,6 +36,7 @@ from . import (
     impact_envelope,
     modflow_contracts,
     payload_warning,
+    publish_manifest,
     region_choice,
     sandbox_contracts,
     secrets,
@@ -68,6 +69,13 @@ from .common import (
 )
 from .geoclaw_contracts import GeoClawDepthLayerURI, GeoClawRunArgs
 from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI, SeepageLayerURI
+from .publish_manifest import (
+    MANIFEST_SCHEMA_VERSION,
+    PublishManifest,
+    PublishManifestBandStats,
+    PublishManifestLayer,
+    parse_publish_manifest,
+)
 from .swan_contracts import SwanRunArgs, SwanWaveBoundary, WaveFieldLayerURI
 from .swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from .sandbox_contracts import (
@@ -98,6 +106,7 @@ __all__ = [
     "geoclaw_contracts",
     "modflow_contracts",
     "payload_warning",
+    "publish_manifest",
     "region_choice",
     "sandbox_contracts",
     "secrets",
@@ -125,6 +134,12 @@ __all__ = [
     "SwanRunArgs",
     "SwanWaveBoundary",
     "WaveFieldLayerURI",
+    # worker -> agent publish-manifest reader (SFINCS postprocess offload Phase 4)
+    "MANIFEST_SCHEMA_VERSION",
+    "PublishManifest",
+    "PublishManifestBandStats",
+    "PublishManifestLayer",
+    "parse_publish_manifest",
     # chart-emission contracts (sprint-13 conversational analysis layer)
     "ChartEmissionPayload",
     "SessionChartRecord",

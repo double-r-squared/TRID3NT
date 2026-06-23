@@ -115,6 +115,10 @@ from .postprocess_waves import (
     WAVE_HEIGHT_STYLE_PRESET,
     postprocess_waves,
 )
+from .register_published_manifest import (
+    read_publish_manifest,
+    register_manifest_layers,
+)
 from .sfincs_builder import (
     BuildOptions,
     DischargeForcing,
@@ -3158,7 +3162,66 @@ async def model_flood_scenario(
                 exc,
             )
 
-    # --- Step 8: postprocess_flood ---
+    # --- Postprocess-offload branch (SFINCS Phase 4): worker-written manifest ---
+    # When the Batch worker rebuilt with the raster-postprocess offload, it ran
+    # the heavy NetCDF -> COG conversion ITSELF (display-ready overview-bearing
+    # COGs at deterministic keys) and wrote a thin typed publish_manifest.json
+    # (pointed to by completion.json.publish_manifest_uri). ``read_publish_manifest``
+    # reads + SCHEMA-GATEs it; a present, schema_version==1 manifest activates the
+    # REGISTER-ONLY path below - SHORT-CIRCUITing the on-box heavy tail entirely
+    # (NO _resolve_run_output_to_local, NO postprocess_flood/_waves, NO
+    # _ensure_raster_has_overviews - has_overviews is true). The agent-side
+    # publish-or-honest-drop gate (GRACE2_TILE_SERVER_BASE) is preserved per layer.
+    #
+    # ONE-RELEASE SAFETY: manifest absent OR unknown schema_version ->
+    # ``read_publish_manifest`` returns None and we run the EXISTING on-box path
+    # below unchanged (the raw sfincs_map.nc is still uploaded). Clean if/else.
+    published_layers: list[LayerURI] = []
+    depth_metrics: dict[str, Any] = {}
+    manifest = await asyncio.to_thread(read_publish_manifest, run_result)
+    register_only = manifest is not None
+    if register_only:
+        logger.info(
+            "model_flood_scenario: REGISTER-ONLY path (worker postprocess "
+            "offload) run_id=%s engine=%s layers=%d",
+            run_result.run_id, manifest.engine, len(manifest.layers),
+        )
+        async with substep(emitter, "publish_layer"):
+            reg = register_manifest_layers(
+                manifest, run_id=run_result.run_id, bbox=resolved_bbox
+            )
+        depth_metrics = reg.metrics
+        # The merged manifest carries depth + wave layers. Primary layers (peak
+        # depth + peak wave) ride into the success envelope's ResultLayer set;
+        # context layers (the "... step N" frames) emit OUT-OF-BAND so the web
+        # scrubber groups form, exactly as the on-box path does.
+        published_layers = [lyr for lyr in reg.layers if lyr.role == "primary"]
+        manifest_frames = [lyr for lyr in reg.layers if lyr.role != "primary"]
+        if manifest_frames and emitter is not None:
+            emitted = 0
+            for lyr in manifest_frames:
+                try:
+                    await emitter.add_loaded_layer(lyr)
+                    emitted += 1
+                except Exception as exc:  # noqa: BLE001 — never break the solve
+                    logger.warning(
+                        "model_flood_scenario: manifest frame emit failed for "
+                        "%s: %s", lyr.layer_id, exc,
+                    )
+            if emitted:
+                logger.info(
+                    "model_flood_scenario: emitted %d/%d manifest animation "
+                    "frames as sequential group(s) (run_id=%s)",
+                    emitted, len(manifest_frames), run_result.run_id,
+                )
+        elif manifest_frames:
+            logger.info(
+                "model_flood_scenario: %d manifest animation frames available "
+                "but no emitter bound - frames not emitted.",
+                len(manifest_frames),
+            )
+
+    # --- Step 8: postprocess_flood (ON-BOX FALLBACK) ---
     # audit #1: ``postprocess_flood`` downloads the full ``sfincs_map.nc`` via
     # SYNC boto3 and writes N COGs to object storage — tens of seconds to
     # minutes of blocking I/O right after the solve. Run it off the loop so it
@@ -3166,377 +3229,386 @@ async def model_flood_scenario(
     # current_emitter()/emit_*/add_loaded_layer): it produces the LayerURIs +
     # metrics then returns, and THIS workflow does all the emitting (the
     # publish + add_loaded_layer steps below run back on the loop), so it is
-    # safe to move to a worker thread.
-    try:
-        # task-168: surface the depth postprocess as a nested child row. A
-        # PostprocessError raises INSIDE the substep -> the child reads red
-        # (honesty floor) and re-raises to the existing except handler, which
-        # returns the failed envelope unchanged. No-op when no emitter is bound.
-        async with substep(emitter, "postprocess_flood"):
-            layers, depth_metrics = await asyncio.to_thread(
-                postprocess_flood,
-                run_result.output_uri or _default_runs_prefix(run_result.run_id),
-                run_id=run_result.run_id,
-            )
-    except PostprocessError as exc:
-        logger.warning("postprocess_flood failed: %s (%s)", exc.error_code, exc)
-        return _build_failed_envelope(
-            bbox=resolved_bbox,
-            project_id=proj_id,
-            session_id=sess_id,
-            error_code=exc.error_code,
-            error_detail=str(exc),
-            workflow_name=workflow_name,
-            data_sources=data_sources,
-            forcing=forcing_summary,
-            solver_run_ids=solver_run_ids,
-            return_period_years=return_period_yr,
-            duration_hours=float(duration_hr),
-            grid_resolution_m=grid_resolution_m,
-        )
-
-    # --- Step 9: publish_layer (COG → QGIS Server WMS bridge, job-0062) ---
-    # For the primary flood-depth layer, invoke the PyQGIS worker to add the COG
-    # to the canonical .qgs project so QGIS Server can serve it as WMS.
-    # The returned WMS URL replaces the gs:// uri in the LayerURI/ResultLayer so
-    # the client gets a renderable URL directly (layer-emission-contract.md, 2026-06-07).
-    #
-    # Non-fatal: if publish_layer fails (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT
-    # is not yet landed), we DROP the primary raster layer from the emitted set
-    # rather than fall back to the raw gs:// uri (job-0254 §1, Decision 11). A
-    # gs:// uri never renders — MapLibre cannot fetch it; emitting it only paints
-    # a dead, broken layer row in the LayerPanel. Dropping it keeps the map
-    # honest while the rest of the envelope (metrics, provenance, narration)
-    # stays intact, so the LLM narrates the publish failure truthfully and the
-    # job-0177 retry-on-failure loop can act. The layer_uri_emit seam enforces
-    # this same rule at the emission boundary as a belt-and-suspenders invariant.
-    # postprocess_flood returns [peak_primary] + [frame_0..frame_k]. The PEAK
-    # layer (role="primary") is the ONE returned by the wrapper + the
-    # published/on_map summary source + the habitat/Pelicun hazard raster — it
-    # takes the existing publish-or-honest-drop path UNCHANGED. The FRAME layers
-    # (role="context", names "Flood depth step N") are the time-stepped animation
-    # (flood North Star Phase 1): each is published + emitted OUT-OF-BAND via the
-    # emitter so the web SequenceScrubber group forms, WITHOUT changing the tool's
-    # single-LayerURI return shape (no re-publish trip in summarize_tool_result).
-    primary_layers = [lyr for lyr in layers if lyr.role == "primary"]
-    frame_layers = [lyr for lyr in layers if lyr.role != "primary"]
-
-    published_layers: list[LayerURI] = []
-    for lyr in primary_layers:
-        # job-0291: s3:// COGs (AWS local-docker backend) take the same
-        # publish-or-honest-drop gate as gs:// — a raw object-store URI never
-        # renders in MapLibre (job-0254 §1), so it must never reach the map.
-        # On AWS publish_layer fails until job-0290 lands QGIS-on-AWS; the
-        # layer is dropped and the metrics/narration stay honest.
-        if (
-            lyr.role == "primary"
-            and lyr.layer_type == "raster"
-            and (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"))
-        ):
-            layer_id_for_wms = f"flood-depth-peak-{run_result.run_id}"
-            try:
-                # audit #1: ``publish_layer`` runs a ``time.sleep`` poll loop
-                # (worker job poll) that blocks the loop for tens of seconds.
-                # Run it off the loop so it cannot stall the WS keepalive.
-                # ``publish_layer`` is EMIT-FREE (no current_emitter()/emit_*/
-                # add_loaded_layer): it returns the WMS URL; this workflow does
-                # the emitting (the LayerURI it builds reaches the map via the
-                # wrapper return / out-of-band add_loaded_layer back on the
-                # loop), so it is safe to move to a worker thread.
-                # task-168: surface the peak-layer publish as a nested child row.
-                # A PublishLayerError raises INSIDE the substep -> the child reads
-                # red (honesty floor) and re-raises to the existing except handler
-                # below, which DROPS the layer (publish-or-honest-drop, job-0254
-                # §1) unchanged. No-op when no emitter is bound.
-                async with substep(emitter, "publish_layer"):
-                    wms_url = await asyncio.to_thread(
-                        publish_layer,
-                        layer_uri=lyr.uri,
-                        layer_id=layer_id_for_wms,
-                        style_preset=lyr.style_preset or "continuous_flood_depth",
-                    )
-                # Substitute the WMS URL into the LayerURI so the client renders
-                # directly (OQ-62-LAYERURI-URI-FIELD: LayerURI.uri is documented
-                # as gs:// but has no validator rejecting WMS URLs; we use it here
-                # as the renderable URL per the kickoff direction. A follow-up
-                # schema job should add a dedicated wms_url field.)
-                published_layers.append(
-                    LayerURI(
-                        layer_id=layer_id_for_wms,
-                        name=lyr.name,
-                        layer_type=lyr.layer_type,
-                        uri=wms_url,
-                        # job (flood-duplicate-layer fix): the published layer
-                        # is the ONE styled (white->blue->green) peak-depth
-                        # layer the user sees. Carry the canonical preset
-                        # unconditionally — never emit a styleless flood-depth
-                        # raster (a styleless COG falls through to TiTiler's
-                        # default matplotlib viridis, the redundant unstyled
-                        # duplicate this workflow must never produce).
-                        style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
-                        temporal=lyr.temporal,
-                        role=lyr.role,
-                        units=lyr.units,
-                        bbox=resolved_bbox,
-                    )
-                )
-                logger.info(
-                    "publish_layer succeeded layer_id=%s wms_url=%s",
-                    layer_id_for_wms,
-                    wms_url,
-                )
-            except PublishLayerError as exc:
-                logger.warning(
-                    "publish_layer failed for layer_id=%s error_code=%s (%s) — "
-                    "DROPPING the primary flood-depth layer from the emitted set "
-                    "(job-0254 §1): a raw gs:// uri never renders in MapLibre, so "
-                    "we do NOT fall back to it. The envelope's metrics/provenance "
-                    "remain intact and the failure is narrated honestly; the "
-                    "retry-on-failure loop (job-0177) can re-attempt publish.",
-                    layer_id_for_wms,
-                    exc.error_code,
-                    exc,
-                )
-                # Intentionally do NOT append `lyr` — the gs:// uri stays off the
-                # map. (OQ-62-WORKER-SA-RUNS-BUCKET-GRANT resolution restores the
-                # success path; until then the depth metrics still surface.)
-        else:
-            published_layers.append(lyr)
-
-    # --- Step 9b: publish + emit the time-step animation frames (Phase 1) ---
-    # Each frame is a DISTINCT COG (distinct runs-bucket key → distinct TiTiler
-    # url= → distinct pipeline_emitter._layer_identity_key → no dedup collapse).
-    # We publish in ASCENDING step order and call emitter.add_loaded_layer for
-    # each so all N frames arrive as one contiguous sequential group; the final
-    # session-state snapshot carries peak + N frames. Frames are emitted ONLY
-    # through the emitter (NOT added to published_layers / result_layers / the
-    # wrapper return), so they never reach summarize_tool_result and can't trip a
-    # re-publish, and the habitat/Pelicun consumers still see layers[0] = peak.
-    # When current_emitter() is None (direct call / smoke / unit test) frame
-    # emission is skipped — the frames still live in the returned `layers` from
-    # postprocess_flood for tests to assert on.
-    if frame_layers and emitter is not None:
-        published_frame_count = 0
-        for lyr in frame_layers:
-            if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
-                # Already a renderable URL (defensive) — emit as-is.
-                try:
-                    await emitter.add_loaded_layer(lyr)
-                    published_frame_count += 1
-                except Exception as exc:  # noqa: BLE001 — never break the solve
-                    logger.warning("frame emit failed for %s: %s", lyr.layer_id, exc)
-                continue
-            try:
-                # audit #1: same as the peak ``publish_layer`` above —
-                # ``time.sleep`` poll loop blocks the loop for tens of seconds
-                # per frame. Run it off the loop so it cannot stall the WS
-                # keepalive. EMIT-FREE: it returns the WMS URL; the
-                # ``add_loaded_layer`` emit for this frame runs back on the loop
-                # just below, so moving the publish to a worker thread is safe.
-                frame_wms_url = await asyncio.to_thread(
-                    publish_layer,
-                    layer_uri=lyr.uri,
-                    layer_id=lyr.layer_id,
-                    style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
-                )
-            except PublishLayerError as exc:
-                # Honest drop: a frame that won't publish is dropped (its raw
-                # gs:// never renders). The remaining frames + the peak layer
-                # stay intact. If too many frames drop the group may fall below
-                # 2 members and simply not form — acceptable, never a fake row.
-                logger.warning(
-                    "publish_layer failed for frame layer_id=%s error_code=%s "
-                    "(%s) — dropping this frame from the animation group.",
-                    lyr.layer_id, exc.error_code, exc,
-                )
-                continue
-            frame_layer = LayerURI(
-                layer_id=lyr.layer_id,
-                name=lyr.name,  # "Flood depth step N" — the web grouping token
-                layer_type=lyr.layer_type,
-                uri=frame_wms_url,
-                style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
-                role=lyr.role,  # "context"
-                units=lyr.units,
-                bbox=resolved_bbox,
-            )
-            try:
-                await emitter.add_loaded_layer(frame_layer)
-                published_frame_count += 1
-            except Exception as exc:  # noqa: BLE001 — never break the solve
-                logger.warning(
-                    "frame add_loaded_layer failed for %s: %s", lyr.layer_id, exc
-                )
-        if published_frame_count:
-            logger.info(
-                "model_flood_scenario: emitted %d/%d animation frames as a "
-                "sequential group (run_id=%s)",
-                published_frame_count, len(frame_layers), run_result.run_id,
-            )
-    elif frame_layers:
-        logger.info(
-            "model_flood_scenario: %d animation frames available but no emitter "
-            "bound (direct/smoke/test) — frames not emitted to the map.",
-            len(frame_layers),
-        )
-
-    # --- Step 9c: postprocess + emit the SnapWave WAVE field (sprint-17) ---
-    # GATED on a quadtree+SnapWave run: the time-resolved wave height field
-    # (hm0 / hm0ig, dims (nmesh2d_face, time)) is written EVERY output step ONLY
-    # on the quadtree+SnapWave solve, so the wave postprocess runs ONLY when the
-    # combined quadtree job ran (``quadtree_run_result is not None`` — the
-    # regular-grid SFINCS path has no wave field). This makes the SnapWave waves
-    # visibly ANIMATE on the Mexico Beach (Hurricane Michael) North Star.
-    #
-    # DEGRADE-not-fail: the entire block is best-effort (mirrors the Step 7.5
-    # mesh-emit pattern). A wave-postprocess failure (no SnapWave field, a COG
-    # write error, a publish/emit error) MUST NEVER sink the depth layers OR the
-    # envelope — it logs + degrades, leaving the flood-depth peak + frames intact.
-    # The peak wave layer takes the SAME publish-or-honest-drop gate the depth
-    # peak uses; the wave frames emit OUT-OF-BAND via the emitter (same as the
-    # depth frames) so they form a SEPARATE web scrubber group ("Wave height
-    # step N") without changing the tool's single-LayerURI return shape.
-    if quadtree_run_result is not None:
+    # safe to move to a worker thread. SKIPPED on the register-only path.
+    layers: list[LayerURI] = []
+    if not register_only:
         try:
-            # task-168: surface the wave postprocess as a nested child row. A
-            # PostprocessError (no SnapWave field / read / write failure) raises
-            # INSIDE the substep -> the child reads red (honesty floor) and
-            # re-raises to the existing except handlers below, which DEGRADE to the
-            # depth layers (a non-SnapWave quadtree run is a legitimate state) with
-            # the depth layers intact. No-op when no emitter is bound.
-            async with substep(emitter, "postprocess_waves"):
-                wave_layers, _wave_metrics = await asyncio.to_thread(
-                    postprocess_waves,
-                    run_result.output_uri or _default_runs_prefix(run_result.run_id),
+            # task-168: surface the depth postprocess as a nested child row. A
+            # PostprocessError raises INSIDE the substep -> the child reads red
+            # (honesty floor) and re-raises to the except handler, which returns
+            # the failed envelope unchanged. No-op when no emitter is bound.
+            async with substep(emitter, "postprocess_flood"):
+                layers, depth_metrics = await asyncio.to_thread(
+                    postprocess_flood,
+                    run_result.output_uri
+                    or _default_runs_prefix(run_result.run_id),
                     run_id=run_result.run_id,
-                    bbox=resolved_bbox,
                 )
         except PostprocessError as exc:
-            # No SnapWave field / read / write failure — degrade silently to the
-            # depth layers (a non-SnapWave quadtree run is a legitimate state).
-            logger.info(
-                "model_flood_scenario: wave postprocess degraded (%s: %s) — "
-                "depth layers intact, no wave animation.",
-                exc.error_code, exc,
-            )
-            wave_layers = []
-        except Exception as exc:  # noqa: BLE001 — wave emit is non-fatal
             logger.warning(
-                "model_flood_scenario: wave postprocess raised unexpectedly "
-                "(non-fatal): %s — depth layers intact.",
-                exc,
+                "postprocess_flood failed: %s (%s)", exc.error_code, exc
             )
-            wave_layers = []
+            return _build_failed_envelope(
+                bbox=resolved_bbox,
+                project_id=proj_id,
+                session_id=sess_id,
+                error_code=exc.error_code,
+                error_detail=str(exc),
+                workflow_name=workflow_name,
+                data_sources=data_sources,
+                forcing=forcing_summary,
+                solver_run_ids=solver_run_ids,
+                return_period_years=return_period_yr,
+                duration_hours=float(duration_hr),
+                grid_resolution_m=grid_resolution_m,
+            )
 
-        wave_peak = [lyr for lyr in wave_layers if lyr.role == "primary"]
-        wave_frames = [lyr for lyr in wave_layers if lyr.role != "primary"]
+    # On-box publish (Steps 9/9b/9c) - SKIPPED on the register-only path
+    # (the worker already produced display-ready COGs; the manifest branch
+    # above did the registration + frame/wave emission).
+    if not register_only:
+        # --- Step 9: publish_layer (COG → QGIS Server WMS bridge, job-0062) ---
+        # For the primary flood-depth layer, invoke the PyQGIS worker to add the COG
+        # to the canonical .qgs project so QGIS Server can serve it as WMS.
+        # The returned WMS URL replaces the gs:// uri in the LayerURI/ResultLayer so
+        # the client gets a renderable URL directly (layer-emission-contract.md, 2026-06-07).
+        #
+        # Non-fatal: if publish_layer fails (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT
+        # is not yet landed), we DROP the primary raster layer from the emitted set
+        # rather than fall back to the raw gs:// uri (job-0254 §1, Decision 11). A
+        # gs:// uri never renders — MapLibre cannot fetch it; emitting it only paints
+        # a dead, broken layer row in the LayerPanel. Dropping it keeps the map
+        # honest while the rest of the envelope (metrics, provenance, narration)
+        # stays intact, so the LLM narrates the publish failure truthfully and the
+        # job-0177 retry-on-failure loop can act. The layer_uri_emit seam enforces
+        # this same rule at the emission boundary as a belt-and-suspenders invariant.
+        # postprocess_flood returns [peak_primary] + [frame_0..frame_k]. The PEAK
+        # layer (role="primary") is the ONE returned by the wrapper + the
+        # published/on_map summary source + the habitat/Pelicun hazard raster — it
+        # takes the existing publish-or-honest-drop path UNCHANGED. The FRAME layers
+        # (role="context", names "Flood depth step N") are the time-stepped animation
+        # (flood North Star Phase 1): each is published + emitted OUT-OF-BAND via the
+        # emitter so the web SequenceScrubber group forms, WITHOUT changing the tool's
+        # single-LayerURI return shape (no re-publish trip in summarize_tool_result).
+        primary_layers = [lyr for lyr in layers if lyr.role == "primary"]
+        frame_layers = [lyr for lyr in layers if lyr.role != "primary"]
 
-        # Peak wave layer — publish-or-honest-drop gate (same as the depth peak).
-        # The published peak wave LayerURI is appended to ``published_layers`` so
-        # it rides into the success envelope's ResultLayer set alongside the
-        # depth peak; a publish failure DROPS it (a raw s3:// never renders).
-        for lyr in wave_peak:
-            if lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"):
+        published_layers: list[LayerURI] = []
+        for lyr in primary_layers:
+            # job-0291: s3:// COGs (AWS local-docker backend) take the same
+            # publish-or-honest-drop gate as gs:// — a raw object-store URI never
+            # renders in MapLibre (job-0254 §1), so it must never reach the map.
+            # On AWS publish_layer fails until job-0290 lands QGIS-on-AWS; the
+            # layer is dropped and the metrics/narration stay honest.
+            if (
+                lyr.role == "primary"
+                and lyr.layer_type == "raster"
+                and (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"))
+            ):
+                layer_id_for_wms = f"flood-depth-peak-{run_result.run_id}"
                 try:
-                    wave_wms_url = await asyncio.to_thread(
-                        publish_layer,
-                        layer_uri=lyr.uri,
-                        layer_id=lyr.layer_id,
-                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                    # audit #1: ``publish_layer`` runs a ``time.sleep`` poll loop
+                    # (worker job poll) that blocks the loop for tens of seconds.
+                    # Run it off the loop so it cannot stall the WS keepalive.
+                    # ``publish_layer`` is EMIT-FREE (no current_emitter()/emit_*/
+                    # add_loaded_layer): it returns the WMS URL; this workflow does
+                    # the emitting (the LayerURI it builds reaches the map via the
+                    # wrapper return / out-of-band add_loaded_layer back on the
+                    # loop), so it is safe to move to a worker thread.
+                    # task-168: surface the peak-layer publish as a nested child row.
+                    # A PublishLayerError raises INSIDE the substep -> the child reads
+                    # red (honesty floor) and re-raises to the existing except handler
+                    # below, which DROPS the layer (publish-or-honest-drop, job-0254
+                    # §1) unchanged. No-op when no emitter is bound.
+                    async with substep(emitter, "publish_layer"):
+                        wms_url = await asyncio.to_thread(
+                            publish_layer,
+                            layer_uri=lyr.uri,
+                            layer_id=layer_id_for_wms,
+                            style_preset=lyr.style_preset or "continuous_flood_depth",
+                        )
+                    # Substitute the WMS URL into the LayerURI so the client renders
+                    # directly (OQ-62-LAYERURI-URI-FIELD: LayerURI.uri is documented
+                    # as gs:// but has no validator rejecting WMS URLs; we use it here
+                    # as the renderable URL per the kickoff direction. A follow-up
+                    # schema job should add a dedicated wms_url field.)
+                    published_layers.append(
+                        LayerURI(
+                            layer_id=layer_id_for_wms,
+                            name=lyr.name,
+                            layer_type=lyr.layer_type,
+                            uri=wms_url,
+                            # job (flood-duplicate-layer fix): the published layer
+                            # is the ONE styled (white->blue->green) peak-depth
+                            # layer the user sees. Carry the canonical preset
+                            # unconditionally — never emit a styleless flood-depth
+                            # raster (a styleless COG falls through to TiTiler's
+                            # default matplotlib viridis, the redundant unstyled
+                            # duplicate this workflow must never produce).
+                            style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+                            temporal=lyr.temporal,
+                            role=lyr.role,
+                            units=lyr.units,
+                            bbox=resolved_bbox,
+                        )
+                    )
+                    logger.info(
+                        "publish_layer succeeded layer_id=%s wms_url=%s",
+                        layer_id_for_wms,
+                        wms_url,
                     )
                 except PublishLayerError as exc:
                     logger.warning(
-                        "model_flood_scenario: publish_layer failed for peak "
-                        "wave layer_id=%s error_code=%s (%s) — dropping it "
-                        "(depth layers intact).",
-                        lyr.layer_id, exc.error_code, exc,
+                        "publish_layer failed for layer_id=%s error_code=%s (%s) — "
+                        "DROPPING the primary flood-depth layer from the emitted set "
+                        "(job-0254 §1): a raw gs:// uri never renders in MapLibre, so "
+                        "we do NOT fall back to it. The envelope's metrics/provenance "
+                        "remain intact and the failure is narrated honestly; the "
+                        "retry-on-failure loop (job-0177) can re-attempt publish.",
+                        layer_id_for_wms,
+                        exc.error_code,
+                        exc,
                     )
-                    continue
-                except Exception as exc:  # noqa: BLE001 — never break the solve
-                    logger.warning(
-                        "model_flood_scenario: peak wave publish raised "
-                        "unexpectedly (non-fatal): %s", exc,
-                    )
-                    continue
-                published_layers.append(
-                    LayerURI(
-                        layer_id=lyr.layer_id,
-                        name=lyr.name,
-                        layer_type=lyr.layer_type,
-                        uri=wave_wms_url,
-                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
-                        role=lyr.role,
-                        units=lyr.units,
-                        bbox=resolved_bbox,
-                    )
-                )
-                logger.info(
-                    "model_flood_scenario: published peak wave layer_id=%s",
-                    lyr.layer_id,
-                )
+                    # Intentionally do NOT append `lyr` — the gs:// uri stays off the
+                    # map. (OQ-62-WORKER-SA-RUNS-BUCKET-GRANT resolution restores the
+                    # success path; until then the depth metrics still surface.)
             else:
                 published_layers.append(lyr)
 
-        # Wave frames — publish + emit OUT-OF-BAND (same as the depth frames) so
-        # they form a SEPARATE "Wave height step N" scrubber group. Emitted only
-        # through the emitter (NOT added to published_layers / result_layers), so
-        # they never reach summarize_tool_result. Skipped when no emitter bound.
-        if wave_frames and emitter is not None:
-            published_wave_frames = 0
-            for lyr in wave_frames:
+        # --- Step 9b: publish + emit the time-step animation frames (Phase 1) ---
+        # Each frame is a DISTINCT COG (distinct runs-bucket key → distinct TiTiler
+        # url= → distinct pipeline_emitter._layer_identity_key → no dedup collapse).
+        # We publish in ASCENDING step order and call emitter.add_loaded_layer for
+        # each so all N frames arrive as one contiguous sequential group; the final
+        # session-state snapshot carries peak + N frames. Frames are emitted ONLY
+        # through the emitter (NOT added to published_layers / result_layers / the
+        # wrapper return), so they never reach summarize_tool_result and can't trip a
+        # re-publish, and the habitat/Pelicun consumers still see layers[0] = peak.
+        # When current_emitter() is None (direct call / smoke / unit test) frame
+        # emission is skipped — the frames still live in the returned `layers` from
+        # postprocess_flood for tests to assert on.
+        if frame_layers and emitter is not None:
+            published_frame_count = 0
+            for lyr in frame_layers:
                 if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
+                    # Already a renderable URL (defensive) — emit as-is.
                     try:
                         await emitter.add_loaded_layer(lyr)
-                        published_wave_frames += 1
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "wave frame emit failed for %s: %s", lyr.layer_id, exc
-                        )
+                        published_frame_count += 1
+                    except Exception as exc:  # noqa: BLE001 — never break the solve
+                        logger.warning("frame emit failed for %s: %s", lyr.layer_id, exc)
                     continue
                 try:
-                    wf_wms_url = await asyncio.to_thread(
+                    # audit #1: same as the peak ``publish_layer`` above —
+                    # ``time.sleep`` poll loop blocks the loop for tens of seconds
+                    # per frame. Run it off the loop so it cannot stall the WS
+                    # keepalive. EMIT-FREE: it returns the WMS URL; the
+                    # ``add_loaded_layer`` emit for this frame runs back on the loop
+                    # just below, so moving the publish to a worker thread is safe.
+                    frame_wms_url = await asyncio.to_thread(
                         publish_layer,
                         layer_uri=lyr.uri,
                         layer_id=lyr.layer_id,
-                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                        style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
                     )
                 except PublishLayerError as exc:
+                    # Honest drop: a frame that won't publish is dropped (its raw
+                    # gs:// never renders). The remaining frames + the peak layer
+                    # stay intact. If too many frames drop the group may fall below
+                    # 2 members and simply not form — acceptable, never a fake row.
                     logger.warning(
-                        "publish_layer failed for wave frame layer_id=%s "
-                        "error_code=%s (%s) — dropping this wave frame.",
+                        "publish_layer failed for frame layer_id=%s error_code=%s "
+                        "(%s) — dropping this frame from the animation group.",
                         lyr.layer_id, exc.error_code, exc,
                     )
                     continue
-                except Exception as exc:  # noqa: BLE001 — never break the solve
-                    logger.warning(
-                        "wave frame publish raised unexpectedly (non-fatal): %s",
-                        exc,
-                    )
-                    continue
-                wave_frame_layer = LayerURI(
+                frame_layer = LayerURI(
                     layer_id=lyr.layer_id,
-                    name=lyr.name,  # "Wave height step N" — the web grouping token
+                    name=lyr.name,  # "Flood depth step N" — the web grouping token
                     layer_type=lyr.layer_type,
-                    uri=wf_wms_url,
-                    style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                    uri=frame_wms_url,
+                    style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
                     role=lyr.role,  # "context"
                     units=lyr.units,
                     bbox=resolved_bbox,
                 )
                 try:
-                    await emitter.add_loaded_layer(wave_frame_layer)
-                    published_wave_frames += 1
+                    await emitter.add_loaded_layer(frame_layer)
+                    published_frame_count += 1
                 except Exception as exc:  # noqa: BLE001 — never break the solve
                     logger.warning(
-                        "wave frame add_loaded_layer failed for %s: %s",
-                        lyr.layer_id, exc,
+                        "frame add_loaded_layer failed for %s: %s", lyr.layer_id, exc
                     )
-            if published_wave_frames:
+            if published_frame_count:
                 logger.info(
-                    "model_flood_scenario: emitted %d/%d wave-animation frames "
-                    "as a separate sequential group (run_id=%s)",
-                    published_wave_frames, len(wave_frames), run_result.run_id,
+                    "model_flood_scenario: emitted %d/%d animation frames as a "
+                    "sequential group (run_id=%s)",
+                    published_frame_count, len(frame_layers), run_result.run_id,
                 )
+        elif frame_layers:
+            logger.info(
+                "model_flood_scenario: %d animation frames available but no emitter "
+                "bound (direct/smoke/test) — frames not emitted to the map.",
+                len(frame_layers),
+            )
+
+        # --- Step 9c: postprocess + emit the SnapWave WAVE field (sprint-17) ---
+        # GATED on a quadtree+SnapWave run: the time-resolved wave height field
+        # (hm0 / hm0ig, dims (nmesh2d_face, time)) is written EVERY output step ONLY
+        # on the quadtree+SnapWave solve, so the wave postprocess runs ONLY when the
+        # combined quadtree job ran (``quadtree_run_result is not None`` — the
+        # regular-grid SFINCS path has no wave field). This makes the SnapWave waves
+        # visibly ANIMATE on the Mexico Beach (Hurricane Michael) North Star.
+        #
+        # DEGRADE-not-fail: the entire block is best-effort (mirrors the Step 7.5
+        # mesh-emit pattern). A wave-postprocess failure (no SnapWave field, a COG
+        # write error, a publish/emit error) MUST NEVER sink the depth layers OR the
+        # envelope — it logs + degrades, leaving the flood-depth peak + frames intact.
+        # The peak wave layer takes the SAME publish-or-honest-drop gate the depth
+        # peak uses; the wave frames emit OUT-OF-BAND via the emitter (same as the
+        # depth frames) so they form a SEPARATE web scrubber group ("Wave height
+        # step N") without changing the tool's single-LayerURI return shape.
+        if quadtree_run_result is not None:
+            try:
+                # task-168: surface the wave postprocess as a nested child row. A
+                # PostprocessError (no SnapWave field / read / write failure) raises
+                # INSIDE the substep -> the child reads red (honesty floor) and
+                # re-raises to the existing except handlers below, which DEGRADE to the
+                # depth layers (a non-SnapWave quadtree run is a legitimate state) with
+                # the depth layers intact. No-op when no emitter is bound.
+                async with substep(emitter, "postprocess_waves"):
+                    wave_layers, _wave_metrics = await asyncio.to_thread(
+                        postprocess_waves,
+                        run_result.output_uri or _default_runs_prefix(run_result.run_id),
+                        run_id=run_result.run_id,
+                        bbox=resolved_bbox,
+                    )
+            except PostprocessError as exc:
+                # No SnapWave field / read / write failure — degrade silently to the
+                # depth layers (a non-SnapWave quadtree run is a legitimate state).
+                logger.info(
+                    "model_flood_scenario: wave postprocess degraded (%s: %s) — "
+                    "depth layers intact, no wave animation.",
+                    exc.error_code, exc,
+                )
+                wave_layers = []
+            except Exception as exc:  # noqa: BLE001 — wave emit is non-fatal
+                logger.warning(
+                    "model_flood_scenario: wave postprocess raised unexpectedly "
+                    "(non-fatal): %s — depth layers intact.",
+                    exc,
+                )
+                wave_layers = []
+
+            wave_peak = [lyr for lyr in wave_layers if lyr.role == "primary"]
+            wave_frames = [lyr for lyr in wave_layers if lyr.role != "primary"]
+
+            # Peak wave layer — publish-or-honest-drop gate (same as the depth peak).
+            # The published peak wave LayerURI is appended to ``published_layers`` so
+            # it rides into the success envelope's ResultLayer set alongside the
+            # depth peak; a publish failure DROPS it (a raw s3:// never renders).
+            for lyr in wave_peak:
+                if lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"):
+                    try:
+                        wave_wms_url = await asyncio.to_thread(
+                            publish_layer,
+                            layer_uri=lyr.uri,
+                            layer_id=lyr.layer_id,
+                            style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                        )
+                    except PublishLayerError as exc:
+                        logger.warning(
+                            "model_flood_scenario: publish_layer failed for peak "
+                            "wave layer_id=%s error_code=%s (%s) — dropping it "
+                            "(depth layers intact).",
+                            lyr.layer_id, exc.error_code, exc,
+                        )
+                        continue
+                    except Exception as exc:  # noqa: BLE001 — never break the solve
+                        logger.warning(
+                            "model_flood_scenario: peak wave publish raised "
+                            "unexpectedly (non-fatal): %s", exc,
+                        )
+                        continue
+                    published_layers.append(
+                        LayerURI(
+                            layer_id=lyr.layer_id,
+                            name=lyr.name,
+                            layer_type=lyr.layer_type,
+                            uri=wave_wms_url,
+                            style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                            role=lyr.role,
+                            units=lyr.units,
+                            bbox=resolved_bbox,
+                        )
+                    )
+                    logger.info(
+                        "model_flood_scenario: published peak wave layer_id=%s",
+                        lyr.layer_id,
+                    )
+                else:
+                    published_layers.append(lyr)
+
+            # Wave frames — publish + emit OUT-OF-BAND (same as the depth frames) so
+            # they form a SEPARATE "Wave height step N" scrubber group. Emitted only
+            # through the emitter (NOT added to published_layers / result_layers), so
+            # they never reach summarize_tool_result. Skipped when no emitter bound.
+            if wave_frames and emitter is not None:
+                published_wave_frames = 0
+                for lyr in wave_frames:
+                    if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
+                        try:
+                            await emitter.add_loaded_layer(lyr)
+                            published_wave_frames += 1
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "wave frame emit failed for %s: %s", lyr.layer_id, exc
+                            )
+                        continue
+                    try:
+                        wf_wms_url = await asyncio.to_thread(
+                            publish_layer,
+                            layer_uri=lyr.uri,
+                            layer_id=lyr.layer_id,
+                            style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                        )
+                    except PublishLayerError as exc:
+                        logger.warning(
+                            "publish_layer failed for wave frame layer_id=%s "
+                            "error_code=%s (%s) — dropping this wave frame.",
+                            lyr.layer_id, exc.error_code, exc,
+                        )
+                        continue
+                    except Exception as exc:  # noqa: BLE001 — never break the solve
+                        logger.warning(
+                            "wave frame publish raised unexpectedly (non-fatal): %s",
+                            exc,
+                        )
+                        continue
+                    wave_frame_layer = LayerURI(
+                        layer_id=lyr.layer_id,
+                        name=lyr.name,  # "Wave height step N" — the web grouping token
+                        layer_type=lyr.layer_type,
+                        uri=wf_wms_url,
+                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                        role=lyr.role,  # "context"
+                        units=lyr.units,
+                        bbox=resolved_bbox,
+                    )
+                    try:
+                        await emitter.add_loaded_layer(wave_frame_layer)
+                        published_wave_frames += 1
+                    except Exception as exc:  # noqa: BLE001 — never break the solve
+                        logger.warning(
+                            "wave frame add_loaded_layer failed for %s: %s",
+                            lyr.layer_id, exc,
+                        )
+                if published_wave_frames:
+                    logger.info(
+                        "model_flood_scenario: emitted %d/%d wave-animation frames "
+                        "as a separate sequential group (run_id=%s)",
+                        published_wave_frames, len(wave_frames), run_result.run_id,
+                    )
 
     # --- Step 10: build success envelope ---
     bbox_area_km2 = _bbox_area_km2(resolved_bbox)

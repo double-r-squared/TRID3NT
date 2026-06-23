@@ -89,6 +89,8 @@ from . import register_tool
 __all__ = [
     "publish_layer",
     "PublishLayerError",
+    "style_params_from_band_stats",
+    "build_titiler_tile_url",
     "set_jobs_client",
     "set_gcp_project",
     "set_gcp_location",
@@ -806,6 +808,74 @@ def _resolve_titiler_style_params(
         layer_uri,
     )
     return _TITILER_SAFE_DEFAULT
+
+
+def style_params_from_band_stats(
+    style_preset: str | None,
+    *,
+    is_categorical: bool = False,
+    is_rgba: bool = False,
+    p2: float | None = None,
+    p98: float | None = None,
+    layer_uri: str = "",
+) -> str:
+    """Resolve TiTiler ``&rescale=..&colormap_name=..`` WITHOUT a COG download.
+
+    The register-only fast path (SFINCS postprocess offload, Phase 4): the worker
+    precomputes ``band_stats`` per COG, so the agent resolves the SAME style
+    params ``_resolve_titiler_style_params`` would, but from the manifest stats
+    instead of re-reading the COG. Resolution order mirrors that function exactly:
+
+    1. CATEGORICAL passthrough (``is_categorical``) -> ``""`` (embedded palette
+       wins).
+    2. RGBA / multiband passthrough (``is_rgba``) -> ``""`` (baked colors render
+       directly).
+    3. TERRAIN-token passthrough (preset / uri tokenizes to a terrain token) ->
+       ``""``.
+    4. REGISTRY (exact key, then family substring/prefix) — flood/plume/wave +
+       weather scalars pinned byte-for-byte.
+    5. GENERIC fallback from ``p2``/``p98`` (NO COG read) — the manifest's
+       precomputed substitute for ``_band1_percentile_rescale``.
+    6. SAFE non-empty default.
+    """
+    # 1. Categorical / paletted -> embedded palette wins.
+    if is_categorical:
+        return ""
+    # 2. RGBA / multiband composite -> TiTiler renders baked colors directly.
+    if is_rgba:
+        return ""
+    # 3. Terrain-family preset/URI -> grayscale/RGBA terrain renders directly.
+    if _is_terrain_token_preset(style_preset, layer_uri):
+        return ""
+    # 4. Typed registry (exact + family).
+    params = _registry_style_params(style_preset or "")
+    if params is not None:
+        return params
+    # 5. Generic percentile rescale from the worker-precomputed band stats.
+    if p2 is not None and p98 is not None:
+        lo, hi = float(p2), float(p98)
+        if lo == lo and hi == hi:  # NaN guard
+            if hi <= lo:
+                pad = max(abs(lo) * 0.01, 1e-6)
+                lo, hi = lo - pad, hi + pad
+            return f"&rescale={lo:g},{hi:g}&colormap_name=viridis"
+    # 6. Safe, NEVER-empty default.
+    return _TITILER_SAFE_DEFAULT
+
+
+def build_titiler_tile_url(tile_base: str, cog_uri: str, style_params: str) -> str:
+    """Mint the TiTiler XYZ tile TEMPLATE for a bare COG key + resolved style.
+
+    Single seam shared by the on-box ``publish_layer`` s3 branch and the
+    register-only manifest path so the URL shape stays identical:
+    ``{tile_base}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<cog>&rescale=..``
+    """
+    from urllib.parse import quote
+
+    return (
+        f"{tile_base.rstrip('/')}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+        f"?url={quote(cog_uri, safe='')}{style_params}"
+    )
 
 
 # --------------------------------------------------------------------------- #
