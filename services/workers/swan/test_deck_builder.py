@@ -145,8 +145,10 @@ def test_render_swn_stationary_has_load_bearing_blocks():
     assert "PROJECT 'GRACE2' 'WAVE'" in text
     # SET uses positional/keyword SWAN syntax (NO ``KEY=value``) with NAUTICAL
     # last and a DEPMIN threshold; ``LEVEL=``/``NOR=`` were invalid SWAN keywords.
-    assert "SET LEVEL 0.0 NOR 90.0 DEPMIN 0.05 EXCEPTION -999.0 NAUTICAL" in text
+    # EXCEPTION is NOT a SET field (SWAN rejected it there); it moved to INPGRID.
+    assert "SET LEVEL 0.0 NOR 90.0 DEPMIN 0.05 NAUTICAL" in text
     assert "LEVEL=" not in text and "NOR=" not in text
+    assert "EXCEPTION" not in text.split("SET ", 1)[1].split("\n", 1)[0]
     assert "MODE STATIONARY TWODIMENSIONAL" in text
     assert "COORDINATES SPHERICAL" in text
     # CGRID with the spectral CIRCLE block (ndir flow fhigh nfreq).
@@ -159,8 +161,13 @@ def test_render_swn_stationary_has_load_bearing_blocks():
     # idla=3 (SW/lower-left, rows south->north) matches render_bottom_input's
     # south-first write order; idla=1 (NW) mirrored the bed N<->S -> all-dry no-op.
     assert "READINP BOTTOM 1.0 'bottom.bot' 3 0 FREE" in text
+    # EXCEPTION sentinel now on the INPGRID BOTTOM line (its correct home), not SET.
+    assert "EXCEPTION -999.0" in text
     # Physics: GEN3 + friction + breaking + triads.
     assert "GEN3 WESTHUYSEN" in text
+    # Zero-wind (no wind_file) deck disables quadruplets, else SWAN aborts at error
+    # level 3 ("quadruplets in combination with zero wind") and never computes.
+    assert "OFF QUAD" in text
     assert "FRICTION JONSWAP" in text
     assert "BREAKING CONSTANT" in text
     assert "TRIAD" in text

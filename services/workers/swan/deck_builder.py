@@ -426,9 +426,10 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
     # minimum depth SWAN treats as WET -- without it (or at its 0.05 m default with
     # an all-land bottom) a coastal grid can end up with no active sea points,
     # which is one way SWAN reaches "Normal end of run" having computed nothing.
+    # EXCEPTION is NOT a SET field -- it belongs on INPGRID BOTTOM (below). SWAN
+    # rejected "... EXCEPTION -999.0 NAUTICAL" on SET ("Illegal keyword: EXCEPTIO").
     lines.append(
-        f"SET LEVEL 0.0 NOR 90.0 DEPMIN {SWAN_DEPMIN_M:.2f} "
-        f"EXCEPTION {SWAN_EXCEPTION_VALUE:.1f} NAUTICAL"
+        f"SET LEVEL 0.0 NOR 90.0 DEPMIN {SWAN_DEPMIN_M:.2f} NAUTICAL"
     )
 
     # Run mode + spherical (lat/lon) coordinates.
@@ -451,10 +452,12 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
     # Bottom (bathymetry) input grid + read.
     #   INPGRID BOTTOM REGULAR xpinp ypinp alpinp mxinp myinp dxinp dyinp
     #   READINP BOTTOM fac 'fname' idla nhedf FREE
+    # EXCEPTION on INPGRID (its correct home) tells SWAN the -999.0 sentinel marks
+    # dry/nodata cells in bottom.bot (it was wrongly on SET before).
     lines.append(
         "INPGRID BOTTOM REGULAR "
         f"{g['xpc']:.6f} {g['ypc']:.6f} 0.0 {inp_mx} {inp_my} "
-        f"{dx:.8f} {dy:.8f}"
+        f"{dx:.8f} {dy:.8f} EXCEPTION {SWAN_EXCEPTION_VALUE:.1f}"
     )
     # fac=1.0 (no scale), idla=3, 0 header lines, FREE format.
     # idla=3 = SWAN reads the grid starting in the LOWER-LEFT (SW) corner, x
@@ -478,6 +481,13 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
 
     # Physics. GEN3 = third-generation wind input + whitecapping (deep water).
     lines.append("GEN3 WESTHUYSEN")
+    if not wind_enabled:
+        # SWAN ABORTS at error level 3 on quadruplets + ZERO wind ("not recommended
+        # to use quadruplets in combination with zero wind conditions" -> "No start
+        # of computation"). Quadruplet nonlinear interactions model wind-sea growth,
+        # which is irrelevant for a pure boundary-forced swell with no wind forcing,
+        # so disable them when no ERA5 wind field is supplied (keep them when it is).
+        lines.append("OFF QUAD")
     if spec.friction:
         # JONSWAP bottom friction (depth-induced), default coefficient.
         lines.append("FRICTION JONSWAP CONSTANT 0.067")
