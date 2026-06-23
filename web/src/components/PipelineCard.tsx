@@ -817,6 +817,19 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
     running: "Modeling pluvial flood…",
     complete: "Pluvial flood modeled",
   },
+  // SWAN is an ACRONYM (Simulating WAves Nearshore) -> ALL-CAPS, never "Swan".
+  // The raw function name fell through to the title-case fallback ("Run Swan
+  // Waves"), which both lower-cased the acronym and surfaced the verb "Run".
+  // Map it explicitly so the card reads like the SFINCS flood card.
+  run_swan_waves: {
+    running: "SWAN wave sim…",
+    complete: "SWAN waves modeled",
+  },
+  // The composer name the emitter may stamp for the wave workflow.
+  model_wave_scenario: {
+    running: "SWAN wave sim…",
+    complete: "SWAN waves modeled",
+  },
 
   // --- Sub-step atomic tools (task-168 nested timeline) ----------------- //
   // Composer-internal atomic-tool calls surfaced as nested CHILD rows. Keyed
@@ -843,6 +856,10 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
   postprocess_waves: {
     running: "Post-processing waves…",
     complete: "Waves post-processed",
+  },
+  postprocess_swan: {
+    running: "Post-processing SWAN waves…",
+    complete: "SWAN waves post-processed",
   },
   postprocess_swmm: {
     running: "Post-processing urban flood…",

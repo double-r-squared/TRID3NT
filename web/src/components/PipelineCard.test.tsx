@@ -333,6 +333,33 @@ describe("PipelineCard — humanized step labels (job-0173 + job-0294)", () => {
     render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_river_widths" })} />);
     expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("Fetch River Widths");
   });
+
+  // SWAN is an ACRONYM (Simulating WAves Nearshore). Before the explicit map
+  // entry, run_swan_waves fell through the title-case fallback and rendered
+  // "Run Swan Waves" — lower-cased acronym + the raw verb "Run". The card must
+  // read like the SFINCS flood card and keep SWAN ALL-CAPS.
+  it("renders run_swan_waves as an ALL-CAPS 'SWAN wave sim' card (never 'Swan')", () => {
+    const { unmount } = render(
+      <PipelineCard step={makeStep({ state: "running", name: "run_swan_waves" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("SWAN wave sim…");
+    expect(label.textContent).not.toContain("Run Swan Waves");
+    expect(label.textContent).not.toContain("Swan"); // acronym never title-cased
+    unmount();
+
+    render(<PipelineCard step={makeStep({ state: "complete", name: "run_swan_waves" })} />);
+    const done = screen.getByTestId("pipeline-card-name");
+    expect(done).toHaveTextContent("SWAN waves modeled");
+    expect(done.textContent).not.toContain("Swan");
+  });
+
+  it("renders postprocess_swan child label with ALL-CAPS SWAN", () => {
+    render(<PipelineCard step={makeStep({ state: "running", name: "postprocess_swan" })} />);
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Post-processing SWAN waves…");
+    expect(label.textContent).not.toContain("Swan");
+  });
 });
 
 // --- Tool timer (job-0264) ----------------------------------------------- //

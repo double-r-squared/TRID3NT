@@ -81,6 +81,24 @@ SWAN_MAT_OUTPUT: str = "swan_out.mat"
 #: the deck (deck_builder.SWAN_EXCEPTION_VALUE). Cells equal to it are masked.
 _SWAN_EXCEPTION_VALUE: float = -999.0
 
+#: Minimum COG pixel dimension (the larger of width/height) the Hs raster is
+#: upsampled to before write. SWAN's computational mesh is COARSE (the v0.1 deck
+#: is a fixed (100, 100) grid -> a 101x101 BLOCK output), and a COG that small
+#: ships with NO internal overviews (the GDAL COG driver only builds overviews
+#: once a dimension exceeds the block size, and ``publish_layer``'s F33
+#: overview-enforcement also no-ops below its 256px threshold). A no-overview COG
+#: is exactly the "renders spotty / never paints" class: TiTiler reports a
+#: single-level tilejson zoom window (min==max), so the MapLibre raster source
+#: paints reliably only inside that 1-level band and cold-loads time out. We
+#: NEAREST-NEIGHBOUR expand the masked Hs grid onto a denser grid so the COG is
+#: large enough for the COG driver to build overviews and TiTiler reports a real
+#: multi-level zoom window -- the SAME robustness the SFINCS/GeoClaw flood COGs
+#: (hundreds-to-thousands of px wide) get for free. Nearest-neighbour (not
+#: interpolation) preserves the calm/wave NaN mask edge EXACTLY and invents no
+#: between-cell wave heights -- it is a pure DISPLAY upsample; every narrated
+#: scalar is still computed on the NATIVE grid upstream (honesty floor intact).
+_COG_MIN_DIM_PX: int = 768
+
 #: Matlab variable-name candidates SWAN writes per quantity (SWAN appends a frame
 #: suffix in nonstationary runs, so we match by PREFIX). Hsig is HSIGN; the period
 #: var is RTp / Tps / Period; Dir is the mean direction.
@@ -289,6 +307,34 @@ def compute_swan_wave_metrics(
 # --------------------------------------------------------------------------- #
 # COG write (EPSG:4326 grid) + CRS round-trip guard.
 # --------------------------------------------------------------------------- #
+def _upsample_for_cog(arr: Any, min_dim_px: int = _COG_MIN_DIM_PX) -> Any:
+    """NEAREST-NEIGHBOUR expand a masked Hs grid so its larger side >= ``min_dim_px``.
+
+    SWAN's coarse mesh (a 101x101 BLOCK output for the v0.1 deck) yields a COG too
+    small for the GDAL COG driver to build internal overviews, so TiTiler reports a
+    1-level (min==max) tilejson zoom window and the layer paints only inside that
+    narrow band / times out cold (the no-overview "renders spotty" class). Tiling
+    each cell into an integer NxN block (``np.repeat``) makes the raster large
+    enough that the COG driver writes overviews -- WITHOUT inventing any data:
+    nearest-neighbour preserves the EXACT cell values + the calm/wave NaN edge, so
+    no between-cell wave heights are fabricated and the narration scalars (computed
+    on the native grid upstream) stand unchanged. No-op when the grid is already
+    >= ``min_dim_px`` on its larger side (the SFINCS/GeoClaw-sized case).
+    """
+    import numpy as np
+
+    a = np.asarray(arr)
+    if a.ndim != 2 or a.size == 0:
+        return a
+    larger = max(a.shape)
+    if larger >= min_dim_px:
+        return a
+    factor = int(np.ceil(min_dim_px / larger))
+    if factor <= 1:
+        return a
+    return np.repeat(np.repeat(a, factor, axis=0), factor, axis=1)
+
+
 def _write_hs_cog_4326(
     hs_grid: Any,
     bbox: tuple[float, float, float, float],
@@ -296,9 +342,13 @@ def _write_hs_cog_4326(
     """Write a masked ``(my, mx)`` SWAN Hs grid to an EPSG:4326 COG over ``bbox``.
 
     SWAN's idla=1 grid is row 0 = south; COGs are row 0 = NORTH, so we FLIP the
-    grid vertically before writing. Sub-threshold / exception cells are NaN. Re-
-    opens the COG to assert the CRS tag round-trips (the TiTiler-wedge guard).
-    Mirrors ``postprocess_geoclaw._write_depth_cog_4326``.
+    grid vertically before writing. Sub-threshold / exception cells are NaN. The
+    masked grid is then NEAREST-NEIGHBOUR upsampled (``_upsample_for_cog``) so the
+    COG is large enough for the GDAL COG driver to build internal OVERVIEWS -- a
+    coarse SWAN mesh otherwise ships a no-overview COG that renders spotty / never
+    paints (TiTiler reports a 1-level zoom window). Re-opens the COG to assert the
+    CRS tag round-trips AND that overviews actually landed (the TiTiler-wedge
+    guard). Mirrors ``postprocess_geoclaw._write_depth_cog_4326``.
     """
     import numpy as np
     import rasterio
@@ -309,6 +359,9 @@ def _write_hs_cog_4326(
     arr = np.flipud(arr)
     # Mask anything below the calm threshold (so calm water paints no wave).
     arr = np.where(np.isfinite(arr) & (arr >= NODATA_WAVE_M), arr, np.float32("nan"))
+    # Upsample a coarse mesh so the COG gets internal overviews (no data invented;
+    # nearest-neighbour preserves the exact values + the calm/wave NaN edge).
+    arr = _upsample_for_cog(arr)
     nrows, ncols = arr.shape
     min_lon, min_lat, max_lon, max_lat = bbox
     transform = from_bounds(min_lon, min_lat, max_lon, max_lat, ncols, nrows)
@@ -318,6 +371,10 @@ def _write_hs_cog_4326(
         tempfile.NamedTemporaryFile(suffix="_swan_hs_4326.tif", delete=False).name
     )
     try:
+        # OVERVIEW_RESAMPLING=NEAREST keeps the calm/wave edge crisp in the
+        # decimated overviews (averaging would bleed wave into calm cells); the
+        # COG driver writes the overviews in the same pass once a dimension
+        # exceeds the block size (the upsample above guarantees that).
         profile = {
             "driver": "COG",
             "crs": dst_crs,
@@ -328,6 +385,7 @@ def _write_hs_cog_4326(
             "dtype": "float32",
             "nodata": float("nan"),
             "compress": "LZW",
+            "overview_resampling": "nearest",
         }
         with rasterio.open(dst_cog, "w", **profile) as dst:
             dst.write(arr, 1)
