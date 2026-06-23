@@ -72,14 +72,36 @@ export interface DrawAoiControlProps {
    */
   mobile?: boolean;
   /**
-   * NATE 2026-06-22 (item 6) - CONFIRM the staged AOI. The "+" affordance pinned
-   * to the bottom-center of a SET (staged, not-being-drawn) box calls this with
-   * the staged bbox to FINALIZE it as the analysis extent (App wires it to a
-   * `zoom-to` map-command so the drawn box becomes the persistent AOI rectangle +
-   * the camera fits it). Optional: when omitted (legacy callers / fixtures) the
-   * "+" still renders and confirming just clears the staged pick overlay.
+   * ITEM 1 (NATE 2026-06-22) - whether the CURRENT case context already HAS an
+   * analysis-extent / AOI set. The Draw-AOI control group (draw button + red-X
+   * cancel + green "+" confirm) is ONLY for STARTING a case: setting the AOI to
+   * begin. Once a case already has a bounding box, NONE of these controls render
+   * (the AOI is established; re-scoping is the agent's job). When true the whole
+   * control returns null. Default false (a fresh, no-AOI start) so existing
+   * callers / fixtures that don't pass it keep rendering the control.
+   */
+  caseHasAoi?: boolean;
+  /**
+   * NATE 2026-06-22 (item 6) - CONFIRM the staged AOI (draw-and-fit path). The
+   * "+" affordance pinned to the bottom-center of a SET (staged, not-being-drawn)
+   * box calls this with the staged bbox to FINALIZE it as the analysis extent
+   * (App wires it to a `zoom-to` map-command so the drawn box becomes the
+   * persistent AOI rectangle + the camera fits it). Optional: when omitted
+   * (legacy callers / fixtures) the "+" still renders and confirming clears the
+   * staged pick overlay (unless onConfirmAoi keeps it - see below).
    */
   onConfirm?: (bbox: BBox) => void;
+  /**
+   * ITEM 4 / feature #170 (NATE 2026-06-22) - AOI-first manual case seam. When
+   * the user confirms a drawn bbox with the green "+", this ALSO fires with the
+   * confirmed extent so the parent SEEDS the case's analysis area to the AGENT
+   * (App wires it to createCase(null, bbox) - the SAME channel AoiPickerCard's
+   * onConfirm rides). When provided, the "+" both fits the camera to the extent
+   * AND seeds the case (then clears the staged box - the case now owns the AOI).
+   * When omitted, the "+" is draw-and-fit only (the staged box stays as the
+   * next-prompt extent). Independent of onConfirm (both fire if both are wired).
+   */
+  onConfirmAoi?: (bbox: BBox) => void;
 }
 
 // FIX 2 geometry (mirrors the App.tsx chat panel + hamburger constants):
@@ -198,8 +220,10 @@ export function DrawAoiControl({
   chatWidthPx,
   chatCollapsed,
   mobile,
+  caseHasAoi,
   onConfirm,
-}: DrawAoiControlProps): JSX.Element {
+  onConfirmAoi,
+}: DrawAoiControlProps): JSX.Element | null {
   // Subscribe to the staged-AOI bus (unless a test override is supplied).
   const { armed, bbox } = useBusState(stateOverride);
 
@@ -324,15 +348,47 @@ export function DrawAoiControl({
     aoiStageBus.clear();
   }, []);
 
-  // NATE 2026-06-22 (item 6): CONFIRM the staged AOI. Hand the staged bbox to the
-  // caller (App wires it to a `zoom-to` map-command so the drawn box becomes the
-  // persistent analysis-extent rectangle + the camera fits it), then clear the
-  // staged pick overlay (the box is now finalized as the AOI, not a pending draw).
+  // UNION (item 6 + ITEM 4, NATE 2026-06-22) - the green "+" CONFIRM. Up to three
+  // things run in order, all optional and independent:
+  //   1. draw-and-fit (always): frame the chosen extent so the user sees the box.
+  //   2. finalize (item 6): if onConfirm is wired, hand the staged bbox to the
+  //      caller (App wires it to a `zoom-to` map-command -> the drawn box becomes
+  //      the persistent analysis-extent rectangle) and clear the staged overlay.
+  //   3. seed-the-case (ITEM 4): if onConfirmAoi is wired, surface the confirmed
+  //      bbox up so the parent routes it through createCase(null, bbox) - the AOI
+  //      becomes the case's analysis area for the next prompt - and clear the
+  //      transient staged rectangle (the case now OWNS the AOI; the on-map
+  //      analysis-extent overlay takes over from the pick rectangle).
+  // When NEITHER finalize nor seed is wired, the "+" is draw-and-fit only: the
+  // staged box STAYS (it is the next-prompt analysis extent).
   const onConfirmClick = useCallback(() => {
     const b = aoiStageBus.getState().bbox ?? bbox;
-    if (b && onConfirm) onConfirm(b);
-    onClear();
-  }, [bbox, onConfirm, onClear]);
+    if (!b) return;
+    const m = mapRef.current;
+    if (m) {
+      try {
+        // draw-and-fit: frame the chosen extent (bbox = [minLon,minLat,maxLon,maxLat]).
+        m.fitBounds(
+          [
+            [b[0], b[1]],
+            [b[2], b[3]],
+          ],
+          { padding: 48, duration: 600 },
+        );
+      } catch {
+        /* map torn down */
+      }
+    }
+    // finalize (item 6) and/or seed-the-case (ITEM 4); either one clears the box.
+    if (onConfirm) onConfirm(b);
+    if (onConfirmAoi) onConfirmAoi(b);
+    if (onConfirm || onConfirmAoi) onClear();
+  }, [bbox, onConfirm, onConfirmAoi, onClear]);
+
+  // ITEM 1 (NATE 2026-06-22) - the Draw-AOI control group is ONLY for starting a
+  // case with no AOI yet. Once the case already has a bounding box, render
+  // NOTHING. (Gate AFTER all hooks so hook order stays stable.)
+  if (caseHasAoi) return null;
 
   const hasStaged = bbox !== null;
 
@@ -357,21 +413,28 @@ export function DrawAoiControl({
         {armed ? <IconClose size={18} /> : <IconBbox size={18} />}
       </button>
 
-      {/* NATE 2026-06-22 (item 6): the "+" CONFIRM control. Appears ONLY once a
-          box is SET (staged, not being drawn). When the box projects on-screen
+      {/* UNION (item 6 + ITEM 4): the "+" CONFIRM control. Appears ONLY once a
+          box is SET (staged, not being drawn). The cancel/clear affordance is the
+          draw button's OWN glyph turning into a red X while armed (item 5) - there
+          is no separate underneath clear-X. When the box projects on-screen
           (confirmRect) the "+" pins to the BOTTOM-CENTER just under the box's
           bottom edge and tracks the camera; if the box is off-screen / not yet
           projected it falls back to viewport bottom-center (mirrors the
           AoiPickerCard DrawControls null-rect fallback) so the confirm is never
           unreachable. Portaled to document.body so its fixed coords resolve
-          against the viewport. Clicking it finalizes the AOI. */}
+          against the viewport. Clicking it fits the camera (draw-and-fit) AND,
+          when wired, finalizes/seeds the case AOI to the agent (createCase). */}
       {hasStaged && !armed
         ? createPortal(
             <button
               type="button"
               data-testid="grace2-draw-aoi-confirm"
               aria-label="Confirm analysis extent"
-              title="Confirm this analysis extent"
+              title={
+                onConfirmAoi
+                  ? "Use this extent as the case area (fits the map too)"
+                  : "Confirm this analysis extent"
+              }
               onClick={onConfirmClick}
               style={{
                 ...confirmBtn,

@@ -655,6 +655,19 @@ export function App(): JSX.Element {
   const onAoiCaptureCancel = useCallback(() => {
     setAoiCaptureOpen(false);
   }, []);
+  // ITEM 4 / feature #170 (NATE 2026-06-22) - AOI-first via the always-on
+  // Draw-AOI control's green "+". The user draws a bbox on the live map and
+  // confirms with "+"; that extent SEEDS a new case as its analysis area - the
+  // SAME createCase(name, bbox) channel the AoiPickerCard onConfirm rides (here
+  // with no name; the server defaults to "Untitled Case", renameable later).
+  // The agent's first turn then reuses the seeded extent (no re-geocode). The
+  // DrawAoiControl also fits the camera (draw-and-fit) before this fires.
+  const onAoiStageConfirm = useCallback(
+    (bbox: [number, number, number, number]) => {
+      createCase(null, bbox);
+    },
+    [createCase],
+  );
   const onRenameGated = useCallback(
     (caseId: string, newTitle: string) => {
       saveGate.gateAction(
@@ -709,23 +722,6 @@ export function App(): JSX.Element {
       selectCase(caseId);
     },
     [cases, bus, selectCase],
-  );
-
-  // NATE 2026-06-22 (item 6): CONFIRM the always-on Draw-AOI staged box. The "+"
-  // under the box finalizes it as the analysis extent: push a `zoom-to` with the
-  // drawn bbox so the SINGLE analysis-extent rectangle is (re)drawn at that
-  // extent and the camera fits it (mirrors the case-select snap above). This is
-  // the closest existing "confirm AOI" action for the request-free always-on draw
-  // (the #170 AoiPickerCard confirm creates a Case; this path instead sets the
-  // analysis extent on the current view without a Case round-trip).
-  const onAoiStageConfirm = useCallback(
-    (bbox: [number, number, number, number]) => {
-      bus.pushMapCommand({
-        command: "zoom-to",
-        args: { bbox },
-      } as unknown as MapCommandPayload);
-    },
-    [bus],
   );
 
   // currentCaseId for the embedded SecretsPanel scope (inside Settings).
@@ -1538,6 +1534,21 @@ export function App(): JSX.Element {
     [aoiScreenRect, layers.length, layersLoading, wsStatus, simRunning, bboxAnimEnabled],
   );
 
+  // ITEM 1 (NATE 2026-06-22) - does the CURRENT case context already have an AOI
+  // set? The always-on Draw-AOI control group (draw + red-X + green "+") is for
+  // STARTING a case: setting the AOI to begin. Once a case has a bounding box it
+  // must NOT render. "Has an AOI" = any of: a valid persisted case.bbox, an AOI
+  // rectangle currently projected on the map (aoiScreenRect, the agent set one),
+  // or the case already carries loaded layers (established work). When no case is
+  // entered (activeCaseId === null, the cases root), the control SHOWS so a fresh
+  // bbox can be drawn + confirmed to seed a brand-new case (item 4). Must be a
+  // HOOK before the AuthGate early-return (same #310 rule as above).
+  const caseHasAoi = useMemo(() => {
+    if (activeCaseId === null) return false; // cases root: allow drawing to seed.
+    const persisted = asBbox(activeSession?.case.bbox ?? null) !== null;
+    return persisted || aoiScreenRect !== null || layers.length > 0;
+  }, [activeCaseId, activeSession, aoiScreenRect, layers.length]);
+
   // CASE-LIST LOADING SIGNAL (BUG 1: late spinner). True while the FIRST
   // case-list load is plausibly in flight AND has not yet settled, so the
   // CasesPanel shows its spinner IMMEDIATELY (on first paint, before the WS even
@@ -1639,9 +1650,12 @@ export function App(): JSX.Element {
            purple while a sim runs (revert to blue when done). No second box is
            drawn; the same blue analysis-extent box's stroke is mutated. */
         simRunning={simRunning}
-        /* NATE 2026-06-22 (item 6) - the always-on Draw-AOI "+" confirm finalizes
-           the staged box as the analysis extent (zoom-to draws the single AOI
-           rectangle + fits the camera). */
+        /* ITEM 1 - hide the Draw-AOI control group once the case has an AOI; it
+           is only for STARTING a case (setting the AOI to begin). */
+        caseHasAoi={caseHasAoi}
+        /* NATE 2026-06-22 (item 6) + ITEM 4 / #170 - the green "+" confirm seeds a
+           new case with the drawn AOI via createCase(null, bbox) (same channel as
+           AoiPickerCard); the DrawAoiControl also fits the camera (draw-and-fit). */
         onAoiStageConfirm={onAoiStageConfirm}
       />
 

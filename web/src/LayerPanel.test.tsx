@@ -7,7 +7,7 @@
 //   4. onLayersChange callback fires with the correct layer list.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import {
   LayerPanel,
   createLayerPanelBus,
@@ -21,6 +21,7 @@ import {
   writeLayerVisibilityOverride,
   parseFrameToken,
   detectSequentialGroups,
+  isPeakLayer,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
@@ -280,9 +281,36 @@ describe("LayerPanel — no nudge buttons (job-0173 Part 4)", () => {
     expect(text).not.toContain("▼");
   });
 
-  it("preserves the drag handle on every layer row (reorder still possible)", () => {
+  // ITEM 2 (NATE 2026-06-22): the dedicated drag-handle button was retired - the
+  // whole card body is the drag handle now (matching the sequential-group row),
+  // and the far-left grabber slot holds an EXPAND control. Reorder is still
+  // possible (the row is a dnd-kit sortable); every row carries the expand
+  // control + the eye in a single aligned left column.
+  it("gives every layer row a far-left expand control in the grabber slot", () => {
     render(<LayerPanel initialLayers={[makeLayer("a"), makeLayer("b", 2)]} />);
-    expect(screen.getAllByTestId("layer-drag-handle")).toHaveLength(2);
+    expect(screen.getAllByTestId("layer-expand")).toHaveLength(2);
+    // The old dedicated drag-handle button is gone (body-drag now).
+    expect(screen.queryByTestId("layer-drag-handle")).toBeNull();
+    // Both rows still render (sortable card body = drag handle).
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(2);
+  });
+
+  it("the row expand control toggles the opacity detail sticky (ITEM 2)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    const expand = screen.getByTestId("layer-expand");
+    // Collapsed by default.
+    expect(screen.getByTestId("layer-row")).toHaveAttribute(
+      "data-expanded",
+      "false",
+    );
+    act(() => {
+      fireEvent.click(expand);
+    });
+    expect(screen.getByTestId("layer-row")).toHaveAttribute(
+      "data-expanded",
+      "true",
+    );
+    expect(expand).toHaveAttribute("aria-expanded", "true");
   });
 
   it("preserves visibility checkbox + opacity slider (controls unaffected)", () => {
@@ -348,7 +376,6 @@ describe("LayerPanel — icons come from the shared module (job-0326 F53)", () =
 // the new outbound `onMapCommand` emission contract that App.tsx wires to
 // the shared bus (MapView consumes it; see Map.test.tsx for that half).
 
-import { fireEvent } from "@testing-library/react";
 import type { MapCommandPayload } from "./contracts";
 
 describe("LayerPanel — user controls emit map-commands (job-0258)", () => {
@@ -1074,6 +1101,73 @@ describe("detectSequentialGroups — conservative grouping", () => {
       "RUNB-swmm-depth-frame-02",
       "RUNB-swmm-depth-frame-03",
     ]);
+  });
+});
+
+// ITEM 3 (NATE 2026-06-22) - the static peak/primary "max-depth" layer is
+// INDEPENDENT of the animation sequence: it must never join the frame group, so
+// hiding the time-series animation keeps the static max-depth layer visible with
+// its own toggle.
+describe("ITEM 3 - peak max-depth decoupled from the frame sequence", () => {
+  // The real engine emission: ONE peak ("Peak flood depth", layer_id
+  // <engine>-depth-peak-<run>) + N frames ("Flood depth step N"), all sharing
+  // the same style_preset + run-dir signature.
+  const peak: ProjectLayerSummary = {
+    layer_id: "swmm-depth-peak-RUN1",
+    name: "Peak flood depth",
+    layer_type: "raster",
+    uri: "s3://bucket/RUN1/swmm_depth_peak.tif",
+    visible: true,
+    opacity: 1,
+    z_index: 5,
+    style_preset: "continuous_flood_depth",
+  };
+  const frame = (n: number): ProjectLayerSummary => {
+    const ss = String(n).padStart(2, "0");
+    return {
+      layer_id: `swmm-depth-frame-${ss}-RUN1`,
+      name: `Flood depth step ${n}`,
+      layer_type: "raster",
+      uri: `s3://bucket/RUN1/swmm_depth_frame_${ss}.tif`,
+      visible: true,
+      opacity: 1,
+      z_index: n,
+      style_preset: "continuous_flood_depth",
+    };
+  };
+
+  it("isPeakLayer flags the peak (layer_id -peak- + 'Peak'/'Max' name) and not frames", () => {
+    expect(isPeakLayer(peak)).toBe(true);
+    expect(isPeakLayer(frame(1))).toBe(false);
+    // Name-only peak (no -peak- id) still flagged via the leading token.
+    expect(
+      isPeakLayer({ ...frame(1), layer_id: "x", name: "Max flood depth" }),
+    ).toBe(true);
+    // "Maximum ..." too.
+    expect(
+      isPeakLayer({ ...frame(1), layer_id: "x", name: "Maximum depth" }),
+    ).toBe(true);
+  });
+
+  it("EXCLUDES the peak from the detected frame group", () => {
+    const groups = detectSequentialGroups([peak, frame(1), frame(2), frame(3)]);
+    expect(groups).toHaveLength(1);
+    // The group holds ONLY the 3 frames - the peak is not a member.
+    expect(groups[0]?.layers).toHaveLength(3);
+    expect(groups[0]?.layers.map((l) => l.layer_id)).not.toContain(
+      "swmm-depth-peak-RUN1",
+    );
+  });
+
+  it("renders the peak as an INDEPENDENT ordinary row alongside the group", () => {
+    render(<LayerPanel initialLayers={[peak, frame(1), frame(2), frame(3)]} />);
+    // The peak is its own single layer row (with its own eye), the group is one
+    // group row - so hiding the animation group never touches the peak's toggle.
+    const peakRow = screen
+      .getAllByTestId("layer-row")
+      .find((r) => r.getAttribute("data-layer-id") === "swmm-depth-peak-RUN1");
+    expect(peakRow).toBeTruthy();
+    expect(screen.getByTestId("layer-group-row")).toBeInTheDocument();
   });
 });
 
