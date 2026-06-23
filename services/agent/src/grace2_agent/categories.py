@@ -341,6 +341,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # 1/9 arc-sec + USGS 3DEP land) — the bathymetric input the coastal SFINCS
     # bed needs (fetch_dem alone is land-only). EPSG:32616 NAVD88 positive-up.
     "fetch_topobathy": "coastal",
+    # AWS / Australian-Water-School "Making Waves" SWAN-lecture post-processors:
+    # two pure-analytic coastal-wave tools (no fetch, no solver). The nomograph
+    # is the wind+fetch -> Hs/Tp pre-flight sanity bound on a SWAN run; the
+    # EurOtop tool turns a nearshore Hs/Tp + structure crest into a mean
+    # overtopping discharge. Both sit in the coastal lane next to run_swan_waves.
+    "compute_wave_nomograph": "coastal",
+    "compute_overtopping": "coastal",
     # ---- 9. damage_assessment ---------------------------------------------
     "compute_impact_envelope": "damage_assessment",
     "postprocess_pelicun": "damage_assessment",

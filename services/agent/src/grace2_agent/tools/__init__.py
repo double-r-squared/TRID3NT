@@ -298,6 +298,12 @@ from . import run_geoclaw_tool  # noqa: E402,F401 — sprint-17: registers run_g
 from . import run_openquake_tool  # noqa: E402,F401 — sprint-17: registers run_seismic_hazard_psha (OpenQuake PSHA seismic-hazard bridge; imports model_seismic_hazard_scenario)
 from . import run_landlab_tool  # noqa: E402,F401 — sprint-17: registers run_landlab_susceptibility (Landlab landslide-probability / overland-flow bridge; imports model_landslide_scenario)
 from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_swan_waves (SWAN third-generation spectral nearshore wave-field bridge; ADDITIVE comparison engine vs SFINCS+SnapWave; imports model_wave_scenario)
+# AWS / Australian-Water-School "Making Waves: Wave Modeling with SWAN" lecture
+# (reports/references/lecture_aws_swan_making_waves): two pure-analytic coastal
+# post-processors flagged as easy/trivial candidate tools -- no fetch, no solver,
+# no cache shim. Both are deterministic closed-form sanity/post-processing tools.
+from . import compute_wave_nomograph  # noqa: E402,F401 -- registers compute_wave_nomograph (wind+fetch -> Hs/Tp deep-water fetch-limited wave-growth sanity estimate; SPM 1984 / CEM Part II-2; pre-flight reality-check on a SWAN run)
+from . import compute_overtopping  # noqa: E402,F401 -- registers compute_overtopping (EurOtop 2018 Ch.5 mean wave-overtopping discharge over a sloped coastal structure; deterministic post-processor on nearshore Hs/Tp from SWAN/SnapWave)
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
