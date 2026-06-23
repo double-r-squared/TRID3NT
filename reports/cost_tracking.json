@@ -2340,6 +2340,20 @@
       "model": "opus",
       "subagent_tokens": 319204,
       "description": "Unified satellite fire-animation demo build (worktree agent, merged ecf5a89): fetch_wfigs_incident (NIFC/WFIGS named-incident), fetch_goes_animation (GOES GeoColor+Fire Temperature SLIDER), fetch_viirs_day_fire (JPSS Day Fire polar SLIDER, slug cira_natural_fire_color), FIRMS historical-date positional, run_model_satellite_fire_animation (generalized composer w/ bbox/window review gate, GOES+JPSS branches), _satellite_slider shared substrate. 68 new tests; TOOL_REGISTRY 98->102; ASCII-clean. PATH A (SLIDER) only; georeference approximate + slugs are live-verify items (flagged in code). No Batch. Merge conflict on categories.py (kept both SWAN+fire entries) resolved; full suite 6363 passed 0 failed."
+    },
+    {
+      "job_id": "cross-section-design-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 88740,
+      "description": "Cross-section/profile tool design spike (NATE pull-forward): reports/design/spike_cross_section_profile_tool.md. Near-pure glue (terra-draw line + chart-in-chat + COG read all exist); net-new = ~150-200-line compute_cross_section sampler + chart spec. Design calls: chat-card v1 (rec), multi-layer overlay YES (rec)."
+    },
+    {
+      "job_id": "contamination-fotw-demo-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 129537,
+      "description": "Contamination plume x Fields-of-the-World demo spike (NATE pull-forward): reports/design/demo_spike_contamination_fotw.md. ~90% composition (run_modflow_job GWT + fetch_field_boundaries + compute_zonal_statistics exist); net-new = analyze_affected_fields tool + model_contamination_affected_fields workflow. FTW regional (US cropland default, Ames IA). Build S1-S5."
     }
   ],
   "totals_by_sprint": {
