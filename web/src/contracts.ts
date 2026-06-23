@@ -920,6 +920,33 @@ export interface GranularitySuggestion {
   spot_label?: string | null;
 }
 
+// Pre-run TIME-SCALE (animation cadence + window) suggestion (combined
+// run-settings gate, sprint-16). Mirrors TimeScaleSuggestion in
+// packages/contracts/src/grace2_contracts/payload_warning.py. The sibling of
+// GranularitySuggestion: where granularity makes the SPATIAL resolution a user
+// lever, this makes the TEMPORAL resolution one (minutes-per-frame + the
+// simulation window). When present ALONGSIDE a granularity block on a
+// `tool-payload-warning`, the client renders ONE combined "Run settings" card
+// to review + override BOTH; the chosen cadence/window rides back on the
+// existing `tool-payload-confirmation` (decision="narrow_scope" + revised_args
+// carrying `output_interval_min` and/or `duration_hr`). None on the pluvial
+// path (hourly cadence is fixed) -> the card degrades to the resolution gate.
+//
+// Invariant 9 (no cost theater): frames / minutes / hours are capacity +
+// capability descriptors, NOT dollar figures. No dollar field.
+export interface TimeScaleSuggestion {
+  cadence_param: "output_interval_min";
+  suggested_interval_min: number;
+  interval_choices: number[];
+  duration_param: "duration_hr";
+  suggested_duration_hr: number;
+  estimated_frame_count: number;
+  max_frames: number;
+  min_interval_min: number;
+  is_coastal: boolean;
+  reason: string;
+}
+
 export interface PayloadWarningEnvelopePayload {
   envelope_type?: "tool-payload-warning";
   warning_id: string;
@@ -932,6 +959,7 @@ export interface PayloadWarningEnvelopePayload {
   options: PayloadWarningOption[];
   ttl_seconds?: number;
   granularity?: GranularitySuggestion | null;
+  time_scale?: TimeScaleSuggestion | null;
 }
 
 export type PayloadConfirmationDecision = "proceed" | "cancel" | "narrow_scope";

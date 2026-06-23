@@ -57,6 +57,7 @@ __all__ = [
     "PayloadConfirmationDecision",
     "PayloadConfirmationEnvelopePayload",
     "GranularitySuggestion",
+    "TimeScaleSuggestion",
     "WARNING_THRESHOLD_MB_DEFAULT",
     "HARD_CAP_MB_DEFAULT",
 ]
@@ -210,6 +211,128 @@ class GranularitySuggestion(GraceModel):
         return value
 
 
+class TimeScaleSuggestion(GraceModel):
+    """Pre-run TIME-SCALE (animation cadence + window) suggestion attached to a
+    ``tool-payload-warning`` (combined run-settings gate, sprint-16).
+
+    The sibling of :class:`GranularitySuggestion`: where granularity makes the
+    SPATIAL resolution a user lever, this makes the TEMPORAL resolution one. A
+    coastal/wave SFINCS run animates its rising water at a FINE minute-scale
+    stride (so it reads as water rolling in, not a slowly-filling bathtub —
+    memory: the "looks like rain" fix); the pluvial path animates hourly. The
+    cadence (minutes per frame) and the simulation window (duration in hours)
+    together determine the animation FRAME COUNT — too many frames balloons the
+    payload, too few hides the wave motion. This model surfaces the agent's
+    SUGGESTED cadence + window + the resulting frame-count estimate so the user
+    can SEE "~N frames every M min" and override the cadence / window before the
+    solve.
+
+    The override reuses the EXISTING ``tool-payload-confirmation`` path
+    (``decision="narrow_scope"`` + ``revised_args`` carrying the chosen
+    ``cadence_param`` value and/or ``duration_param`` value) — no new envelope.
+    The combined run-settings card sends the resolution override AND the
+    time-scale override in the SAME ``revised_args`` dict (ONE interaction).
+
+    This model is an OPTIONAL enrichment on ``PayloadWarningEnvelopePayload``; a
+    payload-warning without a time-scale suggestion is unchanged. The pluvial
+    flood path emits NO time-scale row (hourly cadence is fixed) so the gate
+    falls back to the granularity-only card.
+
+    Fields:
+
+    - ``cadence_param`` — the solver-args field the user overrides for cadence:
+      ``"output_interval_min"`` (minutes between animation frames). The client
+      writes the chosen value back into ``revised_args`` under this exact key.
+    - ``suggested_interval_min`` — the agent's recommended minutes-per-frame
+      (> 0). The default-prefilled cadence.
+    - ``interval_choices`` — an OPTIONAL ascending ladder of suggested cadences
+      (minutes) for quick-pick chips; the card ALSO exposes a free numeric edit
+      so a value off the ladder is allowed. May be empty (free-edit only).
+    - ``duration_param`` — the solver-args field for the simulation window:
+      ``"duration_hr"``. The client writes the chosen window back under this key.
+    - ``suggested_duration_hr`` — the agent's simulation window in hours (> 0).
+      The default-prefilled, editable duration.
+    - ``estimated_frame_count`` — projected animation frames at the suggested
+      cadence + window (>= 1). Drives the "~N frames" readout; the client
+      LIVE-recomputes it as the user edits (``duration_hr*60 / interval``,
+      clamped to ``[1, max_frames]``).
+    - ``max_frames`` — the postprocess frame cap (> 0); the ceiling the
+      recompute clamps to (so the readout never advertises an unbounded count).
+    - ``min_interval_min`` — physical floor on the cadence (minutes, > 0); the
+      deck re-floors at this, so a finer edit cannot yield more frames than the
+      deck emits. The client floors the editable interval at this value.
+    - ``is_coastal`` — True for a coastal/wave run (fine minute-scale stride),
+      False for pluvial (hourly). Surfaced so the card labels the cadence honestly.
+    - ``reason`` — short human-readable rationale (e.g. "Coastal surge: 5-min
+      frames over a 6 h window animate the wave roll-in").
+
+    Invariant 1 (Determinism boundary): every number the chat narrates here is a
+    structured field, never inferred from prose.
+    Invariant 9 (No cost theater): frames / minutes / hours are capacity +
+    capability descriptors, NOT dollar figures. No dollar field.
+    """
+
+    cadence_param: Literal["output_interval_min"] = "output_interval_min"
+    suggested_interval_min: float = Field(gt=0.0)
+    interval_choices: list[float] = Field(default_factory=list)
+    duration_param: Literal["duration_hr"] = "duration_hr"
+    suggested_duration_hr: float = Field(gt=0.0)
+    estimated_frame_count: int = Field(ge=1)
+    max_frames: int = Field(gt=0)
+    min_interval_min: float = Field(default=1.0, gt=0.0)
+    is_coastal: bool = True
+    reason: str = Field(default="", max_length=512)
+
+    @field_validator("suggested_interval_min")
+    @classmethod
+    def _validate_suggested_interval(cls, value: float) -> float:
+        """The cadence must be a positive minutes-per-frame."""
+        if value <= 0.0:
+            raise ValueError(
+                f"suggested_interval_min must be > 0; got {value!r}"
+            )
+        return value
+
+    @field_validator("interval_choices")
+    @classmethod
+    def _validate_interval_choices(cls, value: list[float]) -> list[float]:
+        """Every cadence rung must be a positive minutes value."""
+        for rung in value:
+            if rung <= 0.0:
+                raise ValueError(
+                    f"interval_choices rungs must be > 0; got {rung!r} in {value!r}"
+                )
+        return value
+
+    @field_validator("suggested_duration_hr")
+    @classmethod
+    def _validate_suggested_duration(cls, value: float) -> float:
+        """The simulation window must be a positive number of hours."""
+        if value <= 0.0:
+            raise ValueError(
+                f"suggested_duration_hr must be > 0; got {value!r}"
+            )
+        return value
+
+    @field_validator("estimated_frame_count")
+    @classmethod
+    def _validate_frame_count(cls, value: int) -> int:
+        """A non-empty animation needs at least one frame."""
+        if value < 1:
+            raise ValueError(
+                f"estimated_frame_count must be >= 1; got {value!r}"
+            )
+        return value
+
+    @field_validator("max_frames")
+    @classmethod
+    def _validate_max_frames(cls, value: int) -> int:
+        """The frame cap must be a positive ceiling."""
+        if value <= 0:
+            raise ValueError(f"max_frames must be > 0; got {value!r}")
+        return value
+
+
 class PayloadWarningEnvelopePayload(GraceModel):
     """``tool-payload-warning`` (Appendix A amendment, job-0127).
 
@@ -258,6 +381,14 @@ class PayloadWarningEnvelopePayload(GraceModel):
       override rides back on the existing ``tool-payload-confirmation``
       (``decision="narrow_scope"`` + ``revised_args``). None on ordinary
       payload-warnings — fully back-compatible.
+    - ``time_scale`` — OPTIONAL pre-run time-scale (animation cadence +
+      window) suggestion (combined run-settings gate). When present ALONGSIDE
+      ``granularity``, the client renders ONE combined "Run settings" card
+      letting the user review + override BOTH the spatial resolution AND the
+      temporal cadence/window before the heavy solver run, sending both
+      overrides in a SINGLE ``revised_args`` dict (ONE interaction). None for
+      the pluvial path (hourly cadence is fixed) — the card falls back to the
+      granularity-only resolution gate. Fully back-compatible.
 
     Invariant 1 (Determinism boundary): every number the chat narrates
     here is a structured field, never inferred from prose.
@@ -282,6 +413,7 @@ class PayloadWarningEnvelopePayload(GraceModel):
     )
     ttl_seconds: int = Field(default=300, ge=1)
     granularity: GranularitySuggestion | None = None
+    time_scale: TimeScaleSuggestion | None = None
 
     @model_validator(mode="after")
     def _validate_options_unique(self) -> "PayloadWarningEnvelopePayload":

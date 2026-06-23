@@ -18,10 +18,12 @@ import {
   ResolutionPickerCard,
   estimateCellsForResolution,
   estimateSolveSecondsForResolution,
+  estimateFrameCount,
 } from "./ResolutionPickerCard";
 import {
   GranularitySuggestion,
   PayloadWarningEnvelopePayload,
+  TimeScaleSuggestion,
 } from "../contracts";
 
 afterEach(() => {
@@ -317,6 +319,316 @@ describe("ResolutionPickerCard - lock + fold after a decision", () => {
     expect(
       screen.getByTestId("resolution-picker-resolved"),
     ).toHaveTextContent("Mesh resolution overridden");
+  });
+});
+
+// --- Combined run-settings card (granularity + time_scale) ---------------- //
+
+function timeScale(
+  overrides: Partial<TimeScaleSuggestion> = {},
+): TimeScaleSuggestion {
+  return {
+    cadence_param: "output_interval_min",
+    suggested_interval_min: 5,
+    interval_choices: [1, 2, 5, 10, 30, 60],
+    duration_param: "duration_hr",
+    suggested_duration_hr: 6,
+    estimated_frame_count: 72,
+    max_frames: 240,
+    min_interval_min: 1,
+    is_coastal: true,
+    reason: "Coastal: 5-min frames over a 6 h window animate the roll-in.",
+    ...overrides,
+  };
+}
+
+// An SFINCS granularity for the flood combined card.
+function sfincsGranularity(
+  overrides: Partial<GranularitySuggestion> = {},
+): GranularitySuggestion {
+  return granularity({
+    engine: "sfincs",
+    resolution_param: "grid_resolution_m",
+    suggested_resolution_m: 30,
+    resolution_choices: [30, 50, 100, 200],
+    estimated_active_cells: 46000,
+    estimated_solve_seconds: 70,
+    compute_class: "standard",
+    spot_label: null,
+    ...overrides,
+  });
+}
+
+describe("ResolutionPickerCard - combined run-settings (time scale)", () => {
+  it("renders BOTH the resolution chips and the time-scale section", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    // Resolution section still present.
+    expect(screen.getByTestId("resolution-picker-chips")).toBeInTheDocument();
+    // Time-scale section + editable fields present.
+    expect(screen.getByTestId("resolution-picker-timescale")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resolution-picker-interval-input"),
+    ).toHaveValue(5);
+    expect(
+      screen.getByTestId("resolution-picker-duration-input"),
+    ).toHaveValue(6);
+    // The title reads "Confirm run settings" (combined).
+    const card = screen.getByTestId("resolution-picker-card");
+    expect(card).toHaveAttribute("data-combined", "true");
+  });
+
+  it("shows a LIVE frame-count seeded from the suggestion", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale(); // 6 h / 5 min -> 72 frames
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByTestId("resolution-picker-frame-count"),
+    ).toHaveTextContent("72");
+  });
+
+  it("LIVE-recomputes the frame count as the interval is edited", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale(); // 6 h window
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    // 6 h @ 5 min = 72; change to 2 min -> 6*60/2 = 180 frames.
+    fireEvent.change(screen.getByTestId("resolution-picker-interval-input"), {
+      target: { value: "2" },
+    });
+    expect(
+      screen.getByTestId("resolution-picker-frame-count"),
+    ).toHaveTextContent("180");
+  });
+
+  it("LIVE-recomputes the frame count as the window is edited", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale(); // 5 min cadence
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    // 12 h @ 5 min = 144 frames.
+    fireEvent.change(screen.getByTestId("resolution-picker-duration-input"), {
+      target: { value: "12" },
+    });
+    expect(
+      screen.getByTestId("resolution-picker-frame-count"),
+    ).toHaveTextContent("144");
+  });
+
+  it("clamps the LIVE frame count to max_frames", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale({ max_frames: 100 }); // cap below the raw count
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    // 6 h @ 1 min = 360 raw -> clamped to 100.
+    fireEvent.change(screen.getByTestId("resolution-picker-interval-input"), {
+      target: { value: "1" },
+    });
+    expect(
+      screen.getByTestId("resolution-picker-frame-count"),
+    ).toHaveTextContent("100");
+  });
+
+  it("a cadence preset chip sets the interval field", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByTestId("resolution-picker-interval-chip-10"),
+    );
+    expect(
+      screen.getByTestId("resolution-picker-interval-input"),
+    ).toHaveValue(10);
+    // 6 h @ 10 min = 36 frames.
+    expect(
+      screen.getByTestId("resolution-picker-frame-count"),
+    ).toHaveTextContent("36");
+  });
+
+  it("Confirm with NOTHING changed -> proceed (null revised)", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    const onDecide = vi.fn();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={onDecide}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    expect(onDecide).toHaveBeenCalledWith("proceed", null);
+  });
+
+  it("Confirm after editing the cadence -> narrow_scope with BOTH overrides", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    const onDecide = vi.fn();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={onDecide}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("resolution-picker-interval-input"), {
+      target: { value: "2" },
+    });
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    // The resolution rides back (still the suggested rung) + the changed cadence.
+    expect(onDecide).toHaveBeenCalledWith("narrow_scope", {
+      grid_resolution_m: 30,
+      output_interval_min: 2,
+    });
+  });
+
+  it("Confirm after editing BOTH resolution + cadence + window -> all three", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    const onDecide = vi.fn();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={onDecide}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("resolution-picker-chip-100"));
+    fireEvent.change(screen.getByTestId("resolution-picker-interval-input"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByTestId("resolution-picker-duration-input"), {
+      target: { value: "8" },
+    });
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    expect(onDecide).toHaveBeenCalledWith("narrow_scope", {
+      grid_resolution_m: 100,
+      output_interval_min: 10,
+      duration_hr: 8,
+    });
+  });
+
+  it("floors a below-floor cadence edit at min_interval_min on confirm", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale({ min_interval_min: 1 });
+    const onDecide = vi.fn();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={onDecide}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("resolution-picker-interval-input"), {
+      target: { value: "0.1" },
+    });
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    expect(onDecide).toHaveBeenCalledWith("narrow_scope", {
+      grid_resolution_m: 30,
+      output_interval_min: 1,
+    });
+  });
+
+  it("folds to the run-settings summary after a combined decision", () => {
+    const g = sfincsGranularity();
+    const ts = timeScale();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g, { time_scale: ts })}
+        granularity={g}
+        timeScale={ts}
+        onDecide={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    expect(
+      screen.getByTestId("resolution-picker-resolved"),
+    ).toHaveTextContent("Run settings confirmed");
+  });
+
+  it("granularity-only (no time_scale) stays the resolution gate", () => {
+    const g = granularity();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g)}
+        granularity={g}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByTestId("resolution-picker-timescale"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("resolution-picker-card")).toHaveAttribute(
+      "data-combined",
+      "false",
+    );
+  });
+});
+
+describe("ResolutionPickerCard - estimateFrameCount helper", () => {
+  const ts = timeScale({ max_frames: 240, min_interval_min: 1 });
+
+  it("frames = duration*60 / interval", () => {
+    expect(estimateFrameCount(ts, 5, 6)).toBe(72); // 360/5
+    expect(estimateFrameCount(ts, 2, 6)).toBe(180); // 360/2
+    expect(estimateFrameCount(ts, 10, 12)).toBe(72); // 720/10
+  });
+
+  it("clamps to max_frames", () => {
+    expect(estimateFrameCount(ts, 1, 24)).toBe(240); // 1440 raw -> 240 cap
+  });
+
+  it("floors the interval at min_interval_min", () => {
+    // 0.5 min floored to 1 -> 360/1 = 360 -> clamped to 240.
+    expect(estimateFrameCount(ts, 0.5, 6)).toBe(240);
+  });
+
+  it("returns >= 1 for a degenerate window", () => {
+    expect(estimateFrameCount(ts, 5, 0)).toBe(1);
   });
 });
 

@@ -5121,11 +5121,18 @@ function InterleavedChatStream({
           // (proceed / narrow_scope / cancel). When `granularity` is absent the
           // generic card renders EXACTLY as today (back-compat).
           if (entry.warning.granularity) {
+            // Combined run-settings gate - when the warning ALSO carries a
+            // `time_scale` block (coastal flood: cadence + window), the same
+            // card grows a second section so the user reviews + overrides BOTH
+            // resolution and time-scale in ONE interaction. `time_scale` is
+            // null on the granularity-only path (SWMM / pluvial flood) and the
+            // card is the resolution gate unchanged.
             return (
               <ResolutionPickerCard
                 key={entry.warningId}
                 warning={entry.warning}
                 granularity={entry.warning.granularity}
+                timeScale={entry.warning.time_scale}
                 resolved={entry.resolved}
                 onDecide={(decision, revised) =>
                   onPayloadDecide(entry.warning, decision, revised)
