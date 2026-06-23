@@ -103,6 +103,7 @@ __all__ = [
     "_stretch_brightness_temp_red",
     "_stretch_reflectance",
     "_fire_temperature_rgb",
+    "_band_valid_dn_range",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_goes_archive_animation")
@@ -485,6 +486,37 @@ def _fire_temperature_rgb(
 # ---------------------------------------------------------------------------
 
 
+#: Fallback DN valid range if a CMI variable carries no usable ``valid_range``.
+#: 14-bit covers BOTH the emissive C07 (true [0, 16383]) and the reflective
+#: C05/C06 (true [0, 4095]) -- a too-wide fallback is safe (valid DN never
+#: exceed their own 12-bit ceiling) where a too-narrow 4095 was the bug.
+_DEFAULT_VALID_DN_RANGE = (0, 16383)
+
+
+def _band_valid_dn_range(ncvar: Any) -> tuple[int, int]:
+    """Return the ``(lo, hi)`` valid raw-DN range for a CMI band variable.
+
+    Reads the CF ``valid_range`` attribute -- which DIFFERS BY BAND: the
+    emissive/thermal C07 (3.9um) is a 14-bit product (``[0, 16383]``) while the
+    reflective C05/C06 are 12-bit (``[0, 4095]``). The Fire Temperature RED
+    channel is C07, so masking it with the 12-bit ``4095`` ceiling drops
+    essentially every warm-land pixel (a 320 K BT is DN ~9368) and the RED
+    channel reads 0 across the whole frame. Falls back to
+    ``_DEFAULT_VALID_DN_RANGE`` (14-bit) only when ``valid_range`` is absent or
+    malformed -- a wide fallback never masks real DN, where the narrow 4095 did.
+    """
+    raw = getattr(ncvar, "valid_range", None)
+    try:
+        if raw is not None and len(raw) >= 2:
+            lo = int(raw[0])
+            hi = int(raw[1])
+            if hi > lo:
+                return lo, hi
+    except (TypeError, ValueError):
+        pass
+    return _DEFAULT_VALID_DN_RANGE
+
+
 def _reproject_fire_temperature(
     nc_path: str,
     bbox: tuple[float, float, float, float],
@@ -536,6 +568,14 @@ def _reproject_fire_temperature(
                 add_offset = float(getattr(ncvar, "add_offset", 0.0))
                 fill_raw = getattr(ncvar, "_FillValue", None)
                 fill_value = float(fill_raw) if fill_raw is not None else None
+                # Per-band valid DN range. CRITICAL: this differs by band -- the
+                # thermal/emissive C07 (3.9um) is a 14-bit product (valid_range
+                # [0, 16383]), while the reflective C05/C06 are 12-bit
+                # (valid_range [0, 4095]). Hardcoding 4095 masks ~all warm-land
+                # C07 DN (a 320 K pixel is DN ~9368, far above 4095) -> RED
+                # collapses to 0 over the whole frame while G/B look fine. Read
+                # the actual range so each band masks correctly.
+                valid_lo, valid_hi = _band_valid_dn_range(ncvar)
         except GOESArchiveError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -582,7 +622,9 @@ def _reproject_fire_temperature(
         mask = warped == warp_sentinel
         if fill_value is not None:
             mask |= warped == int(fill_value)
-        mask |= (warped < 0) | (warped > 4095)  # CF valid_range [0, 4095]
+        # Mask out-of-valid-range DN using THIS band's range (14-bit for C07,
+        # 12-bit for C05/C06) -- never a hardcoded 4095 (see _warp_band notes).
+        mask |= (warped < valid_lo) | (warped > valid_hi)
         phys[mask] = np.nan
         return phys
 

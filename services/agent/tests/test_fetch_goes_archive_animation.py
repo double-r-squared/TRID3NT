@@ -37,6 +37,7 @@ from grace2_agent.tools.fetch_goes_archive_animation import (
     GOESArchiveEmptyError,
     GOESArchiveInputError,
     GOESArchiveUpstreamError,
+    _band_valid_dn_range,
     _fire_temperature_rgb,
     _key_start_datetime,
     _list_archive_keys_in_window,
@@ -376,6 +377,145 @@ def test_cf_scaling_applied_in_reproject(monkeypatch, tmp_path):
     assert int(rgb[1].max()) == 102
     # C05 DN 3000 * 0.0001 = 0.3 refl over 0.75 max -> 0.4 -> BLUE round(0.4*255) = 102.
     assert int(rgb[2].max()) == 102
+
+
+# ---- C07 14-bit valid_range (the RED-collapse regression) ------------------
+
+
+def test_band_valid_dn_range_reads_per_band_range():
+    """``_band_valid_dn_range`` must return the band's OWN valid_range -- 14-bit
+    for the emissive C07, 12-bit for the reflective C05/C06. Hardcoding 4095
+    masked ~every warm-land C07 pixel and collapsed RED to 0."""
+
+    class _Var:
+        def __init__(self, vr):
+            self.valid_range = vr
+
+    # Real ABI ranges: C07 (3.9um, emissive) is 14-bit, C05/C06 are 12-bit.
+    assert _band_valid_dn_range(_Var([0, 16383])) == (0, 16383)  # C07
+    assert _band_valid_dn_range(_Var([0, 4095])) == (0, 4095)    # C05/C06
+    # numpy-array valid_range (how netCDF4 actually returns it) also works.
+    assert _band_valid_dn_range(_Var(np.array([0, 16383], dtype="i2"))) == (0, 16383)
+
+
+def test_band_valid_dn_range_falls_back_when_attr_absent_or_bad():
+    """A missing / malformed ``valid_range`` falls back to the 14-bit default --
+    a WIDE fallback never masks real DN (where the narrow 4095 did)."""
+
+    class _NoAttr:
+        pass
+
+    class _BadAttr:
+        valid_range = [5]  # too short
+
+    class _DegenerateAttr:
+        valid_range = [100, 100]  # hi not > lo
+
+    assert _band_valid_dn_range(_NoAttr()) == (0, 16383)
+    assert _band_valid_dn_range(_BadAttr()) == (0, 16383)
+    assert _band_valid_dn_range(_DegenerateAttr()) == (0, 16383)
+
+
+def test_warm_c07_dn_above_4095_unpacks_to_plausible_kelvin_and_reads_red(
+    monkeypatch, tmp_path
+):
+    """REGRESSION (real-data RED=0 bug): the emissive C07 is a 14-bit band
+    (valid_range [0, 16383]). A warm midday-land brightness temperature ~320 K
+    is raw DN ~9368 -- WELL above the 12-bit 4095 ceiling. The old mask
+    ``(warped > 4095)`` flagged that valid DN as out-of-range -> NaN -> RED 0
+    across the whole frame (while the 12-bit G/B reflectance channels populated
+    fine). This test pins: (a) a representative warm C07 DN unpacks to a
+    plausible Kelvin in [270, 340], and (b) it survives the valid-range mask and
+    produces a strong NON-ZERO RED. With the buggy hardcoded 4095 ceiling, RED
+    would be 0 here."""
+    import sys
+    import types
+
+    import grace2_agent.tools.fetch_goes_archive_animation as m
+
+    # Real C07 CF params (from a live noaa-goes18 MCMIPC granule): scale
+    # 0.01309618, offset 197.31, 14-bit valid_range [0, 16383], _FillValue -1.
+    C07_SCALE, C07_OFFSET = 0.01309618, 197.31
+    WARM_C07_DN = 9368  # -> ~320 K (a hot summer-land 3.9um BT)
+    unpacked_k = WARM_C07_DN * C07_SCALE + C07_OFFSET
+    assert 270.0 <= unpacked_k <= 340.0, f"warm C07 DN should be ~320 K, got {unpacked_k}"
+    assert WARM_C07_DN > 4095, "the regression hinges on a valid DN above the old 4095 ceiling"
+
+    class _FakeVar:
+        def __init__(self, scale, offset, fill, valid_range):
+            self.scale_factor = scale
+            self.add_offset = offset
+            self._FillValue = fill
+            self.valid_range = valid_range
+
+    class _FakeDataset:
+        def __init__(self, path):
+            self.variables = {
+                # C07: 14-bit thermal, warm DN above the old 4095 boundary.
+                "CMI_C07": _FakeVar(C07_SCALE, C07_OFFSET, -1, [0, 16383]),
+                # C05/C06: 12-bit reflective.
+                "CMI_C06": _FakeVar(0.00031746, 0.0, -1, [0, 4095]),
+                "CMI_C05": _FakeVar(0.00031746, 0.0, -1, [0, 4095]),
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _FakeNetCDF4:
+        Dataset = _FakeDataset
+
+    monkeypatch.setattr(m, "netCDF4", _FakeNetCDF4, raising=False)
+    monkeypatch.setitem(sys.modules, "netCDF4", _FakeNetCDF4)
+
+    raw_dn = {"CMI_C07": WARM_C07_DN, "CMI_C06": 2000, "CMI_C05": 2000}
+
+    class _FakeSrc:
+        def __init__(self, var):
+            self.var = var
+            self.crs = "GEOSTATIONARY"
+            self.nodata = None
+            self.transform = object()
+
+        def close(self):
+            pass
+
+    class _FakeRasterio:
+        @staticmethod
+        def open(uri):
+            return _FakeSrc(uri.rsplit(":", 1)[-1])
+
+        @staticmethod
+        def band(src, n):
+            return src.var
+
+    def _fake_reproject(source=None, destination=None, **kw):
+        destination[:] = raw_dn[source]
+
+    from rasterio.transform import from_bounds as _real_from_bounds
+
+    class _FakeWarp:
+        Resampling = type("R", (), {"nearest": 0})()
+        reproject = staticmethod(_fake_reproject)
+
+    monkeypatch.setattr(m, "rasterio", _FakeRasterio, raising=False)
+    monkeypatch.setitem(sys.modules, "rasterio", _FakeRasterio)
+    monkeypatch.setitem(sys.modules, "rasterio.warp", _FakeWarp)
+    _transform_mod = types.SimpleNamespace(from_bounds=_real_from_bounds)
+    monkeypatch.setitem(sys.modules, "rasterio.transform", _transform_mod)
+
+    bbox = (-112.0, 39.0, -111.9, 39.08)
+    rgb, transform, w, h = m._reproject_fire_temperature("/fake/path.nc", bbox)
+
+    # The crux: warm C07 (~320 K) survives the valid-range mask and yields a
+    # STRONG non-zero RED. ~320 K -> (320 - 273.15) / 60 ~= 0.78 -> ~199/255.
+    assert int(rgb[0].max()) > 0, "warm C07 DN > 4095 must NOT be masked (the RED-collapse bug)"
+    assert int(rgb[0].min()) > 100, "warm midday land must read a STRONG red, not near-black"
+    # G/B unchanged (still 12-bit, well within range).
+    assert int(rgb[1].max()) > 0
+    assert int(rgb[2].max()) > 0
 
 
 # ---- typed-error surface --------------------------------------------------
