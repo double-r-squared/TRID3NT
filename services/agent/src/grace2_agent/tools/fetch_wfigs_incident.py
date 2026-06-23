@@ -74,7 +74,9 @@ __all__ = [
     "_select_best_feature",
     "_bbox_from_point",
     "_feature_point",
+    "_significant_name_tokens",
     "WFIGS_INCIDENT_BASE",
+    "WFIGS_INCIDENT_YTD_BASE",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_wfigs_incident")
@@ -127,6 +129,23 @@ WFIGS_INCIDENT_BASE = (
     "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
     "WFIGS_Incident_Locations_Current/FeatureServer/0/query"
 )
+
+#: The WFIGS Year-To-Date (all-incidents) sibling service. Same NIFC org,
+#: same layer-0 attribute shape, but it carries CONTAINED / recently-finished
+#: incidents the "Current" feed has already dropped. A recently-contained fire
+#: (e.g. the ~18k-acre Santa Rosa Island fire) resolves here even when the
+#: "Current" feed returns 0 matches. We query "Current" first (live, smallest)
+#: and fall back to YearToDate so a recent-but-contained incident still resolves.
+WFIGS_INCIDENT_YTD_BASE = (
+    "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/"
+    "WFIGS_Incident_Locations_YearToDate/FeatureServer/0/query"
+)
+
+#: Ordered list of WFIGS query endpoints, tried in turn until one matches:
+#: the live "Current" active feed first, then the "YearToDate" all-incidents
+#: feed (which also carries contained fires). ADDITIVE: callers that resolved
+#: against "Current" before still resolve against it first, byte-identically.
+_WFIGS_INCIDENT_BASES = (WFIGS_INCIDENT_BASE, WFIGS_INCIDENT_YTD_BASE)
 
 #: Attribute fields requested from each WFIGS incident feature.
 _OUT_FIELDS = (
@@ -194,6 +213,33 @@ def _normalize_state(state: str | None) -> str | None:
     return f"US-{body}"
 
 
+#: Tokens dropped from a multi-word incident name before the loose token-OR
+#: match (noise words that would over-broaden a contains-LIKE). "Fire" is the
+#: most common; geographic generics ("island", "creek", ...) are NOT dropped
+#: because they can be the discriminating token of a real incident name.
+_NAME_STOP_TOKENS = frozenset({"FIRE", "THE", "OF", "AND", "COMPLEX"})
+
+#: Minimum significant-token length kept for the loose token-OR match (drops
+#: 1-2 char fragments that would match almost everything).
+_MIN_TOKEN_LEN = 3
+
+
+def _significant_name_tokens(name: str) -> list[str]:
+    """Split a name into UPPER significant tokens for the loose token-OR match.
+
+    Drops the noise stop-tokens (``FIRE`` etc.) and very short fragments, so
+    "Santa Rosa Island Fire" -> ["SANTA", "ROSA", "ISLAND"]. Returns ``[]`` when
+    nothing significant remains (the caller then falls back to the whole-string
+    contains match).
+    """
+    toks = []
+    for raw in (name or "").upper().replace("/", " ").split():
+        t = raw.strip("'\"().,;:")
+        if len(t) >= _MIN_TOKEN_LEN and t not in _NAME_STOP_TOKENS:
+            toks.append(t)
+    return toks
+
+
 def _build_wfigs_params(
     incident_name: str,
     state_norm: str | None,
@@ -204,6 +250,14 @@ def _build_wfigs_params(
     token ('Iron') matches 'Iron' AND a fuller 'Iron Fire' label, and so casing
     does not matter. A trailing ' FIRE' on the user's input is stripped before
     the LIKE so "Iron Fire" still matches the bare 'Iron' incident name.
+
+    LOOSE token-OR (fire demo J5 fix): a MULTI-word name ALSO matches on ANY of
+    its significant tokens (``LIKE '%SANTA%' OR LIKE '%ROSA%' OR
+    LIKE '%ISLAND%'``), so a user phrasing that does not exactly equal the WFIGS
+    ``IncidentName`` token still resolves (e.g. "Santa Rosa Island" matching a
+    feed entry labelled just "Santa Rosa", or a record carrying extra words).
+    A single-token name keeps the original whole-string contains match. The
+    optional ``POOState`` filter is ANDed across the whole name clause.
     """
     name = (incident_name or "").strip()
     # Strip a trailing " Fire" so "Santa Rosa Island Fire" matches the bare
@@ -212,7 +266,21 @@ def _build_wfigs_params(
         name = name[: -len(" FIRE")].strip()
     # ArcGIS SQL escapes a single quote by doubling it.
     safe = name.upper().replace("'", "''")
-    where = f"UPPER(IncidentName) LIKE '%{safe}%'"
+    whole = f"UPPER(IncidentName) LIKE '%{safe}%'"
+
+    # Loosen: for a multi-word name, OR-match on each significant token so a
+    # near-miss phrasing still resolves. The whole-string contains stays first
+    # (so an exact substring still wins selection by size, downstream).
+    tokens = _significant_name_tokens(name)
+    if len(tokens) >= 2:
+        clauses = [whole]
+        for tok in tokens:
+            safe_tok = tok.replace("'", "''")
+            clauses.append(f"UPPER(IncidentName) LIKE '%{safe_tok}%'")
+        where = "(" + " OR ".join(clauses) + ")"
+    else:
+        where = whole
+
     if state_norm:
         where = f"({where}) AND POOState = '{state_norm}'"
     return {
@@ -353,17 +421,22 @@ def _epoch_ms_to_iso(value: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_wfigs_json(params: dict[str, str]) -> dict[str, Any]:
-    """GET the WFIGS FeatureServer query and return parsed JSON.
+def _fetch_wfigs_json(
+    params: dict[str, str],
+    base_url: str = WFIGS_INCIDENT_BASE,
+) -> dict[str, Any]:
+    """GET a WFIGS FeatureServer query against ``base_url`` and return parsed JSON.
 
-    Raises ``WFIGSIncidentUpstreamError`` on network / HTTP / non-JSON / ArcGIS
-    error-envelope responses.
+    ``base_url`` selects the endpoint -- the live "Current" active feed
+    (default) or the "YearToDate" all-incidents sibling that also carries
+    contained fires. Raises ``WFIGSIncidentUpstreamError`` on network / HTTP /
+    non-JSON / ArcGIS error-envelope responses.
     """
-    logger.info("fetch_wfigs_incident: GET %s where=%s", WFIGS_INCIDENT_BASE, params.get("where"))
+    logger.info("fetch_wfigs_incident: GET %s where=%s", base_url, params.get("where"))
     try:
         with httpx.Client(timeout=_HTTP_TIMEOUT_S, follow_redirects=True) as client:
             resp = client.get(
-                WFIGS_INCIDENT_BASE,
+                base_url,
                 params=params,
                 headers={"User-Agent": _USER_AGENT},
             )
@@ -406,16 +479,37 @@ def _resolve_incident(
     ``fire_discovery_datetime`` / ``incident_size_acres`` / ``percent_contained``
     / ``poo_state`` / ``poo_county`` / ``irwin_id``. Raised typed errors:
     ``WFIGSIncidentNotFoundError`` (no match), ``WFIGSIncidentUpstreamError``.
+
+    Queries each endpoint in ``_WFIGS_INCIDENT_BASES`` in turn -- the live
+    "Current" active feed first, then the "YearToDate" all-incidents sibling --
+    and returns the first feed that yields a usable feature. A recently-contained
+    fire that the "Current" feed has already dropped (0 matches) resolves against
+    "YearToDate". Only when BOTH feeds miss does the typed not-found raise (the
+    fire-animation workflow now falls back to FIRMS-derived localization, so this
+    no-match is no longer a hard gate -- it is an honest typed dead-end).
     """
     params = _build_wfigs_params(incident_name, state_norm)
-    body = _fetch_wfigs_json(params)
-    features = body.get("features") or []
-    best = _select_best_feature(features) if isinstance(features, list) else None
+    best: dict[str, Any] | None = None
+    total_features = 0
+    for base_url in _WFIGS_INCIDENT_BASES:
+        body = _fetch_wfigs_json(params, base_url=base_url)
+        features = body.get("features") or []
+        if isinstance(features, list):
+            total_features += len(features)
+            candidate = _select_best_feature(features)
+            if candidate is not None:
+                best = candidate
+                logger.info(
+                    "fetch_wfigs_incident: matched %r against %s",
+                    incident_name,
+                    base_url,
+                )
+                break
     if best is None:
         raise WFIGSIncidentNotFoundError(
             f"no WFIGS incident matched name={incident_name!r} "
-            f"state={state_norm!r} (matched {len(features)} feature(s), "
-            "none with a usable point)"
+            f"state={state_norm!r} across Current + YearToDate feeds "
+            f"(matched {total_features} feature(s), none with a usable point)"
         )
     point = _feature_point(best)
     assert point is not None  # _select_best_feature guarantees this

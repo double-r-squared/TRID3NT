@@ -111,6 +111,32 @@ def _fake_wfigs(name, state=None, *a, **k):
     return dict(_INCIDENT)
 
 
+def _fake_geocode_precise(query, *a, **k):
+    """A PRECISE Nominatim geocode (no fallback_reason / not a state snap)."""
+    return {
+        "name": "Eureka, Juab County, Utah",
+        "bbox": [-112.30, 39.90, -112.05, 40.05],
+        "latitude": 39.96,
+        "longitude": -112.16,
+        "source": "nominatim",
+    }
+
+
+def _fake_geocode_coarse(query, *a, **k):
+    """A COARSE state-snap geocode (the Santa Rosa Island failure mode)."""
+    return {
+        "name": "California, United States",
+        "bbox": [-124.48, 32.53, -114.13, 42.01],
+        "latitude": 37.0,
+        "longitude": -119.0,
+        "source": "state-bbox-fallback",
+        "fallback_reason": (
+            "No precise match for 'Santa Rosa Island'; snapped to the full "
+            "state of California. Refine the prompt for a smaller area."
+        ),
+    }
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -129,6 +155,7 @@ def test_review_gate_stops_without_fetching_frames():
     with patch.dict(
         TOOL_REGISTRY,
         {
+            "geocode_location": _reg(_fake_geocode_precise),
             "fetch_wfigs_incident": _reg(_fake_wfigs),
             "fetch_goes_animation": _reg(_fake_goes),
         },
@@ -146,7 +173,9 @@ def test_review_gate_stops_without_fetching_frames():
         )
 
     assert result["status"] == "review"
+    # A tight WFIGS incident bbox wins over the geocode (additive) bbox.
     assert result["bbox"] == _INCIDENT["bbox"]
+    assert result["aoi_source"] == "wfigs-incident"
     assert result["frame_counts"]["geocolor"] == 78
     assert result["start_utc"].endswith("Z")
     assert "presentation_text" in result
@@ -186,6 +215,7 @@ def test_confirm_emits_postprocess_flood_frame_shape():
     with patch.dict(
         TOOL_REGISTRY,
         {
+            "geocode_location": _reg(_fake_geocode_precise),
             "fetch_wfigs_incident": _reg(_fake_wfigs),
             "fetch_goes_animation": _reg(_fake_goes),
         },
@@ -245,6 +275,7 @@ def test_confirm_empty_run_is_not_ok_honesty_floor():
     with patch.dict(
         TOOL_REGISTRY,
         {
+            "geocode_location": _reg(_fake_geocode_precise),
             "fetch_wfigs_incident": _reg(_fake_wfigs),
             "fetch_goes_animation": _reg(_fake_goes),
         },
@@ -276,6 +307,270 @@ def test_confirm_empty_run_is_not_ok_honesty_floor():
 
     assert result["status"] == "empty"
     assert result["n_frames"] == 0
+
+
+# ---- FIX A: coarse-geocode detection --------------------------------------
+
+
+def test_geocode_is_coarse_detects_state_snap():
+    from grace2_agent.workflows.model_satellite_fire_animation import (
+        _geocode_is_coarse,
+    )
+
+    # A coarse state-snap (the Santa Rosa Island failure mode) is coarse.
+    assert _geocode_is_coarse(_fake_geocode_coarse("x")) is True
+    # source-only signal.
+    assert _geocode_is_coarse({"source": "state-bbox-fallback"}) is True
+    # fallback_reason-only signal.
+    assert _geocode_is_coarse({"fallback_reason": "snapped to ..."}) is True
+    # None counts as coarse (no geocode -> fall through to data).
+    assert _geocode_is_coarse(None) is True
+    # A precise Nominatim match is NOT coarse.
+    assert _geocode_is_coarse(_fake_geocode_precise("x")) is False
+
+
+# ---- FIX A: densest-hotspot clustering ------------------------------------
+
+
+def test_densest_hotspot_bbox_empty_is_none():
+    from grace2_agent.workflows.model_satellite_fire_animation import (
+        _densest_hotspot_bbox,
+    )
+
+    assert _densest_hotspot_bbox([]) is None
+
+
+def test_densest_hotspot_bbox_tight_around_densest_cluster():
+    """The bbox snaps to the dense cluster, NOT to a far-flung outlier."""
+    from grace2_agent.workflows.model_satellite_fire_animation import (
+        _densest_hotspot_bbox,
+    )
+
+    # A dense cluster around the Channel Islands (lon ~-120.10, lat ~33.96) ...
+    cluster = [
+        (-120.11, 33.95),
+        (-120.10, 33.96),
+        (-120.09, 33.97),
+        (-120.10, 33.95),
+        (-120.11, 33.96),
+    ]
+    # ... plus a single far outlier 4 deg away that must NOT widen the AOI.
+    points = cluster + [(-116.0, 33.0)]
+    bbox = _densest_hotspot_bbox(points, pad_deg=0.1, cell_deg=0.1)
+    assert bbox is not None
+    min_lon, min_lat, max_lon, max_lat = bbox
+    # The cluster is inside.
+    assert min_lon <= -120.11 and max_lon >= -120.09
+    assert min_lat <= 33.95 and max_lat >= 33.97
+    # The outlier at lon -116 is EXCLUDED (AOI stays tight, < ~1 deg wide).
+    assert max_lon < -119.0
+    assert (max_lon - min_lon) < 1.0
+    assert (max_lat - min_lat) < 1.0
+
+
+# ---- FIX A: FIRMS-localization branch (the Santa Rosa Island fix) ----------
+
+
+class _RecordingEmitter:
+    """Minimal PipelineEmitter stand-in that records map-command emissions."""
+
+    def __init__(self):
+        self.map_commands: list[tuple[str, dict]] = []
+
+    async def add_step(self, name, tool_name):
+        return "step-1"
+
+    async def mark_running(self, step_id):
+        return None
+
+    async def mark_complete(self, step_id):
+        return None
+
+    async def mark_failed(self, step_id, code, msg):
+        return None
+
+    async def emit_map_command(self, command, args):
+        self.map_commands.append((command, args))
+
+
+def test_coarse_geocode_localizes_from_firms_and_emits_aoi_pre_gate():
+    """The Santa Rosa Island fix: a COARSE state-snap geocode + NO WFIGS incident
+    -> the AOI is derived from FIRMS hot pixels, emitted (snap-to-AOI) BEFORE the
+    review gate."""
+    from grace2_agent.tools.fetch_firms_active_fire import FirmsArgError  # noqa: F401
+
+    # The fire's real FIRMS hot pixels (Channel Islands cluster).
+    firms_points = [
+        (-120.11, 33.95),
+        (-120.10, 33.96),
+        (-120.09, 33.97),
+        (-120.10, 33.95),
+    ]
+
+    fetched_imagery = {"called": False}
+
+    def _no_wfigs(name, state=None, *a, **k):
+        # WFIGS does not carry this contained fire -> honest typed not-found.
+        from grace2_agent.tools.fetch_wfigs_incident import (
+            WFIGSIncidentNotFoundError,
+        )
+
+        raise WFIGSIncidentNotFoundError("no match")
+
+    def _fake_firms(bbox, days_back=1, source="VIIRS_NOAA20_NRT", date=None, *a, **k):
+        # Return a sentinel "layer"; _read_firms_points is patched to read it.
+        return ("FIRMS_LAYER", bbox, date)
+
+    def _fake_read_points(layer):
+        return list(firms_points)
+
+    def _fake_peek(product, bbox, start, end):
+        return 5
+
+    def _fake_viirs(*a, **k):
+        fetched_imagery["called"] = True
+        return []
+
+    emitter = _RecordingEmitter()
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_coarse),
+            "fetch_wfigs_incident": _reg(_no_wfigs),
+            "fetch_firms_active_fire": _reg(_fake_firms),
+            "fetch_viirs_day_fire": _reg(_fake_viirs),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._read_firms_points",
+        _fake_read_points,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Santa Rosa Island",
+                products=["day_fire"],
+                start_utc="2026-05-15T00:00:00Z",
+                end_utc="2026-05-19T00:00:00Z",
+                pipeline_emitter=emitter,  # type: ignore[arg-type]
+            )
+        )
+
+    # Stopped at the review gate, AOI derived from the data (not a state snap).
+    assert result["status"] == "review"
+    assert result["aoi_source"] == "firms-hotspots"
+    min_lon, min_lat, max_lon, max_lat = result["bbox"]
+    # The AOI is TIGHT around the Channel Islands cluster, NOT the full state of
+    # California (the coarse geocode bbox spanned ~10 deg of longitude).
+    assert -120.5 < min_lon < -119.5
+    assert -120.5 < max_lon < -119.5
+    assert 33.5 < min_lat < 34.5
+    assert (max_lon - min_lon) < 1.0
+    assert (max_lat - min_lat) < 1.0
+    # No imagery fetched at the review gate.
+    assert fetched_imagery["called"] is False
+    # The AOI snap-to was emitted EARLY (a zoom-to map-command fired before the
+    # gate returned) and points at the tight derived bbox.
+    zooms = [a for (c, a) in emitter.map_commands if c == "zoom-to"]
+    assert zooms, "expected an early zoom-to map-command (snap-to-AOI)"
+    assert zooms[0]["bbox"] == list(result["bbox"])
+
+
+def test_wfigs_no_match_does_not_gate_falls_back_to_firms():
+    """A WFIGS no-match must NOT stop the run -- it degrades to FIRMS localization
+    (with even a coarse geocode), proving WFIGS is additive context, not a gate."""
+
+    def _no_wfigs(name, state=None, *a, **k):
+        from grace2_agent.tools.fetch_wfigs_incident import (
+            WFIGSIncidentNotFoundError,
+        )
+
+        raise WFIGSIncidentNotFoundError("no match")
+
+    def _fake_firms(bbox, days_back=1, source="VIIRS_NOAA20_NRT", date=None, *a, **k):
+        return ("FIRMS_LAYER", bbox, date)
+
+    def _fake_read_points(layer):
+        return [(-120.10, 33.96), (-120.11, 33.95), (-120.09, 33.97)]
+
+    def _fake_peek(product, bbox, start, end):
+        return 3
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_coarse),
+            "fetch_wfigs_incident": _reg(_no_wfigs),
+            "fetch_firms_active_fire": _reg(_fake_firms),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._read_firms_points",
+        _fake_read_points,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Santa Rosa Island",
+                products=["day_fire"],
+                start_utc="2026-05-15T00:00:00Z",
+                end_utc="2026-05-17T00:00:00Z",
+            )
+        )
+
+    # The run did NOT raise -- it produced a review with a data-derived AOI.
+    assert result["status"] == "review"
+    assert result["aoi_source"] == "firms-hotspots"
+    # incident is None (no authoritative record) but the run still localized.
+    assert result["incident"] is None
+
+
+def test_precise_geocode_is_used_without_firms_localization():
+    """A PRECISE geocode (no state-snap) + no WFIGS incident uses the geocode
+    bbox directly and does NOT invoke FIRMS localization."""
+    firms_called = {"called": False}
+
+    def _no_wfigs(name, state=None, *a, **k):
+        from grace2_agent.tools.fetch_wfigs_incident import (
+            WFIGSIncidentNotFoundError,
+        )
+
+        raise WFIGSIncidentNotFoundError("no match")
+
+    def _fake_firms(*a, **k):
+        firms_called["called"] = True
+        return ("FIRMS_LAYER",)
+
+    def _fake_peek(product, bbox, start, end):
+        return 7
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_no_wfigs),
+            "fetch_firms_active_fire": _reg(_fake_firms),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Eureka, Utah",
+                products=["geocolor"],
+                end_utc="2026-06-22T20:00:00Z",
+            )
+        )
+
+    assert result["status"] == "review"
+    assert result["aoi_source"] == "geocode"
+    assert result["bbox"] == [-112.30, 39.90, -112.05, 40.05]
+    # The precise geocode short-circuits the data-localization path.
+    assert firms_called["called"] is False
 
 
 # ---- helpers --------------------------------------------------------------
