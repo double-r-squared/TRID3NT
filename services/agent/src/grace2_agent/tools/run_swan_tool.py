@@ -68,6 +68,50 @@ class RunSwanError(RuntimeError):
         self.error_code = error_code
 
 
+# The strict boundary-side contract is Literal["N","S","E","W"], but the LLM
+# routinely passes a free-text direction ("south", "from the south", "S ") --
+# which fails SwanWaveBoundary validation and surfaces the recurring transient
+# "failed: SWAN wave sim" card (it self-corrects to "S" on retry, but the demo
+# flashes a red card first). Normalize any sane direction phrasing to a single
+# cardinal up front so the first attempt succeeds.
+_SIDE_WORD_TO_CARDINAL = {
+    "N": "N", "NORTH": "N", "NORTHERN": "N", "NORTHWARD": "N",
+    "S": "S", "SOUTH": "S", "SOUTHERN": "S", "SOUTHWARD": "S",
+    "E": "E", "EAST": "E", "EASTERN": "E", "EASTWARD": "E",
+    "W": "W", "WEST": "W", "WESTERN": "W", "WESTWARD": "W",
+}
+
+
+def _normalize_boundary_side(raw: Any) -> str | None:
+    """Coerce a free-text boundary side to one of N/S/E/W (None if unparseable).
+
+    Accepts strict single letters, full words ("south"), and phrases the LLM
+    emits ("from the south", "the southern edge", "south-facing"): scans tokens
+    for the first recognizable cardinal so "FROM THE SOUTH" -> "S". Returns None
+    when no cardinal is found, so the caller drops the field and the demo default
+    applies rather than failing the run.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip().upper()
+    if not s:
+        return None
+    if s in _SIDE_WORD_TO_CARDINAL:
+        return _SIDE_WORD_TO_CARDINAL[s]
+    # Split phrases / hyphenated forms into word tokens: "FROM THE SOUTH",
+    # "SOUTH-FACING", "S/SW" -> first recognizable cardinal wins.
+    flattened = s
+    for sep in ("-", "_", "/", ",", "."):
+        flattened = flattened.replace(sep, " ")
+    for tok in flattened.split():
+        if tok in _SIDE_WORD_TO_CARDINAL:
+            return _SIDE_WORD_TO_CARDINAL[tok]
+    # Last resort: a leading cardinal letter (e.g. "SSW" -> "S").
+    if s[0] in ("N", "S", "E", "W"):
+        return s[0]
+    return None
+
+
 _RUN_SWAN_METADATA = AtomicToolMetadata(
     name="run_swan_waves",
     ttl_class="live-no-cache",
@@ -229,7 +273,11 @@ async def run_swan_waves(
             if boundary_spread_deg is not None:
                 bkwargs["spread_deg"] = float(boundary_spread_deg)
             if boundary_side is not None:
-                bkwargs["side"] = str(boundary_side).strip().upper()
+                norm_side = _normalize_boundary_side(boundary_side)
+                # Drop an unparseable side so the demo default applies instead of
+                # failing SwanWaveBoundary validation (the transient red card).
+                if norm_side is not None:
+                    bkwargs["side"] = norm_side
             boundary = SwanWaveBoundary(**bkwargs)
 
         kwargs: dict[str, Any] = dict(

@@ -635,3 +635,39 @@ def test_build_swan_build_spec_applies_inward_coercion():
     spec = build_swan_build_spec(args)
     assert spec["boundary"]["side"] == "S"
     assert spec["boundary"]["dir_deg"] == pytest.approx(180.0)
+
+
+# --------------------------------------------------------------------------- #
+# Boundary SIDE free-text normalization (the transient "failed" card quirk).
+# --------------------------------------------------------------------------- #
+def test_normalize_boundary_side_words_and_phrases():
+    """Words / phrases the LLM emits must coerce to a single cardinal so the
+    strict Literal["N","S","E","W"] contract does not fail the first attempt."""
+    from grace2_agent.tools.run_swan_tool import _normalize_boundary_side
+
+    assert _normalize_boundary_side("S") == "S"
+    assert _normalize_boundary_side("south") == "S"
+    assert _normalize_boundary_side("SOUTH ") == "S"
+    assert _normalize_boundary_side("from the south") == "S"
+    assert _normalize_boundary_side("the southern edge") == "S"
+    assert _normalize_boundary_side("south-facing") == "S"
+    assert _normalize_boundary_side("EAST") == "E"
+    assert _normalize_boundary_side("northern") == "N"
+    assert _normalize_boundary_side("west") == "W"
+    # unparseable -> None (caller drops it, demo default applies, no failure).
+    assert _normalize_boundary_side("offshore") is None
+    assert _normalize_boundary_side("") is None
+    assert _normalize_boundary_side(None) is None
+
+
+def test_normalized_side_builds_a_valid_boundary():
+    """The normalized side feeds the strict SwanWaveBoundary contract cleanly --
+    a multi-char input ('from the south') no longer trips validation."""
+    from grace2_agent.tools.run_swan_tool import _normalize_boundary_side
+
+    side = _normalize_boundary_side("from the south")
+    assert side == "S"
+    # Constructing the strict-Literal boundary with the normalized value succeeds
+    # (the pre-fix raw "from the south" would have raised here -> the failed card).
+    b = SwanWaveBoundary(hs_m=8.0, tp_s=12.0, dir_deg=180.0, spread_deg=25.0, side=side)
+    assert b.side == "S"
