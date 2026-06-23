@@ -765,8 +765,9 @@ def _synthesize_parametric_wave_boundary(
     handful of offshore incident-wave boundary points along the bbox edges (so at
     least one falls on the seaward edge) carrying a peak significant wave height
     ``hs`` (scaled to ``return_period_yr``), a peak period ``tp`` (a deep-water
-    period-vs-height relation), and a direction ``wd`` pointed shoreward toward
-    the AOI centre. Points are emitted in the deck's PROJECTED CRS
+    period-vs-height relation), and a direction ``wd`` in SnapWave's nautical
+    "coming FROM" convention -- the SEAWARD bearing from the AOI centre toward the
+    boundary point (the prior "shoreward" wd was 180 deg wrong). Points are emitted in the deck's PROJECTED CRS
     (``target_epsg``) because the worker feeds them straight into
     ``snapwave.boundary_conditions.add_point(x, y, ...)`` (grid coordinates) and
     ``derive_seaward_open_boundary_polygon`` reasons in ``target_epsg``.
@@ -820,10 +821,16 @@ def _synthesize_parametric_wave_boundary(
 
     points: list[dict[str, Any]] = []
     for (x, y) in edge_pts:
-        # Shoreward azimuth: degrees clockwise from north, FROM the point toward
-        # the AOI centre (the convention SnapWave's add_point wd expects).
-        dx = cx - float(x)
-        dy = cy - float(y)
+        # SnapWave wd is nautical "coming FROM" (degrees clockwise from north),
+        # confirmed against the SnapWave/SFINCS Fortran (cht_sfincs passes wd
+        # through verbatim; the solver does `theta = 270 - wd`) and the Roelvink
+        # 18th-Waves-Workshop-2025 decks (a west point peaks at 270 oN = waves
+        # coming from the west). So the boundary direction is the SEAWARD bearing
+        # FROM the AOI centre TOWARD the boundary point -- NOT the shoreward
+        # going-to azimuth we used before, which was a constant 180 deg WRONG on
+        # every edge (it pointed the incident waves directly offshore).
+        dx = float(x) - cx
+        dy = float(y) - cy
         wd = (math.degrees(math.atan2(dx, dy))) % 360.0
         points.append(
             {
