@@ -1326,19 +1326,132 @@ async def test_rebind_sink_replays_last_terminal_pipeline_state(
 
 
 @pytest.mark.asyncio
-async def test_rebind_sink_no_replay_without_terminal_state(
+async def test_rebind_sink_replays_full_live_snapshot_for_open_pipeline(
     emitter: PipelineEmitter,
 ) -> None:
-    """J-B-part-i: with NO terminal transition yet, ``rebind_sink`` replays
-    nothing (the running turn's next emit carries the full A.7 view)."""
+    """J-B-part-i (FIX 2): an OPEN pipeline that has NOT reached a terminal
+    transition still replays its FULL live snapshot on ``rebind_sink`` -- this
+    is exactly the fix for the dropped SETUP/dispatch running card. Every step
+    in its CURRENT (running) state must reappear on the new sink, not nothing."""
     step_id = await emitter.add_step(name="Solve", tool_name="run_solver")
     await emitter.mark_running(step_id)  # running, NOT terminal
 
     new_sink = _CapturingSink()
     emitter.rebind_sink(new_sink)
+    await asyncio.sleep(0)  # let the scheduled snapshot replay task run
+    await asyncio.sleep(0)
+
+    replayed = _pipeline_frames(new_sink)
+    assert len(replayed) == 1, replayed
+    payload = replayed[0]["payload"]
+    assert payload["pipeline_id"] == emitter.pipeline_id
+    assert [s["step_id"] for s in payload["steps"]] == [step_id]
+    assert payload["steps"][0]["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_rebind_sink_no_replay_with_no_open_pipeline(
+    emitter: PipelineEmitter,
+) -> None:
+    """J-B-part-i: with NO open pipeline AND no terminal stash, ``rebind_sink``
+    replays nothing (there is no card to repaint)."""
+    new_sink = _CapturingSink()
+    emitter.rebind_sink(new_sink)
     await asyncio.sleep(0)
 
     assert _pipeline_frames(new_sink) == []
+
+
+@pytest.mark.asyncio
+async def test_running_emit_swallows_connection_closed_but_records_state(
+    emitter: PipelineEmitter,
+) -> None:
+    """FIX 1: a NON-terminal (running) ``_emit_pipeline_state`` whose underlying
+    send raises ConnectionClosedError is swallowed (does NOT propagate) and the
+    step's running state is still recorded -- symmetric with the terminal path.
+
+    This is the dropped SETUP/dispatch card: the running frame is lost on the
+    dead launch socket, but the in-memory step state survives so a later rebind
+    can replay it in full."""
+    step_id = await emitter.add_step(name="Setup", tool_name="fetch_dem")
+
+    # Swap in a dead-socket sink ONLY for the running emit (add_step already
+    # emitted its pending frame on the live sink).
+    closing = _ClosingSink()
+    emitter._sink = closing
+
+    # mark_running drives a NON-terminal _emit_pipeline_state. Pre-FIX this
+    # raised; post-FIX it is swallowed.
+    await emitter.mark_running(step_id)
+
+    # The send was attempted (and swallowed) ...
+    assert closing.calls >= 1
+    # ... and the running state is still recorded in memory.
+    assert emitter._steps[step_id].state == "running"
+    snap = emitter.current_snapshot()
+    assert snap is not None
+    assert snap.steps[0].state == "running"
+
+
+@pytest.mark.asyncio
+async def test_running_emit_propagates_non_connection_errors(
+    emitter: PipelineEmitter,
+) -> None:
+    """FIX 1: the running-path swallow is NARROW -- a REAL logic error from the
+    sink (not a connection-closed) on a non-terminal emit still propagates, so
+    genuine serialization/logic bugs are never hidden."""
+
+    async def _broken_sink(text: str) -> None:
+        raise ValueError("serialization bug, not a dead socket")
+
+    step_id = await emitter.add_step(name="Setup", tool_name="fetch_dem")
+    emitter._sink = _broken_sink
+
+    with pytest.raises(ValueError, match="serialization bug"):
+        await emitter.mark_running(step_id)
+
+
+@pytest.mark.asyncio
+async def test_rebind_sink_open_pipeline_replays_all_steps_mixed_states(
+    emitter: PipelineEmitter,
+) -> None:
+    """FIX 2 (full-snapshot replay): after several SETUP/dispatch frames were
+    dropped on a dead launch socket, ``rebind_sink`` on the still-OPEN pipeline
+    replays a SINGLE full snapshot carrying ALL step_ids in their CURRENT state
+    (a mix of complete + running) -- not just the last terminal card."""
+    # Three steps: a completed setup child, a completed dispatch, a running sim.
+    setup_id = await emitter.add_step(name="Fetch DEM", tool_name="fetch_dem")
+    await emitter.mark_running(setup_id)
+    await emitter.mark_complete(setup_id)
+
+    dispatch_id = await emitter.add_step(name="Dispatch", tool_name="run_solver")
+    await emitter.mark_running(dispatch_id)
+    await emitter.mark_complete(dispatch_id)
+
+    sim_id = await emitter.add_step(name="Sim", tool_name="wait_for_completion")
+
+    # Simulate the launch socket dying for the sim's running frame (FIX 1 path).
+    emitter._sink = _ClosingSink()
+    await emitter.mark_running(sim_id)  # running frame dropped, state recorded
+
+    # A NEW socket connects: rebind replays the FULL live snapshot.
+    new_sink = _CapturingSink()
+    emitter.rebind_sink(new_sink)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    replayed = _pipeline_frames(new_sink)
+    assert len(replayed) == 1, replayed
+    payload = replayed[0]["payload"]
+    assert payload["pipeline_id"] == emitter.pipeline_id
+
+    by_id = {s["step_id"]: s for s in payload["steps"]}
+    # ALL three cards are present (not just the last terminal one) ...
+    assert set(by_id) == {setup_id, dispatch_id, sim_id}
+    # ... each in its CURRENT state.
+    assert by_id[setup_id]["state"] == "complete"
+    assert by_id[dispatch_id]["state"] == "complete"
+    assert by_id[sim_id]["state"] == "running"
 
 
 # --------------------------------------------------------------------------- #
