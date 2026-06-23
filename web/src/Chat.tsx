@@ -676,14 +676,68 @@ function narrowCurrentPipeline(x: unknown): PipelineSnapshot | null {
   };
 }
 
+/**
+ * Card-render hardening (NATE 2026-06-22) - merge a SHORT same-pipeline frame
+ * onto the live snapshot instead of letting it WIPE already-rendered cards.
+ *
+ * `incoming` carries FEWER cumulative steps than `live` (the short-frame guard
+ * in the reducer established this). We keep EVERY live step, overwriting by
+ * step_id with the incoming version where the short frame restated it (so a
+ * running->complete transition the short frame DID carry still lands), and
+ * APPENDING any incoming step_id the live snapshot didn't have (defensive - a
+ * short frame normally only restates a subset). The merged snapshot inherits
+ * the incoming frame's top-level fields (pipeline_id is identical; final_state /
+ * timestamps follow the newest frame). Pure; exported for tests.
+ */
+export function mergeShortFrameOntoLive(
+  live: PipelineStatePayload,
+  incoming: PipelineStatePayload,
+): PipelineStatePayload {
+  const incomingById = new Map<string, PipelineStepSummary>();
+  for (const s of incoming.steps ?? []) incomingById.set(s.step_id, s);
+  // Live steps first (incoming version wins for shared ids), preserving order.
+  const mergedSteps: PipelineStepSummary[] = (live.steps ?? []).map(
+    (s) => incomingById.get(s.step_id) ?? s,
+  );
+  // Append incoming-only steps the live snapshot never had.
+  const liveIds = new Set((live.steps ?? []).map((s) => s.step_id));
+  for (const s of incoming.steps ?? []) {
+    if (!liveIds.has(s.step_id)) mergedSteps.push(s);
+  }
+  return { ...incoming, steps: mergedSteps };
+}
+
 export function pipelineReducer(
   state: PipelineInlineState,
   action: PipelineAction,
 ): PipelineInlineState {
   switch (action.type) {
     case "pipeline-state": {
-      // REPLACE-NOT-RECONCILE (Appendix A.7).
-      const steps = action.payload.steps ?? [];
+      // REPLACE-NOT-RECONCILE (Appendix A.7) - with a SHORT-FRAME guard
+      // (card-render hardening, NATE 2026-06-22). Each frame normally WHOLESALE
+      // replaces the live view. But a PARTIAL/short frame for the SAME pipeline
+      // (one that carries FEWER cumulative steps than the live snapshot already
+      // shows - e.g. a delta frame that lost siblings on a socket hiccup, or an
+      // early re-emit that only restated the in-flight step) would WIPE the
+      // already-rendered cards. So when an incoming SAME-pipeline frame has FEWER
+      // steps than the current live snapshot, MERGE-by-step_id (incoming steps
+      // win for the ids they carry; live-only steps are preserved) instead of
+      // replacing. Equal-or-larger cumulative frames keep the wholesale replace
+      // (the contract path; a grown frame supersedes the prior one verbatim).
+      const prevLive = state.live;
+      const isSamePipeline =
+        prevLive !== null &&
+        prevLive.pipeline_id === action.payload.pipeline_id;
+      const isShortFrame =
+        isSamePipeline &&
+        (action.payload.steps?.length ?? 0) <
+          (prevLive.steps?.length ?? 0);
+
+      const incomingPayload: PipelineStatePayload = isShortFrame
+        ? mergeShortFrameOntoLive(prevLive, action.payload)
+        : action.payload;
+
+      const steps = incomingPayload.steps ?? [];
       // Terminal = every step in a terminal state (and at least one step).
       const isTerminal =
         steps.length > 0 &&
@@ -695,7 +749,6 @@ export function pipelineReducer(
         );
 
       // If this is a different pipeline than the live one, archive live first.
-      const prevLive = state.live;
       const isDifferentPipeline =
         prevLive !== null &&
         prevLive.pipeline_id !== action.payload.pipeline_id;
@@ -710,12 +763,12 @@ export function pipelineReducer(
         return {
           ...state,
           live: null,
-          history: [...history, action.payload],
+          history: [...history, incomingPayload],
           currentPipelineFromSession: null,
         };
       }
 
-      return { ...state, live: action.payload, history };
+      return { ...state, live: incomingPayload, history };
     }
     case "session-state": {
       const cp = narrowCurrentPipeline(action.payload.current_pipeline);
@@ -1346,10 +1399,16 @@ export function routeError(
   // job-0166 Part 1 — force the most-recent running step to failed so the
   // rainbow animation terminates and the user sees a RED card (in the
   // OWNING Case's stream, even if it is not currently visible).
+  //
+  // Card-render hardening (NATE 2026-06-22): prefer the error's own
+  // ``tool_name`` (when the agent attributes it) so the RED flip targets THAT
+  // tool's card by id, not merely the "latest running step". Under concurrent
+  // solves an error from tool A must not flip tool B's card. Falls back to null
+  // (the latest-running heuristic) when the agent omits it (older payloads).
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "error",
     payload: p,
-    tool_name: null,
+    tool_name: p.tool_name ?? null,
   });
 }
 
@@ -4862,9 +4921,18 @@ export function buildInterleavedStream(
   // step we never saw (defensive - should not happen) degrades to a top-level
   // card so it is never silently dropped.
   const mergedSteps = mergeStepsByStepId(history, live);
+  // Card-render hardening (NATE 2026-06-22): EXCLUDE thinking (`llm_generation`)
+  // pseudo-steps from the valid-parent set. Thinking steps are filtered out of
+  // the rendered stream entirely (the `isThinkingStep` continue below), so they
+  // never emit a top-level card to host children. If a child's parent_step_id
+  // pointed at a thinking step, it would be SWALLOWED - skipped here as a nested
+  // child AND never rendered because its (thinking) parent produced no card. By
+  // keeping thinking steps OUT of topLevelIds, such a child fails the
+  // `topLevelIds.has(parent)` nesting test and correctly degrades to a top-level
+  // card (the same defensive fallback as a child whose parent we never saw).
   const topLevelIds = new Set(
     mergedSteps
-      .filter((s) => s.parent_step_id == null)
+      .filter((s) => s.parent_step_id == null && !isThinkingStep(s))
       .map((s) => s.step_id),
   );
   const childrenByParent = new Map<string, PipelineStepSummary[]>();

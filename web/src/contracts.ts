@@ -254,6 +254,13 @@ export interface ErrorPayload {
   message: string;
   retryable?: boolean;
   retry_after_seconds?: number | null;
+  // Card-render hardening (NATE 2026-06-22): the registry tool whose dispatch
+  // raised this error, when the agent can attribute it. Optional + forward-
+  // compatible - older agents omit it (null/absent). When present the web
+  // force-flips THAT tool's card to failed (matched by tool_name) instead of
+  // the "latest running step", so an error from tool A cannot turn tool B's
+  // card red under concurrent solves.
+  tool_name?: string | null;
 }
 
 // --- Appendix D.2: ProjectLayerSummary --------------------------------- //

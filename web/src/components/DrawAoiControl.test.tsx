@@ -117,6 +117,83 @@ describe("DrawAoiControl", () => {
   });
 });
 
+// --- ITEM 1 (NATE 2026-06-22): controls ONLY during new-case AOI setup ------ //
+
+describe("DrawAoiControl - ITEM 1 gate (only when starting a case, no AOI yet)", () => {
+  it("renders the whole control group when the case has NO AOI yet", () => {
+    render(<DrawAoiControl map={makeFakeMap()} caseHasAoi={false} />);
+    expect(screen.getByTestId("grace2-draw-aoi-control")).toBeInTheDocument();
+    expect(screen.getByTestId("grace2-draw-aoi-button")).toBeInTheDocument();
+  });
+
+  it("renders NOTHING once the case already HAS a bounding box (caseHasAoi)", () => {
+    // Even with a staged bbox, the whole group is gone when the case has an AOI.
+    act(() => {
+      aoiStageBus.setBbox([1, 2, 3, 4]);
+    });
+    render(<DrawAoiControl map={makeFakeMap()} caseHasAoi={true} />);
+    expect(screen.queryByTestId("grace2-draw-aoi-control")).toBeNull();
+    expect(screen.queryByTestId("grace2-draw-aoi-button")).toBeNull();
+    expect(screen.queryByTestId("grace2-draw-aoi-confirm")).toBeNull();
+    expect(screen.queryByTestId("grace2-draw-aoi-clear")).toBeNull();
+  });
+
+  it("defaults to rendering (caseHasAoi undefined = fresh start)", () => {
+    render(<DrawAoiControl map={makeFakeMap()} />);
+    expect(screen.getByTestId("grace2-draw-aoi-control")).toBeInTheDocument();
+  });
+});
+
+// --- ITEM 4 (NATE 2026-06-22): the green "+" seeds the case (agent path) ----- //
+
+describe("DrawAoiControl - ITEM 4 confirm (+ surfaces the AOI to the agent)", () => {
+  it("shows a green '+' confirm alongside the red-X clear once a bbox is staged", () => {
+    render(<DrawAoiControl map={makeFakeMap()} onConfirmAoi={vi.fn()} />);
+    expect(screen.queryByTestId("grace2-draw-aoi-confirm")).toBeNull();
+    act(() => {
+      aoiStageBus.setBbox([1, 2, 3, 4]);
+    });
+    expect(screen.getByTestId("grace2-draw-aoi-confirm")).toBeInTheDocument();
+    expect(screen.getByTestId("grace2-draw-aoi-clear")).toBeInTheDocument();
+  });
+
+  it("'+' fires onConfirmAoi with the staged bbox (seed-the-case path) + fits", () => {
+    const onConfirmAoi = vi.fn();
+    const m = makeFakeMap();
+    const fitBounds = vi.fn();
+    (m as unknown as { fitBounds: typeof fitBounds }).fitBounds = fitBounds;
+    render(<DrawAoiControl map={m} onConfirmAoi={onConfirmAoi} />);
+    act(() => {
+      aoiStageBus.setBbox([-100, 40, -99, 41]);
+    });
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-draw-aoi-confirm"));
+    });
+    // Agent path: the confirmed bbox is surfaced for createCase(null, bbox).
+    expect(onConfirmAoi).toHaveBeenCalledWith([-100, 40, -99, 41]);
+    // draw-and-fit path: the camera framed the extent.
+    expect(fitBounds).toHaveBeenCalled();
+    // The staged box is cleared (the case now owns the AOI).
+    expect(aoiStageBus.getState().bbox).toBeNull();
+  });
+
+  it("without onConfirmAoi, '+' is draw-and-fit only (keeps the staged box)", () => {
+    const m = makeFakeMap();
+    const fitBounds = vi.fn();
+    (m as unknown as { fitBounds: typeof fitBounds }).fitBounds = fitBounds;
+    render(<DrawAoiControl map={m} />);
+    act(() => {
+      aoiStageBus.setBbox([-100, 40, -99, 41]);
+    });
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-draw-aoi-confirm"));
+    });
+    expect(fitBounds).toHaveBeenCalled();
+    // No agent wiring -> the staged box stays (next-prompt analysis extent).
+    expect(aoiStageBus.getState().bbox).toEqual([-100, 40, -99, 41]);
+  });
+});
+
 // --- FIX 2 (NATE 2026-06-22): position to the LEFT of the chat panel -------- //
 //
 // The control must NOT overlap the chat box. Expanded desktop -> railed to the

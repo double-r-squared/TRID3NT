@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Map as MapLibreMap } from "maplibre-gl";
-import { IconBbox, IconClose } from "./icons";
+import { IconAdd, IconBbox, IconClose } from "./icons";
 import {
   attachBboxDrag,
   drawPickBbox,
@@ -65,6 +65,26 @@ export interface DrawAoiControlProps {
    * placement. Default false (desktop).
    */
   mobile?: boolean;
+  /**
+   * ITEM 1 (NATE 2026-06-22) - whether the CURRENT case context already HAS an
+   * analysis-extent / AOI set. The Draw-AOI control group (draw button + red-X
+   * cancel + green "+" confirm) is ONLY for STARTING a case: setting the AOI to
+   * begin. Once a case already has a bounding box, NONE of these controls render
+   * (the AOI is established; re-scoping is the agent's job). When true the whole
+   * control returns null. Default false (a fresh, no-AOI start) so existing
+   * callers / fixtures that don't pass it keep rendering the control.
+   */
+  caseHasAoi?: boolean;
+  /**
+   * ITEM 4 / feature #170 (NATE 2026-06-22) - AOI-first manual case seam. When
+   * the user confirms a drawn bbox with the green "+", this fires with the
+   * confirmed extent so the parent SEEDS the case's analysis area to the AGENT
+   * (App wires it to createCase(null, bbox) - the SAME channel AoiPickerCard's
+   * onConfirm rides). The draw-and-fit path (staged bbox on the bus, used as the
+   * next-prompt extent) is unchanged and remains the no-agent path. Optional:
+   * without it the "+" still stages + fits (draw-and-fit only).
+   */
+  onConfirmAoi?: (bbox: BBox) => void;
 }
 
 // FIX 2 geometry (mirrors the App.tsx chat panel + hamburger constants):
@@ -161,6 +181,19 @@ const clearBtn: React.CSSProperties = {
   ...baseBtn,
   width: 30,
   height: 30,
+  // ITEM 4 - red-tinted cancel "X" (the red-X cancel affordance).
+  color: "#ff6b78",
+  borderColor: "rgba(255,107,120,0.55)",
+};
+
+// ITEM 4 - green "+" confirm: seeds the case AOI / fits the map.
+const confirmBtn: React.CSSProperties = {
+  ...baseBtn,
+  width: 30,
+  height: 30,
+  color: "#fff",
+  background: "rgba(34,197,94,0.92)",
+  borderColor: "rgba(34,197,94,0.92)",
 };
 
 export function DrawAoiControl({
@@ -169,7 +202,9 @@ export function DrawAoiControl({
   chatWidthPx,
   chatCollapsed,
   mobile,
-}: DrawAoiControlProps): JSX.Element {
+  caseHasAoi,
+  onConfirmAoi,
+}: DrawAoiControlProps): JSX.Element | null {
   // Subscribe to the staged-AOI bus (unless a test override is supplied).
   const { armed, bbox } = useBusState(stateOverride);
 
@@ -240,6 +275,51 @@ export function DrawAoiControl({
     aoiStageBus.clear();
   }, []);
 
+  // ITEM 4 (NATE 2026-06-22) - the green "+" CONFIRM. Two paths, BOTH run:
+  //   (a) draw-and-fit (no-agent): the staged box is already painted; fit the
+  //       camera to it so the user sees the chosen extent framed.
+  //   (b) seed-the-case (agent): surface the confirmed bbox up via onConfirmAoi
+  //       so the parent routes it through createCase(null, bbox) - the AOI
+  //       becomes the case's analysis area for the next prompt. The staged box
+  //       is then cleared (the case now OWNS the AOI; the on-map analysis-extent
+  //       overlay takes over from the transient pick rectangle).
+  const onConfirm = useCallback(() => {
+    if (!bbox) return;
+    const m = mapRef.current;
+    if (m) {
+      try {
+        // draw-and-fit: frame the chosen extent (bbox = [minLon,minLat,maxLon,maxLat]).
+        m.fitBounds(
+          [
+            [bbox[0], bbox[1]],
+            [bbox[2], bbox[3]],
+          ],
+          { padding: 48, duration: 600 },
+        );
+      } catch {
+        /* map torn down */
+      }
+    }
+    if (onConfirmAoi) {
+      // seed-the-case: hand the confirmed AOI to the agent channel, then clear
+      // the transient staged rectangle (the case owns the AOI now).
+      onConfirmAoi(bbox);
+      if (m) {
+        try {
+          clearPickLayers(m);
+        } catch {
+          /* map torn down */
+        }
+      }
+      aoiStageBus.clear();
+    }
+  }, [bbox, onConfirmAoi]);
+
+  // ITEM 1 (NATE 2026-06-22) - the Draw-AOI control group is ONLY for starting a
+  // case with no AOI yet. Once the case already has a bounding box, render
+  // NOTHING. (Gate AFTER all hooks so hook order stays stable.)
+  if (caseHasAoi) return null;
+
   const hasStaged = bbox !== null;
 
   return (
@@ -260,16 +340,34 @@ export function DrawAoiControl({
         <IconBbox size={18} />
       </button>
       {hasStaged && !armed ? (
-        <button
-          type="button"
-          data-testid="grace2-draw-aoi-clear"
-          aria-label="Clear staged analysis extent"
-          title="Clear the staged analysis extent"
-          onClick={onClear}
-          style={clearBtn}
-        >
-          <IconClose size={14} />
-        </button>
+        <>
+          {/* ITEM 4 - green "+" CONFIRM: fits the camera (draw-and-fit) AND, when
+              wired, seeds the case AOI to the agent (createCase). */}
+          <button
+            type="button"
+            data-testid="grace2-draw-aoi-confirm"
+            aria-label="Confirm analysis extent"
+            title={
+              onConfirmAoi
+                ? "Use this extent as the case area (fits the map too)"
+                : "Fit the map to this extent"
+            }
+            onClick={onConfirm}
+            style={confirmBtn}
+          >
+            <IconAdd size={16} />
+          </button>
+          <button
+            type="button"
+            data-testid="grace2-draw-aoi-clear"
+            aria-label="Clear staged analysis extent"
+            title="Clear the staged analysis extent"
+            onClick={onClear}
+            style={clearBtn}
+          >
+            <IconClose size={14} />
+          </button>
+        </>
       ) : null}
     </div>
   );

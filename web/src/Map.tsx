@@ -390,6 +390,20 @@ export interface MapViewProps {
    * keeps its plain top-right placement).
    */
   mobile?: boolean;
+  /**
+   * ITEM 1 (NATE 2026-06-22) - whether the active case already HAS an AOI /
+   * analysis extent set. Threaded to DrawAoiControl: the Draw-AOI control group
+   * is for STARTING a case (setting the AOI to begin), so once a case has a
+   * bounding box NONE of those controls render. Undefined => false (a fresh
+   * no-AOI start) so the control still shows.
+   */
+  caseHasAoi?: boolean;
+  /**
+   * ITEM 4 / feature #170 (NATE 2026-06-22) - fired with the green-"+"-confirmed
+   * bbox so the parent seeds the case AOI to the agent (App wires it to
+   * createCase(null, bbox)). The draw-and-fit no-agent path is unchanged.
+   */
+  onAoiStageConfirm?: (bbox: [number, number, number, number]) => void;
 }
 
 /**
@@ -2209,7 +2223,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, caseHasAoi, onAoiStageConfirm }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3889,6 +3903,8 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           chatWidthPx={chatWidthPx}
           chatCollapsed={chatCollapsed}
           mobile={mobile}
+          caseHasAoi={caseHasAoi}
+          onConfirmAoi={onAoiStageConfirm}
         />
       ) : null}
     </div>
