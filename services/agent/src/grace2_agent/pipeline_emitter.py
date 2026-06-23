@@ -951,11 +951,16 @@ class PipelineEmitter:
         onto the NEW sink here, schedule-and-forget (this method is sync and the
         sink is async). The replay is best-effort: it swallows a dead-socket
         failure on the new sink (it too may have just cycled) and never raises
-        out of the rebind."""
+        out of the rebind.
+
+        J-B-part-i (full-snapshot replay for OPEN pipelines): the single terminal
+        stash only carries the LAST terminal card, so a still-OPEN pipeline whose
+        SETUP-child / Dispatch running frame was dropped on the dead launch socket
+        would never repaint those cards on reconnect. When a pipeline is currently
+        OPEN (``_pipeline_id`` set and ``_step_order`` non-empty) we therefore
+        prefer a FULL snapshot of EVERY step in its CURRENT state and replay THAT;
+        we fall back to the terminal stash only when no pipeline is open."""
         self._sink = sink
-        snapshot = self._last_terminal_pipeline_payload
-        if snapshot is None:
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -963,7 +968,48 @@ class PipelineEmitter:
             # The snapshot stays stashed; a later emit still carries the full
             # A.7 view, and a loop-bound rebind replays it.
             return
-        loop.create_task(self._replay_terminal_pipeline_state(snapshot))
+        if self._pipeline_id is not None and self._step_order:
+            # An OPEN pipeline: replay the FULL live snapshot so any dropped
+            # SETUP/dispatch running cards (the non-terminal frame swallowed by
+            # _emit_pipeline_state, FIX 1) repaint on the new socket. Built the
+            # SAME way the terminal payload is built -- _to_wire_step over the
+            # whole _step_order -- so every step ships in its CURRENT state
+            # (pending / running / complete / failed).
+            snapshot = PipelineStatePayload(
+                pipeline_id=self._pipeline_id,
+                steps=[self._to_wire_step(sid) for sid in self._step_order],
+            )
+            loop.create_task(self._replay_pipeline_snapshot(snapshot))
+            return
+        # No open pipeline: fall back to the last terminal stash (prior
+        # behaviour) so a RENDERED/terminal card still survives a WS blip.
+        terminal = self._last_terminal_pipeline_payload
+        if terminal is None:
+            return
+        loop.create_task(self._replay_terminal_pipeline_state(terminal))
+
+    async def _replay_pipeline_snapshot(
+        self, payload: PipelineStatePayload
+    ) -> None:
+        """Replay a FULL live pipeline-state snapshot onto the (rebound) sink.
+
+        J-B-part-i: mirrors ``_replay_terminal_pipeline_state`` but carries every
+        step in its CURRENT state (not just the last terminal card), so an OPEN
+        pipeline whose SETUP/dispatch running frame was dropped on a dead launch
+        socket repaints in full on reconnect. The web reducer wholesale-replaces a
+        live pipeline by ``pipeline_id`` (cumulative-snapshot contract), so this
+        full snapshot is idempotent with any later terminal replay. Best-effort --
+        the new sink may also be mid-cycle, so a ConnectionClosed* is swallowed (it
+        replays on the NEXT rebind); any other error propagates from ``_send``."""
+        try:
+            await self._send("pipeline-state", payload)
+        except _CONNECTION_CLOSED_EXC:  # type: ignore[misc]
+            logger.debug(
+                "emitter: live pipeline-state snapshot replay failed on the "
+                "rebound socket (best-effort drop) session=%s pipeline_id=%s",
+                self.session_id,
+                self._pipeline_id,
+            )
 
     async def _replay_terminal_pipeline_state(
         self, payload: PipelineStatePayload
@@ -1973,7 +2019,27 @@ class PipelineEmitter:
             pipeline_id=self._pipeline_id,
             steps=[self._to_wire_step(sid) for sid in self._step_order],
         )
-        await self._send("pipeline-state", payload)
+        # J-B-part-i (symmetric resilience): a NON-terminal running transition
+        # (a SETUP child / Dispatch card going visible) becomes surfaced only via
+        # this single frame. If the launching socket is dead/mid-cycling the
+        # underlying ``_send`` raises ConnectionClosed* -- which, unswallowed,
+        # would ABORT the running transition and LOSE the card (the bug behind
+        # "sim border animated but the SETUP/dispatch cards never showed"). We
+        # swallow ONLY the connection-closed class (the SAME tuple the terminal
+        # path uses) so the running-card path is symmetric with the terminal
+        # path; the step STATE is already recorded in ``_steps`` and a sink
+        # rebind replays the full live snapshot. Any OTHER exception (a real
+        # logic/serialization error) still propagates loudly.
+        try:
+            await self._send("pipeline-state", payload)
+        except _CONNECTION_CLOSED_EXC:  # type: ignore[misc]
+            logger.debug(
+                "emitter: running pipeline-state send failed on a closed "
+                "socket (best-effort drop; will replay on rebind) session=%s "
+                "pipeline_id=%s",
+                self.session_id,
+                self._pipeline_id,
+            )
 
     async def _emit_terminal_pipeline_state(self) -> None:
         """Emit the pipeline-state for a TERMINAL transition, best-effort.
