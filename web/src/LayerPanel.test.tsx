@@ -1077,6 +1077,92 @@ describe("detectSequentialGroups — conservative grouping", () => {
   });
 });
 
+describe("satellite fire-animation frames — step token + ISO valid-time label", () => {
+  // A GOES / VIIRS fire-animation frame: "GOES <ProductLabel> step <N> <ISO>
+  // (<SAT>)". The "step <N>" is the monotonic grouping value; the product label
+  // distinguishes the GeoColor vs Fire Temperature series (two groups); the ISO
+  // is the per-frame display label. Same run dir => same AOI/source signature.
+  const satFrame = (
+    productLabel: string,
+    step: number,
+    iso: string,
+    run = "run-goes",
+    preset = "goes_rgb_animation",
+  ): ProjectLayerSummary => ({
+    layer_id: `${run}-${productLabel.replace(/\s+/g, "")}-${step}`,
+    name: `GOES ${productLabel} step ${step} ${iso} (GOES-18)`,
+    layer_type: "raster",
+    uri: `gs://grace-2/runs/${run}/${productLabel.replace(/\s+/g, "")}_${step}.cog.tif`,
+    visible: true,
+    opacity: 1,
+    z_index: 1,
+    style_preset: preset,
+  });
+
+  it("parses a step token and uses the ISO valid-time as the frame label", () => {
+    const t = parseFrameToken(
+      "GOES Fire Temperature step 2 2026-06-22T18:05:00Z (GOES-18)",
+    );
+    expect(t).not.toBeNull();
+    expect(t?.value).toBe(2);
+    // The ISO valid-time is the human label (not the synthetic "step 2").
+    expect(t?.label).toBe("2026-06-22 18:05Z");
+    // The ISO is stripped from the stem so the series groups.
+    expect(t?.stem).toBe("goes fire temperature (goes-18)");
+  });
+
+  it("two frames of one product share a stem (ISO + step vary, product fixed)", () => {
+    const a = parseFrameToken("GOES GeoColor step 1 2026-06-22T18:00:00Z (GOES-18)");
+    const b = parseFrameToken("GOES GeoColor step 2 2026-06-22T18:05:00Z (GOES-18)");
+    expect(a?.stem).toBe(b?.stem);
+    expect(a?.value).toBeLessThan(b?.value ?? -1);
+  });
+
+  it("GeoColor and Fire Temperature have DISTINCT stems (two scrubber groups)", () => {
+    const g = parseFrameToken("GOES GeoColor step 1 2026-06-22T18:00:00Z (GOES-18)");
+    const f = parseFrameToken(
+      "GOES Fire Temperature step 1 2026-06-22T18:00:00Z (GOES-18)",
+    );
+    expect(g?.stem).not.toBe(f?.stem);
+  });
+
+  it("groups a GOES dual-product run into TWO co-temporal scrubber groups", () => {
+    // Same window, same valid-times, two products -> two groups.
+    const times = [
+      "2026-06-22T18:00:00Z",
+      "2026-06-22T18:05:00Z",
+      "2026-06-22T18:10:00Z",
+    ];
+    const layers = [
+      ...times.map((t, i) => satFrame("GeoColor", i + 1, t, "run-goes-geo")),
+      ...times.map((t, i) => satFrame("Fire Temperature", i + 1, t, "run-goes-fire")),
+    ];
+    const groups = detectSequentialGroups(layers);
+    // TWO distinct groups.
+    expect(groups).toHaveLength(2);
+    const byLabel = Object.fromEntries(groups.map((gr) => [gr.label, gr]));
+    const labels = Object.keys(byLabel).sort();
+    expect(labels).toEqual(["Goes Fire Temperature (Goes-18)", "Goes Geocolor (Goes-18)"]);
+    // Each group has all 3 frames, in ascending order.
+    for (const gr of groups) {
+      expect(gr.layers).toHaveLength(3);
+      // CO-TEMPORAL: both groups carry the SAME ISO valid-time labels in order.
+      expect(gr.frameLabels).toEqual([
+        "2026-06-22 18:00Z",
+        "2026-06-22 18:05Z",
+        "2026-06-22 18:10Z",
+      ]);
+    }
+  });
+
+  it("does NOT group a single-product, single-frame run (needs >=2 per series)", () => {
+    const groups = detectSequentialGroups([
+      satFrame("GeoColor", 1, "2026-06-22T18:00:00Z"),
+    ]);
+    expect(groups).toHaveLength(0);
+  });
+});
+
 describe("LayerPanel — sequential group row rendering", () => {
   afterEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }

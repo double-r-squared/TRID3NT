@@ -290,6 +290,15 @@ const FRAME_PATTERNS: ReadonlyArray<{
   { rx: /\bd(?:ay)?\s*\+?(\d{1,3})\b/i, label: (m) => `day ${stripZeros(m[1])}` },
 ];
 
+// An ISO-8601 UTC valid-time substring, e.g. "2026-06-22T18:05:00Z". The
+// satellite fire-animation frames (GOES GeoColor / Fire Temperature, VIIRS Day
+// Fire) carry a "step <N>" monotonic token (the grouping value) PLUS their real
+// UTC valid-time. The raw ISO is not itself a recognized frame token, but when a
+// frame DOES carry a step/index token we prefer the ISO as the human-readable
+// per-frame label and strip it from the grouping stem (otherwise the per-frame
+// time would vary the stem and break the series into singletons).
+const ISO_TIME_RX = /\b(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?Z?\b/;
+
 function pad2(s: string | undefined): string {
   const n = Number(s ?? "0");
   return Number.isFinite(n) ? String(n).padStart(2, "0") : (s ?? "");
@@ -311,16 +320,25 @@ export function parseFrameToken(name: string): FrameToken | null {
       const value = Number(m[1]);
       if (!Number.isFinite(value)) continue;
       // Stem = the name with the matched token removed + whitespace collapsed.
-      // Series members differ ONLY in the token, so they share a stem.
-      const stem = name
+      // Series members differ ONLY in the token, so they share a stem. When the
+      // name also carries an ISO valid-time (satellite fire-animation frames),
+      // strip it too: it varies per frame, so leaving it in the stem would split
+      // the series into singletons. The ISO then becomes the per-frame LABEL.
+      let body = name
         .slice(0, m.index)
-        .concat(name.slice((m.index ?? 0) + m[0].length))
+        .concat(name.slice((m.index ?? 0) + m[0].length));
+      const iso = body.match(ISO_TIME_RX);
+      if (iso) body = body.replace(iso[0], " ");
+      const stem = body
         .replace(/\s+/g, " ")
         .replace(/[\s,(\-–—]+$/g, "")
         .replace(/^[\s,(\-–—]+/g, "")
         .trim()
         .toLowerCase();
-      return { value, label: label(m), stem };
+      // Prefer the real UTC valid-time as the frame label when present (the
+      // satellite-frame case); else the synthetic token label (F+03h / step 4).
+      const frameLabel = iso ? `${iso[1]} ${iso[2]}Z` : label(m);
+      return { value, label: frameLabel, stem };
     }
   }
   return null;

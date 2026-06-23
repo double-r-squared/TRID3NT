@@ -392,11 +392,12 @@ def fetch_viirs_day_fire(
 
     **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
     uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="viirs_day_fire_animation"``, same ``bbox``) whose ``name``
-    carries the product + ISO-UTC pass time + the satellite filter -- the
-    scrubber-group contract, so the web SequenceScrubber animates the irregular
-    series with no web change (frames are NOT evenly spaced; the labels carry the
-    real pass times).
+    ``style_preset="viirs_day_fire_animation"``, same ``bbox``) whose ``name`` is
+    ``"VIIRS Day Fire step <N> <ISO> (<SAT>)"`` -- the scrubber-group contract:
+    ``step <N>`` is the monotonic frame value the web parser keys on (the
+    irregular polar-pass ISO alone is not a recognized token), and the ISO pass
+    time is the per-frame display label. Frames are NOT evenly spaced; the labels
+    carry the real pass times.
 
     NOTE: georeferencing is the approximate SLIDER sector-extent mapping (the
     JPSS polar remap has no published projection -- approximate only); the
@@ -455,7 +456,7 @@ def fetch_viirs_day_fire(
     layers: list[LayerURI] = []
     n_empty = 0
     last_err: SliderError | None = None
-    for ts_int in pass_ts:
+    for frame_no, ts_int in enumerate(pass_ts, start=1):
         iso = ts_int_to_iso(ts_int)
         params = {
             "bbox": list(q_bbox),
@@ -486,10 +487,17 @@ def fetch_viirs_day_fire(
             logger.warning("fetch_viirs_day_fire: pass ts=%s upstream-failed (%s)", iso, exc)
             continue
         assert result.uri is not None
+        # NAME token = "VIIRS Day Fire step <N> <ISO> (<SAT>)". The "step <N>"
+        # token is the MONOTONIC frame value the web detectSequentialGroups parser
+        # keys on (the irregular polar-pass ISO alone is NOT a recognized token,
+        # so without it no scrubber group forms); the ISO valid-time is kept as
+        # the per-frame display label. ``frame_no`` is the position in the
+        # day-filtered pass list (passes are NOT evenly spaced), giving a clean
+        # ascending series for the single polar product.
         layers.append(
             LayerURI(
                 layer_id=f"viirs-dayfire-{ts_int}-{q_bbox[0]:.3f}-{q_bbox[1]:.3f}",
-                name=f"VIIRS Day Fire {iso} ({sat_label})",
+                name=f"VIIRS Day Fire step {frame_no} {iso} ({sat_label})",
                 layer_type="raster",
                 uri=result.uri,
                 style_preset=_VIIRS_ANIM_STYLE_PRESET,

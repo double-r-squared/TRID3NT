@@ -309,6 +309,293 @@ def test_confirm_empty_run_is_not_ok_honesty_floor():
     assert result["n_frames"] == 0
 
 
+# ---- GOES dual-product co-temporal animation (NATE 2026-06-22) -------------
+#
+# A GOES fire run must render BOTH co-temporal imagery products over the SAME
+# window: Fire Temperature (the active-fire mapping) AND GeoColor (which shows
+# the smoke plume), as TWO synchronized scrubber groups. The default (no products
+# arg) is BOTH GOES products; a single product can still be requested.
+
+
+def _goes_frame(product, label, step, ts_iso, bbox):
+    """A GOES animation frame in the emitted shape: distinct id + product-labelled
+    name with a "step <N>" token + the real ISO valid-time."""
+    return LayerURI(
+        layer_id=f"goes-anim-{product}-{ts_iso}",
+        name=f"GOES {label} step {step} {ts_iso} (GOES-18)",
+        layer_type="raster",
+        uri=f"s3://fake/{product}/{ts_iso}.tif",
+        style_preset="goes_rgb_animation",
+        role="context",
+        units=None,
+        bbox=bbox,
+    )
+
+
+# The shared valid-times both products animate over (co-temporal set).
+_GOES_TIMES = (
+    "2026-06-22T18:00:00Z",
+    "2026-06-22T18:05:00Z",
+    "2026-06-22T18:10:00Z",
+)
+
+
+def test_default_goes_run_emits_both_products_cotemporal():
+    """A GOES run with NO products arg defaults to BOTH geocolor + fire_temperature
+    and emits two co-temporal groups (same valid-time set, distinct product
+    labels + step tokens) so the web forms two synchronized scrubbers."""
+    bbox = tuple(_INCIDENT["bbox"])
+    _label = {"geocolor": "GeoColor", "fire_temperature": "Fire Temperature"}
+
+    def _fake_goes(b, band, *a, **k):
+        # The composer passes the product as the 2nd positional (band).
+        return [
+            _goes_frame(band, _label[band], i, t, bbox)
+            for i, t in enumerate(_GOES_TIMES, start=1)
+        ]
+
+    def _fake_peek(product, b, s, e):
+        return len(_GOES_TIMES)
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_fake_wfigs),
+            "fetch_goes_animation": _reg(_fake_goes),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_firms",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_perimeters",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._publish_layers",
+        _async_empty_dict,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Iron",
+                # NO products arg -> default to BOTH GOES products.
+                state="UT",
+                start_utc="2026-06-22T18:00:00Z",
+                end_utc="2026-06-22T18:30:00Z",
+                confirm=True,
+                overlay_firms=False,
+                overlay_perimeters=False,
+            )
+        )
+
+    assert result["status"] == "ok"
+    # Both GOES products were animated.
+    assert set(result["products"]) == {"geocolor", "fire_temperature"}
+    assert result["n_frames"] == 2 * len(_GOES_TIMES)
+    assert result["frame_counts"]["geocolor"] == len(_GOES_TIMES)
+    assert result["frame_counts"]["fire_temperature"] == len(_GOES_TIMES)
+
+    layers = result["layers"]
+    geocolor = [lyr for lyr in layers if "GeoColor" in lyr["name"]]
+    fire = [lyr for lyr in layers if "Fire Temperature" in lyr["name"]]
+    # TWO DISTINCT groups (distinct product label tokens + distinct layer_id prefix).
+    assert len(geocolor) == len(fire) == len(_GOES_TIMES)
+    assert all(lyr["layer_id"].startswith("goes-anim-geocolor-") for lyr in geocolor)
+    assert all(
+        lyr["layer_id"].startswith("goes-anim-fire_temperature-") for lyr in fire
+    )
+    # Each frame carries a "step <N>" monotonic token (the web grouping value).
+    import re
+
+    def _steptimes(group):
+        out = {}
+        for lyr in group:
+            step = int(re.search(r"step (\d+)", lyr["name"]).group(1))
+            iso = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", lyr["name"]).group(1)
+            out[step] = iso
+        return out
+
+    g = _steptimes(geocolor)
+    f = _steptimes(fire)
+    # CO-TEMPORAL + SYNCHRONIZED: identical step->valid-time mapping across both.
+    assert g == f
+    assert set(g.values()) == set(_GOES_TIMES)
+    # distinct ids across the whole set.
+    ids = [lyr["layer_id"] for lyr in layers]
+    assert len(set(ids)) == len(ids)
+    # shared style preset (scrubber-group contract).
+    assert {lyr["style_preset"] for lyr in layers} == {"goes_rgb_animation"}
+
+
+def test_single_goes_product_can_still_be_requested():
+    """A way to request just one GOES product is preserved (products=['geocolor'])."""
+    bbox = tuple(_INCIDENT["bbox"])
+
+    def _fake_goes(b, band, *a, **k):
+        assert band == "geocolor"
+        return [_goes_frame("geocolor", "GeoColor", 1, _GOES_TIMES[0], bbox)]
+
+    def _fake_peek(product, b, s, e):
+        return 1
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_fake_wfigs),
+            "fetch_goes_animation": _reg(_fake_goes),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_firms",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_perimeters",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._publish_layers",
+        _async_empty_dict,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Iron",
+                products=["geocolor"],
+                state="UT",
+                start_utc="2026-06-22T18:00:00Z",
+                end_utc="2026-06-22T18:30:00Z",
+                confirm=True,
+                overlay_firms=False,
+                overlay_perimeters=False,
+            )
+        )
+
+    assert result["status"] == "ok"
+    assert result["products"] == ["geocolor"]
+    assert result["n_frames"] == 1
+    assert all("GeoColor" in lyr["name"] for lyr in result["layers"])
+    assert not any("Fire Temperature" in lyr["name"] for lyr in result["layers"])
+
+
+def test_viirs_run_is_single_polar_product_unchanged():
+    """VIIRS/JPSS day_fire stays a SINGLE polar product (not dual-product) -- a
+    day_fire run animates one group only."""
+    bbox = tuple(_INCIDENT["bbox"])
+    dispatched = {"products": []}
+
+    def _fake_viirs(b, sat, product, *a, **k):
+        dispatched["products"].append(product)
+        return [
+            LayerURI(
+                layer_id=f"viirs-dayfire-{i}",
+                name=f"VIIRS Day Fire step {i} 2026-05-1{i}T20:30:00Z (JPSS)",
+                layer_type="raster",
+                uri=f"s3://fake/viirs/{i}.tif",
+                style_preset="viirs_day_fire_animation",
+                role="context",
+                units=None,
+                bbox=bbox,
+            )
+            for i in (1, 2)
+        ]
+
+    def _fake_peek(product, b, s, e):
+        return 2
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_fake_wfigs),
+            "fetch_viirs_day_fire": _reg(_fake_viirs),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_firms",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_perimeters",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._publish_layers",
+        _async_empty_dict,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Santa Rosa Island",
+                products=["day_fire"],
+                start_utc="2026-05-15T00:00:00Z",
+                end_utc="2026-05-19T00:00:00Z",
+                confirm=True,
+                overlay_firms=False,
+                overlay_perimeters=False,
+            )
+        )
+
+    assert result["status"] == "ok"
+    # Single polar product -- NOT expanded to two.
+    assert result["products"] == ["day_fire"]
+    assert dispatched["products"] == ["day_fire"]
+    assert all("VIIRS Day Fire" in lyr["name"] for lyr in result["layers"])
+
+
+def test_default_goes_run_empty_is_not_ok_honesty_floor():
+    """A confirmed default (dual-product) GOES run that produced NO frames for
+    EITHER product must NOT read status=ok -- the honesty floor holds with two
+    products too."""
+
+    def _fake_goes(*a, **k):
+        from grace2_agent.tools.fetch_goes_animation import GOESAnimEmptyError
+
+        raise GOESAnimEmptyError("no frames")
+
+    def _fake_peek(product, b, s, e):
+        return 0
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_fake_wfigs),
+            "fetch_goes_animation": _reg(_fake_goes),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_firms",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_perimeters",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._publish_layers",
+        _async_empty_dict,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Iron",
+                # default dual-product GOES run
+                state="UT",
+                start_utc="2026-06-22T18:00:00Z",
+                end_utc="2026-06-22T18:30:00Z",
+                confirm=True,
+                overlay_firms=False,
+                overlay_perimeters=False,
+            )
+        )
+
+    assert result["status"] == "empty"
+    assert result["n_frames"] == 0
+    # Both products were attempted and both came back empty.
+    assert set(result["products"]) == {"geocolor", "fire_temperature"}
+
+
 # ---- FIX A: coarse-geocode detection --------------------------------------
 
 

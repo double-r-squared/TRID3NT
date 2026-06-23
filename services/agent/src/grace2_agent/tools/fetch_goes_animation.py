@@ -25,9 +25,12 @@ Strategy (per the design spike S3):
    EPSG:4326 COG via the shared ``_satellite_slider`` substrate.
 3. Return an ordered ``list[LayerURI]`` each carrying its real UTC valid-time in
    the NAME token (the postprocess_flood frame contract: distinct per-frame cache
-   keys + shared style_preset + same bbox + an ISO-time name token), so
-   ``detectSequentialGroups`` + the SequenceScrubber animate them with NO web
-   change.
+   keys + shared style_preset + same bbox + a ``"step <N> <ISO>"`` name token),
+   so ``detectSequentialGroups`` + the SequenceScrubber animate them with NO web
+   change. The ``step <N>`` is the monotonic frame value the web parser keys on
+   (a raw ISO alone is not a recognized token); the product label keeps the
+   per-product stem distinct so GeoColor and Fire Temperature form TWO separate
+   scrubber groups; the ISO is the per-frame display label.
 
 Georeferencing is the APPROXIMATE sector-extent mapping documented in
 ``_satellite_slider`` (SLIDER ships no projection metadata). The imagery + cadence
@@ -385,9 +388,14 @@ def fetch_goes_animation(
 
     **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
     uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="goes_rgb_animation"``, same ``bbox``) whose ``name`` carries
-    the product + ISO-UTC valid-time + satellite -- the scrubber-group contract,
-    so the web SequenceScrubber animates the set with no web change.
+    ``style_preset="goes_rgb_animation"``, same ``bbox``) whose ``name`` is
+    ``"GOES <ProductLabel> step <N> <ISO> (<SAT>)"`` -- the scrubber-group
+    contract: the ``step <N>`` token is the monotonic frame value the web parser
+    keys on, the product label keeps the per-product STEM distinct (so GeoColor
+    and Fire Temperature form TWO separate scrubber groups), and the ISO valid-
+    time is the per-frame display label. ``<N>`` is the position in the shared
+    windowed frame list, so the same step maps to the same SLIDER timestamp
+    across both GOES products -> the two scrubbers stay time-synchronized.
 
     NOTE: georeferencing is the approximate SLIDER sector-extent mapping (SLIDER
     ships no projection); the imagery + cadence are the real CIRA product. An AOI
@@ -468,10 +476,22 @@ def fetch_goes_animation(
             logger.warning("fetch_goes_animation: frame ts=%s upstream-failed (%s)", iso, exc)
             continue
         assert result.uri is not None
+        # NAME token = "GOES <ProductLabel> step <N> <ISO> (<SAT>)". The
+        # "step <N>" token is the MONOTONIC frame value the web detectSequential
+        # Groups parser keys on (the raw ISO alone is NOT a recognized token, so
+        # without "step <N>" no scrubber group forms at all). The product label
+        # ("GeoColor" / "Fire Temperature") keeps the STEM distinct so the two
+        # GOES products form TWO SEPARATE scrubber groups, and the ISO valid-time
+        # stays in the name as the per-frame display label (the web strips it
+        # from the stem so the series groups). ``frame_no`` is the position in
+        # the windowed+subsampled ``frame_ts`` list, so the SAME step value maps
+        # to the SAME SLIDER timestamp across both GOES products -> the two
+        # scrubbers stay time-synchronized (fire mapping vs smoke at one valid-
+        # time).
         layers.append(
             LayerURI(
                 layer_id=f"goes-anim-{product}-{ts_int}-{q_bbox[0]:.3f}-{q_bbox[1]:.3f}",
-                name=f"GOES {product_label} {iso} ({sat_label})",
+                name=f"GOES {product_label} step {frame_no} {iso} ({sat_label})",
                 layer_type="raster",
                 uri=result.uri,
                 style_preset=_GOES_ANIM_STYLE_PRESET,
