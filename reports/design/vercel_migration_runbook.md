@@ -10,6 +10,14 @@ reports/design/vercel_migration_readiness.md. Scaffold landed: `web/vercel.json`
 - Framework preset = **Vite** (build `npm run build`, output `dist`) -- already pinned in vercel.json.
 - `web/vercel.json` provides the SPA-fallback rewrite (all non-asset paths -> `/index.html`, so
   `/app` `/privacy` `/landing` deep links work) + immutable cache on `/assets/*`.
+- **Ignored Build Step (monorepo build-minute saver).** Vercel auto-builds on EVERY push to
+  `main`, but most GRACE-2 commits touch `services/agent/`, `services/workers/`, etc. -- NOT
+  `web/`. Set Project -> Settings -> Git -> **Ignored Build Step** to:
+  `git diff --quiet HEAD^ HEAD ./`
+  Vercel runs it from the Root Directory (`web/`); `git diff --quiet` exits 0 (SKIP the build)
+  when `web/` is unchanged, exits 1 (BUILD) when it changed. So push-to-main is the pipeline, but
+  the frontend only redeploys when the frontend actually changes. (First deploy / shallow-clone
+  edge case: if `HEAD^` is unavailable Vercel falls back to building, which is the safe default.)
 
 ## 2. Vercel Environment Variables (Production scope)
 Set these in the Vercel dashboard (Project -> Settings -> Environment Variables). All are PUBLIC
