@@ -2333,6 +2333,13 @@
       "model": "opus",
       "subagent_tokens": 291932,
       "description": "SWAN Phase 1 standalone wave engine build (worktree agent, merged 0203a40): SwanRunArgs/WaveFieldLayerURI contracts, deterministic .swn deck-builder (GeoClaw analogue), run_swan_waves tool, model_wave_scenario + postprocess_swan (Hs/Tp/Dir COGs), file-only container + swan.tf scaffold. 31 new tests green; TOOL_REGISTRY 97->98; ASCII-clean. Also fixed a pre-existing output_interval_min schema 400-trigger surfaced by the full-suite run. Container build/ECR/Batch apply gated."
+    },
+    {
+      "job_id": "satellite-fire-animation-build-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 319204,
+      "description": "Unified satellite fire-animation demo build (worktree agent, merged ecf5a89): fetch_wfigs_incident (NIFC/WFIGS named-incident), fetch_goes_animation (GOES GeoColor+Fire Temperature SLIDER), fetch_viirs_day_fire (JPSS Day Fire polar SLIDER, slug cira_natural_fire_color), FIRMS historical-date positional, run_model_satellite_fire_animation (generalized composer w/ bbox/window review gate, GOES+JPSS branches), _satellite_slider shared substrate. 68 new tests; TOOL_REGISTRY 98->102; ASCII-clean. PATH A (SLIDER) only; georeference approximate + slugs are live-verify items (flagged in code). No Batch. Merge conflict on categories.py (kept both SWAN+fire entries) resolved; full suite 6363 passed 0 failed."
     }
   ],
   "totals_by_sprint": {
