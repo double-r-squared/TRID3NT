@@ -45,19 +45,90 @@ export interface DrawAoiControlProps {
    * Undefined (default) subscribes to the shared aoiStageBus.
    */
   stateOverride?: AoiStageBusState;
+  /**
+   * NATE FIX 2 - the desktop chat panel's current dragged width (px). The
+   * control rails to the LEFT of the chat panel's left edge and tracks it as
+   * the panel resizes. Ignored on mobile / when collapsed (see below). Undefined
+   * keeps the legacy fixed top-right placement (so existing callers / fixtures
+   * that drive the control directly are unaffected).
+   */
+  chatWidthPx?: number;
+  /**
+   * NATE FIX 2 - whether the desktop chat panel is COLLAPSED (hidden, replaced
+   * by the top-right chat-expand hamburger). When collapsed the control tucks
+   * UNDER that hamburger instead of railing the (absent) panel's left edge.
+   */
+  chatCollapsed?: boolean;
+  /**
+   * NATE FIX 2 - mobile chrome. On mobile the chat is a BOTTOM sheet (no
+   * top-right panel to clear), so the control keeps its plain top-right
+   * placement. Default false (desktop).
+   */
+  mobile?: boolean;
 }
 
-const CONTROL_WRAP: React.CSSProperties = {
-  position: "absolute",
-  top: 12,
-  right: 12,
-  zIndex: 20,
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "flex-end",
-  gap: 8,
-  pointerEvents: "none", // the wrapper is transparent; buttons re-enable.
-};
+// FIX 2 geometry (mirrors the App.tsx chat panel + hamburger constants):
+//   - desktop chat panel: top:16, right:16, width: min(chatWidthPx, 92vw).
+//   - chat-expand hamburger (collapsed): top:12, right:12, 40x40.
+// The control button is 38px wide. We rail it just LEFT of the panel's left
+// edge, at the panel's top; when collapsed, UNDER the hamburger.
+const CHAT_PANEL_RIGHT_PX = 16; // desktopChatContainerStyle.right
+const CHAT_PANEL_TOP_PX = 16; // desktopChatContainerStyle.top
+const CHAT_HAMBURGER_RIGHT_PX = 12; // App hamburgerBtnStyle right (chat)
+const CHAT_HAMBURGER_TOP_PX = 12; // App hamburgerBtnStyle top
+const CHAT_HAMBURGER_SIZE_PX = 40; // App hamburgerBtnStyle width/height
+const CONTROL_GAP_PX = 8; // gap between the control and the panel/hamburger
+
+/**
+ * FIX 2 (pure, exported for tests) - the control wrapper's absolute position.
+ * Three placements:
+ *   - mobile: plain top-right (the chat is a bottom sheet; nothing to clear).
+ *   - desktop + collapsed: UNDER the top-right chat-expand hamburger, aligned to
+ *     its right edge.
+ *   - desktop + expanded: at the chat panel's TOP, railed to the LEFT of the
+ *     panel's left edge (tracks chatWidthPx as the panel resizes). The panel's
+ *     left edge is `CHAT_PANEL_RIGHT_PX + width` from the viewport's right edge,
+ *     so the control sits one gap further right-anchored out: `... + gap`.
+ */
+export function drawAoiControlPosition(opts: {
+  chatWidthPx?: number;
+  chatCollapsed?: boolean;
+  mobile?: boolean;
+}): { top: number; right: number } {
+  const { chatWidthPx, chatCollapsed, mobile } = opts;
+  if (mobile) {
+    return { top: CHAT_HAMBURGER_TOP_PX, right: CHAT_HAMBURGER_RIGHT_PX };
+  }
+  if (chatCollapsed || chatWidthPx === undefined) {
+    // Tuck under the chat-expand hamburger (collapsed), aligned to its right.
+    return {
+      top: CHAT_HAMBURGER_TOP_PX + CHAT_HAMBURGER_SIZE_PX + CONTROL_GAP_PX,
+      right: CHAT_HAMBURGER_RIGHT_PX,
+    };
+  }
+  // Expanded: rail to the LEFT of the panel's left edge, at the panel's top.
+  return {
+    top: CHAT_PANEL_TOP_PX,
+    right: CHAT_PANEL_RIGHT_PX + chatWidthPx + CONTROL_GAP_PX,
+  };
+}
+
+function controlWrapStyle(pos: {
+  top: number;
+  right: number;
+}): React.CSSProperties {
+  return {
+    position: "absolute",
+    top: pos.top,
+    right: pos.right,
+    zIndex: 20,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-end",
+    gap: 8,
+    pointerEvents: "none", // the wrapper is transparent; buttons re-enable.
+  };
+}
 
 const baseBtn: React.CSSProperties = {
   pointerEvents: "auto",
@@ -95,9 +166,18 @@ const clearBtn: React.CSSProperties = {
 export function DrawAoiControl({
   map,
   stateOverride,
+  chatWidthPx,
+  chatCollapsed,
+  mobile,
 }: DrawAoiControlProps): JSX.Element {
   // Subscribe to the staged-AOI bus (unless a test override is supplied).
   const { armed, bbox } = useBusState(stateOverride);
+
+  // FIX 2 - track the chat panel: rail to the left of its left edge (expanded),
+  // under the chat-expand hamburger (collapsed), or plain top-right (mobile).
+  const wrapStyle = controlWrapStyle(
+    drawAoiControlPosition({ chatWidthPx, chatCollapsed, mobile }),
+  );
 
   // Keep the map in a ref so the draw effect reads the current instance without
   // re-arming the gesture on every render.
@@ -163,7 +243,7 @@ export function DrawAoiControl({
   const hasStaged = bbox !== null;
 
   return (
-    <div data-testid="grace2-draw-aoi-control" style={CONTROL_WRAP}>
+    <div data-testid="grace2-draw-aoi-control" style={wrapStyle}>
       <button
         type="button"
         data-testid="grace2-draw-aoi-button"

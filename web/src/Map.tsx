@@ -373,6 +373,23 @@ export interface MapViewProps {
   onAoiCaptureSkip?: (name: string) => void;
   /** #170 - dismiss the AOI overlay without creating a Case. */
   onAoiCaptureCancel?: () => void;
+  /**
+   * NATE FIX 2 - the desktop chat panel's current dragged width (px), threaded
+   * to DrawAoiControl so the always-on Draw-AOI button rails to the LEFT of the
+   * chat panel and tracks it as the panel resizes. Undefined keeps the legacy
+   * top-right placement.
+   */
+  chatWidthPx?: number;
+  /**
+   * NATE FIX 2 - whether the desktop chat panel is collapsed (the Draw-AOI
+   * button then tucks under the top-right chat-expand hamburger).
+   */
+  chatCollapsed?: boolean;
+  /**
+   * NATE FIX 2 - mobile chrome (the chat is a bottom sheet; the Draw-AOI button
+   * keeps its plain top-right placement).
+   */
+  mobile?: boolean;
 }
 
 /**
@@ -2192,7 +2209,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3867,7 +3884,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           agent-requested spatial-input pick, or the #170 AOI-capture card) so two
           drag handlers never fight. NO-CLOBBER: only this control arms the draw. */}
       {!spatialRequest && !aoiCaptureActive ? (
-        <DrawAoiControl map={map.current} />
+        <DrawAoiControl
+          map={map.current}
+          chatWidthPx={chatWidthPx}
+          chatCollapsed={chatCollapsed}
+          mobile={mobile}
+        />
       ) : null}
     </div>
   );

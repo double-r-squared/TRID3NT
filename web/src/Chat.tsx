@@ -1974,6 +1974,15 @@ export function desktopChatContainerStyle(
     fontFamily: "system-ui, sans-serif",
     fontSize: 13,
     overflow: "hidden",
+    // FIX 1 (NATE 2026-06-22) - the chat panel must ALWAYS stack ABOVE the map
+    // bbox overlay (BboxProgressOverlay paints at zIndex 12). Without an explicit
+    // z-index the panel rendered at z:auto, and a positioned sibling with a
+    // positive z-index (the overlay's 12) paints on TOP of z:auto siblings
+    // regardless of DOM order - so the bbox overlay covered the chat ("the
+    // bounding box should always be under the chat"). Pinning the panel to 32
+    // (the same band as the mobile sheet) puts it firmly above the overlay while
+    // staying below the mobile drawer backdrop (40) + inline gate cards (50).
+    zIndex: 32,
     // ux-batch-1 J1 — no width transition: the column tracks the drag pointer
     // 1:1 (a transition would make the handle feel laggy/rubbery during a drag).
   };
