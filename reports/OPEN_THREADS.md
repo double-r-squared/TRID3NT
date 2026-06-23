@@ -8,10 +8,15 @@ Last updated: 2026-06-23.
 
 ## ACTIVE (in flight this session) — 2026-06-23 fleet, 3 background agents
 
-- **[Focus 1: SFINCS North Star] SnapWave empty/static wave root-cause** — agent `w1wvvm3tc` RUNNING.
-  Two symptoms to separate: (a) frames identical across time, (b) ~0.8% sparse field. On report ->
-  launch wave-FIX agent (SFINCS worker sfincs_reader wave var + deck/forcing). NOT green-lit until BOTH
-  the field is covered AND it animates. See [[project_sfincs_snapwave_not_ready]].
+- **[Focus 1: SFINCS North Star] SnapWave wave fix — ARMED, awaiting activation.** Root-caused (dtwave
+  omitted -> hourly re-solve -> 12 identical frames; shallow-edge boundary placement -> 98 'depth below
+  5m' errors -> empty field). FIXED + merged to main (13fc959): depth-aware deep-Gulf boundary + dtwave
+  cadence + time-varying storm-envelope forcing + honesty gate. Worker image REBUILT (digest 5988491,
+  CodeBuild SUCCEEDED) + job-def grace2-sfincs-quadtree REV 2 digest-pinned. REMAINING (on NATE go /
+  clean window): (1) agent redeploy via grace2-runshell SSM (ships model_flood_scenario depth-aware
+  synthesis + build_spec dtwave/series + offload register-only 5cc7faa), (2) live Mexico Beach coastal
+  re-run -> verify hm0 fills active mask AND consecutive frames differ. NOT green-lit until verified.
+  See [[project_sfincs_snapwave_not_ready]].
 - **[NATE complaint] 3D mode rework** — agent `af548fb1` RUNNING (worktree). Current 3D = hillshade only
   because applyTerrain3d never pitches the camera. Fix: P1 auto-pitch + dramatic terrain (v4, must-land),
   P2 MapLibre v5 + globe projection (terra-draw adapter peerDep >=4 so v5 ok). Commit, NOT deploy; I
