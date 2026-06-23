@@ -77,6 +77,8 @@ __all__ = [
     "INPUT_FILENAME",
     "SWN_CASENAME",
     "SWN_FILENAME",
+    "SWAN_EXCEPTION_VALUE",
+    "SWAN_DEPMIN_M",
 ]
 
 #: The output Matlab file the BLOCK command writes (the portable default the
@@ -112,6 +114,13 @@ _VALID_SIDES: frozenset[str] = frozenset({"N", "S", "E", "W"})
 #: SWAN's exception (NaN / dry / no-data) value -- written via SET; the postprocess
 #: masks cells equal to it. A large sentinel SWAN uses for cells with no result.
 SWAN_EXCEPTION_VALUE: float = -999.0
+
+#: SWAN's DEPMIN -- the minimum (positive-down) depth, in metres, SWAN treats as
+#: WET. A bottom cell with depth < DEPMIN is dry/inactive. Written on the SET line
+#: AND read by the worker's all-dry guard, so the deck + guard can never drift: if
+#: EVERY bottom cell is below this, the whole grid is inactive and SWAN no-ops
+#: ("Normal end of run", no swan_out.mat) -- the all-dry signature.
+SWAN_DEPMIN_M: float = 0.05
 
 
 class SwanDeckError(RuntimeError):
@@ -418,8 +427,8 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
     # an all-land bottom) a coastal grid can end up with no active sea points,
     # which is one way SWAN reaches "Normal end of run" having computed nothing.
     lines.append(
-        f"SET LEVEL 0.0 NOR 90.0 DEPMIN 0.05 EXCEPTION {SWAN_EXCEPTION_VALUE:.1f} "
-        "NAUTICAL"
+        f"SET LEVEL 0.0 NOR 90.0 DEPMIN {SWAN_DEPMIN_M:.2f} "
+        f"EXCEPTION {SWAN_EXCEPTION_VALUE:.1f} NAUTICAL"
     )
 
     # Run mode + spherical (lat/lon) coordinates.

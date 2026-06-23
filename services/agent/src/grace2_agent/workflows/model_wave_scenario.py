@@ -107,46 +107,65 @@ def _fetch_bathy_for_swan(
 
     SWAN needs a SEAMLESS land+bathymetry DEM (the bed for depth-induced shoaling /
     breaking): try ``fetch_topobathy`` first (the seamless coastal DEM -- the right
-    substrate for a nearshore wave field), fall back to ``fetch_dem`` (3DEP
-    land-only) only as a last resort (the data-source fallback norm: primary ->
-    fallback -> honest typed error).
+    substrate for a nearshore wave field).
+
+    REQUIRES REAL BATHYMETRY: a coastal wave model run on a LAND-ONLY DEM (all
+    positive NAVD88 elevations) renders an ALL-DRY SWAN bottom grid (every cell
+    above the still-water level -> depth < DEPMIN -> inactive), so SWAN "prepares
+    computation", runs zero sweeps, and writes no swan_out.mat -- the live
+    2026-06-23 Mexico Beach 33 ms no-op. ``fetch_topobathy`` degrades to a
+    land-only 3DEP fallback and signals it via ``bathymetry_present=False``; the
+    older code only checked ``.uri`` and so SILENTLY fed that all-dry DEM to the
+    worker. We now REJECT a bathymetry-absent result up front with an honest typed
+    error rather than launch a guaranteed no-op solve. The old direct ``fetch_dem``
+    (3DEP, land-only) fallback is REMOVED: it can never carry below-sea-level
+    depths, so it would always produce an all-dry deck for a coastal AOI.
 
     Returns the DEM cache/runs ``s3://`` URI (staged BY REFERENCE -- the worker
-    downloads it directly). Raises ``SwanComposerError`` only when BOTH fail.
+    downloads it directly). Raises ``SwanComposerError`` when the fetch fails OR
+    when the result carries no bathymetry (the data-source fallback norm: primary
+    -> honest typed error, never a silent all-dry dead-end).
     """
-    from ..tools.data_fetch import fetch_dem
     from ..tools.fetch_topobathy import fetch_topobathy
+
+    def _attr(layer: Any, name: str) -> Any:
+        if isinstance(layer, dict):
+            return layer.get(name)
+        return getattr(layer, name, None)
 
     try:
         layer = fetch_topobathy(bbox)
-        uri = getattr(layer, "uri", None) or (
-            layer.get("uri") if isinstance(layer, dict) else None
-        )
-        if uri:
-            return str(uri)
-    except Exception as exc:  # noqa: BLE001 -- fall through to fetch_dem
-        logger.info(
-            "fetch_topobathy failed (%s); falling back to fetch_dem(10m)", exc
-        )
-
-    try:
-        layer = fetch_dem(bbox, resolution_m=10)
-        uri = getattr(layer, "uri", None) or (
-            layer.get("uri") if isinstance(layer, dict) else None
-        )
-        if not uri:
-            raise SwanComposerError(
-                "SWAN_DEM_FETCH_FAILED",
-                f"fetch_dem returned no uri for bbox {bbox}",
-            )
-        return str(uri)
-    except SwanComposerError:
-        raise
     except Exception as exc:  # noqa: BLE001
         raise SwanComposerError(
             "SWAN_DEM_FETCH_FAILED",
-            f"both DEM sources failed for bbox {bbox}: topobathy + fetch_dem-10m: {exc}",
+            f"fetch_topobathy failed for bbox {bbox}: {exc}",
         ) from exc
+
+    uri = _attr(layer, "uri")
+    if not uri:
+        raise SwanComposerError(
+            "SWAN_DEM_FETCH_FAILED",
+            f"fetch_topobathy returned no uri for bbox {bbox}",
+        )
+
+    # REQUIRE real bathymetry. ``bathymetry_present`` is False when CUDEM had no
+    # coverage and fetch_topobathy degraded to a LAND-ONLY 3DEP surface -- which
+    # has NO below-datum sea cells, so the SWAN bottom grid would be entirely dry
+    # and SWAN would no-op silently. Default True so a plain ``LayerURI`` (no flag,
+    # e.g. a test stub) is accepted.
+    bathy_present = _attr(layer, "bathymetry_present")
+    if bathy_present is False:
+        warning = _attr(layer, "fallback_warning")
+        raise SwanComposerError(
+            "SWAN_NO_BATHYMETRY",
+            f"fetch_topobathy returned a LAND-ONLY DEM for bbox {bbox} "
+            f"(bathymetry_present=False); a coastal SWAN run needs real "
+            f"below-datum bathymetry or the computational grid is all-dry and "
+            f"SWAN no-ops (empty solve). "
+            + (f"({warning})" if warning else "No CUDEM coastal coverage for this AOI."),
+        )
+
+    return str(uri)
 
 
 def _record_swan_batch_solve_telemetry(
