@@ -2354,6 +2354,22 @@
       "model": "opus",
       "subagent_tokens": 129537,
       "description": "Contamination plume x Fields-of-the-World demo spike (NATE pull-forward): reports/design/demo_spike_contamination_fotw.md. ~90% composition (run_modflow_job GWT + fetch_field_boundaries + compute_zonal_statistics exist); net-new = analyze_affected_fields tool + model_contamination_affected_fields workflow. FTW regional (US cropland default, Ames IA). Build S1-S5."
+    },
+    {
+      "id": "qgis-plugin-wrapping-survey",
+      "date": "2026-06-23",
+      "kind": "workflow",
+      "agents": 6,
+      "subagent_tokens": 599541,
+      "note": "DigitizingTools + top-plugins + profile/digitizer wrapping survey"
+    },
+    {
+      "id": "vercel-migration-readiness",
+      "date": "2026-06-23",
+      "kind": "workflow",
+      "agents": 5,
+      "subagent_tokens": 485215,
+      "note": "frontend Vercel migration readiness audit"
     }
   ],
   "totals_by_sprint": {
