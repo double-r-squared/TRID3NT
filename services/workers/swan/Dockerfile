@@ -35,7 +35,10 @@
 # with the real digest of the pinned tarball (the build's sha256sum -c gate will
 # fail loudly until it is, which is the intended safety interlock).
 
-FROM debian:bookworm-slim AS runtime
+# Base via the AWS ECR Public mirror of Docker Hub library images (NOT
+# docker.io directly) to avoid the Docker Hub anonymous-pull 429 rate limit in
+# CodeBuild -- mirrors the openquake worker's public.ecr.aws/docker/library base.
+FROM public.ecr.aws/docker/library/debian:bookworm-slim AS runtime
 
 LABEL org.opencontainers.image.title="grace-2-swan-solver" \
       org.opencontainers.image.source="https://github.com/double-r-squared/GRACE-2" \
