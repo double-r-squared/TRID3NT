@@ -6,15 +6,18 @@
 // appears during case-create, or the agent-requested spatial-input surface).
 // Nothing runs until the user actually prompts.
 //
-// Flow:
-//   - Idle: a single round control button (the bbox/selection icon).
-//   - Tap it -> ARM the drag-rectangle gesture (attachBboxDrag). The cursor goes
-//     crosshair; the user drags a rectangle on the live map.
-//   - On release -> the staged bbox is recorded on the aoiStageBus (read by Chat
-//     on the next send) and a styled rectangle is painted on the map.
-//   - A staged box surfaces a "Clear" affordance; clearing removes the staged
-//     bbox + the on-map rectangle. Re-tapping the button re-arms a fresh draw
-//     (replacing the staged box).
+// Flow (NATE 2026-06-22, items 5 + 6 - the single-button two-path model):
+//   - Idle: a single round control button (the bbox/selection icon). Tap -> ARM.
+//   - ARMED (drawing): the SAME button's glyph becomes a RED X (cancel). The
+//     cursor goes crosshair; the user drags a rectangle on the live map. Tapping
+//     the red X cancels the in-progress draw (back to idle). There is NO separate
+//     underneath-X anymore - the button itself is the cancel control.
+//   - On release -> the staged bbox is recorded on the aoiStageBus and a styled
+//     rectangle is painted on the map; the button reverts to the draw icon.
+//   - SET (a box exists, not drawing): a "+" affordance appears at the BOTTOM-
+//     CENTER, just under the box's bottom edge, to CONFIRM/finalize the AOI
+//     (onConfirm). Re-tapping the draw button re-arms a fresh draw (replacing the
+//     staged box), which doubles as the RESET path.
 //
 // NO-CLOBBER (NATE): the gesture is armed ONLY by an explicit tap on this
 // control (never an ambient free-draw), and it draws onto the dedicated bbox-pick
@@ -26,14 +29,17 @@
 // clearPickLayers) so the gesture is byte-identical to the AoiPickerCard's.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Map as MapLibreMap } from "maplibre-gl";
-import { IconBbox, IconClose } from "./icons";
+import { IconBbox, IconClose, IconAdd } from "./icons";
 import {
   attachBboxDrag,
   drawPickBbox,
   ensurePickLayers,
   clearPickLayers,
+  projectBboxScreenRect,
   type BBox,
+  type BboxScreenRect,
 } from "../lib/bbox_draw";
 import { aoiStageBus, type AoiStageBusState } from "../lib/aoi_stage_bus";
 
@@ -65,6 +71,15 @@ export interface DrawAoiControlProps {
    * placement. Default false (desktop).
    */
   mobile?: boolean;
+  /**
+   * NATE 2026-06-22 (item 6) - CONFIRM the staged AOI. The "+" affordance pinned
+   * to the bottom-center of a SET (staged, not-being-drawn) box calls this with
+   * the staged bbox to FINALIZE it as the analysis extent (App wires it to a
+   * `zoom-to` map-command so the drawn box becomes the persistent AOI rectangle +
+   * the camera fits it). Optional: when omitted (legacy callers / fixtures) the
+   * "+" still renders and confirming just clears the staged pick overlay.
+   */
+  onConfirm?: (bbox: BBox) => void;
 }
 
 // FIX 2 geometry (mirrors the App.tsx chat panel + hamburger constants):
@@ -149,19 +164,33 @@ const baseBtn: React.CSSProperties = {
   transition: "color 120ms ease, background 120ms ease, border-color 120ms ease",
 };
 
+// NATE 2026-06-22 (item 5): while ARMED (drawing) the button's own glyph turns
+// into a RED X (cancel). Red fill so it reads unmistakably as the "stop / cancel
+// the draw" control - the user taps it to abort the in-progress rectangle.
 const armedBtn: React.CSSProperties = {
   ...baseBtn,
-  // Active/armed accent (bbox-pick blue) so the user sees draw mode is live.
   color: "#fff",
-  background: "rgba(59,130,246,0.92)",
-  borderColor: "rgba(59,130,246,0.92)",
+  background: "rgba(220,38,38,0.92)", // red (cancel).
+  borderColor: "rgba(220,38,38,0.92)",
 };
 
-const clearBtn: React.CSSProperties = {
+// NATE 2026-06-22 (item 6): the "+" CONFIRM control pinned to the box bottom-
+// center. A small green-accented icon button (styled like the X but for the
+// opposite action - confirm vs cancel). pointer-events re-enabled (it portals
+// out of the wrapper, so it sets its own).
+const confirmBtn: React.CSSProperties = {
   ...baseBtn,
-  width: 30,
-  height: 30,
+  pointerEvents: "auto",
+  width: 32,
+  height: 32,
+  color: "#fff",
+  background: "rgba(34,197,94,0.95)", // green (confirm).
+  borderColor: "rgba(34,197,94,0.95)",
 };
+
+// Gap (px) between the box's bottom edge and the "+" confirm control, mirroring
+// the AoiPickerCard DrawControls anchor.
+const CONFIRM_CONTROL_GAP_PX = 10;
 
 export function DrawAoiControl({
   map,
@@ -169,9 +198,17 @@ export function DrawAoiControl({
   chatWidthPx,
   chatCollapsed,
   mobile,
+  onConfirm,
 }: DrawAoiControlProps): JSX.Element {
   // Subscribe to the staged-AOI bus (unless a test override is supplied).
   const { armed, bbox } = useBusState(stateOverride);
+
+  // NATE 2026-06-22 (item 6): the staged box's projected on-screen rect, so the
+  // "+" confirm control can pin to its BOTTOM-CENTER and follow the camera (same
+  // pattern as the legend / scrubber / AoiPickerCard DrawControls). Only tracked
+  // while a box is SET (staged) and NOT being drawn (armed) - the "+" must NOT
+  // appear mid-draw, only once a box exists.
+  const [confirmRect, setConfirmRect] = useState<BboxScreenRect | null>(null);
 
   // FIX 2 - track the chat panel: rail to the left of its left edge (expanded),
   // under the chat-expand hamburger (collapsed), or plain top-right (mobile).
@@ -222,6 +259,53 @@ export function DrawAoiControl({
     }
   }, [map, armed, bbox]);
 
+  // NATE 2026-06-22 (item 6): track the staged box's bottom-center anchor for the
+  // "+" confirm control. Re-projected on every camera move so the "+" stays glued
+  // to the box. Active ONLY when a box is staged AND not being drawn.
+  useEffect(() => {
+    const m = map;
+    if (!m || armed || !bbox) {
+      setConfirmRect(null);
+      return undefined;
+    }
+    let rafId: number | null = null;
+    let disposed = false;
+    const recompute = (): void => {
+      rafId = null;
+      if (disposed) return;
+      setConfirmRect(projectBboxScreenRect(m, bbox));
+    };
+    const schedule = (): void => {
+      if (rafId != null) return;
+      if (typeof requestAnimationFrame === "function") {
+        rafId = requestAnimationFrame(recompute);
+      } else {
+        recompute();
+      }
+    };
+    schedule();
+    try {
+      m.on("move", schedule);
+      m.on("zoom", schedule);
+      m.on("render", schedule);
+    } catch {
+      /* map mid-teardown - the initial projection above still anchors it */
+    }
+    return () => {
+      disposed = true;
+      if (rafId != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
+      try {
+        m.off("move", schedule);
+        m.off("zoom", schedule);
+        m.off("render", schedule);
+      } catch {
+        /* map torn down */
+      }
+    };
+  }, [map, armed, bbox]);
+
   const onArm = useCallback(() => {
     // Re-arming with a staged box replaces it: clear the staged box first so the
     // new draw starts fresh (the gesture repaints as the user drags).
@@ -240,6 +324,16 @@ export function DrawAoiControl({
     aoiStageBus.clear();
   }, []);
 
+  // NATE 2026-06-22 (item 6): CONFIRM the staged AOI. Hand the staged bbox to the
+  // caller (App wires it to a `zoom-to` map-command so the drawn box becomes the
+  // persistent analysis-extent rectangle + the camera fits it), then clear the
+  // staged pick overlay (the box is now finalized as the AOI, not a pending draw).
+  const onConfirmClick = useCallback(() => {
+    const b = aoiStageBus.getState().bbox ?? bbox;
+    if (b && onConfirm) onConfirm(b);
+    onClear();
+  }, [bbox, onConfirm, onClear]);
+
   const hasStaged = bbox !== null;
 
   return (
@@ -251,26 +345,53 @@ export function DrawAoiControl({
         aria-pressed={armed}
         title={
           armed
-            ? "Drag a rectangle on the map to set the analysis extent"
+            ? "Cancel the in-progress AOI draw"
             : "Draw the analysis extent for your next prompt"
         }
         onClick={armed ? onClear : onArm}
         style={armed ? armedBtn : baseBtn}
       >
-        <IconBbox size={18} />
+        {/* NATE 2026-06-22 (item 5): the button's OWN glyph toggles - the draw/
+            bbox icon when idle, a RED X (cancel) while drawing. No separate
+            underneath-X. */}
+        {armed ? <IconClose size={18} /> : <IconBbox size={18} />}
       </button>
-      {hasStaged && !armed ? (
-        <button
-          type="button"
-          data-testid="grace2-draw-aoi-clear"
-          aria-label="Clear staged analysis extent"
-          title="Clear the staged analysis extent"
-          onClick={onClear}
-          style={clearBtn}
-        >
-          <IconClose size={14} />
-        </button>
-      ) : null}
+
+      {/* NATE 2026-06-22 (item 6): the "+" CONFIRM control. Appears ONLY once a
+          box is SET (staged, not being drawn). When the box projects on-screen
+          (confirmRect) the "+" pins to the BOTTOM-CENTER just under the box's
+          bottom edge and tracks the camera; if the box is off-screen / not yet
+          projected it falls back to viewport bottom-center (mirrors the
+          AoiPickerCard DrawControls null-rect fallback) so the confirm is never
+          unreachable. Portaled to document.body so its fixed coords resolve
+          against the viewport. Clicking it finalizes the AOI. */}
+      {hasStaged && !armed
+        ? createPortal(
+            <button
+              type="button"
+              data-testid="grace2-draw-aoi-confirm"
+              aria-label="Confirm analysis extent"
+              title="Confirm this analysis extent"
+              onClick={onConfirmClick}
+              style={{
+                ...confirmBtn,
+                position: "fixed",
+                ...(confirmRect
+                  ? {
+                      left: (confirmRect.left + confirmRect.right) / 2,
+                      top: confirmRect.bottom + CONFIRM_CONTROL_GAP_PX,
+                    }
+                  : { left: "50%", bottom: 96 }),
+                transform: "translateX(-50%)",
+                zIndex: 21,
+              }}
+            >
+              <IconAdd size={16} />
+            </button>,
+            document.body,
+            "grace2-draw-aoi-confirm",
+          )
+        : null}
     </div>
   );
 }

@@ -70,6 +70,7 @@ import {
 } from "../lib/titiler_colormap";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAnimationState } from "../lib/use_animation_controller";
+import { IconClose } from "./icons";
 
 // JOB WEB-AOI-LEGEND (#157)  -  the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
@@ -256,6 +257,13 @@ const KEY_MAX_WIDTH = 520;
 // bar) so we feed a separate vertical height to the stacking math.
 const KEY_HEIGHT_FLAT = 56;
 const KEY_HEIGHT_VERTICAL = 150;
+// NATE 2026-06-22 (item 2): a VERTICAL-docked key (left/right side) is a TALL,
+// NARROW bar - the wide horizontal width made it render nearly square. The card
+// only has to fit the thin gradient bar + the centered min/max labels + padding,
+// so we cap the vertical card to a narrow fixed width (the title ellipsizes).
+// Horizontal keys keep the full AOI-sized width. Snapping is untouched - this is
+// purely the rendered card width per orientation.
+const VERTICAL_KEY_WIDTH = 76;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
 
@@ -875,6 +883,14 @@ export function LayerLegend({
         // horizontal (min at the left, max at the right).
         const orientation: "vertical" | "horizontal" =
           sideLabel === "left" || sideLabel === "right" ? "vertical" : "horizontal";
+        // NATE 2026-06-22 (item 2): a VERTICAL key renders as a tall, NARROW bar.
+        // The horizontal card needs the full AOI-sized `width` (min .. bar .. max
+        // laid out in a row); a vertical card stacks max/bar/min in a column, so
+        // it only needs a slim fixed width (scaled). Snapping is untouched.
+        const cardWidth =
+          orientation === "vertical"
+            ? Math.round(VERTICAL_KEY_WIDTH * scale)
+            : width;
         const stops = model.colormapStops ?? preset.stops;
         const gradient =
           orientation === "vertical"
@@ -904,7 +920,7 @@ export function LayerLegend({
             style={{
               position: "fixed",
               ...posStyle,
-              width,
+              width: cardWidth,
               padding: "7px 10px 8px",
               background: "rgba(17,18,23,0.78)",
               backdropFilter: "blur(6px)",
@@ -1127,18 +1143,14 @@ function LegendControls({
         aria-label="Hide legend"
         style={controlBtnStyle}
       >
-        {/* An eye glyph for the hide affordance (NATE's "hide(eye) button"). */}
-        <span aria-hidden="true" style={{ fontSize: 11, lineHeight: "14px" }}>
-          {EYE_GLYPH}
-        </span>
+        {/* NATE 2026-06-22 (item 1): the hide affordance is an X glyph (was an
+            eye). Same click behavior + aria-label; the X reads as "dismiss the
+            legend" instead of the ambiguous eye. Shared icon (no raw unicode). */}
+        <IconClose size={12} />
       </button>
     </span>
   );
 }
-
-// A minimal eye glyph for the hide control (kept as a constant so the ASCII
-// source stays clean). U+1F441 = eye.
-const EYE_GLYPH = "\u{1F441}";
 
 const controlBtnStyle: React.CSSProperties = {
   display: "inline-flex",

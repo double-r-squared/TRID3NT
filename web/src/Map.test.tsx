@@ -2204,6 +2204,7 @@ import {
   applyLayerOrder,
   layerGroupMemberIds,
   drawAnalysisExtent,
+  setAnalysisExtentSimColor,
   clearAnalysisExtent,
   computeBboxBottomAnchor,
 } from "./Map";
@@ -2313,6 +2314,8 @@ function makeExtentMap() {
     removeSource: vi.fn((id: string) => {
       sources.delete(id);
     }),
+    // NATE item 4: the sim-recolor path mutates the line stroke in place.
+    setPaintProperty: vi.fn(),
   } as unknown as import("maplibre-gl").Map & {
     sources: Map<string, { setData: ReturnType<typeof vi.fn> }>;
     layers: Set<string>;
@@ -2322,6 +2325,7 @@ function makeExtentMap() {
     addLayer: ReturnType<typeof vi.fn>;
     removeLayer: ReturnType<typeof vi.fn>;
     removeSource: ReturnType<typeof vi.fn>;
+    setPaintProperty: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -2419,6 +2423,65 @@ describe("drawAnalysisExtent (job-0294)", () => {
     // Source + line layer intact -> no addLayer, just a setData replace.
     expect(m.addLayer).not.toHaveBeenCalled();
     expect(m.sources.get("grace2-analysis-extent")!.setData).toHaveBeenCalled();
+  });
+});
+
+// --- NATE 2026-06-22 (item 4): the SINGLE AOI box recolors by sim state ----- //
+describe("analysis-extent sim recolor (item 4)", () => {
+  const BBOX: [number, number, number, number] = [-105.3, 39.95, -105.2, 40.05];
+
+  it("draws the line BLUE by default (no sim flag)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    const lineSpec = m.addLayer.mock.calls[0]![0] as {
+      paint: Record<string, unknown>;
+    };
+    expect(lineSpec.paint["line-color"]).toBe("#4D96FF");
+  });
+
+  it("draws the line PURPLE when simRunning is true", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX, true);
+    const lineSpec = m.addLayer.mock.calls[0]![0] as {
+      paint: Record<string, unknown>;
+    };
+    expect(lineSpec.paint["line-color"]).toBe("#a855f7");
+  });
+
+  it("re-asserts the sim color on a redraw when the line already exists", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX); // create blue line
+    m.setPaintProperty.mockClear();
+    drawAnalysisExtent(m, BBOX, true); // redraw while a sim runs
+    expect(m.setPaintProperty).toHaveBeenCalledWith(
+      "grace2-analysis-extent-line",
+      "line-color",
+      "#a855f7",
+    );
+  });
+
+  it("setAnalysisExtentSimColor mutates the existing line stroke (purple <-> blue)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    setAnalysisExtentSimColor(m, true);
+    expect(m.setPaintProperty).toHaveBeenLastCalledWith(
+      "grace2-analysis-extent-line",
+      "line-color",
+      "#a855f7",
+    );
+    setAnalysisExtentSimColor(m, false);
+    expect(m.setPaintProperty).toHaveBeenLastCalledWith(
+      "grace2-analysis-extent-line",
+      "line-color",
+      "#4D96FF",
+    );
+  });
+
+  it("setAnalysisExtentSimColor is a no-op when the line layer is absent", () => {
+    const m = makeExtentMap();
+    // No drawAnalysisExtent -> no line layer.
+    setAnalysisExtentSimColor(m, true);
+    expect(m.setPaintProperty).not.toHaveBeenCalled();
   });
 });
 

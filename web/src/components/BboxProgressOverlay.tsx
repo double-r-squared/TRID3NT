@@ -64,8 +64,14 @@ function ensureKeyframes(): void {
   100% { background-position: 0% 200%, 0 0, 0 0; opacity: 0.35; }
 }
 @keyframes grace2-bbox-scan-sweep {
+  /* NATE 2026-06-22 (item 3): the sweep must cross the FULL bbox extent. The
+     sweep bar is 40% of the frame width, anchored at left:0. To travel from
+     fully off the LEFT edge (its right edge at frame-left) to fully off the
+     RIGHT edge (its left edge at frame-right) it shifts from -100% of its own
+     width to +250% (0.40 * 2.5 = 1.0 frame width past the left edge). The old
+     +100% stopped the bar at 80% across, never reaching the right edge. */
   0%   { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  100% { transform: translateX(250%); }
 }
 @keyframes grace2-bbox-border-pulse {
   0%   { opacity: 0.45; }
@@ -158,17 +164,29 @@ export function BboxProgressOverlay({
   // (the most legible sweep on a rectangle); the pulsing border carries the
   // around-the-edge feel without obscuring the box. Reduced-motion -> a faint
   // static border only.
+  //
+  // NATE 2026-06-22 (item 4): for the SIM tone (purple) the on-map analysis-
+  // extent rectangle ITSELF recolors to purple (Map.setAnalysisExtentSimColor),
+  // so the overlay must NOT also draw its own solid border - that read as a
+  // SECOND box. For the sim tone we drop the static border and keep ONLY the
+  // sweeping highlight bar (which now crosses the full extent, item 3) running on
+  // the recolored single box. The blue (loading / connecting) tone has no map
+  // recolor, so it keeps its pulsing border as the on-map cue.
+  const isSim = tone === "purple";
   const scanBorderStyle: React.CSSProperties = reduced
     ? {
         ...frameStyle,
-        border: `1.5px solid ${color}`,
-        opacity: 0.5,
+        ...(isSim ? {} : { border: `1.5px solid ${color}`, opacity: 0.5 }),
       }
     : {
         ...frameStyle,
-        border: `1.5px solid ${color}`,
-        animation: "grace2-bbox-border-pulse 1.6s ease-in-out infinite",
-        boxShadow: `0 0 8px ${color}55`,
+        ...(isSim
+          ? {}
+          : {
+              border: `1.5px solid ${color}`,
+              animation: "grace2-bbox-border-pulse 1.6s ease-in-out infinite",
+              boxShadow: `0 0 8px ${color}55`,
+            }),
       };
 
   return (
