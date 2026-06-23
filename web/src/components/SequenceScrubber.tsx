@@ -68,11 +68,26 @@ const SCRUBBER_Z_MOBILE = 31; // below the mobile chat sheet (zIndex 32)
 // screen bottom (Chat.tsx mobileSheetContainerStyle, bottom:0). Z-order alone is
 // NOT enough  -  NATE reported the scrubber STILL overlapping the composer because
 // it was POSITIONED in the same bottom band (aoiRect.bottom+12, or the bottom:24
-// fallback). We additionally CLAMP the scrubber's vertical position so its bottom
-// edge always clears the collapsed sheet (composer). This mirrors the legend's
-// MOBILE_SHEET_CLEARANCE_PX (Map.tsx) so the two overlays use one clearance story.
-// The value covers the collapsed composer card + the sheet's safe-area lift.
+// fallback). We CLAMP the scrubber so its bottom edge always clears the collapsed
+// sheet (composer). This mirrors the legend's MOBILE_SHEET_CLEARANCE_PX (Map.tsx)
+// so the two overlays use one clearance story.
+//
+// BUG 3 (NATE 2026-06-23): the scrubber STILL overlapped the composer on a
+// notched device. Root cause - the old mobile clamp computed `top` from
+// `window.innerHeight - CLEARANCE - height`, which does NOT include the device
+// `safe-area-inset-bottom` (env() is invisible to JS), so on an iPhone the
+// reserved band was short by the inset (~34px) and the clamped scrubber dropped
+// into the composer. The fix mirrors the legend PILL exactly: when the clamp
+// engages on mobile we anchor the scrubber from the BOTTOM with a CSS
+// `calc(env(safe-area-inset-bottom) + CLEARANCE)` (SCRUBBER_MOBILE_BOTTOM_CSS),
+// so the safe-area inset is reserved by CSS on-device. The value covers the
+// collapsed composer card + the sheet's safe-area lift.
 export const SCRUBBER_MOBILE_SHEET_CLEARANCE_PX = 116;
+// CSS bottom offset for the mobile clamp: the device safe-area inset PLUS the
+// collapsed-sheet clearance, so the scrubber's bottom edge sits ABOVE the chat
+// composer on notched + non-notched devices alike (env() is 0 on the latter).
+// Mirrors LayerLegend.MOBILE_LEGEND_PILL_BOTTOM_CSS / Chat SHEET_BOTTOM_OFFSET.
+export const SCRUBBER_MOBILE_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${SCRUBBER_MOBILE_SHEET_CLEARANCE_PX}px)`;
 // Approx rendered scrubber height (7px*2 padding + ~26px control row) used to
 // turn the "top" clamp into a bottom-edge clamp. A small over-estimate is safe.
 const SCRUBBER_APPROX_HEIGHT_PX = 44;
@@ -195,28 +210,41 @@ export function SequenceScrubber({
   let posStyle: React.CSSProperties;
   if (aoiRect) {
     const cx = (aoiRect.left + aoiRect.right) / 2;
-    // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile clamp the top so
-    // the scrubber never drops into the chat sheet's band (it sits ABOVE the
-    // composer). Desktop is unaffected (mobileMaxTop is null).
-    let top = aoiRect.bottom + 12;
+    // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile keep the scrubber
+    // ABOVE the chat sheet/composer. Desktop is unaffected (mobileMaxTop is null).
+    const top = aoiRect.bottom + 12;
     if (mobileMaxTop != null && top > mobileMaxTop) {
-      top = Math.max(0, mobileMaxTop);
+      // BUG 3  -  the natural anchor would drop the scrubber into the composer band.
+      // Anchor from the BOTTOM with the safe-area-inclusive clearance (CSS calc),
+      // exactly like the legend pill, so the inset is reserved on-device (the old
+      // `top = innerHeight - CLEARANCE` clamp silently omitted the safe-area inset
+      // and overlapped the composer on notched phones). Still horizontally
+      // centered on the AOI box.
+      posStyle = {
+        position: "fixed",
+        left: cx,
+        bottom: SCRUBBER_MOBILE_BOTTOM_CSS,
+        transform: "translateX(-50%)",
+        transformOrigin: "bottom center",
+      };
+    } else {
+      posStyle = {
+        position: "fixed",
+        left: cx,
+        top,
+        transform: "translateX(-50%)",
+        transformOrigin: "top center",
+      };
     }
-    posStyle = {
-      position: "fixed",
-      left: cx,
-      top,
-      transform: "translateX(-50%)",
-      transformOrigin: "top center",
-    };
   } else {
     // No AOI on screen: anchor from the bottom. ITEM 6  -  on mobile lift the
-    // anchor by the sheet clearance so the fallback band sits ABOVE the chat
-    // sheet/composer instead of the old bottom:24 (which sat behind it). Desktop
-    // keeps the original low bottom-center position.
+    // anchor by the safe-area-inclusive sheet clearance so the fallback band sits
+    // ABOVE the chat sheet/composer (BUG 3: the old fixed bottom:116 px omitted
+    // the device safe-area inset and overlapped on notched phones). Desktop keeps
+    // the original low bottom-center position.
     posStyle = {
       position: "fixed",
-      bottom: isMobile ? SCRUBBER_MOBILE_SHEET_CLEARANCE_PX : 24,
+      bottom: isMobile ? SCRUBBER_MOBILE_BOTTOM_CSS : 24,
       left: "50%",
       transform: "translateX(-50%)",
       transformOrigin: "bottom center",

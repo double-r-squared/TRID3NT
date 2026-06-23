@@ -38,9 +38,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, screen, act, cleanup, waitFor } from "@testing-library/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createLayerPanelBus, LayerPanel } from "./LayerPanel";
+import { resolveBboxProgress } from "./lib/bbox_progress";
+import type { ScreenRect } from "./lib/legend_snap";
 import {
   LayerCache,
   setLayerCache,
@@ -95,7 +97,8 @@ function ColdOpenHarness({
     },
     isSignedIn: true,
   });
-  const { activeSession, activeCaseId, onCaseOpen, selectCase } = cases;
+  const { activeSession, activeCaseId, onCaseOpen, selectCase, clearActive } =
+    cases;
 
   // App's `layers` state (App.tsx:270) + the empty-state gate (App.tsx:1532).
   const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
@@ -103,15 +106,26 @@ function ColdOpenHarness({
     onLayers(layers);
   }, [layers, onLayers]);
 
+  // BUG 2 harness - the AOI bbox overlay anchor (App.tsx:315 aoiScreenRect). The
+  // test arms it directly via __test_setAoi to stand in for MapView's
+  // onAoiScreenRectChange; the exit-to-root effect below must clear it.
+  const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
+
   // (a) layerCache.activeCaseId lockstep effect (App.tsx ~896-925), VERBATIM
   // (only the WS/scrubber side effects that need maplibre are dropped - they
   // are irrelevant to the layer-drop and don't run in this disconnected path).
+  // BUG 2 - the exit-to-root clear (App.tsx ~1080) is reproduced verbatim.
   const activeCaseIdRef = useRef<string | null>(null);
   useEffect(() => {
     const prevCaseId = activeCaseIdRef.current;
     activeCaseIdRef.current = activeCaseId;
     if (prevCaseId !== null && prevCaseId !== activeCaseId) {
       layerCache.evictCase(prevCaseId);
+    }
+    // BUG 2 (NATE 2026-06-23) - exit-to-root is a CLEAR SLATE.
+    if (activeCaseId === null) {
+      setAoiScreenRect(null);
+      setLayers([]);
     }
     layerCache.activeCaseId = activeCaseId;
   }, [activeCaseId, layerCache]);
@@ -154,6 +168,35 @@ function ColdOpenHarness({
     return unsub;
   }, [bus, layerCache]);
 
+  // BUG 1 (NATE 2026-06-23) - the loading-scan settledness derivation, VERBATIM
+  // from App.tsx (~1533). caseSelectedButUnsettled is FALSE once the ACTIVE
+  // Case's layers are present (layers.length > 0), so the loading scan clears even
+  // if the WS session-settle signal lags (the same-bbox switch / cold-view case).
+  // activeSession.case.case_id matching is left out of this harness's settle
+  // signal on purpose: useCases sets activeSession on cold-open, so to exercise
+  // the "session lags but layers present" path we drive layers directly and keep
+  // the session-match term TRUE-by-default (unsettled) via a forced flag.
+  const sessionSettled =
+    activeSession !== null && activeSession.case.case_id === activeCaseId;
+  const caseSelectedButUnsettled =
+    activeCaseId !== null && layers.length === 0 && !sessionSettled;
+  const layersLoading = useMemo(
+    () => activeCaseId !== null && caseSelectedButUnsettled,
+    [activeCaseId, caseSelectedButUnsettled],
+  );
+  const bboxProgress = useMemo(
+    () =>
+      resolveBboxProgress({
+        hasBbox: aoiScreenRect !== null,
+        layerCount: layers.length,
+        layersLoading,
+        connecting: false,
+        simRunning: false,
+        animationsEnabled: true,
+      }),
+    [aoiScreenRect, layers.length, layersLoading],
+  );
+
   // Expose the cold-load entry (App.tsx:1155 useCases_onCaseOpen(payload))
   // AND the user-tap entry (App.tsx:308 selectCase -> setActiveCaseId first).
   useEffect(() => {
@@ -163,15 +206,24 @@ function ColdOpenHarness({
     (window as unknown as Record<string, unknown>).__test_selectCase = (
       id: string,
     ) => selectCase(id);
+    (window as unknown as Record<string, unknown>).__test_setAoi = (
+      r: ScreenRect | null,
+    ) => setAoiScreenRect(r);
+    (window as unknown as Record<string, unknown>).__test_clearActive = () =>
+      clearActive();
     return () => {
       delete (window as unknown as Record<string, unknown>).__test_coldOpen;
       delete (window as unknown as Record<string, unknown>).__test_selectCase;
+      delete (window as unknown as Record<string, unknown>).__test_setAoi;
+      delete (window as unknown as Record<string, unknown>).__test_clearActive;
     };
-  }, [onCaseOpen, selectCase]);
+  }, [onCaseOpen, selectCase, clearActive]);
 
   return (
     <div>
       <div data-testid="app-layer-count">{layers.length}</div>
+      <div data-testid="app-bbox-mode">{bboxProgress.mode}</div>
+      <div data-testid="app-has-aoi">{aoiScreenRect ? "yes" : "no"}</div>
       {/* The App empty-state, gated on layers.length (App.tsx:1532). */}
       {layers.length === 0 && <div>{EMPTY_STATE_TEXT}</div>}
       {/* The REAL LayerPanel on the same bus (App.tsx:1571 wiring). */}
@@ -323,5 +375,82 @@ describe("mergeSnapshot under a stale/correct activeCaseId (race isolation)", ()
     const merged = subscriberMerge(cache, incoming);
     expect(merged.length).toBe(EXPECTED_LAYERS);
     expect(cache.layersFor(cache.activeCaseId).length).toBe(EXPECTED_LAYERS);
+  });
+});
+
+// ── BUG 1 (NATE 2026-06-23): the loading SCAN must clear once the active Case's
+// layers are PRESENT, even if the WS session-settle signal lags (same-bbox
+// switch / cold-view case). resolveBboxProgress maps layersLoading -> a scan
+// over already-loaded layers; the App settledness fix makes layersLoading FALSE
+// the instant layers.length > 0, so the scan stops. ──────────────────────── //
+const setAoi = (r: ScreenRect | null): void =>
+  (window as unknown as { __test_setAoi: (r: ScreenRect | null) => void })
+    .__test_setAoi(r);
+const clearActiveCase = (): void =>
+  (window as unknown as { __test_clearActive: () => void }).__test_clearActive();
+const coldOpen = (p: CaseOpenEnvelopePayload): void =>
+  (window as unknown as { __test_coldOpen: (p: CaseOpenEnvelopePayload) => void })
+    .__test_coldOpen(p);
+
+describe("BUG 1 - loading scan clears when the active Case's layers are present", () => {
+  it("with an AOI armed but ZERO layers, the bbox overlay shows a FILL scan (loading)", async () => {
+    render(<ColdOpenHarness onLayers={(l) => (lastLayers = l)} />);
+    // Arm the AOI + select a case (activeCaseId set, no session yet -> unsettled).
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+      setAoi({ left: 100, top: 100, right: 300, bottom: 200 });
+    });
+    // Unsettled + zero layers -> loading -> FILL shimmer (first fetch).
+    expect(screen.getByTestId("app-bbox-mode").textContent).toBe("fill");
+  });
+
+  it("once the layers PAINT, the loading scan CLEARS (mode none) even before session-settle", async () => {
+    render(<ColdOpenHarness onLayers={(l) => (lastLayers = l)} />);
+    await act(async () => {
+      setAoi({ left: 100, top: 100, right: 300, bottom: 200 });
+      coldOpen(COLD_PAYLOAD);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layer-count").textContent).toBe(
+        String(EXPECTED_LAYERS),
+      );
+    });
+    // Layers present -> caseSelectedButUnsettled FALSE -> layersLoading FALSE ->
+    // resolveBboxProgress returns "none": NO scan running over loaded layers.
+    expect(screen.getByTestId("app-bbox-mode").textContent).toBe("none");
+  });
+});
+
+// ── BUG 2 (NATE 2026-06-23): exit-to-root is a CLEAR SLATE - the AOI bbox
+// overlay anchor (aoiScreenRect) AND the layers must both clear when
+// activeCaseId becomes null, so nothing lingers on the Cases root. ───────── //
+describe("BUG 2 - exit-to-root clears the AOI overlay and the layers", () => {
+  it("clearActive() drops aoiScreenRect + layers so the Cases root is blank", async () => {
+    render(<ColdOpenHarness onLayers={(l) => (lastLayers = l)} />);
+    // Open a case with layers + an armed AOI overlay.
+    await act(async () => {
+      setAoi({ left: 100, top: 100, right: 300, bottom: 200 });
+      coldOpen(COLD_PAYLOAD);
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layer-count").textContent).toBe(
+        String(EXPECTED_LAYERS),
+      );
+    });
+    expect(screen.getByTestId("app-has-aoi").textContent).toBe("yes");
+
+    // Exit to the Cases root.
+    await act(async () => {
+      clearActiveCase();
+    });
+
+    // CLEAR SLATE: no AOI overlay anchor, no layers, no bbox scan on the root.
+    await waitFor(() => {
+      expect(screen.getByTestId("app-has-aoi").textContent).toBe("no");
+    });
+    expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+    expect(screen.getByTestId("app-bbox-mode").textContent).toBe("none");
   });
 });

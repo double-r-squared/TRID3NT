@@ -8,7 +8,12 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
-import { SequenceScrubber, wrapIndex } from "./SequenceScrubber";
+import {
+  SequenceScrubber,
+  wrapIndex,
+  SCRUBBER_MOBILE_BOTTOM_CSS,
+  SCRUBBER_MOBILE_SHEET_CLEARANCE_PX,
+} from "./SequenceScrubber";
 
 afterEach(() => {
   cleanup();
@@ -335,34 +340,54 @@ describe("SequenceScrubber - mobile vertical clamp above the chat sheet (ITEM 6)
     vi.stubGlobal("innerHeight", 600);
   }
 
-  it("CLAMPS the AOI-pinned top so the scrubber clears the chat sheet", () => {
+  it("the mobile bottom-offset constant reserves the safe-area inset + a positive clearance (BUG 3)", () => {
+    // Source-of-truth: a calc() over the device safe-area inset PLUS the fixed
+    // sheet clearance, mirroring LayerLegend.MOBILE_LEGEND_PILL_BOTTOM_CSS. The
+    // old clamp computed `top = innerHeight - CLEARANCE`, which OMITTED the
+    // device safe-area inset (env() is invisible to JS), so on a notched phone
+    // the reserved band fell short by the inset and overlapped the composer.
+    // (jsdom's CSSOM drops calc(env(...)) from an inline `bottom`, so we pin the
+    // exported constant directly  -  the same convention the legend pill uses.)
+    expect(SCRUBBER_MOBILE_SHEET_CLEARANCE_PX).toBeGreaterThan(24);
+    expect(SCRUBBER_MOBILE_BOTTOM_CSS).toBe(
+      `calc(env(safe-area-inset-bottom) + ${SCRUBBER_MOBILE_SHEET_CLEARANCE_PX}px)`,
+    );
+    expect(SCRUBBER_MOBILE_BOTTOM_CSS).toContain("env(safe-area-inset-bottom)");
+  });
+
+  it("CLAMPS a low AOI to a BOTTOM anchor (drops the top anchor) so it clears the sheet (BUG 3)", () => {
     stubMobile();
     // AOI bottom at 580 -> unclamped top would be 592 (past the 600 viewport,
-    // inside the chat sheet). The clamp must pull it up to clear the sheet.
+    // inside the chat sheet). The clamp must re-anchor the scrubber from the
+    // BOTTOM (safe-area-inclusive) instead of a top clamped against innerHeight.
     renderScrubber({ aoiRect: { left: 100, top: 400, right: 300, bottom: 580 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    const top = parseFloat(el.style.top);
-    // maxTop = 600 - 116 (clearance) - 44 (approx height) = 440. The scrubber's
-    // top is clamped to <= maxTop, well above the chat sheet band.
-    expect(top).toBeLessThanOrEqual(440);
+    // No top anchor anymore when clamped: it switches to a bottom anchor.
+    expect(el.style.top).toBe("");
+    // The bottom branch sets a calc(env(...)) value; jsdom drops it to "" - the
+    // key invariant is it is NOT the bare desktop 24px nor the AOI's low top.
+    expect(el.style.bottom).not.toBe("24px");
     // It is centered on the AOI horizontally regardless.
     expect(el.style.left).toBe("200px");
   });
 
   it("does NOT clamp when the AOI sits high enough (top already clears the sheet)", () => {
     stubMobile();
-    // AOI bottom at 100 -> top = 112, far above maxTop(440): unchanged.
+    // AOI bottom at 100 -> top = 112, far above maxTop(440): unchanged (top anchor).
     renderScrubber({ aoiRect: { left: 100, top: 40, right: 300, bottom: 100 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
     expect(parseFloat(el.style.top)).toBe(112);
+    // High AOI keeps a TOP anchor (no bottom override).
+    expect(el.style.bottom).toBe("");
   });
 
-  it("AOI-less fallback anchors ABOVE the chat sheet on mobile (not bottom:24)", () => {
+  it("AOI-less fallback anchors ABOVE the chat sheet on mobile (NOT the bare desktop 24px) (BUG 3)", () => {
     stubMobile();
     renderScrubber(); // no aoiRect
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    // Mobile fallback lifts the bottom anchor by the sheet clearance (116px),
-    // so the scrubber sits above the composer instead of behind it.
-    expect(el.style.bottom).toBe("116px");
+    // Mobile fallback lifts the bottom anchor by the safe-area inset PLUS the
+    // sheet clearance via CSS calc. jsdom drops calc(env(...)) to "" - the key
+    // invariant is it is NOT the desktop 24px that sat behind the composer.
+    expect(el.style.bottom).not.toBe("24px");
   });
 });

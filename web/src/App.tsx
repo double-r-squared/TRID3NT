@@ -1076,6 +1076,24 @@ export function App(): JSX.Element {
       getAnimationController().reset();
       setLegendHiddenMobile(false);
     }
+    // BUG 2 (NATE 2026-06-23) - EXIT-TO-ROOT is a CLEAR SLATE. Navigating OUT to
+    // the Cases root (activeCaseId === null) must leave NOTHING on the map: the
+    // AOI bbox overlay anchor (aoiScreenRect, which drives BboxProgressOverlay)
+    // and the lifted `layers` list both have to be cleared HERE, unconditionally.
+    // The switch path above handles a SWITCH (evict + scrubber reset); a fresh
+    // Case re-arms its OWN bbox/layers via the activeSession effect + MapView
+    // re-projection, so this exit-only clear never strands a switched-into Case.
+    // Previously the AOI overlay lingered after exit because the only clear path
+    // was the `clear-analysis-extent` map command -> MapView -> onAoiScreenRectChange,
+    // which can lag / not re-fire (box busy/asleep, no map re-project), so the
+    // dashed bbox + its progress scan stayed on the Cases root. Clearing the App
+    // state directly is the durable "Cases is a clear slate" guarantee NATE keeps
+    // reporting. These are setState calls inside an effect (NOT hooks), so they
+    // do not affect the #310 hook-count rule.
+    if (activeCaseId === null) {
+      setAoiScreenRect(null);
+      setLayers([]);
+    }
     layerCache.activeCaseId = activeCaseId;
   }, [activeCaseId, layerCache]);
 
@@ -1518,8 +1536,21 @@ export function App(): JSX.Element {
   // unauthed->authed transition and blanks the whole app. Derived from existing
   // signals; FALSE when the Case is open + settled + socket healthy, so a
   // genuinely-empty Case shows the empty stub (never spins forever).
+  //
+  // BUG 1 (NATE 2026-06-23) - the loading scan must clear once the ACTIVE Case's
+  // layers are actually PRESENT, not only when the WS SESSION settles
+  // (activeSession.case.case_id === activeCaseId). On a switch between two Cases
+  // with the SAME bbox the new Case's layers render from cold-view/cache, but the
+  // session-settle signal lags (or never fires while the box is busy/asleep), so
+  // the scan kept running OVER already-loaded layers. Treat layers-present for the
+  // active Case as settled: `layers` is keyed to the active Case (mergeSnapshot
+  // by layerCache.activeCaseId; [] at the root), so layers.length > 0 means the
+  // ACTIVE Case has painted. A genuinely-empty Case (layers.length 0) still waits
+  // on the session-settle signal, so it shows the empty stub once settled rather
+  // than spinning forever (the existing comment's intent is preserved).
   const caseSelectedButUnsettled =
     activeCaseId !== null &&
+    layers.length === 0 &&
     (activeSession === null ||
       activeSession.case.case_id !== activeCaseId);
   const layersLoading = useMemo(
