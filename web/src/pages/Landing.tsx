@@ -139,31 +139,58 @@ const IMPACTS = [
   { n: "Built to defend", l: "Each value is traceable to the data and the model behind it, so the work holds up to scrutiny." },
 ];
 
-/** Lightweight scroll-reveal: adds `is-in` to observed nodes once on screen. */
+/** Lightweight scroll-reveal: adds `is-in` to observed nodes once on screen.
+ *
+ * IMPORTANT ordering: React calls the `ref={reveal}` callbacks during the commit
+ * phase, which is BEFORE `useEffect` runs -- so at registration time the observer
+ * does not exist yet. The previous version dropped those nodes on the floor
+ * (`el && observer.current` was false for every section), so NOTHING was ever
+ * observed, `.is-in` was never added, and every `.lp-section` stayed at
+ * `opacity: 0` -- the live "nothing renders past the hero" bug (only
+ * prefers-reduced-motion users escaped, via the CSS override). Fix: queue nodes
+ * registered before the effect into `pending`, then observe them once the
+ * observer is created; and show everything immediately when reveal is disabled. */
 function useScrollReveal(): (el: HTMLElement | null) => void {
   const observer = useRef<IntersectionObserver | null>(null);
+  const pending = useRef<Set<HTMLElement>>(new Set());
 
   useEffect(() => {
     const reduce =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce || typeof IntersectionObserver === "undefined") return;
-    observer.current = new IntersectionObserver(
+    if (reduce || typeof IntersectionObserver === "undefined") {
+      // No reveal animation available: reveal every queued section now so the
+      // page is never stuck invisible (belt-and-suspenders with landing.css).
+      for (const el of pending.current) el.classList.add("is-in");
+      pending.current.clear();
+      return;
+    }
+    const obs = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
             entry.target.classList.add("is-in");
-            observer.current?.unobserve(entry.target);
+            obs.unobserve(entry.target);
           }
         }
       },
       { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
     );
-    return () => observer.current?.disconnect();
+    observer.current = obs;
+    // Observe any nodes that registered before this effect ran (the commit-phase
+    // ref callbacks) -- without this they are never observed and stay hidden.
+    for (const el of pending.current) obs.observe(el);
+    pending.current.clear();
+    return () => {
+      obs.disconnect();
+      observer.current = null;
+    };
   }, []);
 
   return (el: HTMLElement | null) => {
-    if (el && observer.current) observer.current.observe(el);
+    if (!el) return;
+    if (observer.current) observer.current.observe(el);
+    else pending.current.add(el);
   };
 }
 
