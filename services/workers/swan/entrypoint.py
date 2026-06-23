@@ -210,6 +210,7 @@ def _build_depth_fn(bathy_path: Path) -> Any:
     try:
         import numpy as np
         import rasterio
+        from rasterio.warp import transform as _warp_transform
     except Exception as exc:  # noqa: BLE001
         LOG.warning("rasterio unavailable; using flat demo bathymetry: %s", exc)
         return None
@@ -224,21 +225,56 @@ def _build_depth_fn(bathy_path: Path) -> Any:
 
     band = ds.read(1)
     nodata = ds.nodata
+    dst_crs = ds.crs
+
+    # The SWAN bottom grid is sampled at EPSG:4326 lon/lat nodes, but a staged
+    # ``fetch_topobathy`` DEM is frequently in a PROJECTED CRS -- CUDEM coastal
+    # tiles arrive in UTM (the live 2026-06-23 Mexico Beach tile is EPSG:32616,
+    # metres). ``rasterio.DatasetReader.index`` interprets its arguments in the
+    # DATASET CRS, so feeding raw lon/lat (-85.4, 29.9) into a UTM DEM lands
+    # every query a million rows/columns out of bounds -> EVERY node falls back
+    # to the flat 10 m demo depth. That produced a uniform bottom
+    # (depth_min==depth_max==10.0, wet_cells=10201/10201) which sails past the
+    # all-dry guard yet carries no real bathymetry -> SWAN solved a flat basin
+    # and the wave raster was an invisible boundary sliver. Reproject the query
+    # point 4326 -> dst_crs before indexing. A geographic DEM (lon/lat already)
+    # needs no transform.
+    _needs_reproj = bool(dst_crs) and not dst_crs.is_geographic
+    _nodata_finite = nodata is not None and np.isfinite(float(nodata))
+
+    # Sample bookkeeping: a DEM that covers NONE of the AOI grid (every node out
+    # of bounds / no-data) is the silent-flat-demo failure mode -- the caller
+    # inspects these to FAIL LOUD instead of solving a flat basin.
+    stats: dict[str, int] = {"total": 0, "fallback": 0}
 
     def _depth(lon: float, lat: float) -> float:
+        stats["total"] += 1
+        x, y = lon, lat
+        if _needs_reproj:
+            try:
+                xs, ys = _warp_transform("EPSG:4326", dst_crs, [lon], [lat])
+                x, y = float(xs[0]), float(ys[0])
+            except Exception:  # noqa: BLE001
+                stats["fallback"] += 1
+                return 10.0
         try:
-            row, col = ds.index(lon, lat)
+            row, col = ds.index(x, y)
         except Exception:  # noqa: BLE001
+            stats["fallback"] += 1
             return 10.0
         if 0 <= row < band.shape[0] and 0 <= col < band.shape[1]:
             elev = float(band[row, col])
-            if nodata is not None and np.isclose(elev, float(nodata)):
+            if _nodata_finite and np.isclose(elev, float(nodata)):
+                stats["fallback"] += 1
                 return 10.0
             if not np.isfinite(elev):
+                stats["fallback"] += 1
                 return 10.0
             return -elev  # positive-up elevation -> positive-down depth
+        stats["fallback"] += 1
         return 10.0
 
+    _depth.sample_stats = stats  # type: ignore[attr-defined]
     return _depth
 
 
@@ -255,7 +291,49 @@ def _author_deck(build_spec: dict, cwd: Path, bathy_path: Path) -> Any:
     from services.workers.swan.deck_builder import build_swan_deck
 
     depth_fn = _build_depth_fn(bathy_path)
-    return build_swan_deck(build_spec, cwd, depth_fn=depth_fn)
+    manifest = build_swan_deck(build_spec, cwd, depth_fn=depth_fn)
+
+    # Coverage guard: if a DEM was staged + opened but EVERY bottom node fell
+    # back to the flat demo depth, the DEM does not overlap the AOI grid at all
+    # (e.g. a CRS the sampler could not honour, or the wrong tile). A flat bottom
+    # silently passes the all-dry guard (it reads as uniformly "wet"), so without
+    # this check SWAN would solve a meaningless flat basin and paint an empty
+    # raster. Fail loud + named instead (data-source norm: never a silent
+    # all-flat dead-end).
+    stats = getattr(depth_fn, "sample_stats", None) if depth_fn is not None else None
+    if stats and stats.get("total", 0) > 0:
+        fallback = stats.get("fallback", 0)
+        total = stats["total"]
+        LOG.info(
+            "swan bathy sampling: %d/%d nodes fell back to flat demo depth "
+            "(DEM coverage of the AOI grid)",
+            fallback,
+            total,
+        )
+        if fallback >= total:
+            raise SwanBathyCoverageError(
+                "SWAN bathy DEM covers NONE of the AOI grid: all %d bottom "
+                "nodes fell back to the flat demo depth. The staged "
+                "fetch_topobathy DEM does not overlap the AOI (wrong tile or an "
+                "un-handled CRS). A flat bottom would silently pass the all-dry "
+                "guard and SWAN would solve a meaningless flat basin -- failing "
+                "loud instead. Stage a topo-bathymetry DEM that covers the AOI." % total
+            )
+    return manifest
+
+
+class SwanBathyCoverageError(RuntimeError):
+    """The staged bathy DEM covers NONE of the SWAN AOI grid (all-fallback).
+
+    Distinct from ``SwanAllDryGridError``: there the bottom rendered but every
+    cell is dry; here the bottom could not be sampled from the DEM at all (every
+    node out of bounds / no-data), so the deck author wrote the flat demo depth
+    everywhere. A flat 10 m bottom reads as uniformly WET, so it would slip past
+    the all-dry guard and SWAN would solve a flat basin (the live 2026-06-23
+    Mexico Beach invisible-raster bug: a UTM DEM sampled with lon/lat queries).
+    """
+
+    error_code = "SWAN_BATHY_NO_COVERAGE"
 
 
 class SwanAllDryGridError(RuntimeError):
@@ -646,6 +724,12 @@ def main(argv: list[str] | None = None) -> int:
         status, error_msg = classify_swan_outcome(scratch, rc)
         exit_code = rc if status == "ok" else (rc or 1)
 
+    except SwanBathyCoverageError as exc:
+        LOG.error("swan bathy no-coverage: %s", exc)
+        error_msg = str(exc)
+        error_code = SwanBathyCoverageError.error_code
+        exit_code = 1
+        status = "error"
     except SwanAllDryGridError as exc:
         LOG.error("swan all-dry grid: %s", exc)
         error_msg = str(exc)

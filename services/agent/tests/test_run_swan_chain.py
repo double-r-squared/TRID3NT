@@ -587,3 +587,51 @@ def _amock(ret):
     async def _inner(*a, **k):
         return ret
     return _inner
+
+
+# --------------------------------------------------------------------------- #
+# Boundary side/direction consistency (the live 2026-06-23 empty-raster bug).
+# --------------------------------------------------------------------------- #
+def test_coerce_boundary_snaps_net_outgoing_dir_inward():
+    """side=S with dir=0 (waves from the north) is net-OUTGOING through the
+    southern open-water boundary -> SWAN injects ~no energy and paints an empty
+    raster. The coercion snaps it to the side-inward bearing (180 deg)."""
+    from grace2_agent.workflows.run_swan import _coerce_boundary_inward
+
+    b = SwanWaveBoundary(hs_m=8.0, tp_s=12.0, dir_deg=0.0, spread_deg=25.0, side="S")
+    c = _coerce_boundary_inward(b)
+    assert c.dir_deg == pytest.approx(180.0)
+    assert c.side == "S"
+    # other fields preserved.
+    assert c.hs_m == pytest.approx(8.0)
+    assert c.tp_s == pytest.approx(12.0)
+
+
+def test_coerce_boundary_keeps_sane_oblique_dir():
+    """A direction within 90 deg of the side-inward bearing is a legitimate
+    oblique sea-state and is left untouched."""
+    from grace2_agent.workflows.run_swan import _coerce_boundary_inward
+
+    b = SwanWaveBoundary(hs_m=3.0, tp_s=9.0, dir_deg=160.0, spread_deg=25.0, side="S")
+    assert _coerce_boundary_inward(b).dir_deg == pytest.approx(160.0)
+
+
+def test_coerce_boundary_per_side_inward_bearings():
+    """Each side snaps an opposite-pointing direction to its inward bearing."""
+    from grace2_agent.workflows.run_swan import _coerce_boundary_inward
+
+    cases = {"N": (180.0, 0.0), "E": (270.0, 90.0), "S": (0.0, 180.0), "W": (90.0, 270.0)}
+    for side, (bad_dir, want) in cases.items():
+        b = SwanWaveBoundary(hs_m=3.0, tp_s=9.0, dir_deg=bad_dir, spread_deg=25.0, side=side)  # type: ignore[arg-type]
+        assert _coerce_boundary_inward(b).dir_deg == pytest.approx(want), side
+
+
+def test_build_swan_build_spec_applies_inward_coercion():
+    """The contradictory pair reaches the worker as a corrected, inward dir."""
+    from grace2_agent.workflows.run_swan import build_swan_build_spec
+
+    b = SwanWaveBoundary(hs_m=8.0, tp_s=12.0, dir_deg=0.0, spread_deg=25.0, side="S")
+    args = SwanRunArgs(bbox=(-85.55, 29.85, -85.3, 30.05), boundary=b)
+    spec = build_swan_build_spec(args)
+    assert spec["boundary"]["side"] == "S"
+    assert spec["boundary"]["dir_deg"] == pytest.approx(180.0)

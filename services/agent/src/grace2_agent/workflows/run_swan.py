@@ -171,6 +171,53 @@ def synthesize_demo_wave_boundary(
 
 
 # --------------------------------------------------------------------------- #
+# Boundary side/direction consistency.
+# --------------------------------------------------------------------------- #
+#: Nautical "coming-from" direction (deg) for an inward-facing boundary on each
+#: AOI side: a boundary on the SOUTH edge faces open water to the south, so its
+#: waves come FROM the south (180 deg) and propagate NORTH into the domain.
+_SIDE_INWARD_DIR_DEG: dict[str, float] = {"N": 0.0, "E": 90.0, "S": 180.0, "W": 270.0}
+
+
+def _angular_distance_deg(a: float, b: float) -> float:
+    """Smallest absolute angle (deg, 0..180) between two nautical bearings."""
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def _coerce_boundary_inward(boundary: SwanWaveBoundary) -> SwanWaveBoundary:
+    """Force the boundary's wave direction to drive energy INTO the domain.
+
+    SWAN ``BOUN SIDE`` only injects the part of the imposed directional spectrum
+    that travels INTO the grid. A boundary on side X faces open water beyond edge
+    X, so physically the waves must come FROM that side (nautical "coming-from"
+    direction = the side's compass bearing, see ``_SIDE_INWARD_DIR_DEG``). When
+    the LLM supplies a ``(side, dir)`` pair pointing the energy OUT through the
+    same edge (e.g. the live 2026-06-23 Mexico Beach run: side=S with dir=0 deg,
+    waves "from the north" imposed on the SOUTHERN open-water boundary), almost
+    no energy enters -- SWAN paints only a razor-thin boundary sliver and the
+    wave raster looks empty. If the supplied direction is more than 90 deg from
+    the side-inward bearing (i.e. the energy is net-outgoing) we snap it to the
+    side-inward bearing and log it. A sane pair (e.g. side=S, dir=160) is within
+    90 deg and left untouched, so a deliberately oblique sea-state is preserved.
+    """
+    inward = _SIDE_INWARD_DIR_DEG.get(str(boundary.side).strip().upper())
+    if inward is None:
+        return boundary
+    if _angular_distance_deg(float(boundary.dir_deg), inward) <= 90.0:
+        return boundary
+    logger.info(
+        "swan boundary: dir=%.1f deg on side %s is net-OUTGOING (>90 deg from "
+        "the side-inward bearing %.1f deg); snapping to %.1f deg so wave energy "
+        "enters the domain (was an empty-raster no-op)",
+        float(boundary.dir_deg),
+        boundary.side,
+        inward,
+        inward,
+    )
+    return boundary.model_copy(update={"dir_deg": inward})
+
+
+# --------------------------------------------------------------------------- #
 # build_spec assembly.
 # --------------------------------------------------------------------------- #
 def build_swan_build_spec(
@@ -193,6 +240,7 @@ def build_swan_build_spec(
     ``build_geoclaw_build_spec``).
     """
     boundary = run_args.boundary or synthesize_demo_wave_boundary(tuple(run_args.bbox))
+    boundary = _coerce_boundary_inward(boundary)
 
     spec: dict[str, Any] = {
         "mode": run_args.mode,
