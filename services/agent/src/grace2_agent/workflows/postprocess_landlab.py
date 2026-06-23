@@ -28,12 +28,13 @@ via ``cache.storage_scheme()``); the agent does not re-render — ``publish_laye
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from grace2_contracts.landlab_contracts import LandlabSusceptibilityLayerURI
+
+from . import cog_io
+from .cog_io import CogIoError
 
 __all__ = [
     "PostprocessLandlabError",
@@ -193,116 +194,44 @@ def _resolve_scalars(
 # --------------------------------------------------------------------------- #
 # COG reproject (projected-metres field -> EPSG:4326) + CRS round-trip guard.
 # --------------------------------------------------------------------------- #
+#: stage -> (Landlab error_code) map (STEP 1 dedupe; byte-identical codes).
+_LANDLAB_STAGE_CODES: dict[str, str] = {
+    "DEPENDENCY": "LANDLAB_DEPENDENCY_MISSING",
+    "READ": "LANDLAB_OUTPUT_READ_FAILED",
+    "WRITE": "LANDLAB_COG_REPROJECT_FAILED",
+    "REPROJECT": "LANDLAB_COG_REPROJECT_FAILED",
+    "CRS_MISMATCH": "LANDLAB_CRS_TAG_MISMATCH",
+    "UPLOAD": "LANDLAB_COG_UPLOAD_FAILED",
+}
+
+
+def _reraise_cogio(exc: CogIoError) -> "PostprocessLandlabError":
+    """Map a cog_io ``CogIoError`` onto the Landlab typed error (preserves codes)."""
+    code = _LANDLAB_STAGE_CODES.get(exc.stage, "POSTPROCESS_LANDLAB_FAILED")
+    return PostprocessLandlabError(code, message=exc.message, details=dict(exc.details))
+
+
 def _reproject_field_cog_4326(src_cog: Path) -> tuple[Path, tuple[float, float, float, float] | None]:
     """Reproject a metric-CRS field COG to EPSG:4326 (the MapLibre basemap CRS).
 
-    Mirrors ``postprocess_swmm._write_depth_cog_4326``'s warp + CRS round-trip
-    guard (``Resampling.nearest`` preserves the NaN no-data without smearing).
-    Returns ``(dst_cog_path, bbox_4326)``.
+    Thin shim over ``cog_io.reproject_cog_file_to_4326`` (STEP 1 dedupe): the
+    SOURCE is the worker's on-disk field COG; warp to EPSG:4326
+    (``Resampling.nearest`` preserves the NaN no-data without smearing) + run the
+    CRS round-trip guard (which also supplies the zoom-to bbox). Byte-identical to
+    the pre-dedupe reprojector. Returns ``(dst_cog_path, bbox_4326)``.
     """
     try:
-        import rasterio
-        from rasterio.warp import (
-            Resampling,
-            calculate_default_transform,
-            reproject,
+        return cog_io.reproject_cog_file_to_4326(
+            src_cog,
+            crs_roundtrip_guard=True,
+            dst_suffix="_landlab_4326.tif",
         )
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessLandlabError(
-            "LANDLAB_DEPENDENCY_MISSING",
-            message=f"rasterio unavailable for COG reproject: {exc}",
-        ) from exc
-
-    if not src_cog.exists():
-        raise PostprocessLandlabError(
-            "LANDLAB_OUTPUT_READ_FAILED",
-            message=f"Landlab field COG not found at {src_cog}",
-            details={"src_cog": str(src_cog)},
-        )
-
-    dst_cog = Path(
-        tempfile.NamedTemporaryFile(suffix="_landlab_4326.tif", delete=False).name
-    )
-    dst_crs = "EPSG:4326"
-    try:
-        with rasterio.open(src_cog) as src:
-            if src.crs is None:
-                raise PostprocessLandlabError(
-                    "LANDLAB_OUTPUT_READ_FAILED",
-                    message=f"Landlab field COG {src_cog} carries no CRS tag",
-                    details={"src_cog": str(src_cog)},
-                )
-            transform, width, height = calculate_default_transform(
-                src.crs, dst_crs, src.width, src.height, *src.bounds
-            )
-            profile = {
-                "driver": "COG",
-                "crs": dst_crs,
-                "transform": transform,
-                "width": width,
-                "height": height,
-                "count": 1,
-                "dtype": "float32",
-                "nodata": float("nan"),
-                "compress": "LZW",
-            }
-            with rasterio.open(dst_cog, "w", **profile) as dst:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=Resampling.nearest,
-                )
-    except PostprocessLandlabError:
-        _safe_unlink(dst_cog)
-        raise
-    except Exception as exc:  # noqa: BLE001
-        _safe_unlink(dst_cog)
-        raise PostprocessLandlabError(
-            "LANDLAB_COG_REPROJECT_FAILED",
-            message=f"projected-metres -> EPSG:4326 reprojection failed: {exc}",
-            details={"src_cog": str(src_cog)},
-        ) from exc
-
-    # --- CRS round-trip guard (TiTiler-wedge / mistagged-raster) ---
-    import rasterio
-
-    try:
-        with rasterio.open(dst_cog, "r") as verify:
-            if str(verify.crs) != dst_crs:
-                raise PostprocessLandlabError(
-                    "LANDLAB_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG written with crs={dst_crs!r} but rasterio read back "
-                        f"{verify.crs!r}"
-                    ),
-                )
-            bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
-            if bounds_max > 360:
-                raise PostprocessLandlabError(
-                    "LANDLAB_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG tagged EPSG:4326 (geographic) but bounds.left="
-                        f"{verify.bounds.left} implies projected coords (|x|>360)"
-                    ),
-                )
-            b = verify.bounds
-            bbox = (float(b.left), float(b.bottom), float(b.right), float(b.top))
-    except PostprocessLandlabError:
-        _safe_unlink(dst_cog)
-        raise
-
-    return dst_cog, bbox
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 def _safe_unlink(p: Path) -> None:
-    try:
-        p.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    cog_io.safe_unlink(p)
 
 
 def _read_field_array(cog_path: Path) -> Any:
@@ -341,60 +270,25 @@ def _upload_cog_to_runs_bucket(
 ) -> str:
     """Upload the staged COG to ``{scheme}://<runs_bucket>/<run_id>/<dest_filename>``.
 
-    Scheme-aware via ``cache.storage_scheme()``: under ``s3`` the upload goes via
-    boto3 + the runs bucket MUST come from ``GRACE2_RUNS_BUCKET`` / the explicit
-    arg; the ``gs`` branch uses fsspec. Mirrors
-    ``postprocess_swmm._upload_cog_to_runs_bucket`` exactly.
+    Thin shim over ``cog_io.upload_cog`` (STEP 1 dedupe; byte-identical):
+    scheme-aware via ``cache.storage_scheme()`` - ``s3`` via boto3
+    (``ContentType=image/tiff``), ``gs`` via fsspec (default bucket
+    ``RUNS_BUCKET_DEFAULT``, RAISES on failure).
     """
-    from ..tools.cache import storage_scheme
-
-    scheme = storage_scheme()
-    if scheme == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessLandlabError(
-                "LANDLAB_COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under "
-                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/{dest_filename}"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            with local_cog.open("rb") as fh:
-                _get_s3_client().put_object(
-                    Bucket=bucket,
-                    Key=f"{run_id}/{dest_filename}",
-                    Body=fh,
-                    ContentType="image/tiff",
-                )
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessLandlabError(
-                "LANDLAB_COG_UPLOAD_FAILED",
-                message=f"upload of {local_cog} to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog), "dest": dest},
-            ) from exc
-        logger.info("uploaded Landlab field COG to %s (boto3)", dest)
-        return dest
-
-    bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/{dest_filename}"
     try:
-        import fsspec  # type: ignore[import-not-found]
-
-        fs = fsspec.filesystem("gcs")
-        fs.put(str(local_cog), dest)
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessLandlabError(
-            "LANDLAB_COG_UPLOAD_FAILED",
-            message=f"upload of {local_cog} to {dest} failed: {exc}",
-            details={"local_cog": str(local_cog), "dest": dest},
-        ) from exc
-    logger.info("uploaded Landlab field COG to %s", dest)
-    return dest
+        return cog_io.upload_cog(
+            local_cog,
+            run_id,
+            runs_bucket,
+            dest_filename=dest_filename,
+            content_type="image/tiff",
+            gs_backend="fsspec",
+            gs_fallback_to_file=False,
+            runs_bucket_default=RUNS_BUCKET_DEFAULT,
+            log_label="Landlab field COG",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 # --------------------------------------------------------------------------- #

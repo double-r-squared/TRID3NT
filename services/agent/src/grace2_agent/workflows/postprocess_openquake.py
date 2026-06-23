@@ -31,12 +31,13 @@ import csv
 import io
 import logging
 import math
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from grace2_contracts.openquake_contracts import SeismicHazardLayerURI
+
+from . import cog_io
+from .cog_io import CogIoError
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_openquake")
 
@@ -262,12 +263,34 @@ def compute_hazard_metrics(
 # --------------------------------------------------------------------------- #
 # COG write (already EPSG:4326 — no reprojection).
 # --------------------------------------------------------------------------- #
+#: stage -> (OpenQuake error_code) map (STEP 1 dedupe; byte-identical codes).
+_OQ_STAGE_CODES: dict[str, str] = {
+    "DEPENDENCY": "OQ_DEPENDENCY_MISSING",
+    "WRITE": "OQ_COG_WRITE_FAILED",
+    "REPROJECT": "OQ_COG_WRITE_FAILED",
+    "CRS_MISMATCH": "OQ_COG_WRITE_FAILED",
+    "UPLOAD": "OQ_COG_UPLOAD_FAILED",
+}
+
+
+def _reraise_cogio(exc: CogIoError) -> "PostprocessOpenQuakeError":
+    """Map a cog_io ``CogIoError`` onto the OpenQuake typed error (preserves codes)."""
+    code = _OQ_STAGE_CODES.get(exc.stage, "POSTPROCESS_OPENQUAKE_FAILED")
+    return PostprocessOpenQuakeError(code, message=exc.message, details=dict(exc.details))
+
+
 def _write_cog(grid: Any, bbox: tuple[float, float, float, float]) -> Path:
-    """Write the hazard grid to an EPSG:4326 COG. Sub-floor cells -> NaN."""
+    """Write the hazard grid to an EPSG:4326 COG. Sub-floor cells -> NaN.
+
+    Thin shim over ``cog_io.write_cog_4326_from_grid`` (STEP 1 dedupe;
+    ``reproject=False`` - the hazard grid is ALREADY EPSG:4326): build the affine
+    from the bbox + shape, mask cells at/below ``HAZARD_FLOOR_VALUE`` to NaN
+    (declared ``mask``), write the COG directly. NO CRS round-trip guard
+    (byte-identical to the pre-dedupe writer, which trusted the upstream lattice).
+    """
     try:
         import numpy as np  # type: ignore[import-not-found]
-        import rasterio  # type: ignore[import-not-found]
-        from rasterio.transform import from_bounds
+        from rasterio.transform import from_bounds  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
         raise PostprocessOpenQuakeError(
             "OQ_DEPENDENCY_MISSING",
@@ -275,97 +298,60 @@ def _write_cog(grid: Any, bbox: tuple[float, float, float, float]) -> Path:
         ) from exc
 
     arr = np.asarray(grid, dtype="float32")
-    arr_masked = np.where(arr > HAZARD_FLOOR_VALUE, arr, np.nan).astype("float32")
-    height, width = arr_masked.shape
+    height, width = arr.shape
     min_lon, min_lat, max_lon, max_lat = bbox
     transform = from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
 
-    dst_cog = Path(tempfile.NamedTemporaryFile(suffix="_hazard_4326.tif", delete=False).name)
+    def _mask(a: Any) -> Any:
+        return np.where(a > HAZARD_FLOOR_VALUE, a, np.nan).astype("float32")
+
     try:
-        profile = {
-            "driver": "COG",
-            "crs": "EPSG:4326",
-            "transform": transform,
-            "width": width,
-            "height": height,
-            "count": 1,
-            "dtype": "float32",
-            "nodata": float("nan"),
-            "compress": "LZW",
-        }
-        with rasterio.open(dst_cog, "w", **profile) as dst:
-            dst.write(arr_masked, 1)
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessOpenQuakeError(
-            "OQ_COG_WRITE_FAILED",
-            message=f"hazard COG write failed: {exc}",
-        ) from exc
-    return dst_cog
+        return cog_io.write_cog_4326_from_grid(
+            arr,
+            src_crs="EPSG:4326",
+            src_transform=transform,
+            reproject=False,
+            mask=_mask,
+            crs_roundtrip_guard=False,
+            dst_suffix="_hazard_4326.tif",
+        )
+    except CogIoError as exc:
+        # cog_io's generic WRITE message ("COG write failed: ...") is mapped to
+        # the OQ code; the historic text was "hazard COG write failed: ..." but
+        # only the error_code is contract-pinned.
+        raise _reraise_cogio(exc) from exc
 
 
 def _cog_bbox_4326(cog_path: Path) -> tuple[float, float, float, float] | None:
     """Return the COG's (min_lon, min_lat, max_lon, max_lat) for zoom-to."""
-    try:
-        import rasterio  # type: ignore[import-not-found]
-
-        with rasterio.open(cog_path) as ds:
-            b = ds.bounds
-            return (float(b.left), float(b.bottom), float(b.right), float(b.top))
-    except Exception:  # noqa: BLE001
-        return None
+    return cog_io.cog_bbox_4326(cog_path)
 
 
 def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
     """Upload the EPSG:4326 hazard COG to the runs bucket; return its object URI.
 
-    Scheme-aware per ``cache.storage_scheme()`` (mirrors postprocess_modflow /
-    postprocess_swmm). Under ``s3`` the upload goes via boto3 and FAILS TYPED on
-    a missing ``GRACE2_RUNS_BUCKET`` or upload error — a silent file:// fallback
-    on AWS is exactly the debug-invisible no-render failure. The default ``gs``
-    branch keeps a best-effort file:// fallback for offline/local dev.
+    Thin shim over ``cog_io.upload_cog`` (STEP 1 dedupe; byte-identical):
+    scheme-aware per ``cache.storage_scheme()``. ``s3`` via boto3 (NO
+    ``ContentType`` header - matches the historic ``put_object``) FAILS TYPED on a
+    missing ``GRACE2_RUNS_BUCKET`` / upload error. The ``gs`` branch uses the
+    ``google.cloud.storage`` client (NOT fsspec) with a best-effort ``file://``
+    fallback (offline/local dev), and returns ``file://`` immediately when no
+    bucket is configured.
     """
-    from ..tools.cache import storage_scheme
-
-    if storage_scheme() == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessOpenQuakeError(
-                "OQ_COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under storage_scheme=s3 "
-                    "(no GCP-named default on AWS)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/seismic_hazard_4326.tif"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            bkt, _, k = dest[len("s3://"):].partition("/")
-            with open(local_cog, "rb") as fh:
-                _get_s3_client().put_object(Bucket=bkt, Key=k, Body=fh)
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessOpenQuakeError(
-                "OQ_COG_UPLOAD_FAILED",
-                message=f"hazard COG upload to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog)},
-            ) from exc
-        return dest
-
-    # gs / local-dev best-effort: try GCS, else return the local file:// URI.
-    bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-    if not bucket:
-        return f"file://{local_cog}"
     try:
-        from google.cloud import storage  # type: ignore[import-not-found]
-
-        dest = f"gs://{bucket}/{run_id}/seismic_hazard_4326.tif"
-        client = storage.Client()
-        b, _, k = dest[len("gs://"):].partition("/")
-        client.bucket(b).blob(k).upload_from_filename(str(local_cog))
-        return dest
-    except Exception:  # noqa: BLE001
-        return f"file://{local_cog}"
+        return cog_io.upload_cog(
+            local_cog,
+            run_id,
+            runs_bucket,
+            dest_filename="seismic_hazard_4326.tif",
+            content_type=None,  # historic put_object set no ContentType
+            gs_backend="gcs_client",
+            gs_fallback_to_file=True,
+            runs_bucket_default=None,  # gs path returns file:// when no bucket
+            log_label="hazard COG",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 # --------------------------------------------------------------------------- #

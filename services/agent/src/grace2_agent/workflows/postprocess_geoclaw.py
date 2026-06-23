@@ -43,9 +43,7 @@ via ``cache.storage_scheme()``); the agent does not re-render — ``publish_laye
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +51,9 @@ from grace2_contracts.geoclaw_contracts import (
     GEOCLAW_DEPTH_STYLE_PRESET,
     GeoClawDepthLayerURI,
 )
+
+from . import cog_io
+from .cog_io import CogIoError
 
 # Reuse the SFINCS postprocess constants/helpers (single source of truth so the
 # GeoClaw + SFINCS + SWMM animation paths stay byte-compatible on the web side).
@@ -360,86 +361,62 @@ def compute_geoclaw_depth_metrics(
 # --------------------------------------------------------------------------- #
 # COG write (EPSG:4326 grid) + CRS round-trip guard.
 # --------------------------------------------------------------------------- #
+#: stage -> (GeoClaw error_code) map (STEP 1 dedupe; byte-identical codes).
+_GEOCLAW_STAGE_CODES: dict[str, str] = {
+    "DEPENDENCY": "GEOCLAW_DEPENDENCY_MISSING",
+    "WRITE": "GEOCLAW_COG_WRITE_FAILED",
+    "REPROJECT": "GEOCLAW_COG_WRITE_FAILED",
+    "CRS_MISMATCH": "GEOCLAW_CRS_TAG_MISMATCH",
+    "UPLOAD": "GEOCLAW_COG_UPLOAD_FAILED",
+}
+
+
+def _reraise_cogio(
+    exc: CogIoError, *, bbox: tuple[float, float, float, float] | None = None
+) -> "PostprocessGeoClawError":
+    """Map a cog_io ``CogIoError`` onto the GeoClaw typed error (preserves codes)."""
+    code = _GEOCLAW_STAGE_CODES.get(exc.stage, "POSTPROCESS_GEOCLAW_FAILED")
+    details = dict(exc.details)
+    if bbox is not None and "bbox" not in details:
+        details["bbox"] = list(bbox)
+    return PostprocessGeoClawError(code, message=exc.message, details=details)
+
+
 def _write_depth_cog_4326(
     grid: Any,
     bbox: tuple[float, float, float, float],
 ) -> Path:
     """Write a masked ``(H, W)`` EPSG:4326 depth grid (row 0 = north) to a COG.
 
-    The grid is already in EPSG:4326 over ``bbox`` (rasterize_frame_to_grid
-    builds it north-up), so no reprojection is needed — we build the affine from
-    the bbox + shape directly (mirrors postprocess_swmm's COG-write contract).
-    Re-opens the COG to assert the CRS tag round-trips (the TiTiler-wedge guard).
+    The grid is already in EPSG:4326 over ``bbox`` (rasterize_frame_to_grid builds
+    it north-up), so no reprojection is needed. Thin shim over
+    ``cog_io.write_cog_4326_from_grid`` (STEP 1 dedupe; ``reproject=False``): build
+    the affine from the bbox + shape, write the COG directly, run the CRS
+    round-trip guard. Byte-identical to the pre-dedupe writer.
     """
     import numpy as np
-    import rasterio
     from rasterio.transform import from_bounds
 
     arr = np.asarray(grid, dtype="float32")
     nrows, ncols = arr.shape
     min_lon, min_lat, max_lon, max_lat = bbox
     transform = from_bounds(min_lon, min_lat, max_lon, max_lat, ncols, nrows)
-    dst_crs = "EPSG:4326"
 
-    dst_cog = Path(
-        tempfile.NamedTemporaryFile(suffix="_geoclaw_4326.tif", delete=False).name
-    )
     try:
-        profile = {
-            "driver": "COG",
-            "crs": dst_crs,
-            "transform": transform,
-            "width": ncols,
-            "height": nrows,
-            "count": 1,
-            "dtype": "float32",
-            "nodata": float("nan"),
-            "compress": "LZW",
-        }
-        with rasterio.open(dst_cog, "w", **profile) as dst:
-            dst.write(arr, 1)
-    except Exception as exc:  # noqa: BLE001
-        _safe_unlink(dst_cog)
-        raise PostprocessGeoClawError(
-            "GEOCLAW_COG_WRITE_FAILED",
-            message=f"depth COG write failed: {exc}",
-            details={"bbox": list(bbox)},
-        ) from exc
-
-    # --- CRS round-trip guard (TiTiler-wedge / mistagged-raster) ---
-    try:
-        with rasterio.open(dst_cog, "r") as verify:
-            if str(verify.crs) != dst_crs:
-                raise PostprocessGeoClawError(
-                    "GEOCLAW_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG written crs={dst_crs!r} but rasterio read back "
-                        f"{verify.crs!r}"
-                    ),
-                    details={"bbox": list(bbox)},
-                )
-            bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
-            if bounds_max > 360:
-                raise PostprocessGeoClawError(
-                    "GEOCLAW_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG tagged EPSG:4326 but bounds.left={verify.bounds.left} "
-                        f"implies projected coords (|x|>360)"
-                    ),
-                    details={"bbox": list(bbox)},
-                )
-    except PostprocessGeoClawError:
-        _safe_unlink(dst_cog)
-        raise
-
-    return dst_cog
+        return cog_io.write_cog_4326_from_grid(
+            arr,
+            src_crs="EPSG:4326",
+            src_transform=transform,
+            reproject=False,
+            crs_roundtrip_guard=True,
+            dst_suffix="_geoclaw_4326.tif",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc, bbox=bbox) from exc
 
 
 def _safe_unlink(p: Path) -> None:
-    try:
-        p.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    cog_io.safe_unlink(p)
 
 
 # --------------------------------------------------------------------------- #
@@ -454,60 +431,26 @@ def _upload_cog_to_runs_bucket(
 ) -> str:
     """Upload the staged COG to ``{scheme}://<runs_bucket>/<run_id>/<dest_filename>``.
 
-    Scheme-aware via ``cache.storage_scheme()``. Per-frame callers pass a DISTINCT
-    ``dest_filename`` so each frame lands at its own object key (its own TiTiler
-    url / identity key -> no dedup collapse). Mirrors
-    ``postprocess_swmm._upload_cog_to_runs_bucket`` exactly.
+    Thin shim over ``cog_io.upload_cog`` (STEP 1 dedupe; byte-identical):
+    scheme-aware via ``cache.storage_scheme()`` - ``s3`` via boto3
+    (``ContentType=image/tiff``), ``gs`` via fsspec (default bucket
+    ``RUNS_BUCKET_DEFAULT``, RAISES on failure). Per-frame callers pass a DISTINCT
+    ``dest_filename`` so each frame lands at its own object key (no dedup collapse).
     """
-    from ..tools.cache import storage_scheme
-
-    scheme = storage_scheme()
-    if scheme == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessGeoClawError(
-                "GEOCLAW_COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under "
-                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/{dest_filename}"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            with local_cog.open("rb") as fh:
-                _get_s3_client().put_object(
-                    Bucket=bucket,
-                    Key=f"{run_id}/{dest_filename}",
-                    Body=fh,
-                    ContentType="image/tiff",
-                )
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessGeoClawError(
-                "GEOCLAW_COG_UPLOAD_FAILED",
-                message=f"upload of {local_cog} to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog), "dest": dest},
-            ) from exc
-        logger.info("uploaded GeoClaw depth COG to %s (boto3)", dest)
-        return dest
-
-    bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/{dest_filename}"
     try:
-        import fsspec  # type: ignore[import-not-found]
-
-        fs = fsspec.filesystem("gcs")
-        fs.put(str(local_cog), dest)
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessGeoClawError(
-            "GEOCLAW_COG_UPLOAD_FAILED",
-            message=f"upload of {local_cog} to {dest} failed: {exc}",
-            details={"local_cog": str(local_cog), "dest": dest},
-        ) from exc
-    logger.info("uploaded GeoClaw depth COG to %s", dest)
-    return dest
+        return cog_io.upload_cog(
+            local_cog,
+            run_id,
+            runs_bucket,
+            dest_filename=dest_filename,
+            content_type="image/tiff",
+            gs_backend="fsspec",
+            gs_fallback_to_file=False,
+            runs_bucket_default=RUNS_BUCKET_DEFAULT,
+            log_label="GeoClaw depth COG",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 # --------------------------------------------------------------------------- #

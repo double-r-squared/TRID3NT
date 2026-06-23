@@ -59,9 +59,11 @@ from .chart_contracts import (
 )
 from .common import (
     BBox,
+    EngineRunArgsMixin,
     GraceModel,
     Lat,
     Lon,
+    TemporalMode,
     TimeRange,
     ULIDStr,
     new_ulid,
@@ -154,6 +156,8 @@ __all__ = [
     "Lon",
     "Lat",
     "TimeRange",
+    "TemporalMode",
+    "EngineRunArgsMixin",
     "new_ulid",
     "now_utc",
 ]

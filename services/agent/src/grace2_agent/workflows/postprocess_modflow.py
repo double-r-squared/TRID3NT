@@ -32,12 +32,14 @@ from __future__ import annotations
 
 import glob
 import logging
-import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from grace2_contracts.modflow_contracts import PlumeLayerURI, SeepageLayerURI
+
+from . import cog_io
+from .cog_io import CogIoError
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_modflow")
 
@@ -434,6 +436,29 @@ def _grid_georegistration_from_deck(deck_dir: str | None) -> dict[str, Any] | No
 # --------------------------------------------------------------------------- #
 
 
+#: stage -> (MODFLOW error_code) map (STEP 1 dedupe; byte-identical codes). The
+#: write/reproject stages map to the PLUME_* codes (the seepage path reuses the
+#: same writer, exactly as before this dedupe).
+_MODFLOW_STAGE_CODES: dict[str, str] = {
+    "DEPENDENCY": "PLUME_COG_WRITE_FAILED",
+    "WRITE": "PLUME_COG_WRITE_FAILED",
+    "REPROJECT": "PLUME_REPROJECT_FAILED",
+    "CRS_MISMATCH": "PLUME_REPROJECT_FAILED",
+    "UPLOAD": "PLUME_COG_UPLOAD_FAILED",
+}
+
+
+def _reraise_cogio(
+    exc: CogIoError, *, model_crs: str | None = None
+) -> "PostprocessMODFLOWError":
+    """Map a cog_io ``CogIoError`` onto the MODFLOW typed error (preserves codes)."""
+    code = _MODFLOW_STAGE_CODES.get(exc.stage, "POSTPROCESS_MODFLOW_FAILED")
+    details = dict(exc.details)
+    if model_crs is not None and "model_crs" not in details:
+        details["model_crs"] = model_crs
+    return PostprocessMODFLOWError(code, message=exc.message, details=details)
+
+
 def _write_reprojected_cog(
     final2d: Any,
     model_crs: str,
@@ -446,7 +471,9 @@ def _write_reprojected_cog(
     The grid is in the deck's projected (UTM) CRS. We build the source transform
     from the grid origin + cell size (flopy's row 0 is the NORTH row, so the
     transform's top-left is yorigin + nrow*delc), tag it ``model_crs``, then warp
-    to EPSG:4326 via rasterio's reprojection.
+    to EPSG:4326 via ``cog_io.write_cog_4326_from_grid`` (``reproject=True``,
+    ``Resampling.bilinear`` for the smooth concentration field; NO CRS round-trip
+    guard, byte-identical to the pre-dedupe writer).
 
     Args:
         mask_below_floor: when True (the plume default — BYTE-IDENTICAL to the
@@ -455,22 +482,14 @@ def _write_reprojected_cog(
             river-seepage diverging layer), the array is written AS-IS (already
             NaN off the reach) so negative gaining values survive — masking by a
             positive floor would wrongly drop every gaining (negative) reach
-            cell.
+            cell. Passed to cog_io as the declared ``mask`` callable.
     """
     import numpy as np  # type: ignore[import-not-found]
     import rasterio  # type: ignore[import-not-found]
-    from rasterio.warp import Resampling, calculate_default_transform, reproject
+    from rasterio.warp import Resampling
 
     arr = np.asarray(final2d, dtype="float32")
-    if mask_below_floor:
-        # Mask clean cells (≤ floor) to NaN so the COG renders only the plume.
-        arr_masked = np.where(
-            arr > PLUME_DETECTION_FLOOR_MGL, arr, np.nan
-        ).astype("float32")
-    else:
-        # Diverging seepage: keep the array as-is (NaN already marks off-reach).
-        arr_masked = arr.astype("float32")
-    nrow, ncol = arr_masked.shape
+    nrow, ncol = arr.shape
 
     if geo is not None:
         delr = geo["delr"]
@@ -486,85 +505,32 @@ def _write_reprojected_cog(
         # arbitrary). Logged by the caller via the None geo path.
         src_transform = rasterio.Affine.identity()
 
-    # Stage the source (UTM) COG.
-    src_tmp = Path(tempfile.NamedTemporaryFile(suffix="_src.tif", delete=False).name)
-    try:
-        with rasterio.open(
-            src_tmp,
-            "w",
-            driver="GTiff",
-            width=ncol,
-            height=nrow,
-            count=1,
-            dtype="float32",
-            crs=model_crs,
-            transform=src_transform,
-            nodata=float("nan"),
-        ) as dst:
-            dst.write(arr_masked, 1)
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessMODFLOWError(
-            "PLUME_COG_WRITE_FAILED",
-            message=f"source COG write failed: {exc}",
-            details={"model_crs": model_crs},
-        ) from exc
+    def _mask(a: Any) -> Any:
+        if mask_below_floor:
+            # Mask clean cells (<= floor) to NaN so the COG renders only the plume.
+            return np.where(a > PLUME_DETECTION_FLOOR_MGL, a, np.nan).astype("float32")
+        # Diverging seepage: keep the array as-is (NaN already marks off-reach).
+        return a.astype("float32")
 
-    # Reproject UTM → EPSG:4326.
-    dst_cog = Path(tempfile.NamedTemporaryFile(suffix="_4326.tif", delete=False).name)
     try:
-        with rasterio.open(src_tmp) as src:
-            dst_crs = "EPSG:4326"
-            transform, width, height = calculate_default_transform(
-                src.crs, dst_crs, src.width, src.height, *src.bounds
-            )
-            profile = {
-                "driver": "COG",
-                "crs": dst_crs,
-                "transform": transform,
-                "width": width,
-                "height": height,
-                "count": 1,
-                "dtype": "float32",
-                "nodata": float("nan"),
-                "compress": "LZW",
-            }
-            with rasterio.open(dst_cog, "w", **profile) as dst:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=Resampling.bilinear,
-                )
-    except PostprocessMODFLOWError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessMODFLOWError(
-            "PLUME_REPROJECT_FAILED",
-            message=f"UTM→EPSG:4326 reprojection failed: {exc}",
-            details={"model_crs": model_crs},
-        ) from exc
-    finally:
-        try:
-            src_tmp.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
-
-    return dst_cog
+        return cog_io.write_cog_4326_from_grid(
+            arr,
+            src_crs=model_crs,
+            src_transform=src_transform,
+            reproject=True,
+            resampling=Resampling.bilinear,
+            mask=_mask,
+            crs_roundtrip_guard=False,
+            src_suffix="_src.tif",
+            dst_suffix="_4326.tif",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc, model_crs=model_crs) from exc
 
 
 def _cog_bbox_4326(cog_path: Path) -> tuple[float, float, float, float] | None:
     """Return the COG's (min_lon, min_lat, max_lon, max_lat) for zoom-to."""
-    try:
-        import rasterio  # type: ignore[import-not-found]
-
-        with rasterio.open(cog_path) as ds:
-            b = ds.bounds
-            return (float(b.left), float(b.bottom), float(b.right), float(b.top))
-    except Exception:  # noqa: BLE001
-        return None
+    return cog_io.cog_bbox_4326(cog_path)
 
 
 def _upload_cog(
@@ -576,85 +542,28 @@ def _upload_cog(
 ) -> str:
     """Upload the EPSG:4326 plume COG to the runs bucket; return its object URI.
 
-    job-0292b (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
-    Under ``s3`` the upload goes via **boto3** (job-0289 lesson) and FAILS
-    TYPED on a missing ``GRACE2_RUNS_BUCKET`` or an upload error — on the AWS
-    deployment a silent ``file://`` fallback is exactly the debug-invisible
-    no-render failure job-0241 burned on, so we surface it honestly instead
-    (mirrors ``postprocess_flood._upload_cog_to_runs_bucket``). The default
-    ``gs`` branch keeps its best-effort file:// fallback byte-identical (the
-    offline-dev / local-mode path depends on it).
-
-    In local mode (no GCS), the upload is skipped and the local ``file://`` URI
-    is returned so the live-evidence path completes without cloud access.
+    Thin shim over ``cog_io.upload_cog`` (STEP 1 dedupe; byte-identical):
+    scheme-aware per ``cache.storage_scheme()``. ``s3`` via boto3
+    (``ContentType=image/tiff``) FAILS TYPED on a missing ``GRACE2_RUNS_BUCKET`` /
+    upload error (job-0241 / job-0292b: a silent file:// on AWS is the
+    debug-invisible no-render failure). The ``gs`` branch keeps its best-effort
+    ``file://`` fallback (the loud ImportError classification for a missing
+    ``fsspec[gcs]`` is preserved by cog_io) for the offline-dev / local-mode path.
     """
-    from ..tools.cache import storage_scheme
-
-    if storage_scheme() == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessMODFLOWError(
-                "PLUME_COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under "
-                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS; "
-                    "job-0292b)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/{cog_filename}"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            with local_cog.open("rb") as fh:
-                _get_s3_client().put_object(
-                    Bucket=bucket,
-                    Key=f"{run_id}/{cog_filename}",
-                    Body=fh,
-                    ContentType="image/tiff",
-                )
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessMODFLOWError(
-                "PLUME_COG_UPLOAD_FAILED",
-                message=f"upload of {local_cog} to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog), "dest": dest},
-            ) from exc
-        logger.info("uploaded plume COG to %s (boto3)", dest)
-        return dest
-
-    bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/{cog_filename}"
     try:
-        import fsspec  # type: ignore[import-not-found]
-
-        fs = fsspec.filesystem("gcs")
-        fs.put(str(local_cog), dest)
-        logger.info("uploaded plume COG to %s", dest)
-        return dest
-    except ImportError as exc:
-        # job-0241: a missing fsspec[gcs] is a DEPLOY/ENV DEFECT (it is a
-        # declared dependency), not a transient GCS error — this exact gap
-        # made the Case 2 live plume silently fail to render (job-0235).
-        # Classify it loudly so the next stale-venv regression is one log
-        # line, not a basemap-only map.
-        logger.error(
-            "plume COG upload to %s SKIPPED — fsspec[gcs] not importable (%s). "
-            "This is a deploy/env defect: fsspec is a declared dependency. "
-            "The plume will fall back to file:// and will NOT render. "
-            "Fix: pip install -e . in services/agent (installs fsspec[gcs]).",
-            dest,
-            exc,
+        return cog_io.upload_cog(
+            local_cog,
+            run_id,
+            runs_bucket,
+            dest_filename=cog_filename,
+            content_type="image/tiff",
+            gs_backend="fsspec",
+            gs_fallback_to_file=True,
+            runs_bucket_default=RUNS_BUCKET_DEFAULT,
+            log_label="plume COG",
         )
-        return f"file://{local_cog}"
-    except Exception as exc:  # noqa: BLE001
-        # GCS-unavailable (auth, network, bucket): keep the local COG and
-        # surface a file:// URI so the pipeline completes (offline-dev path).
-        logger.warning(
-            "plume COG upload to %s failed (%s); using local file:// URI",
-            dest,
-            exc,
-        )
-        return f"file://{local_cog}"
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 # --------------------------------------------------------------------------- #

@@ -50,12 +50,13 @@ via ``cache.storage_scheme()``); the agent does not re-render — ``publish_laye
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI
+
+from . import cog_io
+from .cog_io import CogIoError
 
 # Reuse the SFINCS postprocess constants/helpers (single source of truth so the
 # SWMM + SFINCS animation paths stay byte-compatible on the web side).
@@ -397,6 +398,26 @@ def _peak_grid_from_snapshots(grids: list[Any]) -> Any:
 # --------------------------------------------------------------------------- #
 # COG write (projected-metres grid -> EPSG:4326) + CRS round-trip guard.
 # --------------------------------------------------------------------------- #
+#: stage -> (SWMM error_code) map for re-raising cog_io's generic CogIoError as
+#: the engine's typed error (STEP 1 dedupe; byte-identical error codes).
+_SWMM_STAGE_CODES: dict[str, str] = {
+    "DEPENDENCY": "SWMM_DEPENDENCY_MISSING",
+    "WRITE": "SWMM_COG_WRITE_FAILED",
+    "REPROJECT": "SWMM_COG_REPROJECT_FAILED",
+    "CRS_MISMATCH": "SWMM_CRS_TAG_MISMATCH",
+    "UPLOAD": "SWMM_COG_UPLOAD_FAILED",
+}
+
+
+def _reraise_cogio(exc: CogIoError, *, grid_crs: str | None = None) -> "PostprocessSWMMError":
+    """Map a cog_io ``CogIoError`` onto the SWMM typed error (preserves codes)."""
+    code = _SWMM_STAGE_CODES.get(exc.stage, "POSTPROCESS_SWMM_FAILED")
+    details = dict(exc.details)
+    if grid_crs is not None and "grid_crs" not in details:
+        details["grid_crs"] = grid_crs
+    return PostprocessSWMMError(code, message=exc.message, details=details)
+
+
 def _write_depth_cog_4326(
     grid: Any,
     *,
@@ -407,133 +428,35 @@ def _write_depth_cog_4326(
 
     The grid is in the deck's projected-metres CRS (``BuildResult.crs``) with the
     builder's affine (``BuildResult.transform``; row 0 = north, col 0 = west, the
-    standard COG orientation). We stage a source GTiff in the grid CRS then warp
-    to EPSG:4326 (``Resampling.nearest`` so the NaN dry-mask is preserved without
-    smearing) so the COG aligns with the MapLibre basemap exactly like every
-    other published raster (same approach as ``postprocess_modflow``). Re-opens
-    the COG to assert the CRS tag round-trips (the TiTiler-wedge guard). Returns
-    the staged COG path.
+    standard COG orientation). Thin shim over ``cog_io.write_cog_4326_from_grid``
+    (STEP 1 dedupe): stage a source GTiff in the grid CRS, warp to EPSG:4326
+    (``Resampling.nearest`` so the NaN dry-mask is preserved without smearing),
+    then run the CRS round-trip guard. Byte-identical to the pre-dedupe writer.
     """
-    import numpy as np
-    import rasterio
-    from rasterio.warp import (
-        Resampling,
-        calculate_default_transform,
-        reproject,
-    )
+    from rasterio.warp import Resampling
 
-    arr = np.asarray(grid, dtype="float32")
-    nrows, ncols = arr.shape
-
-    # Stage the source (projected-metres) GTiff.
-    src_tmp = Path(tempfile.NamedTemporaryFile(suffix="_swmm_src.tif", delete=False).name)
     try:
-        with rasterio.open(
-            src_tmp,
-            "w",
-            driver="GTiff",
-            width=ncols,
-            height=nrows,
-            count=1,
-            dtype="float32",
-            crs=grid_crs,
-            transform=grid_transform,
-            nodata=float("nan"),
-        ) as dst:
-            dst.write(arr, 1)
-    except Exception as exc:  # noqa: BLE001
-        _safe_unlink(src_tmp)
-        raise PostprocessSWMMError(
-            "SWMM_COG_WRITE_FAILED",
-            message=f"source COG write failed: {exc}",
-            details={"grid_crs": grid_crs},
-        ) from exc
-
-    dst_cog = Path(tempfile.NamedTemporaryFile(suffix="_swmm_4326.tif", delete=False).name)
-    dst_crs = "EPSG:4326"
-    try:
-        with rasterio.open(src_tmp) as src:
-            transform, width, height = calculate_default_transform(
-                src.crs, dst_crs, src.width, src.height, *src.bounds
-            )
-            profile = {
-                "driver": "COG",
-                "crs": dst_crs,
-                "transform": transform,
-                "width": width,
-                "height": height,
-                "count": 1,
-                "dtype": "float32",
-                "nodata": float("nan"),
-                "compress": "LZW",
-            }
-            with rasterio.open(dst_cog, "w", **profile) as dst:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=Resampling.nearest,
-                )
-    except Exception as exc:  # noqa: BLE001
-        _safe_unlink(dst_cog)
-        raise PostprocessSWMMError(
-            "SWMM_COG_REPROJECT_FAILED",
-            message=f"projected-metres -> EPSG:4326 reprojection failed: {exc}",
-            details={"grid_crs": grid_crs},
-        ) from exc
-    finally:
-        _safe_unlink(src_tmp)
-
-    # --- CRS round-trip guard (TiTiler-wedge / mistagged-raster, job-0071) ---
-    try:
-        with rasterio.open(dst_cog, "r") as verify:
-            if str(verify.crs) != dst_crs:
-                raise PostprocessSWMMError(
-                    "SWMM_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG written with crs={dst_crs!r} but rasterio read back "
-                        f"{verify.crs!r}"
-                    ),
-                    details={"grid_crs": grid_crs},
-                )
-            # EPSG:4326 is geographic -> |lon| must be <= 360.
-            bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
-            if bounds_max > 360:
-                raise PostprocessSWMMError(
-                    "SWMM_CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG tagged EPSG:4326 (geographic) but bounds.left="
-                        f"{verify.bounds.left} implies projected coords (|x|>360)"
-                    ),
-                    details={"grid_crs": grid_crs},
-                )
-    except PostprocessSWMMError:
-        _safe_unlink(dst_cog)
-        raise
-
-    return dst_cog
+        return cog_io.write_cog_4326_from_grid(
+            grid,
+            src_crs=grid_crs,
+            src_transform=grid_transform,
+            reproject=True,
+            resampling=Resampling.nearest,
+            crs_roundtrip_guard=True,
+            src_suffix="_swmm_src.tif",
+            dst_suffix="_swmm_4326.tif",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc, grid_crs=grid_crs) from exc
 
 
 def _safe_unlink(p: Path) -> None:
-    try:
-        p.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    cog_io.safe_unlink(p)
 
 
 def _cog_bbox_4326(cog_path: Path) -> tuple[float, float, float, float] | None:
     """Return the COG's ``(min_lon, min_lat, max_lon, max_lat)`` for zoom-to."""
-    try:
-        import rasterio
-
-        with rasterio.open(cog_path) as ds:
-            b = ds.bounds
-            return (float(b.left), float(b.bottom), float(b.right), float(b.top))
-    except Exception:  # noqa: BLE001
-        return None
+    return cog_io.cog_bbox_4326(cog_path)
 
 
 # --------------------------------------------------------------------------- #
@@ -548,63 +471,27 @@ def _upload_cog_to_runs_bucket(
 ) -> str:
     """Upload the staged COG to ``{scheme}://<runs_bucket>/<run_id>/<dest_filename>``.
 
-    Scheme-aware via ``cache.storage_scheme()`` (job-0291 lesson): under ``s3``
-    the upload goes via boto3 + the runs bucket MUST come from
-    ``GRACE2_RUNS_BUCKET`` / the explicit arg (no GCP-named default on AWS); the
-    ``gs`` branch uses fsspec. Per-frame callers pass a DISTINCT ``dest_filename``
-    so each frame lands at its own object key (its own TiTiler url / identity key
-    -> no dedup collapse). Mirrors
-    ``postprocess_flood._upload_cog_to_runs_bucket`` exactly.
+    Thin shim over ``cog_io.upload_cog`` (STEP 1 dedupe; byte-identical):
+    scheme-aware via ``cache.storage_scheme()`` - ``s3`` via boto3
+    (``ContentType=image/tiff``, no GCP-named default), ``gs`` via fsspec (default
+    bucket ``RUNS_BUCKET_DEFAULT``, RAISES on failure - no silent file:// on the
+    cloud path). Per-frame callers pass a DISTINCT ``dest_filename`` so each frame
+    lands at its own object key (its own TiTiler url / identity key -> no dedup).
     """
-    from ..tools.cache import storage_scheme
-
-    scheme = storage_scheme()
-    if scheme == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessSWMMError(
-                "SWMM_COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under "
-                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/{dest_filename}"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            with local_cog.open("rb") as fh:
-                _get_s3_client().put_object(
-                    Bucket=bucket,
-                    Key=f"{run_id}/{dest_filename}",
-                    Body=fh,
-                    ContentType="image/tiff",
-                )
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessSWMMError(
-                "SWMM_COG_UPLOAD_FAILED",
-                message=f"upload of {local_cog} to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog), "dest": dest},
-            ) from exc
-        logger.info("uploaded SWMM depth COG to %s (boto3)", dest)
-        return dest
-
-    bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/{dest_filename}"
     try:
-        import fsspec  # type: ignore[import-not-found]
-
-        fs = fsspec.filesystem("gcs")
-        fs.put(str(local_cog), dest)
-    except Exception as exc:  # noqa: BLE001
-        raise PostprocessSWMMError(
-            "SWMM_COG_UPLOAD_FAILED",
-            message=f"upload of {local_cog} to {dest} failed: {exc}",
-            details={"local_cog": str(local_cog), "dest": dest},
-        ) from exc
-    logger.info("uploaded SWMM depth COG to %s", dest)
-    return dest
+        return cog_io.upload_cog(
+            local_cog,
+            run_id,
+            runs_bucket,
+            dest_filename=dest_filename,
+            content_type="image/tiff",
+            gs_backend="fsspec",
+            gs_fallback_to_file=False,
+            runs_bucket_default=RUNS_BUCKET_DEFAULT,
+            log_label="SWMM depth COG",
+        )
+    except CogIoError as exc:
+        raise _reraise_cogio(exc) from exc
 
 
 # --------------------------------------------------------------------------- #

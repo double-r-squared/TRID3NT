@@ -14,7 +14,7 @@ Conventions enforced here (SRS Appendix A.1, B.7, D.7):
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -22,6 +22,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    field_validator,
 )
 from ulid import ULID
 
@@ -34,6 +35,8 @@ __all__ = [
     "new_ulid",
     "now_utc",
     "TimeRange",
+    "TemporalMode",
+    "EngineRunArgsMixin",
 ]
 
 
@@ -145,3 +148,89 @@ class TimeRange(GraceModel):
 
     start: UTCDatetime
     end: UTCDatetime
+
+
+# --------------------------------------------------------------------------- #
+# Engine run-args mixin (STEP 2 of the engine-coverage-levers refactor).
+# --------------------------------------------------------------------------- #
+
+#: The run's temporal solve mode. ``"steady"`` = a single steady-state /
+#: stationary solve (the engine default for most demos); ``"transient"`` = a
+#: time-stepping solve that emits an animation. Open-ended growth happens through
+#: the alias normalizer below + an additive Literal member, never arbitrary keys.
+TemporalMode = Literal["steady", "transient"]
+
+
+#: Common LLM / user synonyms mapped onto the canonical ``TemporalMode`` BEFORE
+#: the Literal check (so the FIRST attempt validates - no retry loop, mirroring
+#: ``geoclaw_contracts._SCENARIO_ALIASES``). An UNKNOWN string passes through
+#: UNCHANGED so a genuinely-invalid value still raises the honest Literal error.
+_TEMPORAL_MODE_ALIASES: dict[str, str] = {
+    # steady-state / stationary synonyms.
+    "steady": "steady",
+    "steady-state": "steady",
+    "steady_state": "steady",
+    "steadystate": "steady",
+    "stationary": "steady",
+    "static": "steady",
+    "equilibrium": "steady",
+    # transient / time-varying synonyms.
+    "transient": "transient",
+    "nonstationary": "transient",
+    "non-stationary": "transient",
+    "non_stationary": "transient",
+    "unsteady": "transient",
+    "time-varying": "transient",
+    "time_varying": "transient",
+    "timevarying": "transient",
+    "dynamic": "transient",
+    "time-stepping": "transient",
+    "time_stepping": "transient",
+}
+
+
+class EngineRunArgsMixin(GraceModel):
+    """ADDITIVE, DEFAULT-OFF base for the per-engine ``*RunArgs`` models.
+
+    STEP 2 of the engine-coverage-levers refactor. Adds three cross-engine levers
+    the audit identified as recurring across every engine, as ADDITIVE fields with
+    defaults that reproduce TODAY'S behavior byte-for-byte:
+
+      - ``temporal_mode``: ``"steady"`` (default) | ``"transient"``. The default
+        ``"steady"`` is the no-op: a model that does not opt into ``"transient"``
+        behaves exactly as before. The ``_TEMPORAL_MODE_ALIASES`` before-validator
+        normalizes LLM/user synonyms so the first attempt validates.
+      - ``output_frames``: number of evenly-spaced animation output frames
+        (>= 1, default 24). DEFAULT-MATCHES the existing per-engine
+        ``DEFAULT_OUTPUT_FRAMES`` (24) on SWAN/GeoClaw, so adopting the mixin on a
+        model that already has this field is byte-identical; new adopters inherit
+        the same 24.
+      - ``advanced_physics``: an OPTIONAL per-engine physics-overrides dict
+        (default ``None`` = no overrides = current behavior). The convention the
+        audit's "physics-toggle exposure" pattern uses; the registry that
+        validates the keys is ``physics_registry.PHYSICS_REGISTRY`` (STEP 2),
+        wired into the deck builders in STEP 3.
+
+    DEFAULT-OFF GUARANTEE: every field defaults to today's behavior, so a model
+    that does NOT set them serializes + behaves byte-identically. A model adopts
+    the mixin by inheriting it as an ADDITIONAL base alongside ``GraceModel``
+    (``class FooRunArgs(EngineRunArgsMixin): ...``); the fields are then available
+    but inert until the engine's deck builder reads them (STEP 3). Because the
+    fields are additive and default-valued, ``extra="forbid"`` is unaffected for
+    existing payloads (they simply do not carry these keys).
+    """
+
+    temporal_mode: TemporalMode = "steady"
+    output_frames: int = Field(default=24, ge=1)
+    advanced_physics: dict[str, Any] | None = None
+
+    @field_validator("temporal_mode", mode="before")
+    @classmethod
+    def _normalize_temporal_mode(cls, value: Any) -> Any:
+        """Map common synonyms onto the canonical ``TemporalMode`` BEFORE the
+        Literal check. A non-string or unknown string passes through UNCHANGED so
+        a genuinely-invalid value still raises the honest Literal error."""
+        if not isinstance(value, str):
+            return value
+        key = value.strip().lower()
+        return _TEMPORAL_MODE_ALIASES.get(key, key)

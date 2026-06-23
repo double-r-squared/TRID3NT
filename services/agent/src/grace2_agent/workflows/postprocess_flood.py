@@ -39,6 +39,18 @@ from typing import Any
 
 from grace2_contracts.execution import LayerURI
 
+# STEP 1 (engine-coverage-levers): the frame machinery was lifted OUT of this
+# module into ``frames.py`` (single source of truth for the time-stepped
+# animation contract). ``MAX_FLOOD_FRAMES`` + ``_select_frame_time_indices`` are
+# imported back here and RE-EXPORTED so every existing
+# ``from .postprocess_flood import MAX_FLOOD_FRAMES, _select_frame_time_indices``
+# (postprocess_swmm / _swan / _waves / _geoclaw + the agent tests) resolves to
+# the SAME objects (byte-identical output guarantee).
+from .frames import (  # noqa: F401 - re-exported for backward compatibility
+    MAX_FLOOD_FRAMES,
+    _select_frame_time_indices,
+)
+
 __all__ = [
     "PostprocessError",
     "postprocess_flood",
@@ -68,23 +80,9 @@ FLOOD_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
 #: so the two layers reinforce each other (job-0071 transparency fix).
 NODATA_DEPTH_M: float = 0.05
 
-#: Upper bound on the number of per-frame depth COGs the time-stepped flood
-#: animation emits (flood North Star Phase 1, engine-agnostic). When the SFINCS
-#: map output carries MORE than this many ``zs(time,...)`` snapshots we subsample
-#: EVENLY across the full time span (first + last steps always kept) so the
-#: scrubber stays bounded and the per-Case session-state snapshot never balloons.
-#:
-#: COASTAL/WAVE "looks like rain" fix: the cap was a HARD 24 (~one frame/hour
-#: over a 1-day sim) which is too coarse for a coastal surge+SnapWave animation  - 
-#: waves move in seconds-to-minutes, so an hourly stride reads as a filling
-#: bathtub. The deck now emits minute-scale frames for coastal runs (sfincs_builder
-#: ``output_interval_min``); raising the cap to 144 lets a fine-cadence run
-#: (e.g. 5-min over ~12 h, or ~10-min over a full day) emit ALL its frames
-#: rather than silently subsampling back down to 24. 144 ~= 5-min frames over
-#: 12 h, a bounded-but-watchable wave animation. When a run still exceeds the
-#: cap, ``_select_frame_time_indices`` LOGS the subsample (never silent).
-#: Overridable via env for ops tuning.
-MAX_FLOOD_FRAMES: int = int(os.environ.get("GRACE2_MAX_FLOOD_FRAMES", "144"))
+#: ``MAX_FLOOD_FRAMES`` now lives in ``frames.py`` and is imported + re-exported
+#: at the top of this module (STEP 1 extract-in-place). Kept available under the
+#: same name for every legacy importer.
 
 
 class PostprocessError(RuntimeError):
@@ -821,36 +819,9 @@ def _select_peak_depth(ds: Any) -> Any:
     )
 
 
-def _select_frame_time_indices(n_steps: int) -> list[int]:
-    """Pick up to ``MAX_FLOOD_FRAMES`` evenly-spaced time indices over ``n_steps``.
-
-    Endpoints (first + last step) are ALWAYS included so the animation spans the
-    full event. When ``n_steps <= MAX_FLOOD_FRAMES`` every step is returned. When
-    more, ``np.linspace(0, n_steps-1, MAX_FLOOD_FRAMES)`` rounded to ints +
-    ``np.unique`` gives an even, collision-free subsample (<= MAX_FLOOD_FRAMES,
-    strictly increasing). Returned indices are the RAW time-dim positions; the
-    frame NUMBER (1..k) used for the web token is the position in this list.
-    """
-    import numpy as np  # type: ignore[import-not-found]
-
-    if n_steps <= 0:
-        return []
-    if n_steps <= MAX_FLOOD_FRAMES:
-        return list(range(n_steps))
-    idx = np.linspace(0, n_steps - 1, MAX_FLOOD_FRAMES).round().astype(int)
-    kept = [int(i) for i in np.unique(idx)]
-    # Never silently truncate (kickoff requirement): a coastal/wave run with a
-    # fine cadence can emit MANY raw snapshots; if we still exceed the cap we
-    # subsample EVENLY (endpoints kept) and LOG it so the cap is visible.
-    logger.info(
-        "postprocess_flood: %d raw map snapshots exceed MAX_FLOOD_FRAMES=%d; "
-        "subsampling evenly to %d frames (first+last kept). Raise "
-        "GRACE2_MAX_FLOOD_FRAMES to emit more.",
-        n_steps,
-        MAX_FLOOD_FRAMES,
-        len(kept),
-    )
-    return kept
+# ``_select_frame_time_indices`` now lives in ``frames.py`` (STEP 1
+# extract-in-place) and is imported + re-exported at the top of this module. The
+# SFINCS frame loop below calls it unchanged.
 
 
 def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]]:
