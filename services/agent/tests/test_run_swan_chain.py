@@ -167,6 +167,74 @@ def test_run_swan_waves_typed_error_on_missing_bbox():
 
 
 # ===========================================================================
+# (3b) REGRESSION: _fetch_bathy_for_swan REQUIRES real bathymetry.
+# ===========================================================================
+# Root cause of the live 2026-06-23 Mexico Beach all-dry no-op: fetch_topobathy
+# can degrade to a LAND-ONLY 3DEP surface (bathymetry_present=False), which has no
+# below-datum sea cells, so the SWAN bottom grid is entirely dry and SWAN no-ops
+# (empty solve). The old fetch only checked ``.uri`` and SILENTLY fed that DEM. We
+# now reject a bathymetry-absent result with a typed SWAN_NO_BATHYMETRY error.
+def test_fetch_bathy_rejects_land_only_dem():
+    from grace2_agent.workflows.model_wave_scenario import (
+        SwanComposerError,
+        _fetch_bathy_for_swan,
+    )
+
+    bbox = (-85.55, 29.8, -85.25, 30.05)
+
+    class _LandOnlyLayer:
+        uri = "s3://cache/land-only.tif"
+        bathymetry_present = False
+        fallback_warning = "no CUDEM coverage; degraded to 3DEP land-only"
+
+    with patch(
+        "grace2_agent.tools.fetch_topobathy.fetch_topobathy",
+        lambda b: _LandOnlyLayer(),
+    ):
+        with pytest.raises(SwanComposerError) as ei:
+            _fetch_bathy_for_swan(bbox)
+    assert ei.value.error_code == "SWAN_NO_BATHYMETRY"
+    assert "land-only" in str(ei.value).lower() or "below-datum" in str(ei.value).lower()
+
+
+def test_fetch_bathy_accepts_real_bathymetry():
+    from grace2_agent.workflows.model_wave_scenario import _fetch_bathy_for_swan
+
+    bbox = (-85.55, 29.8, -85.25, 30.05)
+
+    class _SeamlessLayer:
+        uri = "s3://cache/topobathy.tif"
+        bathymetry_present = True
+        fallback_warning = None
+
+    with patch(
+        "grace2_agent.tools.fetch_topobathy.fetch_topobathy",
+        lambda b: _SeamlessLayer(),
+    ):
+        uri = _fetch_bathy_for_swan(bbox)
+    assert uri == "s3://cache/topobathy.tif"
+
+
+def test_fetch_bathy_typed_error_when_topobathy_fails():
+    from grace2_agent.workflows.model_wave_scenario import (
+        SwanComposerError,
+        _fetch_bathy_for_swan,
+    )
+
+    bbox = (-85.55, 29.8, -85.25, 30.05)
+
+    def _boom(_b):
+        raise RuntimeError("CUDEM host unreachable")
+
+    with patch(
+        "grace2_agent.tools.fetch_topobathy.fetch_topobathy", _boom
+    ):
+        with pytest.raises(SwanComposerError) as ei:
+            _fetch_bathy_for_swan(bbox)
+    assert ei.value.error_code == "SWAN_DEM_FETCH_FAILED"
+
+
+# ===========================================================================
 # (4) postprocess on a SYNTHETIC swan_out.mat (upload stubbed).
 # ===========================================================================
 def _synthetic_swan_mat(

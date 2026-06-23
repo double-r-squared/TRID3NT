@@ -23,6 +23,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ import pytest
 from services.workers.swan.deck_builder import (
     INPUT_FILENAME,
     OUTPUT_MAT_FILENAME,
+    SWAN_DEPMIN_M,
     SWN_CASENAME,
     SWN_FILENAME,
     SwanBuildSpec,
@@ -435,3 +437,100 @@ def test_entrypoint_swanrun_invocation_finds_authored_swn(tmp_path: Path):
     # swanrun copied the authored deck to INPUT + produced the (fake) wave output.
     assert (tmp_path / "swan_out.mat").exists()
     assert "CGRID REGULAR" in (tmp_path / INPUT_FILENAME).read_text()
+
+
+# ===========================================================================
+# (6) REGRESSION: bottom-grid SIGN convention + the all-dry no-op guard.
+# ===========================================================================
+# These pin the THIRD SWAN bug (live 2026-06-23 Mexico Beach 33 ms no-op): SWAN
+# "prepares computation", runs ZERO sweeps, writes no swan_out.mat when the bottom
+# grid is ALL DRY (every cell below DEPMIN). The two things that must hold:
+#   (a) The worker's DEM sampler negates positive-UP NAVD88 elevation -> SWAN's
+#       positive-DOWN depth, so an offshore (below-datum) point renders WET.
+#   (b) The worker's all-dry guard FAILS FAST (SWAN_ALL_DRY_GRID) on a bottom grid
+#       with no wet cell, naming depth min/max -- instead of an opaque SWAN no-op.
+def test_bottom_sign_convention_offshore_point_is_wet():
+    """The DEM sampler convention (depth = -elevation) must render a known offshore
+    point as WET (depth >= DEPMIN). Mexico Beach offshore (Gulf) sits tens of
+    metres below NAVD88: elevation ~ -20 m -> depth +20 m -> deep wet sea. Land
+    (elevation > 0 -> negative depth) must render DRY. This is the exact sign that,
+    if inverted (or fed a land-only DEM), produces the all-dry no-op.
+    """
+    spec = parse_build_spec(_spec(mx=4, my=4))
+
+    # The entrypoint's _build_depth_fn does ``return -elev``; replicate that here so
+    # the convention is pinned at the deck-author boundary the worker samples onto.
+    # Offshore (south, lower-lat half of the bbox) is below datum; nearshore/land
+    # (north, upper-lat half) is above datum.
+    def depth_fn(lon, lat):
+        # NAVD88 positive-up elevation: -25 m offshore (south), +3 m on land (north).
+        mid_lat = 0.5 * (_AOI[1] + _AOI[3])
+        elevation = -25.0 if lat < mid_lat else 3.0
+        return -elevation  # the worker's positive-up -> positive-down negation.
+
+    text = render_bottom_input(spec, depth_fn=depth_fn)
+    vals = [float(v) for row in text.splitlines() if row.strip() for v in row.split()]
+    wet = [d for d in vals if d >= SWAN_DEPMIN_M]
+    dry = [d for d in vals if d < SWAN_DEPMIN_M]
+    # The offshore (below-datum) cells MUST be wet with a positive, deep depth.
+    assert wet, "no wet cells -- the all-dry no-op signature; sign convention is wrong"
+    assert max(wet) == pytest.approx(25.0, abs=1e-6), (
+        "a -25 m NAVD88 (offshore) elevation must render as +25 m positive-down "
+        "DEPTH (wet); a wrong sign would render it dry"
+    )
+    # Land (positive elevation) cells render negative depth -> dry.
+    assert dry, "expected the land (above-datum) cells to render as dry"
+    assert min(dry) == pytest.approx(-3.0, abs=1e-6)
+
+
+def test_all_dry_guard_fires_and_passes():
+    """The worker's all-dry guard must RAISE SwanAllDryGridError (code
+    SWAN_ALL_DRY_GRID) on a bottom grid with no wet cell -- and PASS a grid with at
+    least one wet cell, returning depth min/max/wet/total. This converts the opaque
+    SWAN no-op into an actionable, typed failure.
+    """
+    from services.workers.swan.entrypoint import (
+        SwanAllDryGridError,
+        _assert_bottom_has_wet_cells,
+    )
+
+    # An ALL-DRY bottom grid (every cell a land-only positive elevation -> negative
+    # depth, the fetch_dem-land-only fallback signature) must trip the guard.
+    dry_dir = Path(tempfile.mkdtemp())
+    (dry_dir / "bottom.bot").write_text("-3.0 -2.5 -4.0\n-1.0 -0.5 -2.0\n")
+    with pytest.raises(SwanAllDryGridError) as ei:
+        _assert_bottom_has_wet_cells(dry_dir)
+    assert ei.value.error_code == "SWAN_ALL_DRY_GRID"
+    msg = str(ei.value)
+    assert "ALL DRY" in msg
+    # The error names the depth range so the operator can diagnose.
+    assert "-4.000" in msg and "-0.500" in msg
+
+    # A grid with at least one wet (>= DEPMIN) cell must PASS and report the stats.
+    wet_dir = Path(tempfile.mkdtemp())
+    (wet_dir / "bottom.bot").write_text("-3.0 12.0 -4.0\n0.10 25.0 -2.0\n")
+    depth_min, depth_max, wet, total = _assert_bottom_has_wet_cells(wet_dir)
+    assert total == 6
+    assert wet == 3  # 12.0, 0.10, 25.0 are >= DEPMIN (0.05)
+    assert depth_max == pytest.approx(25.0, abs=1e-6)
+    assert depth_min == pytest.approx(-4.0, abs=1e-6)
+
+
+def test_all_dry_guard_excludes_exception_sentinel():
+    """The all-dry guard must DROP SWAN's exception/no-data sentinel (-999.0) from
+    the depth stats so a grid of all-sentinel + a single real wet cell still passes
+    correctly (the sentinel is not a real -999 m-deep ``wet`` cell, nor a dry one).
+    """
+    from services.workers.swan.deck_builder import SWAN_EXCEPTION_VALUE
+    from services.workers.swan.entrypoint import _assert_bottom_has_wet_cells
+
+    d = Path(tempfile.mkdtemp())
+    (d / "bottom.bot").write_text(
+        f"{SWAN_EXCEPTION_VALUE:.1f} 8.0 {SWAN_EXCEPTION_VALUE:.1f}\n"
+    )
+    depth_min, depth_max, wet, total = _assert_bottom_has_wet_cells(d)
+    # Only the single real (8.0 m) cell is counted; the two -999 sentinels dropped.
+    assert total == 1
+    assert wet == 1
+    assert depth_min == pytest.approx(8.0, abs=1e-6)
+    assert depth_max == pytest.approx(8.0, abs=1e-6)

@@ -258,6 +258,91 @@ def _author_deck(build_spec: dict, cwd: Path, bathy_path: Path) -> Any:
     return build_swan_deck(build_spec, cwd, depth_fn=depth_fn)
 
 
+class SwanAllDryGridError(RuntimeError):
+    """The rendered SWAN bottom grid has NO wet cells (every cell < DEPMIN).
+
+    SWAN's bottom convention is positive-DOWN DEPTH: a cell is WET (active) only
+    when its depth >= DEPMIN (0.05 m). When every cell is below DEPMIN the whole
+    computational grid is dry/inactive, so SWAN "prepares computation", does ZERO
+    sweeps, writes no ``swan_out.mat``, and prints "Normal end of run" in
+    milliseconds -- the live 2026-06-23 Mexico Beach 33 ms no-op. This is almost
+    always (a) a SIGN error in the bottom render, or (b) a LAND-ONLY DEM fed to a
+    coastal AOI (e.g. the ``fetch_topobathy`` -> land-only ``fetch_dem`` fallback),
+    so EVERY cell renders as land (negative depth). Raising a typed, named error
+    here turns the opaque no-op into an actionable failure naming depth min/max.
+    """
+
+    error_code = "SWAN_ALL_DRY_GRID"
+
+
+def _assert_bottom_has_wet_cells(cwd: Path) -> tuple[float, float, int, int]:
+    """Assert the authored ``bottom.bot`` has >=1 wet cell, else raise SwanAllDryGridError.
+
+    Reads the FREE-format depth grid the deck author wrote (positive-DOWN depth)
+    and counts cells at or above DEPMIN (the SWAN wet threshold). A grid with NO
+    wet cell is the exact all-dry no-op signature, so we FAIL FAST with the
+    depth min/max named -- never let SWAN no-op opaquely. The DEPMIN + bottom
+    filename are read from the deck_builder so this can never drift from the deck.
+
+    Returns ``(depth_min, depth_max, wet_cell_count, total_cell_count)`` on success.
+    Cells equal to the SWAN exception value (no-data) are excluded from the stats.
+    """
+    from services.workers.swan.deck_builder import (
+        SWAN_DEPMIN_M,
+        SWAN_EXCEPTION_VALUE,
+    )
+
+    bottom_path = cwd / "bottom.bot"
+    if not bottom_path.exists():
+        raise SwanAllDryGridError(
+            "SWAN bottom grid 'bottom.bot' was not authored (no bathymetry to check)"
+        )
+
+    depths: list[float] = []
+    text = bottom_path.read_text(errors="replace")
+    for line in text.splitlines():
+        for tok in line.split():
+            try:
+                v = float(tok)
+            except ValueError:
+                continue
+            # Drop the SWAN exception / no-data sentinel from the stats.
+            if abs(v - SWAN_EXCEPTION_VALUE) < 1e-6:
+                continue
+            depths.append(v)
+
+    total = len(depths)
+    if total == 0:
+        raise SwanAllDryGridError(
+            "SWAN bottom grid 'bottom.bot' has no numeric depth cells"
+        )
+
+    depth_min = min(depths)
+    depth_max = max(depths)
+    wet = sum(1 for d in depths if d >= SWAN_DEPMIN_M)
+    LOG.info(
+        "swan bottom grid: depth_min=%.3f depth_max=%.3f wet_cells=%d/%d "
+        "(DEPMIN=%.3f m, wet = depth >= DEPMIN)",
+        depth_min,
+        depth_max,
+        wet,
+        total,
+        SWAN_DEPMIN_M,
+    )
+    if wet == 0:
+        raise SwanAllDryGridError(
+            "SWAN bottom grid is ALL DRY -- 0 of %d cells are wet (depth >= DEPMIN "
+            "%.3f m). depth range [%.3f, %.3f] m (positive-DOWN). This is the "
+            "all-dry no-op: SWAN would prepare computation, run zero sweeps, write "
+            "no swan_out.mat. Cause is almost always a LAND-ONLY DEM fed to a "
+            "coastal AOI (fetch_topobathy -> land-only fetch_dem fallback) or a "
+            "bottom-sign error. Stage a real seamless topo-bathymetry DEM with "
+            "below-datum (negative-elevation -> positive-depth) sea cells."
+            % (total, SWAN_DEPMIN_M, depth_min, depth_max)
+        )
+    return depth_min, depth_max, wet, total
+
+
 def _run_swan(cwd: Path) -> tuple[int, Path, Path]:
     """Run SWAN headless in ``cwd``; capture stdout/stderr.
 
@@ -395,6 +480,7 @@ def _write_completion(
     mode: str | None,
     started_at: str,
     error: str | None,
+    error_code: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -407,6 +493,7 @@ def _write_completion(
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
+        "error_code": error_code,
     }
     completion_uri = _runs_uri(run_id, "completion.json")
     scheme, bucket, key = _split_object_uri(completion_uri)
@@ -437,6 +524,45 @@ DEFAULT_OUTPUT_GLOBS: list[str] = [
     "swan.stderr",
 ]
 
+#: Diagnostic-file globs uploaded UNCONDITIONALLY (even on an early failure /
+#: exception) so the next Batch run is conclusive. swanrun names the SWAN print
+#: file after the case (``swan_run.prt``) OR writes a literal ``PRINT``; SWAN
+#: writes errors to ``Errfile`` / ``Errpts`` / ``swan_run.erf``. The PRINT file
+#: carries SWAN's active-sea-point count + grid diagnostics that confirm the
+#: all-dry-grid theory -- it must reach S3 regardless of how the run ends. The
+#: ``bottom.bot`` + authored ``swan_run.swn`` / ``INPUT`` are included so the deck
+#: that produced the run is always inspectable.
+DIAGNOSTIC_GLOBS: list[str] = [
+    "PRINT",
+    "*.prt",
+    "Errfile",
+    "Errpts",
+    "*.erf",
+    "swan_run.swn",
+    "INPUT",
+    "bottom.bot",
+    "deck_manifest.json",
+]
+
+
+def _upload_diagnostics(run_id: str, cwd: Path) -> list[str]:
+    """Upload SWAN's PRINT / Errfile / deck diagnostics to the runs bucket.
+
+    Highest-value evidence path: the PRINT file holds SWAN's active-sea-point
+    count + grid diagnostics. Best-effort per file (one failed upload never
+    blocks the others) and safe to call from BOTH the success path and the
+    exception handler -- so the diagnostics survive even when the run dies on the
+    node before the normal output-expansion loop. Returns the uploaded URIs.
+    """
+    uris: list[str] = []
+    for path in _expand_outputs(list(DIAGNOSTIC_GLOBS), cwd):
+        rel = path.relative_to(cwd).as_posix()
+        try:
+            uris.append(_upload(path, _runs_uri(run_id, rel)))
+        except Exception as exc:  # noqa: BLE001 -- one bad upload must not block others
+            LOG.warning("diagnostic upload failed for %s: %s", rel, exc)
+    return uris
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_argv_parser()
@@ -465,9 +591,11 @@ def main(argv: list[str] | None = None) -> int:
     stdout_uri: str | None = None
     stderr_uri: str | None = None
     error_msg: str | None = None
+    error_code: str | None = None
     mode: str | None = None
     exit_code = 1
     status = "error"
+    scratch: Path | None = None
 
     try:
         manifest = _read_manifest(manifest_uri)
@@ -497,6 +625,12 @@ def main(argv: list[str] | None = None) -> int:
             deck_manifest.driver_descriptor,
         )
 
+        # All-dry guard (FAIL FAST, pre-solve): if the rendered bottom grid has NO
+        # wet cell (every cell < DEPMIN) SWAN would no-op silently. Raise a typed,
+        # named SWAN_ALL_DRY_GRID error naming depth min/max BEFORE wasting a solve.
+        # The authored bottom.bot is still uploaded by the diagnostics path below.
+        _assert_bottom_has_wet_cells(scratch)
+
         rc, stdout_path, stderr_path = _run_swan(scratch)
 
         # Always upload stdout/stderr so the run produces evidence.
@@ -512,11 +646,30 @@ def main(argv: list[str] | None = None) -> int:
         status, error_msg = classify_swan_outcome(scratch, rc)
         exit_code = rc if status == "ok" else (rc or 1)
 
+    except SwanAllDryGridError as exc:
+        LOG.error("swan all-dry grid: %s", exc)
+        error_msg = str(exc)
+        error_code = SwanAllDryGridError.error_code
+        exit_code = 1
+        status = "error"
     except Exception as exc:  # pragma: no cover -- defensive, logged + emitted
         LOG.exception("solver entrypoint failed")
         error_msg = f"{type(exc).__name__}: {exc}"
         exit_code = 1
         status = "error"
+
+    # ALWAYS upload SWAN's diagnostics (PRINT / Errfile / authored deck) -- even on
+    # an early failure / exception -- so the next Batch run is conclusive (the PRINT
+    # file carries SWAN's active-sea-point count + grid diagnostics). Best-effort:
+    # never let a diagnostic-upload error mask the real outcome.
+    if scratch is not None:
+        try:
+            diag_uris = _upload_diagnostics(run_id, scratch)
+            for u in diag_uris:
+                if u not in output_uris:
+                    output_uris.append(u)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("diagnostic upload sweep failed: %s", exc)
 
     _write_completion(
         run_id=run_id,
@@ -528,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
         mode=mode,
         started_at=started_at,
         error=error_msg,
+        error_code=error_code,
     )
     return exit_code
 
