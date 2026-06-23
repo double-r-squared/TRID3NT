@@ -87,6 +87,9 @@ import { useIsMobile } from "./hooks/useIsMobile";
 import {
   applyTerrain3d,
   removeTerrain3d,
+  buildTerrain3dCameraPose,
+  buildFlat2dCameraPose,
+  TERRAIN_3D_EASE_MS,
   type TerrainMapLike,
 } from "./lib/terrain_3d";
 import {
@@ -2488,18 +2491,69 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     if (!m) return;
     const tm = m as unknown as TerrainMapLike;
 
-    // Disable path: tear terrain down immediately. removeTerrain3d is fully
-    // defensive (try/catch + getLayer/getSource guards), so it is safe before
-    // the style has loaded and must NOT gate on mapStyleReady - gating here would
+    // prefers-reduced-motion: the 3D enter / exit is a ~1.2s camera flight. When
+    // the user has asked for reduced motion, jump (duration 0) instead of easing.
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const easeMs = prefersReducedMotion ? 0 : TERRAIN_3D_EASE_MS;
+
+    // Disable path: ease the camera FLAT (top-down, north-up) FIRST, THEN tear
+    // the terrain down + re-lock 2D once the move settles. Easing before teardown
+    // means the user sees the relief lower back to flat rather than the terrain
+    // popping away under a still-pitched camera. removeTerrain3d is fully
+    // defensive (try/catch + getLayer/getSource guards), so it is safe before the
+    // style has loaded and must NOT gate on mapStyleReady - gating here would
     // latch __grace2StyleReady on mount for the (default) 2D case, which would
     // defeat the layer-reconcile's "style not loaded yet" deferral elsewhere.
     if (!terrain3dEnabled) {
-      removeTerrain3d(tm);
+      let torndown = false;
+      const teardown = () => {
+        if (torndown) return;
+        torndown = true;
+        if (!map.current) return;
+        try {
+          // setMaxPitch(0) inside removeTerrain3d re-locks 2D AFTER the camera is
+          // already flat, so the pitch we just eased to is not clamped mid-flight.
+          removeTerrain3d(map.current as unknown as TerrainMapLike);
+        } catch {
+          /* map already torn down - fine */
+        }
+      };
+      // Only fly the camera flat when it is actually pitched (i.e. 3D was on).
+      // On a fresh 2D mount (the default) the camera is already flat, so skip the
+      // easeTo entirely and tear down immediately - this also avoids registering
+      // a spurious moveend handler on every render.
+      let pitched = false;
+      try {
+        pitched = typeof m.getPitch === "function" && m.getPitch() > 0.5;
+      } catch {
+        pitched = false;
+      }
+      if (!pitched) {
+        teardown();
+        return;
+      }
+      try {
+        const flat = buildFlat2dCameraPose();
+        m.once("moveend", teardown);
+        m.easeTo({ pitch: flat.pitch, bearing: flat.bearing, duration: easeMs });
+        // Belt + suspenders: if the move never fires moveend (already flat, no
+        // animation), tear down on a timer so terrain is never left dangling.
+        window.setTimeout(teardown, easeMs + 80);
+      } catch {
+        // easeTo unavailable (test stub / pre-init) - tear down immediately so
+        // the toggle still works without the camera flourish.
+        teardown();
+      }
       return;
     }
 
     // Enable path: addSource/addLayer/setTerrain need the style loaded once.
     // Gate on the mapStyleReady latch (re-arm on idle) like the layer reconcile.
+    // Once terrain is applied, easeTo a PITCHED pose (keeping the live center +
+    // zoom) so 3D is immediately + unmistakably 3D rather than a flat hillshade.
     const run = () => {
       if (!map.current) return;
       if (!mapStyleReady(map.current)) {
@@ -2511,19 +2565,21 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // AWS Terrarium tiles. Once the agent emits a per-case DEM COG, thread it
       // through here as a prop -> TiTiler terrain-RGB path (see FOLLOW-UPS).
       applyTerrain3d(tm, { contoursRequested: contoursEnabled });
-    };
-    run();
-
-    // On disable / unmount, ensure terrain is torn down + the 2D camera lock is
-    // restored. Guard the map handle (it may be removed during teardown).
-    return () => {
-      if (!map.current) return;
+      // Pitch the camera so the relief actually reads. applyTerrain3d already
+      // unlocked maxPitch (75) + rotate, so this easeTo is not clamped. Keep
+      // center + zoom (easeTo merges over the current pose).
       try {
-        removeTerrain3d(map.current as unknown as TerrainMapLike);
+        const pose = buildTerrain3dCameraPose();
+        map.current.easeTo({
+          pitch: pose.pitch,
+          bearing: pose.bearing,
+          duration: easeMs,
+        });
       } catch {
-        /* map already torn down - fine */
+        /* easeTo unavailable - terrain still renders, just without the tilt-in */
       }
     };
+    run();
   }, [terrain3dEnabled, contoursEnabled]);
 
   // Subscribe to session-state and wire WMS raster sources (job-0068, change 4;

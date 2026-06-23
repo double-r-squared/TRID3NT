@@ -63,6 +63,10 @@ interface MapMock {
   setMaxPitch: ReturnType<typeof vi.fn>;
   dragRotate: { enable: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn> };
   touchPitch: { enable: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn> };
+  easeTo: ReturnType<typeof vi.fn>;
+  getPitch: ReturnType<typeof vi.fn>;
+  _pitch: number;
+  setProjection: ReturnType<typeof vi.fn>;
   getLayer: ReturnType<typeof vi.fn>;
   getSource: ReturnType<typeof vi.fn>;
   isStyleLoaded: ReturnType<typeof vi.fn>;
@@ -71,6 +75,8 @@ interface MapMock {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
+  _onceHandlers: Map<string, Array<() => void>>;
+  fireMoveend: () => void;
   // job-0321 (F43)  -  legend-anchor projection.
   project: ReturnType<typeof vi.fn>;
   getCanvas: ReturnType<typeof vi.fn>;
@@ -128,6 +134,26 @@ vi.mock("maplibre-gl", () => {
     setMaxPitch = vi.fn();
     dragRotate = { enable: vi.fn(), disable: vi.fn() };
     touchPitch = { enable: vi.fn(), disable: vi.fn() };
+    // Priority 1: the 3D toggle eases the camera into / out of a pitched pose.
+    // Track pitch so getPitch() reflects the last easeTo (the disable path only
+    // flies flat when the camera is actually pitched). The move does NOT settle
+    // moveend synchronously; tests drive that via fireMoveend().
+    _pitch = 0;
+    getPitch = vi.fn(() => this._pitch);
+    easeTo = vi.fn((opts: { pitch?: number } = {}) => {
+      if (typeof opts.pitch === "number") this._pitch = opts.pitch;
+    });
+    // Priority 2: globe vs mercator projection swap when 3D flips.
+    setProjection = vi.fn();
+
+    // Fire any pending one-shot `moveend` handlers (the 3D disable path defers
+    // terrain teardown to once("moveend", ...)). Tests call this to settle the
+    // camera move synchronously.
+    fireMoveend(): void {
+      const handlers = this._onceHandlers.get("moveend") ?? [];
+      this._onceHandlers.set("moveend", []);
+      handlers.forEach((h) => h());
+    }
     // isStyleLoaded must return true for the session-state handler to apply.
     isStyleLoaded = vi.fn().mockReturnValue(true);
     // NATE item 2 - the raster frame-swap hold path probes source-tile load
@@ -147,7 +173,16 @@ vi.mock("maplibre-gl", () => {
     // what tests verify).
     on = vi.fn();
     off = vi.fn();
-    once = vi.fn();
+    // Track one-shot handlers so easeTo can settle a registered `moveend`
+    // synchronously (the 3D disable path defers terrain teardown until the
+    // camera has eased flat via once("moveend", ...)). Mirrors a real settled
+    // camera move so the synchronous test sees the teardown.
+    _onceHandlers = new Map<string, Array<() => void>>();
+    once = vi.fn((evt: string, cb: () => void) => {
+      const arr = this._onceHandlers.get(evt) ?? [];
+      arr.push(cb);
+      this._onceHandlers.set(evt, arr);
+    });
     // job-0321 (F43)  -  the legend-anchor projection effect calls project() to
     // map bbox corners to screen space and getCanvas() to read the viewport
     // size for the off-screen test. Deterministic stubs so the anchor lands
@@ -3264,6 +3299,16 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
     expect(m.setMaxPitch).toHaveBeenCalledWith(75);
     expect(m.dragRotate.enable).toHaveBeenCalled();
     expect(m.touchPitch.enable).toHaveBeenCalled();
+    // Priority 1: the camera is eased into a pitched pose so 3D actually LOOKS
+    // 3D rather than a flat hillshade. Pitch reads strongly (>= 60) and a gentle
+    // bearing turns the relief off-axis.
+    const enableEase = m.easeTo.mock.calls.find(
+      (c) => (c[0] as { pitch?: number } | undefined)?.pitch && (c[0] as { pitch: number }).pitch > 0,
+    );
+    expect(enableEase).toBeTruthy();
+    const ease = enableEase![0] as { pitch: number; bearing: number };
+    expect(ease.pitch).toBeGreaterThanOrEqual(60);
+    expect(ease.bearing).toBeGreaterThan(0);
   });
 
   it("tears terrain down + re-locks 2D when the toggle flips back off", () => {
@@ -3273,6 +3318,15 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
       TERRAIN_DEM_SOURCE_ID,
     );
     rerender(<MapView terrain3dEnabled={false} />);
+    // Priority 1: the disable path eases the camera FLAT (pitch 0, bearing 0)
+    // FIRST, then tears terrain down on the moveend that settles the flight.
+    const flatEase = m.easeTo.mock.calls.find(
+      (c) => (c[0] as { pitch?: number } | undefined)?.pitch === 0,
+    );
+    expect(flatEase).toBeTruthy();
+    expect((flatEase![0] as { bearing: number }).bearing).toBe(0);
+    // Settle the camera flight so the deferred terrain teardown runs.
+    act(() => m.fireMoveend());
     // setTerrain(null) called + the DEM source + terrain layers removed.
     expect(m.setTerrain).toHaveBeenLastCalledWith(null);
     const removedSources = m.removeSource.mock.calls.map((c) => c[0]);

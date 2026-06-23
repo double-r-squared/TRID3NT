@@ -119,9 +119,54 @@ export const TERRAIN_DEM_SOURCE_ID = "grace2-terrain-dem";
 export const TERRAIN_HILLSHADE_LAYER_ID = "grace2-terrain-hillshade";
 export const TERRAIN_SKY_LAYER_ID = "grace2-terrain-sky";
 
-/** Default vertical exaggeration for setTerrain. 1.4 reads as relief without
- *  the spiky over-exaggeration of higher values; tuned for CONUS-scale AOIs. */
-export const TERRAIN_EXAGGERATION = 1.4;
+/** Default vertical exaggeration for setTerrain. 2.0 makes relief read STRONGLY
+ *  at AOI / city scale (the zoom NATE works at) once the camera is pitched - the
+ *  earlier 1.4 was too subtle and, with a flat top-down camera, made "3D mode"
+ *  look like a mere hillshade filter. 2.0 sits below the spiky-artifact regime of
+ *  2.5+ while reading as dramatic, navigable relief. Named export so it stays
+ *  the single source of truth (unit-tested + asserted by Map.tsx wiring). */
+export const TERRAIN_EXAGGERATION = 2.0;
+
+// --- pure camera-pose builders (Priority 1: make 3D actually LOOK 3D) ------ //
+//
+// The toggle used to add a DEM + hillshade + setTerrain and UNLOCK pitch/rotate
+// but never PITCHED the camera, so enabling 3D left a flat top-down view and the
+// user only ever saw hillshade shading - never the relief. These builders are
+// pure (no MapLibre) so Map.tsx can easeTo() the live camera into / out of a 3D
+// pose, and the exact poses are unit-tested.
+
+/** A camera pose easeTo() accepts (the subset Map.tsx hands to easeTo). */
+export interface CameraPose {
+  pitch: number;
+  bearing: number;
+}
+
+/** The pitched 3D pose enabling 3D eases the camera INTO. ~67deg pitch reads as
+ *  strong relief at AOI scale while staying under setMaxPitch(75); a gentle 25deg
+ *  bearing turns the terrain off-axis so ridges / valleys read as depth rather
+ *  than a head-on wall. Center + zoom are preserved by easeTo (not set here). */
+export const TERRAIN_3D_PITCH = 67;
+export const TERRAIN_3D_BEARING = 25;
+
+/** The flat 2D pose disabling 3D eases the camera back to (top-down, north-up)
+ *  BEFORE the terrain stack is torn down and the camera re-locked to 2D. */
+export const FLAT_2D_PITCH = 0;
+export const FLAT_2D_BEARING = 0;
+
+/** easeTo duration (ms) for the 3D enter / exit camera move. ~1.2s reads as a
+ *  smooth, deliberate "lift into 3D" without feeling sluggish. */
+export const TERRAIN_3D_EASE_MS = 1200;
+
+/** The pitched 3D camera pose (pure). easeTo merges this over the live center /
+ *  zoom, so enabling 3D tilts in place. */
+export function buildTerrain3dCameraPose(): CameraPose {
+  return { pitch: TERRAIN_3D_PITCH, bearing: TERRAIN_3D_BEARING };
+}
+
+/** The flat top-down 2D camera pose (pure) the disable path eases back to. */
+export function buildFlat2dCameraPose(): CameraPose {
+  return { pitch: FLAT_2D_PITCH, bearing: FLAT_2D_BEARING };
+}
 
 /**
  * Public AWS Terrain Tiles (Terrarium encoding) open dataset. No API key,

@@ -24,6 +24,12 @@ import {
   TERRAIN_HILLSHADE_LAYER_ID,
   TERRAIN_SKY_LAYER_ID,
   TERRAIN_EXAGGERATION,
+  TERRAIN_3D_PITCH,
+  TERRAIN_3D_BEARING,
+  FLAT_2D_PITCH,
+  FLAT_2D_BEARING,
+  buildTerrain3dCameraPose,
+  buildFlat2dCameraPose,
   type TerrainMapLike,
   type TerrainDemSourceSpec,
 } from "./terrain_3d";
@@ -88,6 +94,33 @@ describe("terrain_3d - buildTerrainDemSource", () => {
     // The DEM COG url is URL-encoded into ?url=.
     expect(tpl).toContain(`url=${encodeURIComponent("s3://bucket/dem.tif")}`);
     expect(tpl).toContain("colormap_name=terrainrgb");
+  });
+});
+
+describe("terrain_3d - camera poses (Priority 1: make 3D look 3D)", () => {
+  it("exaggeration is strong enough to read as relief (>= 1.8, < 2.5)", () => {
+    // The old 1.4 was too subtle; 2.5+ goes spiky. Guard the tuned band.
+    expect(TERRAIN_EXAGGERATION).toBeGreaterThanOrEqual(1.8);
+    expect(TERRAIN_EXAGGERATION).toBeLessThan(2.5);
+  });
+
+  it("3D pose pitches strongly but stays under the 75deg max pitch", () => {
+    const pose = buildTerrain3dCameraPose();
+    expect(pose.pitch).toBe(TERRAIN_3D_PITCH);
+    expect(pose.bearing).toBe(TERRAIN_3D_BEARING);
+    // Strong relief read (>= 60) but under setMaxPitch(75) so easeTo is not clamped.
+    expect(pose.pitch).toBeGreaterThanOrEqual(60);
+    expect(pose.pitch).toBeLessThan(75);
+    // A gentle off-axis bearing so ridges read as depth, not a head-on wall.
+    expect(pose.bearing).toBeGreaterThan(0);
+    expect(pose.bearing).toBeLessThanOrEqual(45);
+  });
+
+  it("flat pose is dead-on top-down, north-up", () => {
+    const pose = buildFlat2dCameraPose();
+    expect(pose).toEqual({ pitch: FLAT_2D_PITCH, bearing: FLAT_2D_BEARING });
+    expect(pose.pitch).toBe(0);
+    expect(pose.bearing).toBe(0);
   });
 });
 
