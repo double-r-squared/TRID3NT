@@ -2031,7 +2031,9 @@ async def _stream_gemini_reply(
     from .bedrock_adapter import model_provider as _model_provider
 
     _provider = _model_provider()
-    client = None if _provider == "bedrock" else build_client(settings)
+    # No Vertex client under bedrock OR the scripted/replay sandbox (neither has,
+    # nor needs, GCP ADC -- their stream_* branches ignore ``client``).
+    client = None if _provider in ("bedrock", "scripted", "replay", "fake") else build_client(settings)
     first_token_logged = False
     started_at = asyncio.get_running_loop().time()
 

@@ -2377,6 +2377,22 @@ async def stream_events_with_contents(
     # the server.py dispatch loop, validator, emitter, and UI are untouched.
     # cached_content_name is a Gemini-only fast-path and does not apply here.
     from .bedrock_adapter import model_provider, stream_bedrock
+    from .scripted_adapter import model_provider_is_scripted, stream_scripted
+
+    # MODEL_PROVIDER=scripted (aliases replay/fake): replay a canned transcript of
+    # tool calls with NO model call -- the zero-cost deterministic test/dev
+    # sandbox. Intercept BEFORE the bedrock check (model_provider() would not be
+    # "bedrock", so it must not fall through to the Vertex client path). Yields
+    # the same StreamEvent union, so the dispatch loop is untouched.
+    if model_provider_is_scripted():
+        async for _ev in stream_scripted(
+            contents=contents,
+            tool_declarations=tool_declarations,
+            system_prompt=system_prompt,
+            model=bedrock_model,
+        ):
+            yield _ev
+        return
 
     if model_provider() == "bedrock":
         async for _ev in stream_bedrock(
