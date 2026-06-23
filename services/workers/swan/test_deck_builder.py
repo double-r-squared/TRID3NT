@@ -141,7 +141,10 @@ def test_render_swn_stationary_has_load_bearing_blocks():
     text = render_swn_command_file(spec)
     # PROJECT + SET + run mode + coordinates.
     assert "PROJECT 'GRACE2' 'WAVE'" in text
-    assert "SET NAUTICAL" in text
+    # SET uses positional/keyword SWAN syntax (NO ``KEY=value``) with NAUTICAL
+    # last and a DEPMIN threshold; ``LEVEL=``/``NOR=`` were invalid SWAN keywords.
+    assert "SET LEVEL 0.0 NOR 90.0 DEPMIN 0.05 EXCEPTION -999.0 NAUTICAL" in text
+    assert "LEVEL=" not in text and "NOR=" not in text
     assert "MODE STATIONARY TWODIMENSIONAL" in text
     assert "COORDINATES SPHERICAL" in text
     # CGRID with the spectral CIRCLE block (ndir flow fhigh nfreq).
@@ -162,8 +165,13 @@ def test_render_swn_stationary_has_load_bearing_blocks():
     assert "BOUNDSPEC SIDE S CONSTANT PAR 3.000 9.000 180.00 25.00" in text
     # Gridded output BLOCK to the .mat + the requested quantities.
     assert f"BLOCK 'COMPGRID' NOHEADER '{OUTPUT_MAT_FILENAME}' LAYOUT 3 HSIGN RTP DIR" in text
-    # Stationary compute + stop.
-    assert "COMPUTE STATIONARY" in text
+    # Stationary compute + stop. SWAN's manual is explicit: in MODE STATIONARY the
+    # COMPUTE command takes NO option -- a bare ``COMPUTE`` (the ``STATIONARY``
+    # token after COMPUTE is reserved for a stationary step inside a NONSTATIONARY
+    # file, and writing it here made SWAN skip the iteration -> the 33 ms no-op).
+    lines = text.splitlines()
+    assert "COMPUTE" in lines  # the bare COMPUTE line, exactly
+    assert "COMPUTE STATIONARY" not in text
     assert "STOP" in text
 
 
@@ -176,6 +184,64 @@ def test_render_swn_nonstationary_has_nonstat_compute():
     assert "COMPUTE NONSTATIONARY" in text
     assert "600.0 SEC" in text
     assert "COMPUTE STATIONARY" not in text
+
+
+def test_render_swn_stationary_deck_actually_computes_and_writes_output():
+    """REGRESSION (live 2026-06-23 33 ms no-op): the authored STATIONARY deck must
+    contain an EXECUTABLE compute over a NON-DEGENERATE grid plus a BLOCK that
+    writes ``swan_out.mat`` with the significant-wave-height field the postprocess
+    reads -- otherwise SWAN reaches "Normal end of run" without iterating, writes
+    no .mat, and the workflow fails honestly with SWAN_BATCH_OUTPUT_MISSING.
+
+    The two deck defects this pins:
+      (1) STATIONARY mode must emit a BARE ``COMPUTE`` (no ``STATIONARY`` option);
+          ``COMPUTE STATIONARY`` made SWAN skip the iteration (the no-op).
+      (2) The BLOCK must target ``swan_out.mat`` with HSIGN -- the EXACT variable
+          the postprocess (`_HS_PREFIXES`) matches. A .mat extension makes SWAN
+          write a binary MATLAB file; LAYOUT 3 is SWAN's recommended .mat layout.
+    """
+    spec = parse_build_spec(_spec(mode="stationary"))
+    text = render_swn_command_file(spec)
+    lines = text.splitlines()
+
+    # (1) An EXECUTABLE compute: a bare COMPUTE line, NOT ``COMPUTE STATIONARY``
+    # (the no-op token), and it must be present exactly once.
+    assert "COMPUTE" in lines, "stationary deck must contain a bare COMPUTE"
+    assert "COMPUTE STATIONARY" not in text, (
+        "COMPUTE STATIONARY in a MODE STATIONARY deck makes SWAN skip the solve "
+        "(the live 33 ms no-op) -- emit a bare COMPUTE"
+    )
+    assert lines.count("COMPUTE") == 1
+
+    # The compute must run over a NON-DEGENERATE computational grid: a real bbox
+    # (-85.75..-85.25 lon, 29.55..30.20 lat) with mx=40 my=50 meshes -> the CGRID
+    # spans must be strictly positive (zero-span = nothing to iterate over).
+    cgrid = next(L for L in lines if L.startswith("CGRID REGULAR"))
+    toks = cgrid.split()
+    # CGRID REGULAR xpc ypc alpc xlenc ylenc mxc myc CIRCLE ...
+    xlenc, ylenc = float(toks[5]), float(toks[6])
+    mxc, myc = int(toks[7]), int(toks[8])
+    assert xlenc > 0.0 and ylenc > 0.0, "degenerate CGRID extent -> SWAN no-op"
+    assert mxc >= 1 and myc >= 1, "degenerate CGRID mesh count -> SWAN no-op"
+
+    # (2) The BLOCK must write swan_out.mat with HSIGN (the postprocess primary
+    # field), and BEFORE the COMPUTE (SWAN ignores output declared after COMPUTE).
+    block = next(L for L in lines if L.startswith("BLOCK"))
+    assert "swan_out.mat" in block
+    assert "HSIGN" in block
+    assert lines.index(block) < lines.index("COMPUTE"), (
+        "BLOCK must precede COMPUTE -- SWAN ignores output requested after COMPUTE"
+    )
+
+    # Deck <-> postprocess contract: the BLOCK requests HSIGN, which SWAN writes to
+    # the .mat as the variable ``Hsig``. ``postprocess_swan._HS_PREFIXES`` matches
+    # ("Hsig", "Hsign", "HSIGN", "Hs"), so the BLOCK's HSIGN field is the one the
+    # reader rasterizes. (We assert the deck side here -- the worker test path does
+    # not import the agent package -- and pin the agreed token names explicitly so
+    # a drift in either direction is visible.)
+    assert "HSIGN" in block
+    _POSTPROCESS_HS_PREFIXES = ("Hsig", "Hsign", "HSIGN", "Hs")
+    assert "HSIGN" in _POSTPROCESS_HS_PREFIXES
 
 
 def test_render_swn_wind_block_only_when_wind_file_present():
@@ -278,7 +344,9 @@ def test_build_swan_deck_writes_input_and_bottom(tmp_path: Path):
     # the on-disk INPUT carries the SWAN keyword sequence.
     input_text = (tmp_path / INPUT_FILENAME).read_text()
     assert "CGRID REGULAR" in input_text
-    assert "COMPUTE STATIONARY" in input_text
+    # Stationary mode -> a bare COMPUTE (no STATIONARY option); see the deck author.
+    assert "COMPUTE" in input_text.splitlines()
+    assert "COMPUTE STATIONARY" not in input_text
     # the persisted manifest round-trips.
     disk = json.loads((tmp_path / "deck_manifest.json").read_text())
     assert disk["mode"] == "stationary"

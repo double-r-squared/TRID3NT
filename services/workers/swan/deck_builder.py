@@ -30,8 +30,10 @@ Canonical real-world pipeline (mirrored, not invented):
         <dd>: the PARAMETRIC offshore boundary.
       - BLOCK 'COMPGRID' NOHEADER 'swan_out.mat' LAYOUT 3 HSIGN RTP DIR ...: the
         gridded output fields the postprocess rasterizes.
-      - COMPUTE STATIONARY <time> | COMPUTE NONSTATIONARY <t0> <dt> <unit> <t1>:
-        runs it. STOP.
+      - COMPUTE (stationary; NO option -- a bare COMPUTE) | COMPUTE NONSTATIONARY
+        <t0> <dt> <unit> <t1> (nonstationary): runs it. STOP. The STATIONARY token
+        after COMPUTE is ONLY for a stationary step inside a MODE NONSTATIONARY
+        deck; in a MODE STATIONARY deck it must be omitted (else SWAN no-ops).
 
 The build_spec schema (authored agent-side by ``workflows/run_swan.py``):
     {
@@ -405,9 +407,19 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
     lines.append(f"$ mode={spec.mode} bbox={spec.bbox}")
     lines.append("$ -------------------------------------------------------------")
     lines.append("PROJECT 'GRACE2' 'WAVE'")
-    # SET: NaN/exception value (NAUTICAL direction convention; gravity default).
+    # SET general run constants. SWAN reads SET's optional fields POSITIONALLY
+    # (``SET [level] [nor] [depmin] ... NAUTICAL``); it does NOT accept a
+    # ``KEY=value`` form (the ``=`` sign only follows a real command KEYWORD, and
+    # SWAN has no ``LEVEL=`` / ``NOR=`` keyword on SET). The earlier
+    # ``SET NAUTICAL LEVEL=0.0 NOR=90.0 EXCEPTION ...`` therefore mis-parsed. Emit
+    # the canonical positional/keyword form, with NAUTICAL LAST so it closes the
+    # field sequence. DEPMIN (threshold depth, m) is load-bearing: it is the
+    # minimum depth SWAN treats as WET -- without it (or at its 0.05 m default with
+    # an all-land bottom) a coastal grid can end up with no active sea points,
+    # which is one way SWAN reaches "Normal end of run" having computed nothing.
     lines.append(
-        f"SET NAUTICAL  LEVEL=0.0  NOR=90.0  EXCEPTION {SWAN_EXCEPTION_VALUE:.1f}"
+        f"SET LEVEL 0.0 NOR 90.0 DEPMIN 0.05 EXCEPTION {SWAN_EXCEPTION_VALUE:.1f} "
+        "NAUTICAL"
     )
 
     # Run mode + spherical (lat/lon) coordinates.
@@ -496,7 +508,16 @@ def render_swn_command_file(spec: SwanBuildSpec) -> str:
         # manifest for the postprocess frame-selection cap.
         _ = n_steps
     else:
-        lines.append("COMPUTE STATIONARY")
+        # STATIONARY mode: the SWAN manual is explicit -- "if the SWAN mode is
+        # stationary, then only the command COMPUTE should be given here (no
+        # options!)". The ``STATIONARY [time]`` option after COMPUTE is reserved
+        # for a stationary step INSIDE a MODE NONSTATIONARY file. Writing
+        # ``COMPUTE STATIONARY`` in a MODE STATIONARY deck makes SWAN read
+        # ``STATIONARY`` as an unexpected/time token and skip the actual
+        # iteration -- it "prepares computation", does ZERO sweeps, writes no
+        # swan_out.mat, and still prints "Normal end of run" in milliseconds (the
+        # live 2026-06-23 33 ms no-op). Emit the bare COMPUTE.
+        lines.append("COMPUTE")
     lines.append("STOP")
 
     return "\n".join(lines) + "\n"
