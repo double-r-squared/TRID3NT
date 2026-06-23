@@ -89,6 +89,8 @@ import {
   removeTerrain3d,
   buildTerrain3dCameraPose,
   buildFlat2dCameraPose,
+  buildGlobeProjectionSpec,
+  buildMercatorProjectionSpec,
   TERRAIN_3D_EASE_MS,
   type TerrainMapLike,
 } from "./lib/terrain_3d";
@@ -2520,6 +2522,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         } catch {
           /* map already torn down - fine */
         }
+        // Priority 2 (v5): restore the flat Web-Mercator projection. Guarded -
+        // setProjection only exists on MapLibre v5; pre-v5 / test stubs lacking
+        // it just keep the default 2D map.
+        try {
+          const mc = map.current as unknown as {
+            setProjection?: (p: { type: string }) => void;
+          };
+          mc.setProjection?.(buildMercatorProjectionSpec());
+        } catch {
+          /* projection swap best-effort */
+        }
       };
       // Only fly the camera flat when it is actually pitched (i.e. 3D was on).
       // On a fresh 2D mount (the default) the camera is already flat, so skip the
@@ -2565,9 +2578,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // AWS Terrarium tiles. Once the agent emits a per-case DEM COG, thread it
       // through here as a prop -> TiTiler terrain-RGB path (see FOLLOW-UPS).
       applyTerrain3d(tm, { contoursRequested: contoursEnabled });
+      // Priority 2 (v5): switch to the globe projection so a zoomed-OUT view is a
+      // real navigable globe. The curvature only reads at continental / global
+      // scale; at AOI zoom it looks ~flat, which is fine - the pitched terrain
+      // below carries the close-up wow. Guarded: setProjection is v5-only.
+      try {
+        const mc = map.current as unknown as {
+          setProjection?: (p: { type: string }) => void;
+        };
+        mc.setProjection?.(buildGlobeProjectionSpec());
+      } catch {
+        /* projection swap best-effort - terrain still renders on Mercator */
+      }
       // Pitch the camera so the relief actually reads. applyTerrain3d already
       // unlocked maxPitch (75) + rotate, so this easeTo is not clamped. Keep
-      // center + zoom (easeTo merges over the current pose).
+      // center + zoom (easeTo merges over the current pose). A gentle one-shot
+      // bearing sweep adds "wow" - skipped under prefers-reduced-motion (easeMs
+      // 0 there, so the sweep collapses to the static target bearing anyway).
       try {
         const pose = buildTerrain3dCameraPose();
         map.current.easeTo({

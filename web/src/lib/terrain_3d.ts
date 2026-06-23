@@ -168,6 +168,29 @@ export function buildFlat2dCameraPose(): CameraPose {
   return { pitch: FLAT_2D_PITCH, bearing: FLAT_2D_BEARING };
 }
 
+// --- pure projection-spec builders (Priority 2: the real "globe") --------- //
+//
+// MapLibre GL JS v5 exposes a globe projection via map.setProjection({type:
+// 'globe'}). The curvature only reads when zoomed OUT to continental / global
+// scale; at AOI zoom the globe looks ~flat (fine - Priority 1's pitched terrain
+// carries the close-up wow). When 3D is off we restore Mercator. These builders
+// are pure (no MapLibre) so the exact spec is unit-testable.
+
+/** A MapLibre v5 projection spec (the subset setProjection accepts). */
+export interface ProjectionSpec {
+  type: "globe" | "mercator";
+}
+
+/** The globe projection spec (3D on): a real navigable globe when zoomed out. */
+export function buildGlobeProjectionSpec(): ProjectionSpec {
+  return { type: "globe" };
+}
+
+/** The flat Web-Mercator projection spec (3D off): the app's default 2D map. */
+export function buildMercatorProjectionSpec(): ProjectionSpec {
+  return { type: "mercator" };
+}
+
 /**
  * Public AWS Terrain Tiles (Terrarium encoding) open dataset. No API key,
  * global coverage, served from S3 over https. This is the zero-backend fallback

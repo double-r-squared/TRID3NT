@@ -30,6 +30,8 @@ import {
   FLAT_2D_BEARING,
   buildTerrain3dCameraPose,
   buildFlat2dCameraPose,
+  buildGlobeProjectionSpec,
+  buildMercatorProjectionSpec,
   type TerrainMapLike,
   type TerrainDemSourceSpec,
 } from "./terrain_3d";
@@ -121,6 +123,16 @@ describe("terrain_3d - camera poses (Priority 1: make 3D look 3D)", () => {
     expect(pose).toEqual({ pitch: FLAT_2D_PITCH, bearing: FLAT_2D_BEARING });
     expect(pose.pitch).toBe(0);
     expect(pose.bearing).toBe(0);
+  });
+});
+
+describe("terrain_3d - projection specs (Priority 2: the globe)", () => {
+  it("globe spec is the v5 { type: 'globe' } shape", () => {
+    expect(buildGlobeProjectionSpec()).toEqual({ type: "globe" });
+  });
+
+  it("mercator spec is the v5 { type: 'mercator' } shape", () => {
+    expect(buildMercatorProjectionSpec()).toEqual({ type: "mercator" });
   });
 });
 

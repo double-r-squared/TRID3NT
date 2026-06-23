@@ -3309,6 +3309,9 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
     const ease = enableEase![0] as { pitch: number; bearing: number };
     expect(ease.pitch).toBeGreaterThanOrEqual(60);
     expect(ease.bearing).toBeGreaterThan(0);
+    // Priority 2 (v5): the globe projection is set on enable so a zoomed-out
+    // view is a real navigable globe.
+    expect(m.setProjection).toHaveBeenCalledWith({ type: "globe" });
   });
 
   it("tears terrain down + re-locks 2D when the toggle flips back off", () => {
@@ -3337,5 +3340,7 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
     // Re-locked to flat 2D.
     expect(m.setMaxPitch).toHaveBeenCalledWith(0);
     expect(m.dragRotate.disable).toHaveBeenCalled();
+    // Priority 2 (v5): the flat Mercator projection is restored on disable.
+    expect(m.setProjection).toHaveBeenLastCalledWith({ type: "mercator" });
   });
 });
