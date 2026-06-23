@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { DrawAoiControl } from "./DrawAoiControl";
+import { DrawAoiControl, drawAoiControlPosition } from "./DrawAoiControl";
 import { aoiStageBus } from "../lib/aoi_stage_bus";
 import type { Map as MapLibreMap } from "maplibre-gl";
 
@@ -114,5 +114,69 @@ describe("DrawAoiControl", () => {
       m.__handlers["mouseup"]?.({ lngLat: { lng: -99, lat: 41 } });
     });
     expect(aoiStageBus.getState().bbox).toBeNull();
+  });
+});
+
+// --- FIX 2 (NATE 2026-06-22): position to the LEFT of the chat panel -------- //
+//
+// The control must NOT overlap the chat box. Expanded desktop -> railed to the
+// LEFT of the chat panel's left edge, at the panel top, tracking the dragged
+// width. Collapsed -> tucked UNDER the top-right chat-expand hamburger. Mobile
+// -> plain top-right (the chat is a bottom sheet; nothing to clear).
+
+describe("drawAoiControlPosition (FIX 2 - tracks the chat panel)", () => {
+  it("expanded desktop: rails to the LEFT of the panel left edge at the panel top", () => {
+    // panel: right 16, width W -> left edge is (16 + W) from the viewport right.
+    // control sits one gap (8) further out, at the panel top (16).
+    const W = 384;
+    const pos = drawAoiControlPosition({ chatWidthPx: W });
+    expect(pos.top).toBe(16);
+    expect(pos.right).toBe(16 + W + 8);
+  });
+
+  it("TRACKS the dragged width: a wider panel pushes the control further right", () => {
+    const narrow = drawAoiControlPosition({ chatWidthPx: 320 });
+    const wide = drawAoiControlPosition({ chatWidthPx: 600 });
+    expect(wide.right).toBeGreaterThan(narrow.right);
+    // The delta matches the width delta exactly (1:1 tracking).
+    expect(wide.right - narrow.right).toBe(600 - 320);
+  });
+
+  it("collapsed: tucks UNDER the top-right chat-expand hamburger", () => {
+    const pos = drawAoiControlPosition({ chatWidthPx: 384, chatCollapsed: true });
+    // hamburger: top 12, height 40, right 12 -> control below it (12+40+8) at right 12.
+    expect(pos.top).toBe(12 + 40 + 8);
+    expect(pos.right).toBe(12);
+  });
+
+  it("mobile: keeps the plain top-right placement (bottom sheet, nothing to clear)", () => {
+    const pos = drawAoiControlPosition({ chatWidthPx: 384, mobile: true });
+    expect(pos.top).toBe(12);
+    expect(pos.right).toBe(12);
+  });
+
+  it("undefined width (legacy callers) falls back to the collapsed/top-right tuck", () => {
+    const pos = drawAoiControlPosition({});
+    expect(pos.right).toBe(12);
+    expect(pos.top).toBe(12 + 40 + 8);
+  });
+});
+
+describe("DrawAoiControl render position (FIX 2)", () => {
+  it("applies the expanded left-of-panel position to the wrapper", () => {
+    render(<DrawAoiControl map={makeFakeMap()} chatWidthPx={384} />);
+    const wrap = screen.getByTestId("grace2-draw-aoi-control");
+    // 16 (panel right) + 384 (width) + 8 (gap) = 408px from the right edge.
+    expect(wrap.style.right).toBe("408px");
+    expect(wrap.style.top).toBe("16px");
+  });
+
+  it("applies the collapsed under-hamburger position to the wrapper", () => {
+    render(
+      <DrawAoiControl map={makeFakeMap()} chatWidthPx={384} chatCollapsed />,
+    );
+    const wrap = screen.getByTestId("grace2-draw-aoi-control");
+    expect(wrap.style.right).toBe("12px");
+    expect(wrap.style.top).toBe("60px");
   });
 });

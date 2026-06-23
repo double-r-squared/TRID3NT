@@ -1611,6 +1611,13 @@ export function App(): JSX.Element {
         onAoiCaptureConfirm={onAoiCaptureConfirm}
         onAoiCaptureSkip={onAoiCaptureSkip}
         onAoiCaptureCancel={onAoiCaptureCancel}
+        /* NATE FIX 2 - thread the chat panel geometry so the always-on Draw-AOI
+           control rails to the LEFT of the chat panel (and tracks its dragged
+           width), tucks under the chat-expand hamburger when collapsed, and
+           keeps its plain top-right placement on mobile (bottom sheet). */
+        chatWidthPx={chatWidth}
+        chatCollapsed={rightCollapsed}
+        mobile={isMobile}
       />
 
       {/* NATE item 1 - AOI-bbox loading-animation overlay. Anchored to the

@@ -1385,6 +1385,16 @@ describe("desktopChatContainerStyle (job-0283 + ux-batch-1 J1 drag-resize)", () 
     expect(String(desktopChatContainerStyle(80).width)).toContain("320px");
     expect(String(desktopChatContainerStyle(5000).width)).toContain("760px");
   });
+
+  it("FIX 1 - stacks ABOVE the map bbox overlay (zIndex > 12)", () => {
+    // BboxProgressOverlay paints at zIndex 12; the chat panel must always sit
+    // above it ("the bounding box should always be under the chat"). An explicit
+    // positive z-index is required: a z:auto panel is painted UNDER any
+    // positively-z-indexed sibling regardless of DOM order.
+    const z = desktopChatContainerStyle().zIndex;
+    expect(typeof z).toBe("number");
+    expect(z as number).toBeGreaterThan(12);
+  });
 });
 
 // --- chat-width persistence (ux-batch-1 J1 drag-resize) ------------------ //
