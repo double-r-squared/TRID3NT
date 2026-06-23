@@ -533,6 +533,16 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "diverging_river_seepage": ("-100,100", "rdbu"),
     "continuous_seismic_pga": ("0,1", "magma"),
     "continuous_landslide_susceptibility": ("0,1", "rdylgn_r"),
+    # conservation micro-North-Star -- ADDITIVE. NDVI is the canonical
+    # vegetation index in [-1, 1]; bare/water near 0, healthy canopy ~0.6-0.9 ->
+    # a green-up rdylgn ramp rescaled to the full physical range. MoBI
+    # imperiled-species importance is strictly positive (low->high); a ylgn ramp
+    # over a typical richness band reads as a biodiversity hotspot map.
+    # (NAIP RGB is a multiband COG -- handled by the RGBA/multiband passthrough
+    # in _resolve_titiler_style_params, NOT a single-band registry entry, so
+    # "naip_rgb" is intentionally absent here.)
+    "ndvi": ("-1,1", "rdylgn"),
+    "mobi_biodiversity": ("0,40", "ylgn"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an
