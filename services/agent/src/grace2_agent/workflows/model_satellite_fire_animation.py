@@ -3,8 +3,21 @@
 ONE generalized composer for BOTH fire-animation demos (GOES geostationary +
 JPSS/VIIRS polar). It chains:
 
-    fetch_wfigs_incident(name [, state])           -> authoritative point + bbox
-      -> derive the AOI bbox + the (start_utc, end_utc) window
+    geocode_location(incident_name)                -> a place bbox (precise OR a
+                                                      coarse state-level snap)
+    fetch_wfigs_incident(name [, state])           -> ADDITIVE context only: an
+                                                      authoritative point + bbox
+                                                      WHEN one is on record. It
+                                                      is NEVER a gate -- a no-
+                                                      match does not stop the run.
+      -> if NEITHER a precise place NOR an incident pins a TIGHT AOI, LOCALIZE
+         FROM THE DATA: fetch_firms_active_fire over the (broad) region + window,
+         cluster the hot pixels, and derive a TIGHT AOI bbox from the densest
+         cluster -- the hotspots ARE the fire (NATE: "recreate" = BUILD from OUR
+         endpoints, never force a named external record).
+      -> emit the AOI bbox + a snap-to-AOI map zoom EARLY -- BEFORE the review
+         gate -- so the user sees WHERE first.
+      -> derive the (start_utc, end_utc) window
       -> peek the SLIDER frame list (NO imagery fetched yet)
       -> STOP at a bbox/window REVIEW gate (review-gated, like
          model_news_event_ingest): return the AOI bbox + the planned frame list
@@ -60,6 +73,10 @@ __all__ = [
     "_product_to_fetcher",
     "_default_window_for_product",
     "_compose_review_text",
+    "_geocode_is_coarse",
+    "_read_firms_points",
+    "_densest_hotspot_bbox",
+    "_localize_from_firms",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.model_satellite_fire_animation")
@@ -95,6 +112,22 @@ GOES_PRODUCTS: tuple[str, ...] = ("geocolor", "fire_temperature")
 VIIRS_PRODUCTS: tuple[str, ...] = ("day_fire",)
 
 SUPPORTED_PRODUCTS: tuple[str, ...] = GOES_PRODUCTS + VIIRS_PRODUCTS
+
+#: Cap on the number of per-day FIRMS queries the data-driven localization runs
+#: across a window (a VIIRS demo can request a 4-day window; capping keeps the
+#: fallback cheap while still pooling enough hot pixels to find the fire).
+_FIRMS_LOCALIZE_MAX_DAYS: int = 6
+
+#: Continental-US fallback region used to bound the FIRMS data search only when
+#: NEITHER a geocode NOR a WFIGS incident NOR an explicit bbox produced any
+#: region at all (a degenerate input). It is a search region, never the AOI: the
+#: hotspot cluster derived inside it is the AOI.
+_CONUS_FALLBACK_BBOX: tuple[float, float, float, float] = (
+    -125.0,
+    24.0,
+    -66.0,
+    50.0,
+)
 
 
 def _product_to_fetcher(product: str) -> str:
@@ -269,6 +302,330 @@ def _peek_frame_count(
 
 
 # --------------------------------------------------------------------------- #
+# Resolution helpers (FIX A): geocode-first + WFIGS-as-additive-context.
+# --------------------------------------------------------------------------- #
+
+
+def _coerce_bbox(value: Any) -> tuple[float, float, float, float] | None:
+    """Coerce a 4-element bbox-like into a float tuple, or ``None`` if unusable.
+
+    Accepts a tuple/list of 4 numerics; returns ``None`` for anything else
+    (empty, wrong length, non-numeric). Does NOT validate ordering -- callers
+    that need a valid AOI pass it to the fetchers, which validate.
+    """
+    if not isinstance(value, (tuple, list)) or len(value) != 4:
+        return None
+    try:
+        return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _safe_geocode(
+    query: str,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> dict[str, Any] | None:
+    """Geocode ``query`` via ``geocode_location`` (best-effort, never raises out).
+
+    Returns the geocode dict (which may be a COARSE state-snap carrying
+    ``fallback_reason`` / ``source == "state-bbox-fallback"``) or ``None`` on any
+    failure / missing tool. The caller inspects ``_geocode_is_coarse`` to decide
+    whether the place pinned the fire or we must localize from the data. Runs the
+    sync tool in ``asyncio.to_thread`` (no-loop-blocking norm).
+    """
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name=f"Locate place: {query}", tool_name="geocode_location"
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+    try:
+        geocode_fn = _registry_fn("geocode_location")
+        geo = await asyncio.to_thread(geocode_fn, query)
+    except Exception as exc:  # noqa: BLE001 -- geocode is additive, never a gate
+        logger.warning(
+            "model_satellite_fire_animation: geocode_location(%r) failed (%s); "
+            "will fall back to WFIGS / FIRMS localization",
+            query,
+            exc,
+        )
+        if pipeline_emitter is not None and step is not None:
+            await pipeline_emitter.mark_complete(step)
+        return None
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return geo if isinstance(geo, dict) else None
+
+
+async def _safe_wfigs(
+    incident_name: str,
+    state: str | None,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> dict[str, Any] | None:
+    """Look an incident up in WFIGS as ADDITIVE context (best-effort, never gates).
+
+    NATE directive: ``fetch_wfigs_incident`` is additive context only -- NEVER a
+    gate. A no-match / upstream hiccup returns ``None`` (the caller proceeds with
+    the geocode / FIRMS-derived AOI); it never raises out of the workflow. Runs
+    the sync tool in ``asyncio.to_thread`` (no-loop-blocking norm).
+    """
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name=f"Look up incident: {incident_name}",
+            tool_name="fetch_wfigs_incident",
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+    try:
+        wfigs_fn = _registry_fn("fetch_wfigs_incident")
+        incident = await asyncio.to_thread(wfigs_fn, incident_name, state)
+    except Exception as exc:  # noqa: BLE001 -- additive context, never a gate
+        logger.info(
+            "model_satellite_fire_animation: WFIGS lookup for %r returned no "
+            "authoritative incident (%s); proceeding from geocode / FIRMS data",
+            incident_name,
+            exc,
+        )
+        if pipeline_emitter is not None and step is not None:
+            # Not a failure of the workflow -- mark complete so the timeline is
+            # honest (no incident on record, we build from data instead).
+            await pipeline_emitter.mark_complete(step)
+        return None
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return incident if isinstance(incident, dict) else None
+
+
+# --------------------------------------------------------------------------- #
+# Data-driven localization (FIX A): derive the AOI from FIRMS hot pixels when a
+# place / incident does not resolve to a TIGHT bbox.
+# --------------------------------------------------------------------------- #
+#
+# NATE directive: "recreate" = BUILD the case from OUR endpoints, never force a
+# named external record. When geocode_location snaps coarsely (state-level) and
+# no WFIGS incident resolves, the FIRE ITSELF is still in the data -- a real
+# ~17k-acre fire HAS FIRMS hot pixels. So we fetch FIRMS over the broad region +
+# the requested window, cluster the returned hot pixels on a coarse grid, and
+# derive a TIGHT AOI bbox from the densest cluster. The hotspots ARE the fire.
+
+
+#: Coarse-snap geocode signals (set by data_fetch.geocode_location's state-snap
+#: fallback): a ``state-bbox-fallback`` source OR a present ``fallback_reason``.
+#: Either means "no precise match, snapped to the full state" -- too broad to be
+#: a fire AOI, so we localize from the data instead.
+def _geocode_is_coarse(geo: dict[str, Any] | None) -> bool:
+    """True iff a ``geocode_location`` result is a coarse state-level snap.
+
+    A coarse snap carries ``source == "state-bbox-fallback"`` and/or a non-empty
+    ``fallback_reason`` (the honest "snapped to the full state" note). A precise
+    Nominatim match has neither. ``None`` (no geocode at all) counts as coarse so
+    the caller falls through to the data-driven path.
+    """
+    if not geo or not isinstance(geo, dict):
+        return True
+    if geo.get("source") == "state-bbox-fallback":
+        return True
+    if geo.get("fallback_reason"):
+        return True
+    return False
+
+
+def _read_firms_points(layer: Any) -> list[tuple[float, float]]:
+    """Read (lon, lat) points from a FIRMS FlatGeobuf ``LayerURI``.
+
+    Best-effort: reads the FGB the fetcher produced (via pyogrio/geopandas) and
+    returns the detection point list. Returns ``[]`` on any read failure (a
+    missing optional dep, an unreadable URI, a 0-feature layer) so the caller
+    degrades honestly rather than crashing -- localization is a fallback path.
+    Only a local-file or already-materialized cache URI is read here; a remote
+    object store URI that geopandas cannot open yields ``[]``.
+    """
+    uri = getattr(layer, "uri", None)
+    if not uri or not isinstance(uri, str):
+        return []
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - dep present in the agent env
+        logger.warning(
+            "model_satellite_fire_animation: geopandas unavailable for FIRMS "
+            "localization (%s)",
+            exc,
+        )
+        return []
+    try:
+        gdf = gpd.read_file(uri)
+    except Exception as exc:  # noqa: BLE001 -- unreadable URI degrades to []
+        logger.warning(
+            "model_satellite_fire_animation: could not read FIRMS layer %r for "
+            "localization (%s)",
+            uri,
+            exc,
+        )
+        return []
+    pts: list[tuple[float, float]] = []
+    for geom in getattr(gdf, "geometry", []):
+        if geom is None or getattr(geom, "is_empty", True):
+            continue
+        try:
+            pts.append((float(geom.x), float(geom.y)))
+        except Exception:  # noqa: BLE001 -- skip non-point / bad geometry
+            continue
+    return pts
+
+
+def _densest_hotspot_bbox(
+    points: list[tuple[float, float]],
+    pad_deg: float = 0.1,
+    cell_deg: float = 0.1,
+) -> tuple[float, float, float, float] | None:
+    """Cluster (lon, lat) hot pixels on a coarse grid -> a TIGHT AOI bbox.
+
+    Buckets the points into ``cell_deg`` grid cells, finds the densest cell, then
+    grows the cluster to the 3x3 neighbourhood of that cell (so a fire that
+    straddles a cell boundary is captured whole), takes the min/max of the points
+    in that neighbourhood, and pads the result by ``pad_deg`` (clamped to valid
+    ranges). Returns ``None`` for an empty point list (caller honesty-floors).
+
+    Deterministic: ties on cell count break on the lowest (col, row) index so the
+    chosen cluster is stable for tests. This is the data-driven AOI: the densest
+    hotspot cluster IS the fire.
+    """
+    if not points:
+        return None
+
+    def _cell(lon: float, lat: float) -> tuple[int, int]:
+        import math
+
+        return (int(math.floor(lon / cell_deg)), int(math.floor(lat / cell_deg)))
+
+    counts: dict[tuple[int, int], int] = {}
+    for lon, lat in points:
+        c = _cell(lon, lat)
+        counts[c] = counts.get(c, 0) + 1
+    # Densest cell; deterministic tie-break on lowest (col, row).
+    best_cell = min(counts, key=lambda c: (-counts[c], c[0], c[1]))
+    bc, br = best_cell
+    # Grow to the 3x3 neighbourhood so a boundary-straddling fire is captured.
+    neigh = {
+        (bc + dc, br + dr) for dc in (-1, 0, 1) for dr in (-1, 0, 1)
+    }
+    cluster = [
+        (lon, lat) for (lon, lat) in points if _cell(lon, lat) in neigh
+    ]
+    if not cluster:  # pragma: no cover - best_cell is always in neigh
+        cluster = points
+    lons = [p[0] for p in cluster]
+    lats = [p[1] for p in cluster]
+    pad = max(0.01, float(pad_deg))
+    min_lon = max(-180.0, min(lons) - pad)
+    max_lon = min(180.0, max(lons) + pad)
+    min_lat = max(-90.0, min(lats) - pad)
+    max_lat = min(90.0, max(lats) + pad)
+    # Guard a degenerate single-point cluster (min==max) -- pad guarantees span.
+    return (
+        round(min_lon, 6),
+        round(min_lat, 6),
+        round(max_lon, 6),
+        round(max_lat, 6),
+    )
+
+
+async def _localize_from_firms(
+    region_bbox: tuple[float, float, float, float],
+    start_dt: datetime,
+    end_dt: datetime,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> tuple[float, float, float, float] | None:
+    """Localize a fire AOI from FIRMS hot pixels over a broad region + window.
+
+    Fetches FIRMS detections over ``region_bbox`` for the requested window (one
+    fetch per acquisition day across the window, capped), pools the points, and
+    derives a TIGHT bbox from the densest hotspot cluster. Returns ``None`` when
+    no hot pixels are found (no fire detected -> the caller keeps the region
+    bbox + honesty-floors). All heavy sync work runs in ``asyncio.to_thread``
+    (no-loop-blocking norm).
+    """
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name="Localize fire from FIRMS hot pixels",
+            tool_name="fetch_firms_active_fire",
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+
+    try:
+        firms_fn = _registry_fn("fetch_firms_active_fire")
+    except SatelliteFireAnimationError as exc:
+        logger.warning(
+            "model_satellite_fire_animation: fetch_firms_active_fire not "
+            "registered; cannot localize (%s)",
+            exc,
+        )
+        if pipeline_emitter is not None and step is not None:
+            await pipeline_emitter.mark_failed(
+                step, "FIRMS_LOCALIZE_UNAVAILABLE", str(exc)
+            )
+        return None
+
+    # One FIRMS query per acquisition day across the window (the historical-date
+    # positional forces a single day each), capped so a wide window stays cheap.
+    days: list[str] = []
+    cur = start_dt
+    while cur <= end_dt and len(days) < _FIRMS_LOCALIZE_MAX_DAYS:
+        days.append(cur.strftime("%Y-%m-%d"))
+        cur = cur + timedelta(days=1)
+    if not days:
+        days = [start_dt.strftime("%Y-%m-%d")]
+
+    all_points: list[tuple[float, float]] = []
+    for day in days:
+        try:
+            # source VIIRS_NOAA20_NRT (JPSS sibling); date forces that one day.
+            layer = await asyncio.to_thread(
+                firms_fn, region_bbox, 1, "VIIRS_NOAA20_NRT", day
+            )
+        except Exception as exc:  # noqa: BLE001 -- one bad day must not sink it
+            logger.warning(
+                "model_satellite_fire_animation: FIRMS localize day=%s failed "
+                "(%s)",
+                day,
+                exc,
+            )
+            continue
+        pts = await asyncio.to_thread(_read_firms_points, layer)
+        all_points.extend(pts)
+
+    bbox = _densest_hotspot_bbox(all_points)
+    if bbox is None:
+        logger.info(
+            "model_satellite_fire_animation: FIRMS localize found no hot pixels "
+            "over region=%s window=%s..%s",
+            region_bbox,
+            days[0],
+            days[-1],
+        )
+        if pipeline_emitter is not None and step is not None:
+            # Not a failure -- honest "no detections"; mark complete so the
+            # timeline reads truthfully (the caller keeps the region bbox).
+            await pipeline_emitter.mark_complete(step)
+        return None
+
+    logger.info(
+        "model_satellite_fire_animation: FIRMS localize derived AOI %s from %d "
+        "hot pixel(s) over %d day(s)",
+        bbox,
+        len(all_points),
+        len(days),
+    )
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return bbox
+
+
+# --------------------------------------------------------------------------- #
 # The workflow
 # --------------------------------------------------------------------------- #
 
@@ -336,40 +693,28 @@ async def model_satellite_fire_animation(
     if not products:
         raise SatelliteFireAnimationInputError("at least one product is required")
 
-    # --- Stage 1: resolve the named incident -> point + bbox + discovery floor.
-    if pipeline_emitter is not None:
-        step = await pipeline_emitter.add_step(
-            name=f"Look up incident: {incident_name}", tool_name="fetch_wfigs_incident"
-        )
-        await pipeline_emitter.mark_running(step)
-    else:
-        step = None
-    try:
-        wfigs_fn = _registry_fn("fetch_wfigs_incident")
-        incident = await asyncio.to_thread(wfigs_fn, incident_name, state)
-    except Exception:
-        if pipeline_emitter is not None and step is not None:
-            await pipeline_emitter.mark_failed(
-                step, "WFIGS_LOOKUP_FAILED", f"incident lookup failed for {incident_name!r}"
-            )
-        raise
-    if pipeline_emitter is not None and step is not None:
-        await pipeline_emitter.mark_complete(step)
+    # --- Stage 1 (FIX A): resolve a starting region + the discovery floor.
+    #
+    # "Recreate" = BUILD the case from OUR endpoints, never force a named record.
+    # Order: (a) geocode the supplied location, (b) try WFIGS as ADDITIVE context
+    # only (never a gate), (c) if neither yields a TIGHT AOI, LOCALIZE FROM THE
+    # DATA (FIRMS hot pixels). An explicit ``bbox`` arg always wins.
+    geo = await _safe_geocode(incident_name, pipeline_emitter)
+    incident = await _safe_wfigs(incident_name, state, pipeline_emitter)
 
-    resolved_bbox = tuple(bbox) if bbox else tuple(incident.get("bbox") or ())
-    if not resolved_bbox or len(resolved_bbox) != 4:
-        raise SatelliteFireAnimationError(
-            f"could not resolve an AOI bbox for incident {incident_name!r}"
-        )
-    resolved_bbox = (
-        float(resolved_bbox[0]),
-        float(resolved_bbox[1]),
-        float(resolved_bbox[2]),
-        float(resolved_bbox[3]),
-    )
-    discovery_iso = incident.get("fire_discovery_datetime")
+    # The (possibly broad) REGION used to localize from data + as the floor AOI:
+    # explicit bbox > a TIGHT WFIGS incident bbox > the geocode bbox (even a
+    # coarse state snap -- it bounds the FIRMS search) > a continental fallback.
+    region_bbox = _coerce_bbox(bbox)
+    wfigs_bbox = _coerce_bbox(incident.get("bbox")) if incident else None
+    geo_bbox = _coerce_bbox(geo.get("bbox")) if geo else None
+    if region_bbox is None:
+        region_bbox = wfigs_bbox or geo_bbox or _CONUS_FALLBACK_BBOX
 
-    # --- Stage 2: derive the window (per the first product's family) + peek frames.
+    # The discovery floor comes from WFIGS when present (additive); else None.
+    discovery_iso = incident.get("fire_discovery_datetime") if incident else None
+
+    # Window FIRST (the data-localization fetch needs it).
     end_dt_arg = _parse_utc(end_utc)
     primary_product = products[0]
     start_dt, end_dt = _default_window_for_product(
@@ -386,6 +731,59 @@ async def model_satellite_fire_animation(
             f"({end_dt.isoformat()})"
         )
 
+    # --- Decide the AOI. An explicit bbox or a TIGHT WFIGS incident bbox is
+    # authoritative. Otherwise, when the geocode is COARSE (state-level snap) and
+    # no incident resolved, the place did not pin the fire -- so DERIVE the AOI
+    # FROM THE DATA: cluster FIRMS hot pixels over the region + window. The
+    # hotspots ARE the fire AOI. A precise (tight) geocode is used as-is.
+    aoi_source = "geocode"
+    if _coerce_bbox(bbox) is not None:
+        resolved_bbox = _coerce_bbox(bbox)
+        aoi_source = "bbox-override"
+    elif wfigs_bbox is not None:
+        resolved_bbox = wfigs_bbox
+        aoi_source = "wfigs-incident"
+    elif geo is not None and not _geocode_is_coarse(geo) and geo_bbox is not None:
+        resolved_bbox = geo_bbox
+        aoi_source = "geocode"
+    else:
+        # No tight place + no incident -> localize from the data.
+        firms_bbox = await _localize_from_firms(
+            region_bbox, start_dt, end_dt, pipeline_emitter
+        )
+        if firms_bbox is not None:
+            resolved_bbox = firms_bbox
+            aoi_source = "firms-hotspots"
+        else:
+            # FIRMS found nothing either -- keep the (broad) region bbox so the
+            # review gate still shows WHERE we looked; the honesty floor handles
+            # the empty-imagery case downstream.
+            resolved_bbox = region_bbox
+            aoi_source = "region-fallback"
+
+    assert resolved_bbox is not None  # every branch sets it
+    resolved_bbox = (
+        float(resolved_bbox[0]),
+        float(resolved_bbox[1]),
+        float(resolved_bbox[2]),
+        float(resolved_bbox[3]),
+    )
+
+    # --- Emit the AOI bbox + a snap-to-AOI map zoom EARLY -- BEFORE the review
+    # gate -- so the user sees WHERE first (responsive-design / invariant 8).
+    if pipeline_emitter is not None:
+        try:
+            await pipeline_emitter.emit_map_command(
+                "zoom-to", {"bbox": list(resolved_bbox)}
+            )
+        except Exception as exc:  # noqa: BLE001 -- a UX verb, never a gate
+            logger.warning(
+                "model_satellite_fire_animation: early AOI zoom-to emit failed "
+                "(%s)",
+                exc,
+            )
+
+    # --- Stage 2: peek planned frames over the resolved AOI + window.
     frame_counts: dict[str, int] = {}
     for product in products:
         frame_counts[product] = await asyncio.to_thread(
@@ -397,8 +795,11 @@ async def model_satellite_fire_animation(
 
     # --- Review gate: STOP unless confirmed (Invariant 9; the #154 philosophy). ---
     if not confirm:
+        display_name = str(
+            (incident.get("incident_name") if incident else None) or incident_name
+        )
         review_text = _compose_review_text(
-            str(incident.get("incident_name") or incident_name),
+            display_name,
             resolved_bbox,
             products,
             start_dt,
@@ -409,6 +810,7 @@ async def model_satellite_fire_animation(
             "status": "review",
             "incident": incident,
             "bbox": list(resolved_bbox),
+            "aoi_source": aoi_source,
             "start_utc": start_iso,
             "end_utc": end_iso,
             "products": products,

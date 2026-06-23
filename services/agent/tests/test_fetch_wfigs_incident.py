@@ -24,6 +24,8 @@ import pytest
 
 from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools.fetch_wfigs_incident import (
+    WFIGS_INCIDENT_BASE,
+    WFIGS_INCIDENT_YTD_BASE,
     WFIGSIncidentInputError,
     WFIGSIncidentNotFoundError,
     _bbox_from_point,
@@ -32,6 +34,7 @@ from grace2_agent.tools.fetch_wfigs_incident import (
     _feature_point,
     _normalize_state,
     _select_best_feature,
+    _significant_name_tokens,
     fetch_wfigs_incident,
 )
 
@@ -239,3 +242,139 @@ def test_empty_match_raises_not_found():
 def test_blank_name_raises_input_error():
     with pytest.raises(WFIGSIncidentInputError):
         fetch_wfigs_incident("   ")
+
+
+# ---- FIX B: loose token-OR name match -------------------------------------
+
+
+def test_significant_name_tokens_drops_noise():
+    # "Fire" and short fragments are dropped; geographic tokens kept.
+    assert _significant_name_tokens("Santa Rosa Island Fire") == [
+        "SANTA",
+        "ROSA",
+        "ISLAND",
+    ]
+    # A single-token name yields a single token.
+    assert _significant_name_tokens("Iron Fire") == ["IRON"]
+
+
+def test_build_wfigs_params_multiword_uses_token_or():
+    """A multi-word name ALSO OR-matches each significant token (loose match)."""
+    params = _build_wfigs_params("Santa Rosa Island", None)
+    where = params["where"]
+    # whole-string contains is present ...
+    assert "LIKE '%SANTA ROSA ISLAND%'" in where
+    # ... plus a token-OR over each significant token.
+    assert "LIKE '%SANTA%'" in where
+    assert "LIKE '%ROSA%'" in where
+    assert "LIKE '%ISLAND%'" in where
+    assert " OR " in where
+
+
+def test_build_wfigs_params_singleword_keeps_whole_match():
+    """A single-token name keeps the original whole-string contains (no OR)."""
+    params = _build_wfigs_params("Iron", None)
+    assert params["where"] == "UPPER(IncidentName) LIKE '%IRON%'"
+    assert " OR " not in params["where"]
+
+
+def test_build_wfigs_params_multiword_with_state_filter():
+    params = _build_wfigs_params("Santa Rosa Island", "US-CA")
+    where = params["where"]
+    assert " OR " in where
+    assert "POOState = 'US-CA'" in where
+
+
+# ---- FIX B: Current-then-YearToDate fallback ------------------------------
+
+
+_SANTA_ROSA_YTD_RESPONSE = {
+    "features": [
+        {
+            "attributes": {
+                "IncidentName": "Santa Rosa Island",
+                "FireDiscoveryDateTime": 1781913600000,
+                "InitialLatitude": 33.958561,
+                "InitialLongitude": -120.106659,
+                "IncidentSize": 18379,
+                "PercentContained": 100,
+                "POOState": "US-CA",
+                "POOCounty": "Santa Barbara",
+                "IrwinID": "srx-999",
+                "UniqueFireIdentifier": "2026-CASTF-000999",
+            },
+            "geometry": {"x": -120.106659, "y": 33.958561},
+        }
+    ]
+}
+
+
+def test_contained_fire_resolves_via_yeartodate_when_current_empty():
+    """The Santa Rosa Island fix: a contained fire the 'Current' feed has dropped
+    resolves against the 'YearToDate' all-incidents sibling."""
+    calls: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, headers=None):
+            calls.append(url)
+            # 'Current' feed has NO match; 'YearToDate' resolves it.
+            if url == WFIGS_INCIDENT_BASE:
+                return _FakeResp({"features": []})
+            return _FakeResp(_SANTA_ROSA_YTD_RESPONSE)
+
+    with patch(
+        "grace2_agent.tools.fetch_wfigs_incident.httpx.Client", _FakeClient
+    ), patch(
+        "grace2_agent.tools.fetch_wfigs_incident.read_through",
+        _identity_read_through,
+    ):
+        result = fetch_wfigs_incident("Santa Rosa Island", state="CA")
+
+    # Both feeds were queried, Current first then YearToDate.
+    assert calls[0] == WFIGS_INCIDENT_BASE
+    assert WFIGS_INCIDENT_YTD_BASE in calls
+    assert result["incident_name"] == "Santa Rosa Island"
+    assert result["incident_size_acres"] == 18379
+    assert result["lat"] == pytest.approx(33.958561)
+    assert result["lon"] == pytest.approx(-120.106659)
+
+
+def test_not_found_only_after_both_feeds_miss():
+    """The typed not-found raises ONLY after BOTH Current and YearToDate miss."""
+    calls: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, headers=None):
+            calls.append(url)
+            return _FakeResp({"features": []})
+
+    with patch(
+        "grace2_agent.tools.fetch_wfigs_incident.httpx.Client", _FakeClient
+    ), patch(
+        "grace2_agent.tools.fetch_wfigs_incident.read_through",
+        _identity_read_through,
+    ):
+        with pytest.raises(WFIGSIncidentNotFoundError):
+            fetch_wfigs_incident("Nonexistent Fire")
+
+    # Both endpoints were tried before giving up.
+    assert WFIGS_INCIDENT_BASE in calls
+    assert WFIGS_INCIDENT_YTD_BASE in calls
