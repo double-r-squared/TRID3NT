@@ -8077,6 +8077,57 @@ async def _run_to_completion_shielded(coro: Awaitable[Any]) -> None:
         raise asyncio.CancelledError
 
 
+async def _terminate_turn_inflight_batch_jobs(state: SessionState) -> None:
+    """Terminate any Batch job this turn submitted but never finished waiting on.
+
+    THE GAP (Invariant 8 completeness): ``run_solver`` submits a Batch job and
+    returns in ONE tool call; ``wait_for_completion`` polls + terminates-on-cancel
+    in a SEPARATE, LATER call. The existing ``CancelledError -> terminate_job``
+    chain inside ``wait_for_completion`` only fires when that coroutine is the
+    frame being awaited. If the user cancels the turn (stop button /
+    same-stream re-prompt supersede) in the WINDOW between submit and wait --
+    during the intervening LLM generation, or before the agent ever issues
+    ``wait_for_completion`` -- nothing terminated the job, so it kept running on
+    Spot (costing money + orphaning a result).
+
+    Called FIRST in the turn-task ``finally`` (every exit path incl. cancel).
+    ``solver.begin_turn_inflight_tracking`` bound a fresh per-turn list at task
+    entry; ``run_solver`` appended each submitted jobId; ``wait_for_completion``
+    cleared each on terminal / its own cancel. So on a CLEAN turn the list is
+    empty and this is a no-op; only an abandoned-in-flight job remains.
+
+    Best-effort + never blocks the cancel:
+      * runs the synchronous boto3 ``terminate_job`` calls OFF the event loop
+        (``asyncio.to_thread``) per feedback_no_sync_blocking_on_asyncio_loop;
+      * SHIELDED so a pending parent ``CancelledError`` cannot cut the kill
+        short before the terminate is issued (same rationale as the durable
+        layer-persist) -- then the cancel propagates normally;
+      * swallows every error (a dead Batch client / bad jobId must never break
+        turn teardown or mask the original exception).
+    """
+    from .tools.solver import (
+        inflight_batch_jobs,
+        terminate_inflight_batch_jobs,
+    )
+
+    # Cheap pre-check on the loop: nothing in flight -> no thread, no work.
+    if not inflight_batch_jobs():
+        return
+    try:
+        await _run_to_completion_shielded(
+            asyncio.to_thread(
+                terminate_inflight_batch_jobs, "cancelled by user"
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - best-effort, never mask turn teardown
+        logger.exception(
+            "turn-inflight-batch terminate failed session=%s",
+            state.session_id,
+        )
+
+
 async def _persist_case_loaded_layers(
     state: SessionState, *, case_id: str | None = None
 ) -> None:
@@ -8679,6 +8730,14 @@ async def _dispatch_gemini_and_persist(
     # envelope this turn emits (chunks, pipeline-state, session-state, …)
     # carries Envelope.case_id and the web routes it to the right stream.
     bind_turn_case(turn_case_id)
+    # Turn-cancel Batch kill path: bind a FRESH per-turn in-flight-jobs list so
+    # run_solver records any Batch jobId it submits THIS turn. On a stop /
+    # same-stream supersede / any cancel that abandons the wait, the finally
+    # below terminates whatever is still in flight (the gap: a job submitted but
+    # not currently being awaited by wait_for_completion was never terminated).
+    from .tools.solver import begin_turn_inflight_tracking
+
+    begin_turn_inflight_tracking()
     # job-0269: per-turn object capture. A concurrent turn (or a case
     # switch) re-points both SessionState fields mid-stream — this wrapper
     # must gauge completion against THIS turn's history list, and join the
@@ -8693,6 +8752,15 @@ async def _dispatch_gemini_and_persist(
             bedrock_model=bedrock_model,
         )
     finally:
+        # Turn-cancel Batch kill path: terminate any Batch job this turn
+        # submitted (run_solver) that is NOT being finished by an in-flight
+        # wait_for_completion -- the cancel-in-the-submit/wait-window gap. A
+        # clean turn drains its own list (wait_for_completion clears on terminal
+        # + its own cancel handler), so this is a no-op then. Best-effort + off
+        # the loop (sync boto3 terminate_job) per no-sync-blocking-on-the-loop;
+        # NEVER blocks/raises into the cancel. FIRST in the finally so a raise in
+        # the persistence below cannot skip the kill.
+        await _terminate_turn_inflight_batch_jobs(state)
         # job-0267 / job-0315: close out the turn's narration persistence.
         # With job-0315 each FINALIZED narration segment is already persisted
         # in-loop by ``_finalize_segment`` (interleaved with the mid-turn tool
@@ -8865,6 +8933,11 @@ async def _dispatch_tool_and_persist(
     # job-0268: entry-time Case capture — see _dispatch_gemini_and_persist.
     turn_case_id = _turn_case_id(state)
     bind_turn_case(turn_case_id)  # job-0277: envelope tagging
+    # Turn-cancel Batch kill path: bind a fresh per-turn in-flight-jobs list (the
+    # /invoke directive path can run_solver too). See _dispatch_gemini_and_persist.
+    from .tools.solver import begin_turn_inflight_tracking
+
+    begin_turn_inflight_tracking()
     try:
         try:
             await _invoke_tool_via_emitter(
@@ -8901,6 +8974,10 @@ async def _dispatch_tool_and_persist(
                 retryable=exc.retryable,
             )
     finally:
+        # Turn-cancel Batch kill path (see _dispatch_gemini_and_persist): FIRST
+        # in the finally so a cancel in the /invoke window still terminates the
+        # in-flight Batch job. No-op on a clean turn.
+        await _terminate_turn_inflight_batch_jobs(state)
         if turn_case_id:
             await _persist_chat_turn(
                 state,

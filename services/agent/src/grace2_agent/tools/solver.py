@@ -165,6 +165,7 @@ shared.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import glob as _glob
 import json
 import logging
@@ -212,6 +213,9 @@ __all__ = [
     "set_batch_client",
     "set_ecs_client",
     "set_ec2_client",
+    "begin_turn_inflight_tracking",
+    "inflight_batch_jobs",
+    "terminate_inflight_batch_jobs",
     "LOCAL_DOCKER_WORKFLOW_NAME",
     "LOCAL_EXEC_WORKFLOW_NAME",
     "LocalSolverSpec",
@@ -1064,6 +1068,110 @@ class _LocalRun:
 _LOCAL_RUNS: dict[str, _LocalRun] = {}
 
 
+# --------------------------------------------------------------------------- #
+# In-flight Batch jobId tracking (turn-cancel kill path)
+# --------------------------------------------------------------------------- #
+#
+# THE GAP this closes: ``run_solver`` submits a Batch job (``batch.submit_job``)
+# and returns an ``ExecutionHandle`` in ONE tool call; ``wait_for_completion``
+# polls + terminates-on-cancel in a SEPARATE, LATER tool call. The
+# Invariant-8 ``CancelledError`` -> ``_terminate_batch_job`` chain only fires
+# when ``wait_for_completion`` is the frame actually being awaited. If the user
+# cancels the turn (stop button / same-stream re-prompt supersede) in the WINDOW
+# between submit and wait -- during the intervening LLM generation, or before the
+# agent ever issues ``wait_for_completion`` -- the Batch job keeps running on
+# Spot, costing money + producing an orphaned result. Nothing terminated it.
+#
+# Fix: track the in-flight jobId(s) on a per-turn ContextVar (mirrors
+# ``pipeline_emitter._TURN_CASE`` -- per-task, never leaks across concurrent
+# turns, and ``asyncio.to_thread`` propagates the Context so an off-loaded sync
+# ``run_solver`` still appends to the right turn's list). The submit path
+# registers; ``wait_for_completion`` clears on terminal return + on its OWN
+# cancel handler (so a job it already terminated is not double-terminated); the
+# turn-cancel cleanup in ``server.py`` calls ``terminate_inflight_batch_jobs``
+# for whatever remains. Idempotent + a no-op when no job is in flight.
+_INFLIGHT_BATCH_JOBS: contextvars.ContextVar[list[str] | None] = (
+    contextvars.ContextVar("grace2_inflight_batch_jobs", default=None)
+)
+
+
+def begin_turn_inflight_tracking() -> contextvars.Token:
+    """Bind a FRESH empty in-flight-jobs list for this turn task.
+
+    Call once at turn-task entry (``server.py`` ``_dispatch_*_and_persist``).
+    Returns the ``Token`` so the caller MAY reset it; in practice the turn task
+    owns the Context for its lifetime so a reset is unnecessary (the binding
+    dies with the task). Idempotent to call (each call just rebinds a new list).
+    """
+    return _INFLIGHT_BATCH_JOBS.set([])
+
+
+def _register_inflight_batch_job(job_id: str) -> None:
+    """Append ``job_id`` to the active turn's in-flight list (no-op if unbound).
+
+    Called by every aws-batch submit path right after a successful
+    ``batch.submit_job``. Unbound (``None``) outside a turn (tests, smoke
+    harness, sub-workflow contexts that never began tracking) -> a harmless
+    no-op; the existing ``wait_for_completion`` cancel chain still covers those.
+    """
+    bucket = _INFLIGHT_BATCH_JOBS.get()
+    if bucket is None:
+        return
+    if job_id not in bucket:
+        bucket.append(job_id)
+
+
+def _clear_inflight_batch_job(job_id: str) -> None:
+    """Remove ``job_id`` from the active turn's in-flight list (idempotent).
+
+    Called by ``wait_for_completion`` on EVERY terminal exit (success, solver
+    FAILED, early-FAILED, timeout) and inside its own cancel handler -- once a
+    poll has reached terminal (or itself terminated the job) the turn-cancel
+    cleanup must NOT re-terminate it.
+    """
+    bucket = _INFLIGHT_BATCH_JOBS.get()
+    if bucket is None:
+        return
+    try:
+        bucket.remove(job_id)
+    except ValueError:
+        pass
+
+
+def inflight_batch_jobs() -> list[str]:
+    """Snapshot of the active turn's still-in-flight Batch jobIds (read-only)."""
+    bucket = _INFLIGHT_BATCH_JOBS.get()
+    return list(bucket) if bucket else []
+
+
+def terminate_inflight_batch_jobs(
+    reason: str = "cancelled by user",
+) -> list[str]:
+    """Best-effort terminate EVERY still-in-flight Batch job for this turn.
+
+    The turn-cancel kill path: ``server.py`` calls this from the turn task's
+    cancel cleanup (off the event loop via ``asyncio.to_thread`` per the
+    no-sync-blocking norm -- this body issues synchronous boto3
+    ``terminate_job`` calls). Synchronous + self-contained so it is trivially
+    off-loadable and unit-testable with a fake Batch client.
+
+    Idempotent + safe when nothing is in flight (returns ``[]``). Swallows all
+    per-job errors (a single bad jobId never blocks terminating the rest, and
+    never blocks the cancel itself). Clears each id as it is handled so a second
+    call is a no-op. Returns the list of jobIds it ATTEMPTED to terminate.
+    """
+    bucket = _INFLIGHT_BATCH_JOBS.get()
+    if not bucket:
+        return []
+    # Drain a snapshot; clear the live list first so a concurrent
+    # wait_for_completion terminal/cancel cannot double-handle an id.
+    job_ids = list(bucket)
+    bucket.clear()
+    for job_id in job_ids:
+        _terminate_batch_job(job_id, reason)
+    return job_ids
+
+
 def _expand_local_outputs(patterns: list[str], rundir: Path) -> list[Path]:
     """Glob-expand the manifest ``outputs[]`` in the rundir — mirrors the
     entrypoints' ``_expand_outputs`` (files only, de-duplicated, sorted).
@@ -1565,6 +1673,9 @@ def _run_solver_aws_batch(
         raise SolverDispatchError(
             f"AWS Batch submit_job returned no jobId: {resp!r}"
         )
+    # Turn-cancel kill path: record the in-flight jobId so a cancel that lands
+    # BEFORE wait_for_completion is awaited still terminates this Batch job.
+    _register_inflight_batch_job(str(job_id))
 
     handle = ExecutionHandle(
         handle_id=new_ulid(),
@@ -1767,6 +1878,8 @@ def submit_sfincs_deckbuild(
         raise DeckBuildError(
             f"AWS Batch submit_job returned no jobId for the deck-build: {resp!r}"
         )
+    # Turn-cancel kill path: record the in-flight jobId (see _register_inflight_batch_job).
+    _register_inflight_batch_job(str(job_id))
 
     handle = ExecutionHandle(
         handle_id=new_ulid(),
@@ -2048,6 +2161,8 @@ def submit_sfincs_quadtree(
             f"AWS Batch submit_job returned no jobId for the combined "
             f"quadtree job: {resp!r}"
         )
+    # Turn-cancel kill path: record the in-flight jobId (see _register_inflight_batch_job).
+    _register_inflight_batch_job(str(job_id))
 
     handle = ExecutionHandle(
         handle_id=new_ulid(),
@@ -2458,6 +2573,9 @@ async def _wait_for_completion_aws_batch(
                     run_result = run_result.model_copy(
                         update={"batch_compute_meta": meta}
                     )
+                # Terminal: drop the in-flight tracking so a later turn-cancel
+                # cleanup does not re-terminate an already-finished job.
+                _clear_inflight_batch_job(job_id)
                 return run_result
 
             # No completion yet — read the live Batch status ONCE per tick
@@ -2486,6 +2604,8 @@ async def _wait_for_completion_aws_batch(
                 meta = await loop.run_in_executor(
                     None, _capture_batch_compute_meta, job_id
                 )
+                # Terminal (early FAILED): drop the in-flight tracking.
+                _clear_inflight_batch_job(job_id)
                 return RunResult(
                     run_id=handle.run_id,
                     handle_id=handle.handle_id,
@@ -2520,6 +2640,9 @@ async def _wait_for_completion_aws_batch(
                     job_id,
                     "wait_for_completion timeout",
                 )
+                # Terminal (timeout): already terminated above; drop tracking so
+                # the turn-cancel cleanup does not issue a second terminate_job.
+                _clear_inflight_batch_job(job_id)
                 return RunResult(
                     run_id=handle.run_id,
                     handle_id=handle.handle_id,
@@ -2548,6 +2671,9 @@ async def _wait_for_completion_aws_batch(
             job_id,
         )
         _terminate_batch_job(job_id, "user cancel (Invariant-8 cancel chain)")
+        # Already terminated by this handler; drop tracking so the turn-cancel
+        # cleanup in server.py does not issue a duplicate terminate_job.
+        _clear_inflight_batch_job(job_id)
         raise
 
 
