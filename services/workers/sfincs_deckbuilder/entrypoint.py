@@ -450,6 +450,11 @@ def snapwave_inp_overrides(spec: dict) -> dict:
     spec's ``use_herbers`` value and forces 1. A DELIBERATE opt-out exists for
     callers that truly want the Herbers path OFF: ``snapwave.force_no_herbers =
     true`` (only that explicit flag turns it back to 0).
+
+    Also threads the SnapWave coupling cadence ``dtwave`` (the bare SFINCS input
+    variable, NOT a ``snapwave_*`` knob) when the agent pins it via
+    ``snapwave.dtwave``. build_deck() owns the default (the output cadence) so the
+    SnapWave field re-solves every output frame rather than hourly (DEFECT 2).
     """
     sw = spec.get("snapwave") or {}
     # CAVEAT 2 fix — force infragravity run-up ON unless the deliberate escape
@@ -467,6 +472,13 @@ def snapwave_inp_overrides(spec: dict) -> dict:
         "snapwave_nrsweeps": int(sw.get("nrsweeps", 1)),
         "snapwave_use_herbers": use_herbers,
     }
+    # DEFECT 2 FIX - ``dtwave`` (SnapWave coupling cadence). Only emitted when the
+    # agent pins it; else build_deck() sets v.dtwave to the output cadence. Without
+    # it SFINCS re-solves SnapWave hourly (dtwave default 3600 s) while map output
+    # is every output_dt -> ~12 byte-identical hm0 frames per re-solve (a static
+    # wave animation -- the live "literally nothing happening" symptom).
+    if sw.get("dtwave") is not None:
+        knobs["dtwave"] = float(sw["dtwave"])
     return knobs
 
 
@@ -1132,7 +1144,7 @@ def _faces_inside_polygons(xc, yc, gdf, target_epsg):
         return None
 
 
-def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
+def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int, zb=None):
     """Derive a thin seaward-edge polygon hugging the domain's open edge.
 
     Used when SnapWave boundary POINTS are supplied (incident waves) but NO
@@ -1145,11 +1157,17 @@ def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
     pre-built ``sfincs.bnd`` / ``sfincs.bzs`` pair staged by the forcing adapter
     (see ``_attach_waterlevel_forcing``), which bypasses cht's mask machinery,
     so there is genuinely no ``mask == 2`` open-boundary cell to reuse. We
-    therefore construct the polygon from the SAME seaward domain edge the wave
-    travels in from: the side of the active-cell bounding box nearest the
-    incident-wave boundary point(s) (which sit just offshore of the deepest
-    bathymetry). Any active cell on that edge has an inactive / no-neighbor cell
-    just outside it, so ``snapwave.mask.build`` flags it wavebnd=2.
+    therefore construct the polygon from the SEAWARD domain edge.
+
+    DEFECT 1 FIX - edge selection is DEPTH-AWARE. When the per-face bathymetry
+    ``zb`` (positive-up; seabed < 0) is supplied, we pick the active-bbox edge
+    whose outermost-ring active cells have the DEEPEST mean bed (most-negative zb,
+    well seaward of the surf zone) instead of the edge merely nearest the incident
+    points. The live failure (run 01KVSTC80F) had the worker keep the SHALLOWEST
+    east/north edge (mean zb ~ -1 m, up to +2 m land) so SnapWave dissipated the
+    wave at the boundary; the deep SW/S (Gulf) edge (mean zb ~ -8 to -15 m) is the
+    correct one. Without ``zb`` we fall back to the prior nearest-incident-point
+    heuristic.
 
     Returns a single-row geopandas GeoDataFrame (a thin rectangle in the grid's
     projected CRS) or ``None`` when it cannot be derived (no active cells / no
@@ -1193,6 +1211,16 @@ def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
             return None
         ax = xc[active]
         ay = yc[active]
+        # Active-cell bathymetry (positive-up; seabed < 0), for depth-aware edge
+        # selection. None when zb was not supplied or shape-mismatched.
+        az = None
+        if zb is not None:
+            try:
+                zb_arr = np.asarray(zb, dtype=float).reshape(-1)
+                if zb_arr.shape == xc.shape:
+                    az = zb_arr[active]
+            except Exception:  # noqa: BLE001
+                az = None
 
         # Mean incident-wave boundary point location (offshore anchor).
         px = float(np.mean([float(p["x"]) for p in points]))
@@ -1224,20 +1252,50 @@ def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
         band = 1.5 * dx
         pad = 2.0 * dx
 
-        # Pick the seaward edge = the domain side whose outward direction points
-        # toward the incident-wave point. Compare the point's offset past each
-        # face of the active bounding box; the largest positive offset wins.
-        offsets = {
-            "west": xmin - px,   # point west of the western face
-            "east": px - xmax,   # point east of the eastern face
-            "south": ymin - py,  # point south of the southern face
-            "north": py - ymax,  # point north of the northern face
-        }
-        side = max(offsets, key=offsets.get)
-        # If the point sits INSIDE the active bbox on every axis (all offsets
-        # negative), fall back to the nearest edge by absolute distance.
-        if offsets[side] <= 0:
-            side = min(offsets, key=lambda k: abs(offsets[k]))
+        side = None
+        # DEFECT 1 FIX - DEPTH-AWARE edge selection. Pick the active-bbox edge
+        # whose outermost-ring active cells have the DEEPEST mean bed (smallest /
+        # most-negative mean zb). A wide edge band (a few cell pitches) is used so
+        # a refined quadtree edge still has enough cells to average.
+        if az is not None:
+            edge_band = max(band, 3.0 * dx)
+            edge_masks = {
+                "west": ax <= (xmin + edge_band),
+                "east": ax >= (xmax - edge_band),
+                "south": ay <= (ymin + edge_band),
+                "north": ay >= (ymax - edge_band),
+            }
+            edge_mean_z: dict[str, float] = {}
+            for name, m in edge_masks.items():
+                if bool(np.any(m)):
+                    zvals = az[m]
+                    zvals = zvals[np.isfinite(zvals)]
+                    if zvals.size:
+                        edge_mean_z[name] = float(np.mean(zvals))
+            if edge_mean_z:
+                # Deepest = most-negative mean bed (positive-up convention).
+                side = min(edge_mean_z, key=edge_mean_z.get)
+                LOG.info(
+                    "snapwave seaward-boundary: DEPTH-AWARE edge means zb=%s "
+                    "-> deepest=%s",
+                    {k: round(v, 2) for k, v in edge_mean_z.items()},
+                    side,
+                )
+
+        if side is None:
+            # Fallback (no zb / no finite bed): pick the seaward edge = the domain
+            # side whose outward direction points toward the incident-wave point.
+            offsets = {
+                "west": xmin - px,   # point west of the western face
+                "east": px - xmax,   # point east of the eastern face
+                "south": ymin - py,  # point south of the southern face
+                "north": py - ymax,  # point north of the northern face
+            }
+            side = max(offsets, key=offsets.get)
+            # If the point sits INSIDE the active bbox on every axis (all offsets
+            # negative), fall back to the nearest edge by absolute distance.
+            if offsets[side] <= 0:
+                side = min(offsets, key=lambda k: abs(offsets[k]))
 
         if side == "west":
             poly = Polygon([
@@ -1272,6 +1330,77 @@ def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
     except Exception as exc:  # noqa: BLE001
         LOG.warning("snapwave seaward-boundary derive failed: %s", exc)
         return None
+
+
+def _apply_time_varying_snapwave_forcing(sf, points: list, tstart) -> None:
+    """Replace each SnapWave boundary point's constant timeseries with a ramped one.
+
+    DEFECT 2 realism: the agent emits a shared ``time_s`` (seconds from tstart) +
+    per-point ``hs_series`` / ``tp_series`` ramped on the storm envelope. cht's
+    ``add_point`` only seeds a 2-point (tstart, tstop) constant series; here we
+    overwrite each point's ``timeseries`` DataFrame with the time-varying one so
+    the written bhs/btp columns evolve and hm0 grows + recedes over the storm.
+
+    Best-effort + NON-fatal: any point WITHOUT a ``time_s`` + series (or any
+    failure) leaves the constant cht series intact (the prior behaviour). Returns
+    None. The agent guarantees a single shared ``time_s`` across all points (cht's
+    writer indexes every column by the FIRST point's time).
+    """
+    try:
+        import datetime as _dtm  # local - lean top
+        import pandas as pd  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("time-varying snapwave forcing: pandas missing (%s)", exc)
+        return
+    try:
+        gdf = sf.snapwave.boundary_conditions.gdf
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("time-varying snapwave forcing: no boundary gdf (%s)", exc)
+        return
+    if gdf is None or len(gdf.index) != len(points):
+        return
+
+    applied = 0
+    for i, pt in enumerate(points):
+        time_s = pt.get("time_s")
+        hs_series = pt.get("hs_series")
+        tp_series = pt.get("tp_series")
+        if not (time_s and hs_series and tp_series):
+            continue
+        n = len(time_s)
+        if not (len(hs_series) == n and len(tp_series) == n) or n < 2:
+            continue
+        try:
+            times = [
+                tstart + _dtm.timedelta(seconds=float(s)) for s in time_s
+            ]
+            # Constant wd/ds from the seeded series (cht stored them per add_point).
+            prev = gdf.loc[i, "timeseries"]
+            wd_val = float(prev["wd"].iloc[0]) if prev is not None and len(prev) else float(pt.get("wd", 0.0))
+            ds_val = float(prev["ds"].iloc[0]) if prev is not None and len(prev) else float(pt.get("ds", 0.0))
+            df = pd.DataFrame(
+                {
+                    "time": times,
+                    "hs": [float(x) for x in hs_series],
+                    "tp": [float(x) for x in tp_series],
+                    "wd": [wd_val] * n,
+                    "ds": [ds_val] * n,
+                }
+            ).set_index("time")
+            gdf.at[i, "timeseries"] = df
+            applied += 1
+        except Exception as exc:  # noqa: BLE001 - keep the constant series
+            LOG.warning(
+                "time-varying snapwave forcing: point %d failed (%s) - keeping "
+                "constant series",
+                i, exc,
+            )
+    if applied:
+        LOG.info(
+            "time-varying snapwave forcing applied to %d/%d boundary point(s) "
+            "(%d time steps)",
+            applied, len(points), len(points[0].get("time_s") or []),
+        )
 
 
 def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
@@ -1456,6 +1585,8 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
         "snapwave mask: active=%d wavebnd=%d inactive=%d",
         sw_active, sw_wavebnd, sw_inactive,
     )
+    provenance["snapwave_active_cells"] = sw_active
+    provenance["snapwave_wavebnd_cells"] = sw_wavebnd
 
     # FIX: wave-boundary repair. If no cell was flagged as the wave boundary
     # (wavebnd=0) but incident-wave boundary POINTS are present, the wave field
@@ -1470,7 +1601,7 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
                      or {}).get("points") or []
         if sw_points:
             derived_poly = derive_seaward_open_boundary_polygon(
-                sf, sw_points, target_epsg
+                sf, sw_points, target_epsg, zb=zb
             )
             if derived_poly is not None:
                 sw_active, sw_wavebnd, sw_inactive = _build_snapwave_mask(
@@ -1516,9 +1647,8 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
     sw_bc = forcing_blocks["snapwave_boundary"] or {}
     points = sw_bc.get("points") or []
     if points:
-        # One boundary point per offshore location; uniform-in-time per the
-        # spec values (the proven cht path). add_point(hs=..) seeds the
-        # timeseries from tstart/tstop — anchored to the datetimes set in
+        # One boundary point per offshore location. add_point(hs=..) seeds a
+        # CONSTANT (tstart, tstop) timeseries - anchored to the datetimes set in
         # step 6, so the written time column is tref-relative (CAVEAT 1).
         for pt in points:
             sf.snapwave.boundary_conditions.add_point(
@@ -1528,6 +1658,14 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
                 wd=float(pt.get("wd", 0.0)),
                 ds=float(pt.get("ds", 0.0)),
             )
+        # DEFECT 2 realism - TIME-VARYING incident wave forcing. The agent emits a
+        # shared ``time_s`` (seconds from tstart) plus per-point ``hs_series`` /
+        # ``tp_series`` ramped on the storm envelope, so hm0 grows into the storm
+        # peak and recedes (vs a single constant Hs/Tp per point). Replace each
+        # point's constant cht timeseries with the time-varying one. cht's writer
+        # indexes every column by the FIRST point's time, so all points share the
+        # one ``time_s`` vector (the agent guarantees this).
+        _apply_time_varying_snapwave_forcing(sf, points, times["tstart"])
     else:
         LOG.warning("no SnapWave boundary points in spec — deck has no wave forcing")
 
@@ -1538,11 +1676,21 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
     v.snapwave_btpfile = "snapwave.btp"
     v.snapwave_bwdfile = "snapwave.bwd"
     v.snapwave_bdsfile = "snapwave.bds"
+    # DEFECT 2 FIX - SnapWave coupling cadence. Pin v.dtwave to the FINE output
+    # cadence (capped at 600 s) so SnapWave RE-SOLVES every output frame. Without
+    # this the deck never wrote dtwave and SFINCS fell back to dtwave=3600 s
+    # (hourly), so ~12 consecutive map frames carried a BYTE-IDENTICAL hm0 field
+    # and the wave animation was static. An agent-pinned snapwave.dtwave (returned
+    # by snapwave_inp_overrides) OVERRIDES this default via the setattr loop below.
+    v.dtwave = min(out_dt, 600.0)
     for key, val in snapwave_inp_overrides(spec).items():
         setattr(v, key, val)
     LOG.info(
-        "snapwave keywords set (use_herbers=%s — CAVEAT 2 fix)",
+        "snapwave keywords set (use_herbers=%s - CAVEAT 2 fix; dtwave=%s s, "
+        "out_dt=%s s)",
         getattr(v, "snapwave_use_herbers"),
+        getattr(v, "dtwave"),
+        out_dt,
     )
 
     # ---- 9. optional water-level (surge) boundary forcing -------------------
@@ -1921,6 +2069,36 @@ def _spec_bbox_4326(spec: dict) -> tuple[float, float, float, float] | None:
     return None
 
 
+#: Substring SnapWave prints when an offshore boundary point sits in < 5 m of
+#: water (the incident wave dissipates AT the boundary -> a near-empty hm0 field).
+_SNAPWAVE_SHALLOW_BND_MARKER = "dropped below 5 m"
+#: Minimum wave-field coverage as a FRACTION of the depth-field coverage. The live
+#: degenerate run had wave ~0.76% vs depth ~40.6% valid pixels (ratio ~1.9%); a
+#: genuine nearshore wave field is a large fraction of the wetted area. Below this
+#: the "modeled" wave layer is degenerate and must NOT read status=ok.
+_WAVE_MIN_COVERAGE_FRAC_OF_DEPTH = float(
+    os.environ.get("GRACE2_WAVE_MIN_COVERAGE_FRAC_OF_DEPTH", "0.05")
+)
+
+
+def _snapwave_shallow_boundary_warning(deck_dir: Path) -> bool:
+    """True if sfincs.stdout shows a SnapWave shallow-boundary warning.
+
+    The marker (``depth at boundary input point ... dropped below 5 m ... Please
+    specify input in deeper water``) means SnapWave dissipated the incident wave
+    AT the boundary, so the hm0 field is born nearly empty. Best-effort; any read
+    failure returns False (do not block on a missing log).
+    """
+    stdout_path = deck_dir / "sfincs.stdout"
+    if not stdout_path.exists():
+        return False
+    try:
+        data = stdout_path.read_bytes()
+    except Exception:  # noqa: BLE001
+        return False
+    return _SNAPWAVE_SHALLOW_BND_MARKER.encode("utf-8", "ignore") in data
+
+
 def run_raster_postprocess(
     run_id: str,
     deck_dir: Path,
@@ -1987,6 +2165,16 @@ def run_raster_postprocess(
     rels = [Path(lyr["cog_uri"]).name for lyr in layers]
 
     # WAVE pass (SnapWave) — best-effort; absence is the honest depth-only degrade.
+    #
+    # HONESTY GATE (DEFECT 1 floor): a "modeled" wave envelope that is degenerate
+    # (the incident wave dissipated at a shallow boundary -> a near-empty hm0
+    # field) must NOT publish as a status=ok wave layer. The postprocess already
+    # drops a TRULY empty field (flooded_cell_count==0), but the live failure was
+    # a NON-zero but tiny field (~0.76% vs depth's ~40.6% valid pixels). So we
+    # ALSO drop the wave layer when EITHER (a) sfincs.stdout shows the SnapWave
+    # shallow-boundary warning, OR (b) the wave coverage is < a few % of the depth
+    # coverage. The DEPTH layer + animation are unaffected (depth is honest), so
+    # we degrade to depth-only rather than sinking the whole run.
     try:
         waves = _pp.run_postprocess(
             local_nc, run_id=run_id, deck_dir=deck_dir,
@@ -1994,9 +2182,45 @@ def run_raster_postprocess(
             bbox=bbox,
         )
         if waves.status == "ok" and waves.manifest.get("layers"):
-            layers.extend(waves.manifest["layers"])
-            frame_count += int(waves.manifest.get("frame_count", 0))
-            rels.extend(Path(lyr["cog_uri"]).name for lyr in waves.manifest["layers"])
+            wave_flooded = int(
+                (waves.metrics or {}).get("flooded_cell_count", 0) or 0
+            )
+            depth_flooded = int(
+                (depth.metrics or {}).get("flooded_cell_count", 0) or 0
+            )
+            cov_frac = (
+                (wave_flooded / depth_flooded) if depth_flooded > 0 else 0.0
+            )
+            shallow_warn = _snapwave_shallow_boundary_warning(deck_dir)
+            degenerate = shallow_warn or (
+                depth_flooded > 0 and cov_frac < _WAVE_MIN_COVERAGE_FRAC_OF_DEPTH
+            )
+            if degenerate:
+                # Drop the degenerate wave COGs + DO NOT add the wave layer (no
+                # status=ok-but-empty wave envelope). Depth-only honest degrade.
+                for lyr in waves.manifest["layers"]:
+                    try:
+                        (deck_dir / Path(lyr["cog_uri"]).name).unlink(
+                            missing_ok=True
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                LOG.warning(
+                    "raster postprocess: WAVE honesty gate fired - dropping wave "
+                    "layer (shallow_boundary_warning=%s, wave_cells=%d, "
+                    "depth_cells=%d, coverage=%.2f%% < floor %.2f%%). The SnapWave "
+                    "boundary likely landed in shallow water; depth-only degrade.",
+                    shallow_warn, wave_flooded, depth_flooded,
+                    100.0 * cov_frac,
+                    100.0 * _WAVE_MIN_COVERAGE_FRAC_OF_DEPTH,
+                )
+            else:
+                layers.extend(waves.manifest["layers"])
+                frame_count += int(waves.manifest.get("frame_count", 0))
+                rels.extend(
+                    Path(lyr["cog_uri"]).name
+                    for lyr in waves.manifest["layers"]
+                )
     except Exception as exc:  # noqa: BLE001 — waves are optional
         LOG.warning("raster postprocess: wave pass failed (%s) — depth-only", exc)
 

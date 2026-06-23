@@ -681,3 +681,80 @@ def test_synthesize_parametric_wave_boundary_scales_with_return_period() -> None
     for pt in bc["points"]:
         assert abs(pt["x"]) > 1000.0 and abs(pt["y"]) > 1000.0
         assert 0.0 <= pt["wd"] <= 360.0
+
+
+def test_quadtree_build_spec_sets_dtwave_and_time_varying_wave_boundary(
+    reset_seams, monkeypatch, tmp_path
+) -> None:
+    """DEFECT 2: the coastal build_spec snapwave block carries ``dtwave`` (pinned
+    to the fine output cadence, capped 600 s) AND the synthesized wave boundary
+    points carry the time-varying storm-envelope series. The worker contract still
+    validates. The DEM is unreachable in this fake S3 -> the boundary falls back
+    to the bathy-unaware 4-edge placement (depth-aware is exercised in
+    test_wave_boundary_depth_aware)."""
+    worker = _load_worker_validate()
+
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("GRACE2_CACHE_BUCKET", "deck-cache-bucket")
+    s3 = FakeS3Client()
+    set_s3_client(s3)
+
+    from grace2_agent.workflows.model_flood_scenario import (
+        _compose_and_upload_deckbuild_spec,
+    )
+
+    build_spec_uri = _compose_and_upload_deckbuild_spec(
+        bbox=(-85.55, 29.92, -85.35, 30.12),  # Mexico Beach-ish
+        topobathy_uri="s3://topo-bucket/topobathy.tif",  # not in fake S3 -> fallback
+        bathymetry_present=True,
+        model_setup=_FakeModelSetup(parameters={"crs": "EPSG:3857"}),
+        forcing_spec=_FakeForcingSpec(provenance={}),
+        surge_forcing={"waterlevel": {"timeseries_uri": "s3://f/bzs.csv"}},
+        grid_resolution_m=30.0,
+        duration_hr=6.0,
+        return_period_yr=100,
+        is_coastal=True,
+        output_dt_s=300.0,  # fine coastal cadence
+    )
+
+    s3_bucket, _, key = build_spec_uri[len("s3://"):].partition("/")
+    composed = json.loads(s3.objects[(s3_bucket, key)])
+
+    # DEFECT 2 (dtwave): pinned to min(output_dt, 600) = 300 s.
+    assert composed["snapwave"]["dtwave"] == 300.0
+    # The worker resolves it as a bare ``dtwave`` knob (not snapwave_*).
+    knobs = worker.snapwave_inp_overrides(composed)
+    assert knobs["dtwave"] == 300.0
+
+    # Cap holds when the output cadence is coarse.
+    build_spec_uri2 = _compose_and_upload_deckbuild_spec(
+        bbox=(-85.55, 29.92, -85.35, 30.12),
+        topobathy_uri="s3://topo-bucket/topobathy.tif",
+        bathymetry_present=True,
+        model_setup=_FakeModelSetup(parameters={"crs": "EPSG:3857"}),
+        forcing_spec=_FakeForcingSpec(provenance={}),
+        surge_forcing={"waterlevel": {"timeseries_uri": "s3://f/bzs.csv"}},
+        grid_resolution_m=30.0,
+        duration_hr=6.0,
+        return_period_yr=100,
+        is_coastal=True,
+        output_dt_s=3600.0,  # coarse -> capped to 600
+    )
+    s3b, _, key2 = build_spec_uri2[len("s3://"):].partition("/")
+    composed2 = json.loads(s3.objects[(s3b, key2)])
+    assert composed2["snapwave"]["dtwave"] == 600.0
+
+    # DEFECT 2 realism: time-varying wave boundary series on every point.
+    sw_bc = composed["forcing"]["surge_forcing"]["snapwave_boundary"]
+    assert sw_bc["_prov_time_varying"] is True
+    assert sw_bc["points"]
+    for pt in sw_bc["points"]:
+        assert pt["time_s"] and pt["hs_series"] and pt["tp_series"]
+        n = len(pt["time_s"])
+        assert len(pt["hs_series"]) == n and len(pt["tp_series"]) == n
+        # Hs ramps to the peak scalar at the storm centre, lower at the ends.
+        assert pt["hs_series"][0] < pt["hs"]
+        assert max(pt["hs_series"]) <= pt["hs"] + 1e-6
+
+    # Whole spec still validates against the worker contract.
+    worker.validate_build_spec(composed)

@@ -740,6 +740,140 @@ _WAVE_HS_M_AT_100YR = float(os.getenv("GRACE2_WAVE_HS_M_AT_100YR", "4.0"))
 _WAVE_HS_M_FLOOR = float(os.getenv("GRACE2_WAVE_HS_M_FLOOR", "0.5"))
 _WAVE_HS_M_CEIL = float(os.getenv("GRACE2_WAVE_HS_M_CEIL", "9.0"))
 
+# --------------------------------------------------------------------------- #
+# Depth-aware offshore wave-boundary placement (Defect 1 fix)
+# --------------------------------------------------------------------------- #
+# The parametric SnapWave boundary MUST land in genuine offshore water, not on a
+# shallow / intertidal / land bbox edge. SnapWave dissipates the incident wave AT
+# a boundary point in < 5 m of water ("depth at boundary input point ... dropped
+# below 5 m ... specify input in deeper water") so ~98% of the active mask gets
+# zero wave energy (run 01KVSTC80F: boundary stranded in 0.10 m / 1.79 m).
+#
+# We sample the topobathy DEM (positive-up NAVD88, seabed < 0) and place the
+# offshore point(s) on the genuinely-seaward side: the edge with the deepest mean
+# bed, pushing the candidate seaward along the offshore bearing until the bed is
+# at least ``_WAVE_BND_TARGET_DEPTH_M`` deep. A point that never clears the HARD
+# floor (``_WAVE_BND_MIN_DEPTH_M``) is dropped; if NO edge clears it we raise a
+# typed error rather than running a flat-zero wave field.
+
+#: Hard minimum water depth (m, positive-down) a wave-boundary point must clear.
+#: Mirrors SnapWave's stdout gate (it warns + clamps below 5 m); below this the
+#: incident wave breaks AT the boundary and the field is born empty.
+_WAVE_BND_MIN_DEPTH_M = float(os.getenv("GRACE2_WAVE_BND_MIN_DEPTH_M", "5.0"))
+#: Preferred ("deep enough to not break at the boundary") depth (m). The seaward
+#: search keeps pushing out until it reaches this; a point at >= this is ideal.
+_WAVE_BND_TARGET_DEPTH_M = float(os.getenv("GRACE2_WAVE_BND_TARGET_DEPTH_M", "10.0"))
+#: How far (as a fraction of the bbox span on that axis) to step the candidate
+#: seaward per iteration when searching for deep water, and the max steps.
+_WAVE_BND_SEAWARD_STEP_FRAC = float(
+    os.getenv("GRACE2_WAVE_BND_SEAWARD_STEP_FRAC", "0.04")
+)
+_WAVE_BND_SEAWARD_MAX_STEPS = int(os.getenv("GRACE2_WAVE_BND_SEAWARD_MAX_STEPS", "10"))
+
+
+def _sample_dem_depth_m(
+    topobathy_uri: str | None,
+    points_xy: list[tuple[float, float]],
+    target_epsg: int,
+) -> list[float] | None:
+    """Point-sample positive-DOWN water depth (m) from the topobathy DEM.
+
+    ``points_xy`` are in ``target_epsg`` (the deck CRS). Returns a depth per point
+    where depth = ``-elevation`` (DEM is positive-up NAVD88: seabed < 0 -> depth
+    > 0; land > 0 -> depth < 0). A NaN/nodata/off-tile sample maps to ``nan``.
+
+    Best-effort + NON-fatal: returns ``None`` (caller falls back to the prior
+    bathy-unaware placement) when rasterio/numpy is missing, the DEM cannot be
+    read, or ``topobathy_uri`` is falsy. Never raises - the typed deep-water gate
+    is the caller's decision, made only when a real DEM WAS sampled.
+    """
+    if not topobathy_uri or not points_xy:
+        return None
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import rasterio  # type: ignore[import-not-found]
+        from rasterio.warp import (  # type: ignore[import-not-found]
+            transform as _warp_transform,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "wave boundary: rasterio/numpy unavailable for DEM depth sampling "
+            "(%s) - falling back to bathy-unaware edge placement",
+            exc,
+        )
+        return None
+
+    memfile = None
+    try:
+        if str(topobathy_uri).startswith("s3://"):
+            from rasterio.io import MemoryFile  # type: ignore[import-not-found]
+
+            from ..tools.cache import read_object_bytes_s3
+
+            memfile = MemoryFile(read_object_bytes_s3(topobathy_uri))
+            ds_ctx = memfile.open()
+        else:
+            ds_ctx = rasterio.open(_to_vsigs(topobathy_uri))
+        with ds_ctx as ds:
+            src_crs = ds.crs
+            band_nodata = ds.nodata
+            xs = [float(x) for (x, _y) in points_xy]
+            ys = [float(y) for (_x, y) in points_xy]
+            if src_crs is not None and src_crs.to_epsg() not in (
+                int(target_epsg),
+                None,
+            ):
+                xs, ys = _warp_transform(
+                    f"EPSG:{int(target_epsg)}", src_crs, xs, ys
+                )
+            elev = np.fromiter(
+                (v[0] for v in ds.sample(zip(xs, ys))),
+                dtype="float64",
+                count=len(xs),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "wave boundary: DEM depth sampling of %s failed (%s) - falling back "
+            "to bathy-unaware edge placement",
+            topobathy_uri,
+            exc,
+        )
+        return None
+    finally:
+        if memfile is not None:
+            try:
+                memfile.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # Mask declared nodata + common fill sentinels -> NaN (mirrors the worker's
+    # ``_mask_topobathy_sentinels``: 9999 / -9999 / 1e20 / |z|>=9000).
+    bad = ~np.isfinite(elev)
+    if band_nodata is not None:
+        bad |= elev == band_nodata
+    bad |= np.abs(elev) >= 9000.0
+    elev = np.where(bad, np.nan, elev)
+    # depth (positive-down) = -elevation. Seabed (elev<0) -> depth>0.
+    depth = -elev
+    return [float(d) for d in depth]
+
+
+def _wave_storm_envelope_factor(t_s: float, win_s: float) -> float:
+    """Raised-cosine storm envelope factor in [0, 1] at time ``t_s``.
+
+    Mirrors the surge forcing's ``_synthesize_parametric_surge_forcing`` bump: 0 at
+    the window ends, 1 at the centre, a smooth rise-and-recede so the incident wave
+    grows into the storm peak and recedes. ``win_s`` is the full window in seconds.
+    """
+    import math
+
+    if win_s <= 0:
+        return 1.0
+    t_peak = 0.5 * win_s
+    span = 0.5 * win_s
+    frac = max(-1.0, min(1.0, (float(t_s) - t_peak) / span))
+    return 0.5 * (1.0 + math.cos(math.pi * frac))
+
 
 def _parametric_wave_hs_m(return_period_yr: int | float | None) -> float:
     """Peak incident significant wave height (m) for a design-storm ARI.
@@ -757,28 +891,163 @@ def _parametric_wave_hs_m(return_period_yr: int | float | None) -> float:
     return max(_WAVE_HS_M_FLOOR, min(_WAVE_HS_M_CEIL, hs))
 
 
+class WaveBoundaryError(RuntimeError):
+    """Raised when a depth-aware offshore wave boundary cannot be placed.
+
+    Carries an A.6 open-set ``error_code`` so the deck-build compose surfaces it
+    as a typed failed envelope (honest failure) rather than running a flat-zero
+    wave field. The only code is ``WAVE_BOUNDARY_NO_DEEP_WATER`` (no bbox edge
+    reaches >= ``_WAVE_BND_MIN_DEPTH_M`` of water even after the seaward search).
+    """
+
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _depth_aware_offshore_points(
+    edges: list[dict[str, Any]],
+    *,
+    cx: float,
+    cy: float,
+    sample_depths: Any,
+) -> list[dict[str, Any]] | None:
+    """Pick the genuinely-seaward edge(s) by sampling the DEM at each edge midpoint.
+
+    ``edges`` is the four candidate bbox-edge midpoints in the deck CRS, each
+    ``{"name","x","y","ox","oy"}`` where ``(ox, oy)`` is a UNIT seaward step vector
+    (outward, away from the AOI centre) for that edge. ``sample_depths`` is a
+    callable ``list[(x,y)] -> list[float] | None`` giving positive-down water
+    depth (m) at each point (``None`` -> DEM unavailable).
+
+    Algorithm: sample each edge midpoint; for any edge below the target depth,
+    push the candidate seaward along ``(ox, oy)`` (steps of
+    ``_WAVE_BND_SEAWARD_STEP_FRAC`` of the bbox span) until it clears the target
+    depth or runs out of steps. Keep edges whose best candidate clears the HARD
+    floor ``_WAVE_BND_MIN_DEPTH_M``, deepest first. Returns the kept points
+    (``{"name","x","y","depth_m"}``) or:
+      * ``None`` when ``sample_depths`` returns ``None`` (DEM unavailable) -> the
+        caller falls back to the prior bathy-unaware placement.
+      * raises ``WaveBoundaryError`` when the DEM WAS sampled but NO edge clears
+        the hard floor (honest dead-end, never a flat-zero field).
+    """
+    import math
+
+    # Step size in projected units = a fraction of the bbox span on each axis.
+    xs = [e["x"] for e in edges]
+    ys = [e["y"] for e in edges]
+    span_x = max(xs) - min(xs)
+    span_y = max(ys) - min(ys)
+    step = _WAVE_BND_SEAWARD_STEP_FRAC * max(span_x, span_y, 1.0)
+
+    # Build the full candidate set: each edge midpoint + its seaward pushes.
+    probe_pts: list[tuple[float, float]] = []
+    probe_owner: list[int] = []  # index into edges
+    for i, e in enumerate(edges):
+        for k in range(_WAVE_BND_SEAWARD_MAX_STEPS + 1):
+            probe_pts.append(
+                (e["x"] + k * step * e["ox"], e["y"] + k * step * e["oy"])
+            )
+            probe_owner.append(i)
+
+    depths = sample_depths(probe_pts)
+    if depths is None:
+        return None  # DEM unavailable -> caller falls back
+
+    # For each edge, pick the SHALLOWEST seaward step that already clears the
+    # target depth (prefer the closest-to-shore deep point); else the DEEPEST
+    # candidate it reached. Track each edge's best clearing depth.
+    best_by_edge: dict[int, tuple[float, float, float]] = {}  # i -> (depth,x,y)
+    for owner, (px, py), d in zip(probe_owner, probe_pts, depths):
+        if not math.isfinite(d):
+            continue
+        prev = best_by_edge.get(owner)
+        # Prefer the FIRST candidate that clears the target depth; otherwise keep
+        # the deepest seen so far for this edge.
+        if d >= _WAVE_BND_TARGET_DEPTH_M:
+            if prev is None or prev[0] < _WAVE_BND_TARGET_DEPTH_M:
+                best_by_edge[owner] = (d, px, py)
+        elif prev is None or d > prev[0]:
+            best_by_edge[owner] = (d, px, py)
+
+    kept: list[dict[str, Any]] = []
+    for i, e in enumerate(edges):
+        best = best_by_edge.get(i)
+        if best is None:
+            continue
+        depth, px, py = best
+        if depth < _WAVE_BND_MIN_DEPTH_M:
+            continue
+        kept.append(
+            {"name": e["name"], "x": float(px), "y": float(py), "depth_m": depth}
+        )
+
+    if not kept:
+        deepest = max(
+            (best_by_edge.get(i, (float("nan"),))[0] for i in range(len(edges))),
+            default=float("nan"),
+        )
+        raise WaveBoundaryError(
+            "WAVE_BOUNDARY_NO_DEEP_WATER",
+            "no AOI edge reaches deep enough water for a SnapWave offshore wave "
+            f"boundary: the deepest sampled candidate was {deepest:.2f} m, below "
+            f"the {_WAVE_BND_MIN_DEPTH_M:.0f} m floor (SnapWave dissipates the "
+            "incident wave at a shallow boundary -> a flat-zero wave field). The "
+            "AOI may be fully inland / enclosed, or the topobathy lacks offshore "
+            "bathymetry. Extend the AOI seaward into deeper water.",
+        )
+
+    # Deepest edge first (the most-seaward forcing the worker should prefer).
+    kept.sort(key=lambda p: p["depth_m"], reverse=True)
+    return kept
+
+
 def _synthesize_parametric_wave_boundary(
     bbox: tuple[float, float, float, float],
     *,
     target_epsg: int,
     return_period_yr: int | float | None,
+    duration_hr: float = 24.0,
+    topobathy_uri: str | None = None,
 ) -> dict[str, Any]:
     """Build a parametric offshore SnapWave boundary block (incident waves).
 
-    Mirrors ``_synthesize_parametric_surge_forcing`` for the WAVE side: lays a
-    handful of offshore incident-wave boundary points along the bbox edges (so at
-    least one falls on the seaward edge) carrying a peak significant wave height
-    ``hs`` (scaled to ``return_period_yr``), a peak period ``tp`` (a deep-water
-    period-vs-height relation), and a direction ``wd`` in SnapWave's nautical
-    "coming FROM" convention -- the SEAWARD bearing from the AOI centre toward the
-    boundary point (the prior "shoreward" wd was 180 deg wrong). Points are emitted in the deck's PROJECTED CRS
+    Mirrors ``_synthesize_parametric_surge_forcing`` for the WAVE side, with two
+    fixes for the live "empty + static" wave animation (run 01KVSTC80F):
+
+    * DEPTH-AWARE placement (Defect 1): instead of laying one point per 2%-inset
+      bbox edge midpoint with NO bathymetric awareness (which stranded the live
+      boundary in 0.10 m / 1.79 m of water on the shallow N/E edges so SnapWave
+      dissipated the wave AT the boundary), we sample the topobathy DEM and place
+      the offshore point(s) on the genuinely-seaward edge -- the one(s) reaching
+      genuine deep water (>= ~10 m, hard floor 5 m), pushing each candidate
+      seaward along its outward bearing until it clears the gate. If NO edge
+      clears the floor we raise ``WaveBoundaryError`` (honest dead-end). When the
+      DEM is unavailable we fall back to the prior all-four-edges placement (the
+      worker still derives the seaward edge).
+    * TIME-VARYING forcing (Defect 2 realism): each point carries a per-time Hs/Tp
+      series ramped on the SAME raised-cosine storm envelope the surge forcing
+      uses, so hm0 grows into the storm peak and recedes (vs the prior single
+      constant Hs/Tp per point). ``wd``/``ds`` stay constant.
+
+    ``hs`` is the PEAK significant wave height (scaled to ``return_period_yr``);
+    ``tp`` the peak period (a deep-water period-vs-height relation); ``wd`` the
+    direction in SnapWave's nautical "coming FROM" convention (the SEAWARD bearing
+    from the AOI centre toward the boundary point -- the prior shoreward wd was
+    180 deg wrong, already fixed). Points are emitted in the deck's PROJECTED CRS
     (``target_epsg``) because the worker feeds them straight into
     ``snapwave.boundary_conditions.add_point(x, y, ...)`` (grid coordinates) and
     ``derive_seaward_open_boundary_polygon`` reasons in ``target_epsg``.
 
-    Returns ``{"points": [{"x","y","hs","tp","wd","ds"}, ...], "_prov_*": ...}``
-     -  the exact shape the worker's ``resolve_forcing_blocks(...)["snapwave_boundary"]``
-    consumes. The agent does NO cht/GIS work; it only declares the boundary.
+    Returns ``{"points": [{"x","y","hs","tp","wd","ds","time_s","hs_series",
+    "tp_series"}, ...], "_prov_*": ...}`` -- the exact shape the worker's
+    ``resolve_forcing_blocks(...)["snapwave_boundary"]`` consumes (``hs``/``tp``
+    are the peak scalars the worker seeds ``add_point`` with; the ``*_series`` +
+    shared ``time_s`` are the time-varying override the worker applies). The agent
+    does NO cht/GIS work; it only declares the boundary.
+
+    Raises ``WaveBoundaryError("WAVE_BOUNDARY_NO_DEEP_WATER")`` when the DEM was
+    sampled but no edge reaches deep water.
     """
     import math
 
@@ -794,15 +1063,14 @@ def _synthesize_parametric_wave_boundary(
     mid_lat = 0.5 * (min_lat + max_lat)
     inset_lon = 0.02 * (max_lon - min_lon)
     inset_lat = 0.02 * (max_lat - min_lat)
-    # One point per edge midpoint (lon/lat)  -  the worker derives the seaward edge
-    # from whichever point sits offshore of the active extent. Direction points
-    # FROM the edge TOWARD the AOI centre (waves travel shoreward).
-    edge_pts_ll: list[tuple[float, float]] = [
-        (min_lon + inset_lon, mid_lat),  # west
-        (max_lon - inset_lon, mid_lat),  # east
-        (mid_lon, min_lat + inset_lat),  # south
-        (mid_lon, max_lat - inset_lat),  # north
-    ]
+    # One candidate per edge midpoint (lon/lat); the depth-aware selector keeps
+    # only the genuinely-seaward (deep) one(s).
+    edge_pts_ll: dict[str, tuple[float, float]] = {
+        "west": (min_lon + inset_lon, mid_lat),
+        "east": (max_lon - inset_lon, mid_lat),
+        "south": (mid_lon, min_lat + inset_lat),
+        "north": (mid_lon, max_lat - inset_lat),
+    }
 
     # Reproject the boundary points to the deck CRS (the worker's add_point wants
     # grid coordinates). Fall back to lon/lat if pyproj is unavailable (the worker
@@ -812,7 +1080,8 @@ def _synthesize_parametric_wave_boundary(
 
         tf = Transformer.from_crs(4326, int(target_epsg), always_xy=True)
         cx, cy = tf.transform(mid_lon, mid_lat)
-        edge_pts = [tf.transform(lon, lat) for (lon, lat) in edge_pts_ll]
+        edge_xy = {n: tf.transform(lon, lat) for n, (lon, lat) in edge_pts_ll.items()}
+        projected = True
     except Exception as exc:  # noqa: BLE001  -  degrade to lon/lat (worker re-snaps)
         logger.warning(
             "parametric wave boundary: pyproj reproject to EPSG:%s failed (%s)  -  "
@@ -821,42 +1090,104 @@ def _synthesize_parametric_wave_boundary(
             exc,
         )
         cx, cy = mid_lon, mid_lat
-        edge_pts = edge_pts_ll
+        edge_xy = dict(edge_pts_ll)
+        projected = False
+
+    # Build the edge candidate records with an outward (seaward) UNIT step vector.
+    edges: list[dict[str, Any]] = []
+    for name, (x, y) in edge_xy.items():
+        ox, oy = float(x) - cx, float(y) - cy
+        norm = math.hypot(ox, oy) or 1.0
+        edges.append(
+            {"name": name, "x": float(x), "y": float(y), "ox": ox / norm, "oy": oy / norm}
+        )
+
+    # --- DEPTH-AWARE selection (Defect 1) ---------------------------------- #
+    # Sample the DEM only on the projected (metric) path; lon/lat probes are not
+    # meaningful for a CONUS topobathy COG, so degrade to the prior placement.
+    selected: list[dict[str, Any]] | None = None
+    if projected and topobathy_uri:
+        def _sampler(pts: list[tuple[float, float]]) -> list[float] | None:
+            return _sample_dem_depth_m(topobathy_uri, pts, int(target_epsg))
+
+        selected = _depth_aware_offshore_points(
+            edges, cx=cx, cy=cy, sample_depths=_sampler
+        )
+
+    if selected is not None:
+        chosen = selected
+        logger.info(
+            "model_flood_scenario: DEPTH-AWARE SnapWave wave boundary picked "
+            "%d offshore edge(s) %s (depths %s m) for bbox=%s",
+            len(chosen),
+            [c["name"] for c in chosen],
+            [round(c["depth_m"], 1) for c in chosen],
+            bbox,
+        )
+    else:
+        # Bathy-unaware fallback: keep all four edge midpoints (the worker derives
+        # the seaward edge). No depth annotation.
+        chosen = [{"name": e["name"], "x": e["x"], "y": e["y"]} for e in edges]
+
+    # --- TIME-VARYING storm envelope (Defect 2 realism) -------------------- #
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+    win_s = win_hr * 3600.0
+    n_steps = max(int(round(win_hr)), 2)
+    time_s = [round(float(i) * win_s / float(n_steps), 1) for i in range(n_steps + 1)]
+    # Hs ramps 0 -> peak -> 0 on the raised-cosine bump; Tp scales with the
+    # instantaneous Hs (steeper, longer-period seas at the storm peak), clamped.
+    hs_floor = max(0.25, 0.15 * hs)  # never a fully-dead boundary off-peak
+    hs_series_template: list[float] = []
+    tp_series_template: list[float] = []
+    for t in time_s:
+        f = _wave_storm_envelope_factor(t, win_s)
+        hs_t = round(hs_floor + (hs - hs_floor) * f, 3)
+        tp_t = round(max(4.0, min(16.0, 3.86 * math.sqrt(max(hs_t, 0.1)))), 3)
+        hs_series_template.append(hs_t)
+        tp_series_template.append(tp_t)
 
     points: list[dict[str, Any]] = []
-    for (x, y) in edge_pts:
+    for c in chosen:
+        x, y = c["x"], c["y"]
         # SnapWave wd is nautical "coming FROM" (degrees clockwise from north),
         # confirmed against the SnapWave/SFINCS Fortran (cht_sfincs passes wd
         # through verbatim; the solver does `theta = 270 - wd`) and the Roelvink
         # 18th-Waves-Workshop-2025 decks (a west point peaks at 270 oN = waves
-        # coming from the west). So the boundary direction is the SEAWARD bearing
-        # FROM the AOI centre TOWARD the boundary point -- NOT the shoreward
-        # going-to azimuth we used before, which was a constant 180 deg WRONG on
-        # every edge (it pointed the incident waves directly offshore).
+        # coming from the west). The boundary direction is the SEAWARD bearing
+        # FROM the AOI centre TOWARD the boundary point.
         dx = float(x) - cx
         dy = float(y) - cy
         wd = (math.degrees(math.atan2(dx, dy))) % 360.0
-        points.append(
-            {
-                "x": float(x),
-                "y": float(y),
-                "hs": round(hs, 3),
-                "tp": round(tp, 3),
-                "wd": round(wd, 2),
-                "ds": ds,
-            }
-        )
+        pt: dict[str, Any] = {
+            "x": float(x),
+            "y": float(y),
+            "hs": round(hs, 3),  # PEAK scalar (worker seeds add_point with this)
+            "tp": round(tp, 3),
+            "wd": round(wd, 2),
+            "ds": ds,
+            # Time-varying override (shared time vector + per-point series). The
+            # worker replaces the point's constant timeseries with these.
+            "time_s": list(time_s),
+            "hs_series": list(hs_series_template),
+            "tp_series": list(tp_series_template),
+        }
+        if "depth_m" in c:
+            pt["_prov_depth_m"] = round(float(c["depth_m"]), 2)
+        points.append(pt)
 
     logger.info(
         "model_flood_scenario: synthesised PARAMETRIC SnapWave wave boundary for "
-        "bbox=%s (return_period_yr=%s -> hs=%.2f m, tp=%.2f s, %d offshore points "
-        "in EPSG:%s)",
+        "bbox=%s (return_period_yr=%s -> peak hs=%.2f m, tp=%.2f s, %d offshore "
+        "points in EPSG:%s, %d time steps over %.0f hr, depth_aware=%s)",
         bbox,
         return_period_yr,
         hs,
         tp,
         len(points),
         target_epsg,
+        len(time_s),
+        win_hr,
+        selected is not None,
     )
     return {
         "points": points,
@@ -864,6 +1195,8 @@ def _synthesize_parametric_wave_boundary(
         "_prov_hs_m": hs,
         "_prov_tp_s": tp,
         "_prov_return_period_yr": return_period_yr,
+        "_prov_depth_aware": selected is not None,
+        "_prov_time_varying": True,
     }
 
 
@@ -1059,11 +1392,23 @@ def _compose_and_upload_deckbuild_spec(
             isinstance(existing, dict) and bool(existing.get("points"))
         )
         if not has_points:
-            wave_bc = _synthesize_parametric_wave_boundary(
-                bbox,
-                target_epsg=target_epsg,
-                return_period_yr=return_period_yr,
-            )
+            # Depth-aware placement samples the SAME topobathy COG the deck uses;
+            # the time-varying envelope spans ``duration_hr``. A
+            # ``WaveBoundaryError`` (no edge reaches deep water) is raised as a
+            # DeckBuildError below so the workflow surfaces an honest typed failed
+            # envelope rather than a flat-zero wave field.
+            try:
+                wave_bc = _synthesize_parametric_wave_boundary(
+                    bbox,
+                    target_epsg=target_epsg,
+                    return_period_yr=return_period_yr,
+                    duration_hr=float(duration_hr),
+                    topobathy_uri=topobathy_uri,
+                )
+            except WaveBoundaryError as exc:
+                dberr = _DeckBuildError(str(exc))
+                dberr.error_code = exc.error_code  # WAVE_BOUNDARY_NO_DEEP_WATER
+                raise dberr from exc
             surge_forcing = dict(surge_forcing or {})
             surge_forcing["snapwave_boundary"] = wave_bc
 
@@ -1122,6 +1467,14 @@ def _compose_and_upload_deckbuild_spec(
             "crit": 0.01,
             "igwaves": 1,
             "nrsweeps": 1,
+            # DEFECT 2 FIX - SnapWave coupling cadence (dtwave). Without it SFINCS
+            # defaults dtwave=3600 s (SnapWave re-solves HOURLY) while map output
+            # is every output_dt -> ~12 byte-identical hm0 frames per re-solve, so
+            # the wave animation is static ("literally nothing happening"). Pin it
+            # to the FINE output cadence (capped at 600 s) so SnapWave re-solves
+            # every output frame and the wave field actually evolves. The worker
+            # threads this into v.dtwave; the agent can override via this knob.
+            "dtwave": min(float(output_dt_s), 600.0),
         },
         "forcing": {
             "tref": tref,

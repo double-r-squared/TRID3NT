@@ -245,6 +245,130 @@ class Caveat2HerbersTests(unittest.TestCase):
         self.assertEqual(knobs["snapwave_igwaves"], 1)
 
 
+class DtwaveCadenceTests(unittest.TestCase):
+    """DEFECT 2 - the SnapWave coupling cadence ``dtwave`` knob threading."""
+
+    def test_dtwave_absent_when_not_pinned(self):
+        # When the agent does not pin dtwave, snapwave_inp_overrides omits it
+        # (build_deck owns the default = output cadence). A bare _valid_spec has
+        # no snapwave.dtwave.
+        knobs = ep.snapwave_inp_overrides(_valid_spec())
+        self.assertNotIn("dtwave", knobs)
+
+    def test_dtwave_threaded_when_pinned(self):
+        spec = _valid_spec()
+        spec["snapwave"]["dtwave"] = 300.0
+        knobs = ep.snapwave_inp_overrides(spec)
+        self.assertEqual(knobs["dtwave"], 300.0)
+        # It is a BARE SFINCS var, NOT a snapwave_* knob.
+        self.assertNotIn("snapwave_dtwave", knobs)
+
+
+class SnapwaveShallowBoundaryWarningTests(unittest.TestCase):
+    """HONESTY GATE - detect the SnapWave shallow-boundary stdout warning."""
+
+    def test_marker_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            (deck / "sfincs.stdout").write_text(
+                "ERROR SnapWave - depth at boundary input point 661738.9 "
+                "3314426.2 dropped below 5 m: 1.79 ... Please specify input in "
+                "deeper water.\n"
+            )
+            self.assertTrue(ep._snapwave_shallow_boundary_warning(deck))
+
+    def test_marker_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            (deck / "sfincs.stdout").write_text("Normal end of run\n")
+            self.assertFalse(ep._snapwave_shallow_boundary_warning(deck))
+
+    def test_missing_stdout_is_false(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(ep._snapwave_shallow_boundary_warning(Path(d)))
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("numpy") is not None
+    and importlib.util.find_spec("geopandas") is not None
+    and importlib.util.find_spec("shapely") is not None
+    and importlib.util.find_spec("pyproj") is not None,
+    "geo stack (numpy/geopandas/shapely/pyproj) required",
+)
+class DepthAwareSeawardEdgeTests(unittest.TestCase):
+    """DEFECT 1 (worker) - derive_seaward_open_boundary_polygon picks the DEEPEST
+    domain edge, not the nearest-to-incident-points edge."""
+
+    def _fake_sf(self, xc, yc, swmask, zb_unused=None, dx=1.0):
+        import numpy as np
+
+        class _GridData:
+            def __init__(self, swm):
+                self.attrs = {"dx": dx}
+                self._d = {
+                    "snapwave_mask": mock.MagicMock(
+                        values=np.asarray(swm, dtype=float)
+                    )
+                }
+
+            def __getitem__(self, k):
+                return self._d[k]
+
+        fake_sf = mock.MagicMock()
+        fake_sf.grid.face_coordinates.return_value = (
+            np.asarray(xc, dtype=float), np.asarray(yc, dtype=float)
+        )
+        fake_sf.grid.data = _GridData(swmask)
+        fake_sf.grid.dx = dx
+        return fake_sf
+
+    def _grid_5x5(self):
+        # 5x5 face centres at integer coords 0..4 (25 faces, all active).
+        xc, yc = [], []
+        for j in range(5):  # y
+            for i in range(5):  # x
+                xc.append(float(i))
+                yc.append(float(j))
+        swmask = [1] * 25
+        return xc, yc, swmask
+
+    def test_picks_deepest_south_edge(self):
+        import numpy as np
+
+        xc, yc, swmask = self._grid_5x5()
+        # zb positive-up: deep (-12) along the SOUTH edge (y==0), shallow / land
+        # everywhere else. The deepest edge mean is SOUTH.
+        zb = []
+        for j in range(5):
+            for _i in range(5):
+                zb.append(-12.0 if j == 0 else (1.0 if j == 4 else -0.5))
+        # Incident points sit to the EAST (would mislead the old nearest-point
+        # heuristic), but depth-awareness must still pick SOUTH.
+        points = [{"x": 10.0, "y": 2.0}]
+        poly = ep.derive_seaward_open_boundary_polygon(
+            self._fake_sf(xc, yc, swmask),
+            points, 32616, zb=np.asarray(zb),
+        )
+        self.assertIsNotNone(poly)
+        # The south-edge band polygon's y-extent hugs the southern face (y ~ 0),
+        # not the north (y ~ 4): its max-y is well below the domain's max-y (4).
+        miny, maxy = poly.total_bounds[1], poly.total_bounds[3]
+        self.assertLess(maxy, 3.0)  # confined to the southern band
+        self.assertLessEqual(miny, 0.0)
+
+    def test_falls_back_without_zb(self):
+        # No zb -> the nearest-incident-point heuristic (east point -> east edge).
+        xc, yc, swmask = self._grid_5x5()
+        points = [{"x": 10.0, "y": 2.0}]  # far east
+        poly = ep.derive_seaward_open_boundary_polygon(
+            self._fake_sf(xc, yc, swmask), points, 32616, zb=None
+        )
+        self.assertIsNotNone(poly)
+        minx = poly.total_bounds[0]
+        # East-edge band: its min-x is well to the east (near x ~ 4), not x ~ 0.
+        self.assertGreater(minx, 1.0)
+
+
 class AgentSpecShapeTests(unittest.TestCase):
     """The worker tolerates the agent composer's real build_spec shape."""
 
