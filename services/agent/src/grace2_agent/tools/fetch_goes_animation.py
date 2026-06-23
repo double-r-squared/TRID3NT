@@ -66,6 +66,7 @@ from ._satellite_slider import (
     SliderEmptyError,
     SliderError,
     SliderUpstreamError,
+    blend_geocolor_fire_temperature,
     fetch_slider_timestamps,
     mosaic_to_cog_bytes,
     pick_zoom_for_aoi,
@@ -76,6 +77,7 @@ from ._satellite_slider import (
 
 __all__ = [
     "fetch_goes_animation",
+    "fetch_goes_blend_animation",
     "GOESAnimError",
     "GOESAnimInputError",
     "GOESAnimBboxRequiredError",
@@ -83,11 +85,13 @@ __all__ = [
     "GOESAnimEmptyError",
     "GOES_ANIM_PRODUCTS",
     "GOES_ANIM_SATELLITES",
+    "GOES_BLEND_PRODUCT",
     "MAX_ANIM_FRAMES",
     "_parse_utc",
     "_band_to_slider_product",
     "_select_frame_indices",
     "_build_frame_list",
+    "_blend_frame_cog_bytes",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_goes_animation")
@@ -158,6 +162,22 @@ _PRODUCT_LABEL: dict[str, str] = {
 #: passthrough; no colormap). A consistent preset across frames is part of the
 #: scrubber-group contract.
 _GOES_ANIM_STYLE_PRESET = "goes_rgb_animation"
+
+#: Synthetic product slug for the GeoColor + Fire Temperature per-timestep BLEND
+#: (the CIRA "GeoColor and Fire Temperature" composite). NOT a SLIDER product --
+#: it is produced by compositing the two real SLIDER products frame-by-frame.
+GOES_BLEND_PRODUCT = "geocolor_fire_temperature_blend"
+
+#: The two real SLIDER products that the blend composites, in (base, overlay)
+#: order: GeoColor is the true-color base, Fire Temperature is the fire overlay.
+_BLEND_BASE_PRODUCT = "geocolor"
+_BLEND_FIRE_PRODUCT = "fire_temperature"
+
+#: LayerURI name label for a blended frame.
+_BLEND_PRODUCT_LABEL = "Fire (GeoColor + Fire Temperature)"
+
+#: Shared style preset for blended frames (3-band RGB COG -> multiband passthrough).
+_GOES_BLEND_STYLE_PRESET = "goes_rgb_animation"
 
 #: Upper bound on emitted frames (mirrors postprocess_flood.MAX_FLOOD_FRAMES=144).
 #: ~6.5h / 5min ~= 78 frames sits comfortably under this; a larger window
@@ -322,6 +342,64 @@ def _fetch_frame_cog_bytes(
     """Stitch + reproject one SLIDER frame -> 3-band EPSG:4326 RGB COG bytes."""
     rgb, mosaic_extent = stitch_slider_mosaic(sat, sector, product, ts_int, zoom, bbox)
     return mosaic_to_cog_bytes(rgb, mosaic_extent, bbox)
+
+
+def _single_product_frame_bytes(
+    sat: str,
+    sector: str,
+    product: str,
+    ts_int: int,
+    zoom: int,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Cache-mediated fetch of ONE single-product SLIDER frame COG (bytes).
+
+    Routes through ``read_through`` with the SAME params shape + cache key as
+    ``fetch_goes_animation`` does, so the per-product GeoColor / Fire Temperature
+    frames the blend consumes are cached + de-duplicated independently (a frame
+    already pulled for a single-product run is reused). Returns the COG bytes.
+    """
+    params = {
+        "bbox": list(bbox),
+        "product": product,
+        "satellite": sat,
+        "sector": sector,
+        "ts_int": ts_int,
+        "zoom": zoom,
+    }
+    result = read_through(
+        metadata=_METADATA,
+        params=params,
+        ext="tif",
+        fetch_fn=lambda: _fetch_frame_cog_bytes(sat, sector, product, ts_int, zoom, bbox),
+    )
+    return result.data
+
+
+def _blend_frame_cog_bytes(
+    sat: str,
+    sector: str,
+    ts_int: int,
+    zoom: int,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Fetch the co-temporal GeoColor + Fire Temperature frames for ``ts_int`` and
+    blend them into ONE composite RGB COG (the CIRA "GeoColor and Fire
+    Temperature" look).
+
+    The two source frames are each pulled (cache-mediated) at the SAME AOI bbox /
+    zoom / sector, so they are co-registered by construction; the blend preserves
+    the GeoColor frame's georeference. Both products at one valid-time means a
+    single empty source (SliderEmptyError) makes the blended frame empty too --
+    the caller skips it (the honesty floor holds per frame + for the whole run).
+    """
+    base_bytes = _single_product_frame_bytes(
+        sat, sector, _BLEND_BASE_PRODUCT, ts_int, zoom, bbox
+    )
+    fire_bytes = _single_product_frame_bytes(
+        sat, sector, _BLEND_FIRE_PRODUCT, ts_int, zoom, bbox
+    )
+    return blend_geocolor_fire_temperature(base_bytes, fire_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +591,206 @@ def fetch_goes_animation(
         "%s..%s zoom=%d",
         len(layers),
         product,
+        n_empty,
+        satellite,
+        sector,
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+        zoom,
+    )
+    return layers
+
+
+# ---------------------------------------------------------------------------
+# Blended GeoColor + Fire Temperature animation (ONE composite scrubber group).
+# ---------------------------------------------------------------------------
+
+
+def _build_blend_metadata() -> AtomicToolMetadata:
+    common = dict(
+        name="fetch_goes_blend_animation",
+        ttl_class="dynamic-1h",
+        source_class="goes_animation",
+        cacheable=True,
+    )
+    try:
+        return AtomicToolMetadata(**common, supports_global_query=False)  # type: ignore[call-arg]
+    except Exception:
+        return AtomicToolMetadata(**common)
+
+
+_BLEND_METADATA = _build_blend_metadata()
+
+
+@register_tool(
+    _BLEND_METADATA,
+    # readOnlyHint=True, openWorldHint=True (external SLIDER tiles),
+    # destructiveHint=False, idempotentHint=True (per-frame cache dedupes).
+    open_world_hint=True,
+)
+def fetch_goes_blend_animation(
+    bbox: tuple[float, float, float, float],
+    satellite: str = "goes-18",
+    sector: str = "conus",
+    start_utc: str | None = None,
+    end_utc: str | None = None,
+    step_minutes: int = 5,
+    # job-0164: absorb LLM-invented kwargs.
+    **_extra_ignored: Any,
+) -> list[LayerURI]:
+    """Build a BLENDED GeoColor + Fire Temperature animation (ONE composite scrubber group).
+
+    **What it does:** For each SLIDER scan time in the window, pulls BOTH the
+    GeoColor (true-color base, shows smoke) and the Fire Temperature (SWIR active-
+    fire) RGB frames for that SAME valid-time and composites them into ONE RGB COG
+    -- GeoColor as the base with the active fire glow overlaid only where the Fire
+    Temperature SWIR signature is hot. This is the CIRA "GeoColor and Fire
+    Temperature" combined product. Returns an ORDERED list of per-frame blended
+    RGB COGs over the AOI -- ONE frame per scan time -> ONE scrubber group (NOT
+    two synchronized groups).
+
+    **When to use:**
+    - "Recreate the CIRA GeoColor + Fire Temperature fire animation" -- the single
+      composite loop where the active fire glows on top of the true-color scene.
+    - Default GOES fire-animation path (the composer dispatches this for a GOES
+      run so the user gets one blended scrubber, not two separate ones).
+
+    **When NOT to use:**
+    - A single (un-blended) GeoColor OR Fire Temperature loop (use
+      ``fetch_goes_animation`` with one band).
+    - A multi-day polar timelapse / VIIRS Day Fire (``fetch_viirs_day_fire``).
+
+    **Parameters:** same window/AOI/satellite/sector contract as
+    ``fetch_goes_animation`` (minus ``band`` -- both products are always pulled
+    and blended).
+
+    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
+    uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
+    ``style_preset="goes_rgb_animation"``, same ``bbox``) whose ``name`` is
+    ``"GOES Fire (GeoColor + Fire Temperature) step <N> <ISO> (<SAT>)"`` and whose
+    ``layer_id`` shares the single ``goes-fire-blend-...`` prefix -> ONE scrubber
+    group: the ``step <N>`` token is the monotonic frame value the web parser keys
+    on, the single product stem keeps every frame in ONE group, and the ISO valid-
+    time is the per-frame display label.
+
+    NOTE: georeferencing is the approximate SLIDER sector-extent mapping (the two
+    products share it, so they co-register exactly). An AOI / window with no
+    blendable frames raises a typed error (honesty floor).
+
+    **Cross-tool dependencies:**
+    - Upstream: ``fetch_wfigs_incident`` (the AOI bbox + the window floor).
+    - Composites the two ``fetch_goes_animation`` products per timestep.
+    - Driven by: ``run_model_satellite_fire_animation`` (the GOES default path).
+    """
+    q_bbox = _round_bbox(_validate_bbox(bbox))
+    if satellite not in GOES_ANIM_SATELLITES:
+        raise GOESAnimInputError(
+            f"unknown satellite={satellite!r}; allowed: {list(GOES_ANIM_SATELLITES)}"
+        )
+
+    # Resolve the window. Default: most-recent ~6.5h ending now.
+    now = datetime.now(timezone.utc)
+    end_dt = _parse_utc(end_utc) if end_utc else now
+    start_dt = _parse_utc(start_utc) if start_utc else (end_dt - timedelta(hours=6, minutes=30))
+    if start_dt >= end_dt:
+        raise GOESAnimInputError(
+            f"start_utc ({start_dt.isoformat()}) must be before end_utc "
+            f"({end_dt.isoformat()})"
+        )
+
+    # Build the SHARED frame list from the GeoColor time index (both products run
+    # the same CONUS 5-minute cadence; GeoColor is the base so it anchors the
+    # valid-time set). Each step <N> -> the same SLIDER timestamp in both products.
+    try:
+        all_ts = fetch_slider_timestamps(satellite, sector, _BLEND_BASE_PRODUCT)
+    except SliderError as exc:
+        raise GOESAnimUpstreamError(str(exc)) from exc
+    frame_ts = _build_frame_list(all_ts, start_dt, end_dt, cap=MAX_ANIM_FRAMES)
+    if not frame_ts:
+        raise GOESAnimEmptyError(
+            f"no SLIDER {_BLEND_BASE_PRODUCT} frames for {satellite}/{sector} in "
+            f"window {start_dt.isoformat()}..{end_dt.isoformat()} "
+            f"(index has {len(all_ts)} timestamps)"
+        )
+
+    zoom = pick_zoom_for_aoi(satellite, sector, q_bbox)
+    sat_label = satellite.upper()
+
+    layers: list[LayerURI] = []
+    n_empty = 0
+    last_err: SliderError | None = None
+    for frame_no, ts_int in enumerate(frame_ts, start=1):
+        iso = ts_int_to_iso(ts_int)
+        # The blended COG caches under its OWN synthetic product slug + ts so it
+        # de-dupes independently of the two source frames.
+        params = {
+            "bbox": list(q_bbox),
+            "product": GOES_BLEND_PRODUCT,
+            "satellite": satellite,
+            "sector": sector,
+            "ts_int": ts_int,
+            "zoom": zoom,
+        }
+        try:
+            result = read_through(
+                metadata=_BLEND_METADATA,
+                params=params,
+                ext="tif",
+                fetch_fn=lambda s=satellite, t=ts_int: _blend_frame_cog_bytes(
+                    s, sector, t, zoom, q_bbox
+                ),
+            )
+        except SliderEmptyError as exc:
+            # Either source frame empty (transparent crop) -> skip, not fatal.
+            n_empty += 1
+            last_err = exc
+            logger.warning(
+                "fetch_goes_blend_animation: empty blended frame ts=%s skipped (%s)",
+                iso,
+                exc,
+            )
+            continue
+        except SliderUpstreamError as exc:
+            n_empty += 1
+            last_err = exc
+            logger.warning(
+                "fetch_goes_blend_animation: blended frame ts=%s upstream-failed (%s)",
+                iso,
+                exc,
+            )
+            continue
+        assert result.uri is not None
+        # NAME token = "GOES Fire (GeoColor + Fire Temperature) step <N> <ISO>
+        # (<SAT>)". A SINGLE product stem ("Fire (GeoColor + Fire Temperature)")
+        # keeps every blended frame in ONE scrubber group (NOT two); the "step
+        # <N>" token is the monotonic frame value the web detectSequentialGroups
+        # parser keys on; the ISO valid-time stays as the per-frame display label.
+        # The single ``goes-fire-blend-`` layer_id prefix carries the same single
+        # group identity.
+        layers.append(
+            LayerURI(
+                layer_id=f"goes-fire-blend-{ts_int}-{q_bbox[0]:.3f}-{q_bbox[1]:.3f}",
+                name=f"GOES {_BLEND_PRODUCT_LABEL} step {frame_no} {iso} ({sat_label})",
+                layer_type="raster",
+                uri=result.uri,
+                style_preset=_GOES_BLEND_STYLE_PRESET,
+                role="context",
+                units=None,
+                bbox=q_bbox,
+            )
+        )
+
+    # Honesty floor: a run that produced NO blended frames is not success.
+    if not layers:
+        raise GOESAnimEmptyError(
+            f"every one of {len(frame_ts)} GeoColor+Fire Temperature frame pairs "
+            f"was empty/failed for {satellite}/{sector} over the AOI"
+            + (f": {last_err}" if last_err else "")
+        )
+    logger.info(
+        "fetch_goes_blend_animation: %d blended frames (%d empty skipped) for "
+        "%s/%s window %s..%s zoom=%d",
+        len(layers),
         n_empty,
         satellite,
         sector,
