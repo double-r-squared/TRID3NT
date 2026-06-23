@@ -58,7 +58,7 @@ describe("DrawAoiControl", () => {
     );
   });
 
-  it("completing a drag STAGES the bbox (disarms) and shows a Clear affordance", () => {
+  it("completing a drag STAGES the bbox (disarms) and shows the + confirm affordance", () => {
     const m = makeFakeMap();
     render(<DrawAoiControl map={m} />);
     act(() => {
@@ -73,21 +73,56 @@ describe("DrawAoiControl", () => {
     const staged = aoiStageBus.getState();
     expect(staged.armed).toBe(false);
     expect(staged.bbox).toEqual([-100, 40, -99, 41]);
-    // The Clear affordance appears once a box is staged.
-    expect(screen.getByTestId("grace2-draw-aoi-clear")).toBeInTheDocument();
+    // NATE item 6: the "+" CONFIRM affordance appears once a box is set. There is
+    // no longer a separate underneath clear-X.
+    expect(screen.getByTestId("grace2-draw-aoi-confirm")).toBeInTheDocument();
+    expect(screen.queryByTestId("grace2-draw-aoi-clear")).toBeNull();
   });
 
-  it("the Clear button drops the staged extent", () => {
+  it("the + confirm finalizes the staged extent (onConfirm + clears)", () => {
+    const onConfirm = vi.fn();
+    render(<DrawAoiControl map={makeFakeMap()} onConfirm={onConfirm} />);
+    act(() => {
+      aoiStageBus.setBbox([1, 2, 3, 4]);
+    });
+    const confirm = screen.getByTestId("grace2-draw-aoi-confirm");
+    act(() => {
+      fireEvent.click(confirm);
+    });
+    // onConfirm got the staged bbox; the staged extent is then cleared.
+    expect(onConfirm).toHaveBeenCalledWith([1, 2, 3, 4]);
+    expect(aoiStageBus.getState().bbox).toBeNull();
+    expect(screen.queryByTestId("grace2-draw-aoi-confirm")).toBeNull();
+  });
+
+  it("the + confirm renders even without an onConfirm prop (legacy: just clears)", () => {
     render(<DrawAoiControl map={makeFakeMap()} />);
     act(() => {
       aoiStageBus.setBbox([1, 2, 3, 4]);
     });
-    expect(screen.getByTestId("grace2-draw-aoi-clear")).toBeInTheDocument();
+    expect(screen.getByTestId("grace2-draw-aoi-confirm")).toBeInTheDocument();
     act(() => {
-      fireEvent.click(screen.getByTestId("grace2-draw-aoi-clear"));
+      fireEvent.click(screen.getByTestId("grace2-draw-aoi-confirm"));
     });
     expect(aoiStageBus.getState().bbox).toBeNull();
-    expect(screen.queryByTestId("grace2-draw-aoi-clear")).toBeNull();
+  });
+
+  it("while armed (drawing) the button glyph is the RED X (cancel) - item 5", () => {
+    render(<DrawAoiControl map={makeFakeMap()} />);
+    const btn = screen.getByTestId("grace2-draw-aoi-button");
+    // Idle: cancel-label is NOT set (it is the draw label).
+    expect(btn.getAttribute("aria-label")).toBe("Draw analysis extent");
+    act(() => {
+      fireEvent.click(btn); // arm
+    });
+    const armedBtn = screen.getByTestId("grace2-draw-aoi-button");
+    // Armed: aria-pressed + the cancel label (the glyph is the X cancel control).
+    expect(armedBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(armedBtn.getAttribute("aria-label")).toBe("Cancel AOI draw");
+    // Red fill so the X reads as cancel (item 5).
+    expect(armedBtn.style.background).toContain("220");
+    // No + confirm shows while drawing (only once a box is SET).
+    expect(screen.queryByTestId("grace2-draw-aoi-confirm")).toBeNull();
   });
 
   it("while armed, tapping the button again CANCELS the draw (clears)", () => {

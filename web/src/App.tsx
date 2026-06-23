@@ -711,6 +711,23 @@ export function App(): JSX.Element {
     [cases, bus, selectCase],
   );
 
+  // NATE 2026-06-22 (item 6): CONFIRM the always-on Draw-AOI staged box. The "+"
+  // under the box finalizes it as the analysis extent: push a `zoom-to` with the
+  // drawn bbox so the SINGLE analysis-extent rectangle is (re)drawn at that
+  // extent and the camera fits it (mirrors the case-select snap above). This is
+  // the closest existing "confirm AOI" action for the request-free always-on draw
+  // (the #170 AoiPickerCard confirm creates a Case; this path instead sets the
+  // analysis extent on the current view without a Case round-trip).
+  const onAoiStageConfirm = useCallback(
+    (bbox: [number, number, number, number]) => {
+      bus.pushMapCommand({
+        command: "zoom-to",
+        args: { bbox },
+      } as unknown as MapCommandPayload);
+    },
+    [bus],
+  );
+
   // currentCaseId for the embedded SecretsPanel scope (inside Settings).
   const currentCaseId: string | null = activeCaseId;
 
@@ -1618,6 +1635,14 @@ export function App(): JSX.Element {
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
         mobile={isMobile}
+        /* NATE 2026-06-22 (item 4) - recolor the SINGLE on-map AOI rectangle to
+           purple while a sim runs (revert to blue when done). No second box is
+           drawn; the same blue analysis-extent box's stroke is mutated. */
+        simRunning={simRunning}
+        /* NATE 2026-06-22 (item 6) - the always-on Draw-AOI "+" confirm finalizes
+           the staged box as the analysis extent (zoom-to draws the single AOI
+           rectangle + fits the camera). */
+        onAoiStageConfirm={onAoiStageConfirm}
       />
 
       {/* NATE item 1 - AOI-bbox loading-animation overlay. Anchored to the

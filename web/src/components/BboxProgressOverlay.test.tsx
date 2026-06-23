@@ -44,10 +44,48 @@ describe("BboxProgressOverlay", () => {
     expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
   });
 
-  it("renders a PURPLE scan border for a sim", () => {
-    render(<BboxProgressOverlay rect={RECT} mode="scan" tone="purple" />);
+  it("renders a PURPLE scan for a sim with NO static border box (item 4)", () => {
+    render(
+      <BboxProgressOverlay
+        rect={RECT}
+        mode="scan"
+        tone="purple"
+        reducedMotionOverride={false}
+      />,
+    );
     const el = screen.getByTestId("grace2-bbox-progress-overlay");
     expect(el.getAttribute("data-tone")).toBe("purple");
+    // NATE item 4: the on-map AOI rectangle ITSELF recolors purple, so the
+    // overlay must NOT draw its own solid border (that read as a SECOND box).
+    // The sim frame carries no border; only the moving sweep runs on the box.
+    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
+    expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
+  });
+
+  it("the BLUE (loading) scan KEEPS its border (no map recolor for it)", () => {
+    render(
+      <BboxProgressOverlay
+        rect={RECT}
+        mode="scan"
+        tone="blue"
+        reducedMotionOverride={false}
+      />,
+    );
+    const el = screen.getByTestId("grace2-bbox-progress-overlay");
+    // The blue loading/connecting cue has no on-map recolor, so it keeps the
+    // pulsing border as its on-map signal.
+    expect(el.style.border).toContain("solid");
+  });
+
+  it("the scan sweep keyframe travels the FULL extent (translateX 250%) - item 3", () => {
+    render(<BboxProgressOverlay rect={RECT} mode="scan" tone="blue" />);
+    // NATE item 3: the sweep must cross edge-to-edge. The injected keyframe ends
+    // at translateX(250%) (0.40 bar * 2.5 = 1.0 frame past the left edge), not
+    // the old +100% which stopped the bar at 80% across.
+    const style = document.getElementById("grace2-bbox-progress-keyframes");
+    expect(style).not.toBeNull();
+    expect(style?.textContent ?? "").toContain("translateX(250%)");
+    expect(style?.textContent ?? "").not.toContain("translateX(100%)");
   });
 
   it("reduced-motion: scan degrades to a static border (no sweep bar)", () => {

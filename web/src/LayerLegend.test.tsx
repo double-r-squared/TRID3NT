@@ -331,6 +331,26 @@ describe("LayerLegend  -  scrubber-active right-side vertical rail (ITEM 5)", ()
     expect(key.getAttribute("data-legend-side")).toBe("right");
     expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
   });
+
+  it("a VERTICAL key renders NARROWER than the horizontal AOI width (item 2)", () => {
+    // NATE item 2: a vertical (left/right-docked) key is a tall, NARROW bar, not
+    // the full AOI-sized width (which made it nearly square). The horizontal key
+    // uses barWidth (200); the vertical key must be substantially narrower.
+    activateScrubber();
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    const w = parseFloat(key.style.width);
+    // Narrow: well under both the 200px barWidth and the 140px horizontal min.
+    expect(w).toBeLessThan(120);
+    expect(w).toBeGreaterThan(0);
+  });
 });
 
 describe("LayerLegend  -  snaps to the TRUE projected AOI rect (aoiRect)", () => {
@@ -474,6 +494,17 @@ describe("LayerLegend  -  hide toggle", () => {
     fireEvent.click(screen.getByTestId("layer-legend-hide"));
     expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
     expect(screen.getByTestId("grace2-layer-legend-show")).toBeInTheDocument();
+  });
+
+  it("the hide control renders an X icon (NOT the old eye emoji) - item 1", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const hide = screen.getByTestId("layer-legend-hide");
+    // NATE item 1: the hide affordance is now the shared X icon (an <svg>), not
+    // the U+1F441 eye emoji. Assert the glyph is an SVG and not the eye codepoint.
+    expect(hide.querySelector("svg")).not.toBeNull();
+    expect(hide.textContent ?? "").not.toContain("\u{1F441}");
+    // aria-label + click behavior are unchanged (covered by the hide tests below).
+    expect(hide.getAttribute("aria-label")).toBe("Hide legend");
   });
 
   it("re-shows the legend when the pill is clicked", () => {

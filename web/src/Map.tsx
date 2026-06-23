@@ -390,6 +390,21 @@ export interface MapViewProps {
    * keeps its plain top-right placement).
    */
   mobile?: boolean;
+  /**
+   * NATE 2026-06-22 (item 4) - whether a long-running sim is in progress. When
+   * true the SINGLE analysis-extent AOI rectangle recolors to purple (matching
+   * the sim scan tone); false reverts it to blue. No second box is drawn - the
+   * existing rectangle's stroke color is mutated in place. Undefined => blue.
+   */
+  simRunning?: boolean;
+  /**
+   * NATE 2026-06-22 (item 6) - confirm/finalize the staged Draw-AOI box. The
+   * always-on DrawAoiControl's "+" calls this with the staged bbox; App wires it
+   * to a `zoom-to` map-command so the drawn box becomes the persistent analysis-
+   * extent rectangle (and the camera fits it). Undefined => the "+" just clears
+   * the staged pick overlay.
+   */
+  onAoiStageConfirm?: (bbox: [number, number, number, number]) => void;
 }
 
 /**
@@ -506,6 +521,12 @@ const DARK_BASEMAP_SOURCE_ID = "carto-dark";
 const ANALYSIS_EXTENT_SOURCE_ID = "grace2-analysis-extent";
 const ANALYSIS_EXTENT_FILL_LAYER_ID = "grace2-analysis-extent-fill";
 const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
+// NATE 2026-06-22 (item 4): the analysis-extent rectangle is the ONE AOI box.
+// Its default stroke is blue; while a sim runs it RECOLORS to purple (matching
+// the sim pipeline-card / scan tone), then REVERTS to blue when the sim ends. No
+// SECOND box is drawn - the same single rectangle changes color.
+const ANALYSIS_EXTENT_COLOR_IDLE = "#4D96FF"; // blue (default).
+const ANALYSIS_EXTENT_COLOR_SIM = "#a855f7"; // purple (sim in progress).
 
 /**
  * INCIDENT FIX 2026-06-16  -  hung-tile resilience. The reconcile + layer-add
@@ -1357,6 +1378,10 @@ export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): voi
 export function drawAnalysisExtent(
   m: MapLibreMap,
   bbox: [number, number, number, number],
+  // NATE 2026-06-22 (item 4): paint the AOI box PURPLE when a sim is running,
+  // blue otherwise. Optional (default blue) so the existing 2-arg call sites +
+  // tests are byte-preserved; the live redraw paths pass the current sim flag.
+  simRunning = false,
 ): void {
   const [minLon, minLat, maxLon, maxLat] = bbox;
   const ring: [number, number][] = [
@@ -1407,12 +1432,40 @@ export function drawAnalysisExtent(
       type: "line",
       source: ANALYSIS_EXTENT_SOURCE_ID,
       paint: {
-        "line-color": "#4D96FF",
+        "line-color": simRunning
+          ? ANALYSIS_EXTENT_COLOR_SIM
+          : ANALYSIS_EXTENT_COLOR_IDLE,
         "line-width": 1.5,
         "line-dasharray": [3, 2],
         "line-opacity": 0.9,
       },
     });
+  } else {
+    // The layer already exists (replace-on-new-bbox / redraw): re-assert the
+    // stroke color for the current sim state so a redraw during a sim stays
+    // purple (and an idle redraw stays blue). Idempotent + cheap.
+    setAnalysisExtentSimColor(m, simRunning);
+  }
+}
+
+/**
+ * NATE 2026-06-22 (item 4): recolor the SINGLE analysis-extent AOI rectangle by
+ * sim state - purple while a sim runs, blue otherwise. Mutates the existing line
+ * layer's stroke in place (no second box). Missing-layer / torn-down tolerant.
+ */
+export function setAnalysisExtentSimColor(
+  m: MapLibreMap,
+  simRunning: boolean,
+): void {
+  try {
+    if (!m.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) return;
+    m.setPaintProperty(
+      ANALYSIS_EXTENT_LINE_LAYER_ID,
+      "line-color",
+      simRunning ? ANALYSIS_EXTENT_COLOR_SIM : ANALYSIS_EXTENT_COLOR_IDLE,
+    );
+  } catch {
+    /* map torn down / style swapped mid-mutation - non-fatal */
   }
 }
 
@@ -2209,7 +2262,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, onAoiStageConfirm }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -2253,6 +2306,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // command. Null until the first zoom-to. Kept inside this track's
   // ownership (no LayerPanel bus replay buffer  -  see crossTrackChanges).
   const lastZoomToCorners = useRef<[number, number, number, number] | null>(null);
+  // NATE 2026-06-22 (item 4): mirror the sim-running flag into a ref so the
+  // (stable-closure) redraw paths paint the AOI rectangle in the right color
+  // when they re-assert it, and a dedicated effect recolors the live box the
+  // moment the flag flips. Kept in lockstep with the `simRunning` prop below.
+  const simRunningRef = useRef<boolean>(simRunning);
   // ROOT-CAUSE FIX (job-0076 diagnosis): the prior implementation read
   // `payload.loaded_layers` synchronously in the subscriber and bailed if
   // `m.isStyleLoaded()` was false  -  so when session-state arrived BEFORE the
@@ -2788,6 +2846,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     applyLatestRef.current?.();
   }, [caseActive]);
 
+  // NATE 2026-06-22 (item 4) - recolor the SINGLE analysis-extent AOI rectangle
+  // by sim state: purple while a sim runs, blue when it ends. We mutate the
+  // existing line layer's stroke in place (setAnalysisExtentSimColor) - NO second
+  // box is drawn. The ref keeps the (stable-closure) redraw paths painting the
+  // right color when they re-assert the rectangle.
+  useEffect(() => {
+    simRunningRef.current = simRunning;
+    const m = map.current;
+    if (m) setAnalysisExtentSimColor(m, simRunning);
+  }, [simRunning]);
+
   // Subscribe to theme prop changes and swap the basemap source+layer
   // (job-0076 bundled enhancement). The swap pattern:
   //   1. Pick the lowest-priority existing flood-overlay layer as the
@@ -2875,7 +2944,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // so this is a no-op when the extent is already intact.
       if (lastZoomToCorners.current) {
         try {
-          drawAnalysisExtent(currentMap, lastZoomToCorners.current);
+          drawAnalysisExtent(
+            currentMap,
+            lastZoomToCorners.current,
+            simRunningRef.current,
+          );
         } catch (err) {
           if (import.meta.env.DEV) {
             // eslint-disable-next-line no-console
@@ -2983,7 +3056,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               return;
             }
             try {
-              drawAnalysisExtent(map.current, liveCorners);
+              drawAnalysisExtent(map.current, liveCorners, simRunningRef.current);
             } catch (err) {
               // Mid style-mutation race; re-schedule rather than drop. Bounded
               // so a permanently-broken style cannot loop forever.
@@ -3889,6 +3962,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           chatWidthPx={chatWidthPx}
           chatCollapsed={chatCollapsed}
           mobile={mobile}
+          onConfirm={onAoiStageConfirm}
         />
       ) : null}
     </div>
