@@ -543,6 +543,12 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # "naip_rgb" is intentionally absent here.)
     "ndvi": ("-1,1", "rdylgn"),
     "mobi_biodiversity": ("0,40", "ylgn"),
+    # canopy-height ML-inference tool (Meta HighResCanopyHeight on CPU Batch).
+    # ESTIMATED canopy top height in METRES (a single-band float32 COG); typical
+    # forest canopies are ~0..40 m, so a 0..40 m greens ramp (rio-tiler "greens")
+    # reads as a height map (bare/low near 0 -> tall canopy at the top of the
+    # ramp). ADDITIVE -- the entries above stay byte-identical.
+    "canopy_height_m": ("0,40", "greens"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an

@@ -268,6 +268,16 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # cross-listed under coastal (SECONDARY_CATEGORIES) since it is a coastal/wave
     # tool a user reaches from the coastal lane.
     "run_swan_waves": "hazard_modeling",
+    # conservation micro-North-Star composer: the run_* multi-tool workflow
+    # (species occurrences + NDVI + MoBI -> priority surface). Filed alongside
+    # the other run_model_* composers here; cross-listed to conservation_ecology
+    # (SECONDARY_CATEGORIES) since a user reaches it from the conservation lane.
+    "run_model_conservation_priority": "hazard_modeling",
+    # canopy-height ML-inference tool (Meta HighResCanopyHeight on CPU Batch).
+    # It is a compute-heavy run_* model that dispatches the canopy Batch worker
+    # and publishes a canopy-height (m) raster -- filed alongside the other
+    # engine dispatchers; cross-listed to conservation_ecology + land_cover.
+    "compute_canopy_height": "hazard_modeling",
     "run_solver": "hazard_modeling",
     "wait_for_completion": "hazard_modeling",
     # ---- 2. weather_atmosphere --------------------------------------------
@@ -319,6 +329,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_roads_osm": "land_cover_development",
     "fetch_field_boundaries": "land_cover_development",
     "fetch_usace_nsi": "land_cover_development",
+    # NAIP sub-metre aerial RGB imagery (CONUS) -- a land-cover imagery source
+    # (the RGB input the canopy-height model + the digitize/CV demos consume).
+    "fetch_naip": "land_cover_development",
+    # NDVI is a local raster compute (a vegetation index over imagery) -- the
+    # land-cover/vegetation signal that feeds the conservation composer; filed
+    # alongside compute_impervious_surface, its closest local-compute sibling.
+    "compute_ndvi": "land_cover_development",
     # ---- 6. conservation_ecology ------------------------------------------
     "fetch_gbif_occurrences": "conservation_ecology",
     "fetch_inaturalist_observations": "conservation_ecology",
@@ -326,6 +343,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_iucn_red_list_range": "conservation_ecology",
     "fetch_movebank_tracks": "conservation_ecology",
     "fetch_wdpa_protected_areas": "conservation_ecology",
+    # NatureServe MoBI imperiled-species biodiversity importance raster -- a
+    # biodiversity data layer, filed in the conservation lane next to the other
+    # species/biodiversity fetchers.
+    "fetch_mobi": "conservation_ecology",
     # ---- 7. fire ----------------------------------------------------------
     "fetch_firms_active_fire": "fire",
     "fetch_mtbs_burn_severity": "fire",
@@ -437,6 +458,15 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # (it is THE defensible nearshore wave-field tool -- a user reaches it from the
     # coastal lane to compare against SFINCS+SnapWave on the same case).
     "run_swan_waves": ("coastal",),
+    # The conservation-priority composer spans hazard_modeling (it runs the
+    # multi-tool workflow) AND conservation_ecology (it IS the conservation
+    # micro-North-Star -- a user reaches it from the conservation lane).
+    "run_model_conservation_priority": ("conservation_ecology",),
+    # The canopy-height ML-inference tool spans hazard_modeling (it dispatches a
+    # CPU Batch worker like the other engines) AND conservation_ecology + land
+    # cover (a canopy-height surface is a vegetation/ecology product a user
+    # reaches from either lane).
+    "compute_canopy_height": ("conservation_ecology", "land_cover_development"),
     # The GOES animation fetcher is primary-filed in weather_atmosphere (next to
     # fetch_goes_satellite) but materially belongs to the fire branch too.
     "fetch_goes_animation": ("fire",),

@@ -389,9 +389,12 @@ def _compute_ndvi_cog_bytes(
 
 @register_tool(
     _METADATA,
-    # Annotations: readOnlyHint=True, openWorldHint=True (PC STAC public API),
-    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
-    open_world_hint=True,
+    # Annotations: readOnlyHint=True, openWorldHint=False (a local raster compute
+    # -- like the other compute_* tools; the annotation contract reserves
+    # open_world_hint for fetch_* / web_fetch / catalog_* external-API tools, and
+    # test_open_world_tools_are_fetchers_or_external forbids a compute_* tool from
+    # carrying it), destructiveHint=False, idempotentHint=True (cache-deduped).
+    open_world_hint=False,
 )
 def compute_ndvi(
     bbox: tuple[float, float, float, float],

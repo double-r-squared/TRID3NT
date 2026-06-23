@@ -295,6 +295,19 @@ SOLVER_WORKFLOW_REGISTRY: dict[str, str] = {
     # AWS_BATCH_WORKFLOW_NAME sentinel; the static literal here is evaluated first,
     # so the setdefault is a no-op and this consistent composer name wins).
     "swan": "model_wave_scenario",
+    # canopy-height ML-inference tool (Meta HighResCanopyHeight on CPU Batch). It
+    # is NOT a numerical engine -- it is a compute-heavy ML-inference tool that
+    # runs on the SAME CPU SPOT Batch substrate the physics engines use (the spike
+    # verdict: CPU-feasible, no GPU CE for v1). The agent stages an RGB COG +
+    # build_spec and dispatches via the generic run_solver / wait_for_completion
+    # seam; the canopy worker writes the SAME completion.json schema, so the wait
+    # branch is reused verbatim. Per-solver job-def: GRACE2_AWS_BATCH_JOB_DEF_CANOPY
+    # (INERT until NATE provisions + flips the env, like SWMM/OpenQuake/SWAN).
+    # The value is the aws-batch backend sentinel (== AWS_BATCH_WORKFLOW_NAME,
+    # which is defined LATER in this module; the registry value is consumed only
+    # as a presence-gate by run_solver, so the string literal is used here to
+    # avoid a forward-reference at dict-build time).
+    "canopy": "aws-batch",
 }
 
 

@@ -265,6 +265,7 @@ from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers f
 from . import compute_ndvi  # noqa: E402,F401 -- conservation micro-North-Star: registers compute_ndvi (Sentinel-2 L2A NDVI vegetation index via Microsoft Planetary Computer STAC; least-cloudy scene -> single-band float32 NDVI COG -1..1 with RdYlGn vegetation ramp)
 from . import fetch_naip  # noqa: E402,F401 -- conservation micro-North-Star: registers fetch_naip (USDA NAIP high-res aerial RGB imagery via Microsoft Planetary Computer STAC; 3-band uint8 COG multiband passthrough base layer; US-only honest no-coverage)
 from . import fetch_mobi  # noqa: E402,F401 -- conservation micro-North-Star: registers fetch_mobi (NatureServe Map of Biodiversity Importance imperiled-species richness via Microsoft Planetary Computer STAC mobi; CONUS-windowed single-band float32 COG with YlGn biodiversity ramp)
+from . import compute_canopy_height  # noqa: E402,F401 -- canopy-height ML-inference tool: registers compute_canopy_height (Meta HighResCanopyHeight ViT+DPT on CPU AWS Batch; stages a NAIP/RGB COG + dispatches the canopy worker via run_solver('canopy') + publishes a canopy-height-in-metres COG with the greens canopy_height_m ramp)
 
 from . import fetch_era5_reanalysis  # noqa: E402,F401 — job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)
 from . import fetch_gtsm_tide_surge  # noqa: E402,F401 — job-0132: registers fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary)
