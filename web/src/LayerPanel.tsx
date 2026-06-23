@@ -62,7 +62,6 @@ import type { ScreenRect } from "./lib/legend_snap";
 import {
   IconClose,
   IconDelete,
-  IconDragHandle,
   IconEye,
   IconEyeOff,
   IconChevronDown,
@@ -375,6 +374,27 @@ function titleizeStem(stem: string, fallback: string): string {
 }
 
 /**
+ * ITEM 3 (NATE 2026-06-22) - true for the STATIC peak / primary "max-depth"
+ * layer that rides ALONGSIDE a time-series animation, so it is NEVER swept into
+ * the frame group. The engines emit a `role="primary"` peak (e.g. name "Peak
+ * flood depth" / "Peak wave height", layer_id `<engine>-depth-peak-<run>`) plus
+ * N `role="context"` frames ("Flood depth step N"). `role` does NOT survive into
+ * `ProjectLayerSummary`, so we detect the peak from the two SURVIVING signals:
+ * the layer_id's `-peak-` segment (authoritative - every engine stamps it) and a
+ * leading "peak"/"max"/"maximum" name token. Excluding the peak keeps it an
+ * INDEPENDENT ordinary row with its own toggle: hiding the animation sequence
+ * (the scrubber/frame group) no longer hides the static max-depth layer.
+ * Exported for unit testing.
+ */
+export function isPeakLayer(layer: ProjectLayerSummary): boolean {
+  const id = (layer.layer_id ?? "").toLowerCase();
+  if (id.includes("-peak-") || id.endsWith("-peak")) return true;
+  const name = (layer.name ?? "").trim().toLowerCase();
+  // A leading peak/max(imum) token ("Peak flood depth", "Max flood depth").
+  return /^(?:peak|max(?:imum)?)\b/.test(name);
+}
+
+/**
  * Detect sequential groups among an ordered layer list. CONSERVATIVE: a group
  * forms only when >=2 layers share (stem + source/AOI signature + style_preset)
  * AND carry strictly-increasing, DISTINCT frame values. Members are returned in
@@ -389,6 +409,11 @@ export function detectSequentialGroups(
     { token: FrameToken; layer: ProjectLayerSummary }[]
   >();
   for (const layer of layers) {
+    // ITEM 3 - the static peak/primary "max-depth" layer is INDEPENDENT of the
+    // animation: never let it join a frame group (so hiding the sequence keeps
+    // it visible with its own toggle). Belt to the name-token suspenders below -
+    // a peak whose name happened to carry a digit must still never group.
+    if (isPeakLayer(layer)) continue;
     const token = parseFrameToken(layer.name);
     if (!token) continue;
     // Group key: stem + source/AOI signature + preset. All three must match so
@@ -1406,7 +1431,13 @@ function SortableRow({
   // resting row clean while controls stay one gesture away. The row also
   // stays "expanded" while the pointer is over it.
   const [hovered, setHovered] = useState(false);
-  const showOpacity = hovered || isDragging;
+  // ITEM 2 (NATE 2026-06-22) - a far-left EXPAND control in the grabber slot,
+  // matching the sequential-group row. Clicking it STICKILY reveals the row's
+  // detail (the opacity slider) so a single layer + a frame group share the same
+  // row anatomy. Hover still reveals opacity transiently; the chevron makes it
+  // persistent (and is the keyboard/touch path where hover doesn't exist).
+  const [expanded, setExpanded] = useState(false);
+  const showOpacity = hovered || expanded || isDragging;
   const kind = layerKind(layer);
   const dimmed = !layer.visible;
   // ux-batch-1 J3 (F8) — a layer with undefined/NaN opacity left the range
@@ -1448,40 +1479,60 @@ function SortableRow({
   return (
     <div
       ref={setNodeRef}
-      style={style}
+      style={{ ...style, cursor: "grab", touchAction: "none" }}
       data-testid="layer-row"
       data-layer-id={layer.layer_id}
+      data-expanded={expanded}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      // ITEM 2 (NATE 2026-06-22) - the whole card body is the drag handle (the
+      // same model the sequential-group row uses), so single layers + frame
+      // groups share one row anatomy: pointer-down on any non-button region
+      // starts the reorder. Buttons (expand / eye / delete) stopPropagation.
+      {...attributes}
+      {...listeners}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        {/* ITEM 2 - far-left EXPAND control in the grabber slot, aligned with the
+            sequential-group row's chevron so the eye column lines up across all
+            rows. Toggles the sticky opacity detail. A button -> stopPropagation
+            so it never starts a card drag. */}
         <button
-          aria-label={`drag handle for ${layer.name}`}
-          {...attributes}
-          {...listeners}
-          title="Drag to reorder"
+          type="button"
+          data-testid="layer-expand"
+          data-legend-no-drag=""
+          aria-label={expanded ? `collapse ${layer.name}` : `expand ${layer.name}`}
+          aria-expanded={expanded}
+          title={expanded ? "Hide opacity" : "Show opacity"}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
           style={{
-            cursor: "grab",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 16,
+            height: 22,
+            flexShrink: 0,
+            padding: 0,
             background: "transparent",
             border: "none",
             color: hovered ? "#8a929e" : "#5a626d",
-            width: 16,
-            height: 22,
-            padding: 0,
-            fontSize: 13,
-            lineHeight: "22px",
-            flexShrink: 0,
+            cursor: "pointer",
             transition: "color 120ms ease",
-            touchAction: "none",
           }}
-          data-testid="layer-drag-handle"
         >
-          <IconDragHandle size={14} />
+          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
         </button>
         {/* Eye toggle. The checkbox input is visually hidden (overlaid) so the
             existing data-testid + a11y contract are preserved while the
-            user sees the shared Phosphor eye icon (IconEye / IconEyeOff). */}
+            user sees the shared Phosphor eye icon (IconEye / IconEyeOff).
+            stopPropagation on pointer-down so toggling never starts a drag. */}
         <label
+          data-legend-no-drag=""
+          onPointerDown={(e) => e.stopPropagation()}
           style={{
             position: "relative",
             display: "inline-flex",
@@ -1610,6 +1661,10 @@ function SortableRow({
           max={1}
           step={0.01}
           value={safeOpacity}
+          // ITEM 2 - the card body is now the drag handle, so stop the slider's
+          // pointer-down from starting a reorder while the user drags the thumb.
+          data-legend-no-drag=""
+          onPointerDown={(e) => e.stopPropagation()}
           onChange={(e) =>
             onOpacityChange(layer.layer_id, Number(e.target.value))
           }
@@ -1761,10 +1816,44 @@ function SortableGroupRow({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        {/* ITEM 2/4  -  FAR-LEFT eye: toggles the WHOLE group's visibility (all
-            frames), aligned with an ordinary layer's eye. The visually-hidden
-            checkbox preserves the a11y + test contract. stopPropagation on
-            pointer-down so toggling visibility never starts a card drag. */}
+        {/* ITEM 2 (NATE 2026-06-22)  -  FAR-LEFT expand chevron in the grabber
+            slot, aligned with the single-layer row's expand control so the eye
+            column lines up across all rows (single + group share one anatomy).
+            Toggles the per-frame sub-rows. A button -> stopPropagation so it
+            never starts a card drag. */}
+        <button
+          type="button"
+          data-testid="layer-group-expand"
+          data-legend-no-drag=""
+          aria-label={expanded ? "Collapse sequence" : "Expand sequence"}
+          aria-expanded={expanded}
+          title={expanded ? "Collapse sequence" : "Expand sequence"}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 16,
+            height: 22,
+            flexShrink: 0,
+            padding: 0,
+            background: "transparent",
+            border: "none",
+            color: "#8a929e",
+            cursor: "pointer",
+          }}
+        >
+          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+        </button>
+        {/* ITEM 2/4  -  the group visibility eye, in the SAME column as the
+            single-layer row's eye (chevron to its left). Toggles the WHOLE
+            group's visibility (all frames). The visually-hidden checkbox
+            preserves the a11y + test contract. stopPropagation on pointer-down
+            so toggling visibility never starts a card drag. */}
         <label
           data-legend-no-drag=""
           onPointerDown={(e) => e.stopPropagation()}
@@ -1839,36 +1928,6 @@ function SortableGroupRow({
         >
           {idx + 1}/{n}
         </span>
-        {/* Subtle expand chevron  -  keeps per-frame sub-rows reachable. A button,
-            so stopPropagation prevents it from starting a card drag. */}
-        <button
-          type="button"
-          data-testid="layer-group-expand"
-          data-legend-no-drag=""
-          aria-label={expanded ? "Collapse sequence" : "Expand sequence"}
-          aria-expanded={expanded}
-          title={expanded ? "Collapse sequence" : "Expand sequence"}
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleExpand();
-          }}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 18,
-            height: 22,
-            flexShrink: 0,
-            padding: 0,
-            background: "transparent",
-            border: "none",
-            color: "#8a929e",
-            cursor: "pointer",
-          }}
-        >
-          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
-        </button>
         {/* PLAY/pause button at the END (item 2 layout). */}
         <button
           type="button"

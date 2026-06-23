@@ -398,11 +398,21 @@ export interface MapViewProps {
    */
   simRunning?: boolean;
   /**
-   * NATE 2026-06-22 (item 6) - confirm/finalize the staged Draw-AOI box. The
-   * always-on DrawAoiControl's "+" calls this with the staged bbox; App wires it
-   * to a `zoom-to` map-command so the drawn box becomes the persistent analysis-
-   * extent rectangle (and the camera fits it). Undefined => the "+" just clears
-   * the staged pick overlay.
+   * ITEM 1 (NATE 2026-06-22) - whether the active case already HAS an AOI /
+   * analysis extent set. Threaded to DrawAoiControl: the Draw-AOI control group
+   * is for STARTING a case (setting the AOI to begin), so once a case has a
+   * bounding box NONE of those controls render. Undefined => false (a fresh
+   * no-AOI start) so the control still shows.
+   */
+  caseHasAoi?: boolean;
+  /**
+   * NATE 2026-06-22 (item 6) / ITEM 4 (feature #170) - confirm/finalize the
+   * staged Draw-AOI box. The always-on DrawAoiControl's green "+" calls this with
+   * the staged bbox; App wires it to seed the case AOI to the agent
+   * (createCase(null, bbox)) and/or a `zoom-to` map-command so the drawn box
+   * becomes the persistent analysis-extent rectangle (and the camera fits it).
+   * The draw-and-fit no-agent path is unchanged. Undefined => the "+" is
+   * draw-and-fit only and keeps the staged pick overlay.
    */
   onAoiStageConfirm?: (bbox: [number, number, number, number]) => void;
 }
@@ -2262,7 +2272,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, onAoiStageConfirm }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3962,7 +3972,8 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           chatWidthPx={chatWidthPx}
           chatCollapsed={chatCollapsed}
           mobile={mobile}
-          onConfirm={onAoiStageConfirm}
+          caseHasAoi={caseHasAoi}
+          onConfirmAoi={onAoiStageConfirm}
         />
       ) : null}
     </div>
