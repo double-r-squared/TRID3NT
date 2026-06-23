@@ -56,6 +56,8 @@ import {
   readBboxAnimationsEnabled,
   isPipelineRunning,
 } from "./lib/bbox_progress";
+// "3D terrain viz" first cut - the persisted 3D-terrain + contour enable flags.
+import { readTerrain3dEnabled, readContoursEnabled } from "./lib/terrain_3d";
 import {
   AuthGate,
   clearAnonymousAccepted,
@@ -325,6 +327,20 @@ export function App(): JSX.Element {
     [bboxAnimSettingsTick],
   );
   const [simRunning, setSimRunning] = useState<boolean>(false);
+
+  // "3D terrain viz" first cut - the persisted 3D-terrain + contour flags. The
+  // SettingsPopup toggles write them through to localStorage and bump this tick
+  // (via onTerrain3dChange) so App re-reads + re-threads them into MapView, which
+  // applies/removes MapLibre terrain. Default OFF (read-with-default helpers).
+  const [terrain3dSettingsTick, setTerrain3dSettingsTick] = useState(0);
+  const terrain3dEnabled = useMemo(
+    () => readTerrain3dEnabled(),
+    [terrain3dSettingsTick],
+  );
+  const contoursEnabled = useMemo(
+    () => readContoursEnabled(),
+    [terrain3dSettingsTick],
+  );
 
   // #170 AOI-first manual case-creation: when the user taps "+ New Case" we open
   // an AOI-capture overlay (the AoiPickerCard, mounted by Map.tsx) instead of
@@ -1657,6 +1673,12 @@ export function App(): JSX.Element {
            new case with the drawn AOI via createCase(null, bbox) (same channel as
            AoiPickerCard); the DrawAoiControl also fits the camera (draw-and-fit). */
         onAoiStageConfirm={onAoiStageConfirm}
+        /* "3D terrain viz" first cut - the persisted 3D-terrain + contour flags.
+           When terrain3dEnabled flips on, MapView enables MapLibre terrain
+           (terrain-RGB DEM + hillshade + sky) and unlocks pitch/rotate; off
+           restores the flat 2D camera. contoursEnabled is a stub seam for now. */
+        terrain3dEnabled={terrain3dEnabled}
+        contoursEnabled={contoursEnabled}
       />
 
       {/* NATE item 1 - AOI-bbox loading-animation overlay. Anchored to the
@@ -2404,6 +2426,11 @@ export function App(): JSX.Element {
              bumps a tick so App re-reads `bboxAnimEnabled`. The CONNECTING scan
              border ignores this (it is a transport-health cue). */
           onBboxAnimationsChange={() => setBboxAnimSettingsTick((t) => t + 1)}
+          /* "3D terrain viz" first cut - SettingsPopup persists the 3D-terrain +
+             contour flags itself (localStorage); this callback bumps a tick so
+             App re-reads them and re-threads terrain3dEnabled/contoursEnabled
+             into MapView (which applies/removes MapLibre terrain). */
+          onTerrain3dChange={() => setTerrain3dSettingsTick((t) => t + 1)}
           onSignOut={() => {
             void handleSignOut();
             setSettingsOpen(false);

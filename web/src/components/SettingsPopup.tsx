@@ -43,6 +43,16 @@ import {
   readBboxAnimationsEnabled,
   writeBboxAnimationsEnabled,
 } from "../lib/bbox_progress";
+// "3D terrain viz" first cut - the 3D-terrain enable toggle + the (stubbed)
+// contour toggle. Settings owns the persistence write (mirroring the bbox /
+// chat-opacity pattern); App re-reads via the onTerrain3dChange callback and
+// threads the flags into MapView, which applies MapLibre terrain.
+import {
+  readTerrain3dEnabled,
+  writeTerrain3dEnabled,
+  readContoursEnabled,
+  writeContoursEnabled,
+} from "../lib/terrain_3d";
 
 export interface SettingsPopupProps {
   /** Email of the signed-in user, or null if anonymous. */
@@ -60,6 +70,15 @@ export interface SettingsPopupProps {
    * fixtures that don't plumb it still render (the toggle just won't notify App).
    */
   onBboxAnimationsChange?: (enabled: boolean) => void;
+  /**
+   * "3D terrain viz" first cut - optional notify when the 3D-terrain and/or
+   * contour toggles flip. SettingsPopup writes the persisted flags itself; this
+   * callback lets App re-read them (re-deriving the props it threads into
+   * MapView). Called with the current (terrain3d, contours) flags. OPTIONAL so
+   * pre-existing fixtures that don't plumb it still render (the toggles just
+   * won't notify App).
+   */
+  onTerrain3dChange?: (state: { terrain3d: boolean; contours: boolean }) => void;
   /** Sign-out handler. App.tsx wires the real auth.signOut call. */
   onSignOut: () => void;
   /** Sign-in handler — only invoked when isSignedIn=false. */
@@ -263,6 +282,7 @@ export function SettingsPopup({
   theme,
   onToggleTheme,
   onBboxAnimationsChange,
+  onTerrain3dChange,
   onSignOut,
   onSignInRequest,
   onClose,
@@ -299,6 +319,31 @@ export function SettingsPopup({
     setBboxAnimEnabled(next);
     writeBboxAnimationsEnabled(next);
     onBboxAnimationsChange?.(next);
+  }
+
+  // "3D terrain viz" first cut - the 3D-terrain enable flag (DEFAULT OFF) + the
+  // contour-overlay flag (DEFAULT OFF, rendering stubbed). Persisted here; App
+  // re-reads via onTerrain3dChange and threads the flags into MapView. The
+  // contour toggle only renders when 3D is ON (it overlays the terrain DEM).
+  const [terrain3dEnabled, setTerrain3dEnabled] = useState<boolean>(() =>
+    readTerrain3dEnabled(),
+  );
+  const [contoursEnabled, setContoursEnabled] = useState<boolean>(() =>
+    readContoursEnabled(),
+  );
+
+  function onToggleTerrain3d(): void {
+    const next = !terrain3dEnabled;
+    setTerrain3dEnabled(next);
+    writeTerrain3dEnabled(next);
+    onTerrain3dChange?.({ terrain3d: next, contours: contoursEnabled });
+  }
+
+  function onToggleContours(): void {
+    const next = !contoursEnabled;
+    setContoursEnabled(next);
+    writeContoursEnabled(next);
+    onTerrain3dChange?.({ terrain3d: terrain3dEnabled, contours: next });
   }
 
   // Agent sleep control (NATE 2026-06-18). Two-step: first click ARMS a confirm,
@@ -486,6 +531,44 @@ export function SettingsPopup({
               {bboxAnimEnabled ? "On" : "Off"}
             </button>
           </div>
+          {/* "3D terrain viz" first cut - 3D terrain toggle (DEFAULT OFF).
+              When on, MapView enables MapLibre terrain (terrain-RGB DEM +
+              hillshade + sky) and unlocks two-finger pitch/rotate. */}
+          <div style={{ ...valueStyle, marginTop: 10 }}>
+            <span>3D terrain</span>
+            <button
+              data-testid="grace2-settings-terrain-3d-toggle"
+              onClick={onToggleTerrain3d}
+              style={buttonStyle}
+              role="switch"
+              aria-checked={terrain3dEnabled}
+              aria-label={`Turn 3D terrain ${terrain3dEnabled ? "off" : "on"}`}
+            >
+              {terrain3dEnabled ? "On" : "Off"}
+            </button>
+          </div>
+          {/* Contour overlay (STUB) - rendered only when 3D is on, since it
+              overlays the same terrain DEM. Real contour lines need the
+              maplibre-contour plugin (not a dep); for now the toggle persists +
+              MapView logs a TODO. Disabled visual cue so the stub is honest. */}
+          {terrain3dEnabled && (
+            <div style={{ ...valueStyle, marginTop: 10 }}>
+              <span>
+                Contour lines{" "}
+                <span style={{ color: "#888", fontSize: 11 }}>(coming soon)</span>
+              </span>
+              <button
+                data-testid="grace2-settings-contours-toggle"
+                onClick={onToggleContours}
+                style={buttonStyle}
+                role="switch"
+                aria-checked={contoursEnabled}
+                aria-label={`Turn contour lines ${contoursEnabled ? "off" : "on"}`}
+              >
+                {contoursEnabled ? "On" : "Off"}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Agent section (NATE 2026-06-18) - explicit "Put agent to sleep",

@@ -78,6 +78,17 @@ import { getAnimationController } from "./lib/animation_controller";
 import { swapFrameWithHold, type FrameMapAdapter } from "./lib/frame_preload";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
+// "3D terrain viz" project track (first cut) - MapLibre setTerrain over a
+// terrain-RGB DEM raster-dem source + a hillshade + sky layer, gated on the
+// persisted 3D toggle. The pure source-builder + apply/remove helpers live in
+// lib/terrain_3d.ts so the wiring here stays thin (and the core is unit-tested
+// without a WebGL canvas). DEM origin = TiTiler terrain-RGB of a per-case DEM
+// COG when one exists, else the public AWS Terrarium tiles (works today).
+import {
+  applyTerrain3d,
+  removeTerrain3d,
+  type TerrainMapLike,
+} from "./lib/terrain_3d";
 import {
   fetchVectorAsGeoJson,
   vectorResultFromInlineGeoJson,
@@ -415,6 +426,23 @@ export interface MapViewProps {
    * draw-and-fit only and keeps the staged pick overlay.
    */
   onAoiStageConfirm?: (bbox: [number, number, number, number]) => void;
+  /**
+   * "3D terrain viz" first cut - when true, MapLibre terrain is enabled (a
+   * terrain-RGB DEM raster-dem source + hillshade + sky + setTerrain, and
+   * two-finger pitch/rotate unlocked). When false, setTerrain(null) and the
+   * flat 2D camera is restored. The flag is persisted in localStorage by
+   * Settings (lib/terrain_3d.ts); App re-reads it and threads it here.
+   * Undefined => 2D (the historical default), so older callers / unit fixtures
+   * render flat as before.
+   */
+  terrain3dEnabled?: boolean;
+  /**
+   * Contour overlay flag (STUB for the first cut). Persisted + surfaced in
+   * Settings so the UX seam is real, but real contour LINES need the
+   * maplibre-contour plugin (not a dep) - so when true alongside terrain3d it
+   * only logs a TODO. Threaded so the future wire-up has the value.
+   */
+  contoursEnabled?: boolean;
 }
 
 /**
@@ -2272,7 +2300,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -2447,6 +2475,56 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
     };
   }, []);
+
+  // "3D terrain viz" first cut - apply / remove MapLibre terrain when the
+  // persisted 3D toggle flips. Gated on mapStyleReady (the same one-time latch
+  // the layer reconcile uses) so addSource/addLayer/setTerrain run only after
+  // the style has loaded once; a not-yet-ready map re-arms on the next idle.
+  // The pure source-builder + side-effect helpers live in lib/terrain_3d.ts;
+  // this effect just sequences them against the live instance. Re-runs whenever
+  // the 3D / contour flags change. Teardown on unmount/disable restores 2D.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    const tm = m as unknown as TerrainMapLike;
+
+    // Disable path: tear terrain down immediately. removeTerrain3d is fully
+    // defensive (try/catch + getLayer/getSource guards), so it is safe before
+    // the style has loaded and must NOT gate on mapStyleReady - gating here would
+    // latch __grace2StyleReady on mount for the (default) 2D case, which would
+    // defeat the layer-reconcile's "style not loaded yet" deferral elsewhere.
+    if (!terrain3dEnabled) {
+      removeTerrain3d(tm);
+      return;
+    }
+
+    // Enable path: addSource/addLayer/setTerrain need the style loaded once.
+    // Gate on the mapStyleReady latch (re-arm on idle) like the layer reconcile.
+    const run = () => {
+      if (!map.current) return;
+      if (!mapStyleReady(map.current)) {
+        map.current.once("idle", run);
+        return;
+      }
+      // DEM origin: no per-case DEM COG is published yet, so buildTerrainDemSource
+      // (called inside applyTerrain3d with no demSource) falls back to the public
+      // AWS Terrarium tiles. Once the agent emits a per-case DEM COG, thread it
+      // through here as a prop -> TiTiler terrain-RGB path (see FOLLOW-UPS).
+      applyTerrain3d(tm, { contoursRequested: contoursEnabled });
+    };
+    run();
+
+    // On disable / unmount, ensure terrain is torn down + the 2D camera lock is
+    // restored. Guard the map handle (it may be removed during teardown).
+    return () => {
+      if (!map.current) return;
+      try {
+        removeTerrain3d(map.current as unknown as TerrainMapLike);
+      } catch {
+        /* map already torn down - fine */
+      }
+    };
+  }, [terrain3dEnabled, contoursEnabled]);
 
   // Subscribe to session-state and wire WMS raster sources (job-0068, change 4;
   // job-0076 race-condition fix). Replace-not-reconcile per A.7: diff

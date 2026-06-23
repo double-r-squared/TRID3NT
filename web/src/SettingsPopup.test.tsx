@@ -24,6 +24,13 @@ import {
   readBboxAnimationsEnabled,
   writeBboxAnimationsEnabled,
 } from "./lib/bbox_progress";
+// "3D terrain viz" first cut - the 3D-terrain + contour enable-flag helpers
+// (real impl; the SettingsPopup toggles persist through these).
+import {
+  readTerrain3dEnabled,
+  writeTerrain3dEnabled,
+  readContoursEnabled,
+} from "./lib/terrain_3d";
 
 // job-0322 F56 — mock Chat.tsx with a localStorage-backed fake implementing the
 // AGREED per-user opacity contract (tiers low|medium|high, default "medium").
@@ -158,6 +165,51 @@ describe("SettingsPopup", () => {
     expect(
       screen.getByTestId("grace2-settings-bbox-animations-toggle"),
     ).toHaveAttribute("aria-checked", "false");
+  });
+
+  // "3D terrain viz" first cut - the 3D-terrain toggle (DEFAULT OFF).
+  it("3D terrain toggle defaults OFF and persists ON on click", () => {
+    const onTerrain3dChange = vi.fn();
+    render(
+      <SettingsPopup {...defaultProps} onTerrain3dChange={onTerrain3dChange} />,
+    );
+    const toggle = screen.getByTestId("grace2-settings-terrain-3d-toggle");
+    // DEFAULT OFF.
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(toggle.textContent).toBe("Off");
+    fireEvent.click(toggle);
+    // Persisted ON + the change callback fired with terrain3d:true.
+    expect(readTerrain3dEnabled()).toBe(true);
+    expect(onTerrain3dChange).toHaveBeenCalledWith({
+      terrain3d: true,
+      contours: false,
+    });
+    expect(
+      screen.getByTestId("grace2-settings-terrain-3d-toggle"),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("3D terrain toggle initialises from the persisted ON value", () => {
+    writeTerrain3dEnabled(true);
+    render(<SettingsPopup {...defaultProps} />);
+    expect(
+      screen.getByTestId("grace2-settings-terrain-3d-toggle"),
+    ).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("contour toggle is hidden until 3D terrain is ON, then persists + stays a stub", () => {
+    render(<SettingsPopup {...defaultProps} />);
+    // Hidden while 3D is off (it overlays the terrain DEM).
+    expect(
+      screen.queryByTestId("grace2-settings-contours-toggle"),
+    ).toBeNull();
+    // Turn 3D on -> the contour toggle appears (default OFF).
+    fireEvent.click(screen.getByTestId("grace2-settings-terrain-3d-toggle"));
+    const contour = screen.getByTestId("grace2-settings-contours-toggle");
+    expect(contour).toHaveAttribute("aria-checked", "false");
+    // Toggling it persists the flag (rendering is stubbed in MapView).
+    fireEvent.click(contour);
+    expect(readContoursEnabled()).toBe(true);
   });
 
   it("close button invokes onClose", () => {

@@ -32,6 +32,12 @@ import {
 // job-0179  -  drive the shared LayerCache singleton MapView reads for the
 // teardown gate (allowsEvict) + persisted view-override re-apply.
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
+// "3D terrain viz" first cut - terrain source/layer ids for the toggle tests.
+import {
+  TERRAIN_DEM_SOURCE_ID,
+  TERRAIN_HILLSHADE_LAYER_ID,
+  TERRAIN_SKY_LAYER_ID,
+} from "./lib/terrain_3d";
 
 // --- MapLibre mock -------------------------------------------------------- //
 // Capture all relevant method calls for assertion.
@@ -47,8 +53,16 @@ interface MapMock {
   moveLayer: ReturnType<typeof vi.fn>;
   fitBounds: ReturnType<typeof vi.fn>;
   addControl: ReturnType<typeof vi.fn>;
-  touchZoomRotate: { disableRotation: ReturnType<typeof vi.fn> };
+  touchZoomRotate: {
+    disableRotation: ReturnType<typeof vi.fn>;
+    enableRotation: ReturnType<typeof vi.fn>;
+  };
   keyboard: { disableRotation: ReturnType<typeof vi.fn> };
+  // "3D terrain viz" first cut - terrain + 3D-camera controls.
+  setTerrain: ReturnType<typeof vi.fn>;
+  setMaxPitch: ReturnType<typeof vi.fn>;
+  dragRotate: { enable: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn> };
+  touchPitch: { enable: ReturnType<typeof vi.fn>; disable: ReturnType<typeof vi.fn> };
   getLayer: ReturnType<typeof vi.fn>;
   getSource: ReturnType<typeof vi.fn>;
   isStyleLoaded: ReturnType<typeof vi.fn>;
@@ -105,8 +119,15 @@ vi.mock("maplibre-gl", () => {
     moveLayer = vi.fn();
     fitBounds = vi.fn();
     addControl = vi.fn();
-    touchZoomRotate = { disableRotation: vi.fn() };
+    // "3D terrain viz" first cut - the terrain effect calls setTerrain +
+    // unlocks/re-locks pitch & rotate. enableRotation added alongside
+    // disableRotation; the other 3D-camera controls are stubbed.
+    touchZoomRotate = { disableRotation: vi.fn(), enableRotation: vi.fn() };
     keyboard = { disableRotation: vi.fn() };
+    setTerrain = vi.fn();
+    setMaxPitch = vi.fn();
+    dragRotate = { enable: vi.fn(), disable: vi.fn() };
+    touchPitch = { enable: vi.fn(), disable: vi.fn() };
     // isStyleLoaded must return true for the session-state handler to apply.
     isStyleLoaded = vi.fn().mockReturnValue(true);
     // NATE item 2 - the raster frame-swap hold path probes source-tile load
@@ -3199,5 +3220,68 @@ describe("clipFeaturesToBbox  -  relaxed AOI clip (server already AOI-scopes)", 
     ]);
     const out = clipFeaturesToBbox(fc, [0, 0, 10, 10]);
     expect(out.features).toHaveLength(2);
+  });
+});
+
+// --- "3D terrain viz" first cut: terrain effect ------------------------------ //
+describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("does NOT enable terrain by default (flat 2D)", () => {
+    render(<MapView />);
+    const m = lastMapMock!;
+    // No setTerrain({source,...}) call; the effect runs the disable branch which
+    // calls setTerrain(null) defensively, but never adds the DEM source.
+    const addedSources = m.addSource.mock.calls.map((c) => c[0]);
+    expect(addedSources).not.toContain(TERRAIN_DEM_SOURCE_ID);
+    const enabledCalls = m.setTerrain.mock.calls.filter(
+      (c) => c[0] && typeof c[0] === "object",
+    );
+    expect(enabledCalls.length).toBe(0);
+  });
+
+  it("enables terrain (DEM source + hillshade + sky + setTerrain + pitch) when terrain3dEnabled", () => {
+    render(<MapView terrain3dEnabled />);
+    const m = lastMapMock!;
+    const addedSources = m.addSource.mock.calls.map((c) => c[0]);
+    expect(addedSources).toContain(TERRAIN_DEM_SOURCE_ID);
+    const addedLayers = m.addLayer.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    );
+    expect(addedLayers).toContain(TERRAIN_HILLSHADE_LAYER_ID);
+    expect(addedLayers).toContain(TERRAIN_SKY_LAYER_ID);
+    // setTerrain called with a source spec (the enable branch).
+    const enabledCall = m.setTerrain.mock.calls.find(
+      (c) => c[0] && typeof c[0] === "object",
+    );
+    expect(enabledCall).toBeTruthy();
+    expect((enabledCall![0] as { source: string }).source).toBe(
+      TERRAIN_DEM_SOURCE_ID,
+    );
+    // Two-finger pitch / rotate unlocked.
+    expect(m.setMaxPitch).toHaveBeenCalledWith(75);
+    expect(m.dragRotate.enable).toHaveBeenCalled();
+    expect(m.touchPitch.enable).toHaveBeenCalled();
+  });
+
+  it("tears terrain down + re-locks 2D when the toggle flips back off", () => {
+    const { rerender } = render(<MapView terrain3dEnabled />);
+    const m = lastMapMock!;
+    expect(m.addSource.mock.calls.map((c) => c[0])).toContain(
+      TERRAIN_DEM_SOURCE_ID,
+    );
+    rerender(<MapView terrain3dEnabled={false} />);
+    // setTerrain(null) called + the DEM source + terrain layers removed.
+    expect(m.setTerrain).toHaveBeenLastCalledWith(null);
+    const removedSources = m.removeSource.mock.calls.map((c) => c[0]);
+    expect(removedSources).toContain(TERRAIN_DEM_SOURCE_ID);
+    const removedLayers = m.removeLayer.mock.calls.map((c) => c[0]);
+    expect(removedLayers).toContain(TERRAIN_HILLSHADE_LAYER_ID);
+    expect(removedLayers).toContain(TERRAIN_SKY_LAYER_ID);
+    // Re-locked to flat 2D.
+    expect(m.setMaxPitch).toHaveBeenCalledWith(0);
+    expect(m.dragRotate.disable).toHaveBeenCalled();
   });
 });
