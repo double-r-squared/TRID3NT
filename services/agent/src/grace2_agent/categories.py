@@ -282,6 +282,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # animation frames (filed in weather next to fetch_goes_satellite; cross-
     # listed to 'fire' via SECONDARY_CATEGORIES).
     "fetch_goes_animation": "weather_atmosphere",
+    # blended GeoColor + Fire Temperature animation (one composite scrubber: the
+    # CIRA combined product) -- filed alongside fetch_goes_animation, cross-listed
+    # to 'fire' via SECONDARY_CATEGORIES.
+    "fetch_goes_blend_animation": "weather_atmosphere",
     "fetch_era5_reanalysis": "weather_atmosphere",
     "fetch_asos_metar": "weather_atmosphere",
     "fetch_raws_weather": "weather_atmosphere",
@@ -425,6 +429,8 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # The GOES animation fetcher is primary-filed in weather_atmosphere (next to
     # fetch_goes_satellite) but materially belongs to the fire branch too.
     "fetch_goes_animation": ("fire",),
+    # The blended GeoColor + Fire Temperature animation fetcher: same cross-list.
+    "fetch_goes_blend_animation": ("fire",),
     # The satellite fire-animation composer spans hazard_modeling (it composes a
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).

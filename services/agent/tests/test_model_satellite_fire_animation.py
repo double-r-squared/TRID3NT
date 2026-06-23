@@ -309,22 +309,25 @@ def test_confirm_empty_run_is_not_ok_honesty_floor():
     assert result["n_frames"] == 0
 
 
-# ---- GOES dual-product co-temporal animation (NATE 2026-06-22) -------------
+# ---- GOES blended GeoColor + Fire Temperature animation (NATE 2026-06-22) ---
 #
-# A GOES fire run must render BOTH co-temporal imagery products over the SAME
-# window: Fire Temperature (the active-fire mapping) AND GeoColor (which shows
-# the smoke plume), as TWO synchronized scrubber groups. The default (no products
-# arg) is BOTH GOES products; a single product can still be requested.
+# A GOES fire run FOLDS the co-temporal pair into ONE scrubber: each frame is a
+# BLEND of the GeoColor base (true-color + smoke) with the Fire Temperature
+# active-fire glow composited in (the CIRA "GeoColor and Fire Temperature" look).
+# The default (no products arg) is BOTH GOES products -> ONE blended group via
+# fetch_goes_blend_animation. A single product can still be requested (un-blended).
 
 
-def _goes_frame(product, label, step, ts_iso, bbox):
-    """A GOES animation frame in the emitted shape: distinct id + product-labelled
-    name with a "step <N>" token + the real ISO valid-time."""
+def _blend_frame(step, ts_iso, bbox):
+    """A blended GOES frame in the emitted shape: ONE shared layer_id prefix +
+    single product-label name with a "step <N>" token + the real ISO valid-time."""
     return LayerURI(
-        layer_id=f"goes-anim-{product}-{ts_iso}",
-        name=f"GOES {label} step {step} {ts_iso} (GOES-18)",
+        layer_id=f"goes-fire-blend-{ts_iso}",
+        name=(
+            f"GOES Fire (GeoColor + Fire Temperature) step {step} {ts_iso} (GOES-18)"
+        ),
         layer_type="raster",
-        uri=f"s3://fake/{product}/{ts_iso}.tif",
+        uri=f"s3://fake/blend/{ts_iso}.tif",
         style_preset="goes_rgb_animation",
         role="context",
         units=None,
@@ -332,7 +335,7 @@ def _goes_frame(product, label, step, ts_iso, bbox):
     )
 
 
-# The shared valid-times both products animate over (co-temporal set).
+# The shared valid-times the blended group animates over.
 _GOES_TIMES = (
     "2026-06-22T18:00:00Z",
     "2026-06-22T18:05:00Z",
@@ -340,19 +343,21 @@ _GOES_TIMES = (
 )
 
 
-def test_default_goes_run_emits_both_products_cotemporal():
-    """A GOES run with NO products arg defaults to BOTH geocolor + fire_temperature
-    and emits two co-temporal groups (same valid-time set, distinct product
-    labels + step tokens) so the web forms two synchronized scrubbers."""
+def test_default_goes_run_emits_one_blended_group():
+    """A GOES run with NO products arg defaults to BOTH products and FOLDS them
+    into ONE blended scrubber group (single layer_id prefix + single product-label
+    stem + step tokens) via fetch_goes_blend_animation -- NOT two groups."""
     bbox = tuple(_INCIDENT["bbox"])
-    _label = {"geocolor": "GeoColor", "fire_temperature": "Fire Temperature"}
+    dispatched = {"single_goes": False}
 
-    def _fake_goes(b, band, *a, **k):
-        # The composer passes the product as the 2nd positional (band).
-        return [
-            _goes_frame(band, _label[band], i, t, bbox)
-            for i, t in enumerate(_GOES_TIMES, start=1)
-        ]
+    def _fake_blend(b, satellite="goes-18", *a, **k):
+        # The composer dispatches the blend fetcher ONCE for the default pair.
+        return [_blend_frame(i, t, bbox) for i, t in enumerate(_GOES_TIMES, start=1)]
+
+    def _fake_single_goes(*a, **k):
+        # Must NOT be called when both products are requested (blend wins).
+        dispatched["single_goes"] = True
+        return []
 
     def _fake_peek(product, b, s, e):
         return len(_GOES_TIMES)
@@ -362,7 +367,8 @@ def test_default_goes_run_emits_both_products_cotemporal():
         {
             "geocode_location": _reg(_fake_geocode_precise),
             "fetch_wfigs_incident": _reg(_fake_wfigs),
-            "fetch_goes_animation": _reg(_fake_goes),
+            "fetch_goes_blend_animation": _reg(_fake_blend),
+            "fetch_goes_animation": _reg(_fake_single_goes),
         },
     ), patch(
         "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
@@ -380,7 +386,7 @@ def test_default_goes_run_emits_both_products_cotemporal():
         result = _run(
             model_satellite_fire_animation(
                 "Iron",
-                # NO products arg -> default to BOTH GOES products.
+                # NO products arg -> default to BOTH GOES products -> blended.
                 state="UT",
                 start_utc="2026-06-22T18:00:00Z",
                 end_utc="2026-06-22T18:30:00Z",
@@ -391,38 +397,33 @@ def test_default_goes_run_emits_both_products_cotemporal():
         )
 
     assert result["status"] == "ok"
-    # Both GOES products were animated.
+    # Both GOES products are still REPORTED (they both fed the blend) ...
     assert set(result["products"]) == {"geocolor", "fire_temperature"}
-    assert result["n_frames"] == 2 * len(_GOES_TIMES)
-    assert result["frame_counts"]["geocolor"] == len(_GOES_TIMES)
-    assert result["frame_counts"]["fire_temperature"] == len(_GOES_TIMES)
+    # ... but exactly ONE blended group of frames was emitted (not 2x).
+    assert result["n_frames"] == len(_GOES_TIMES)
+    # The single-product GOES fetcher was NOT used (the blend path won).
+    assert dispatched["single_goes"] is False
 
     layers = result["layers"]
-    geocolor = [lyr for lyr in layers if "GeoColor" in lyr["name"]]
-    fire = [lyr for lyr in layers if "Fire Temperature" in lyr["name"]]
-    # TWO DISTINCT groups (distinct product label tokens + distinct layer_id prefix).
-    assert len(geocolor) == len(fire) == len(_GOES_TIMES)
-    assert all(lyr["layer_id"].startswith("goes-anim-geocolor-") for lyr in geocolor)
+    # ONE group: every frame shares the single blended layer_id prefix + label.
+    assert all(lyr["layer_id"].startswith("goes-fire-blend-") for lyr in layers)
     assert all(
-        lyr["layer_id"].startswith("goes-anim-fire_temperature-") for lyr in fire
+        "Fire (GeoColor + Fire Temperature)" in lyr["name"] for lyr in layers
     )
-    # Each frame carries a "step <N>" monotonic token (the web grouping value).
+    # No separate GeoColor-only / Fire-Temperature-only groups exist.
+    assert not any(lyr["layer_id"].startswith("goes-anim-") for lyr in layers)
+    # Each frame carries a "step <N>" monotonic token (the web grouping value)
+    # and its real ISO valid-time as the display label.
     import re
 
-    def _steptimes(group):
-        out = {}
-        for lyr in group:
-            step = int(re.search(r"step (\d+)", lyr["name"]).group(1))
-            iso = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", lyr["name"]).group(1)
-            out[step] = iso
-        return out
-
-    g = _steptimes(geocolor)
-    f = _steptimes(fire)
-    # CO-TEMPORAL + SYNCHRONIZED: identical step->valid-time mapping across both.
-    assert g == f
-    assert set(g.values()) == set(_GOES_TIMES)
-    # distinct ids across the whole set.
+    steptimes = {}
+    for lyr in layers:
+        step = int(re.search(r"step (\d+)", lyr["name"]).group(1))
+        iso = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", lyr["name"]).group(1)
+        steptimes[step] = iso
+    assert set(steptimes) == {1, 2, 3}
+    assert set(steptimes.values()) == set(_GOES_TIMES)
+    # distinct ids across the group.
     ids = [lyr["layer_id"] for lyr in layers]
     assert len(set(ids)) == len(ids)
     # shared style preset (scrubber-group contract).
@@ -430,12 +431,24 @@ def test_default_goes_run_emits_both_products_cotemporal():
 
 
 def test_single_goes_product_can_still_be_requested():
-    """A way to request just one GOES product is preserved (products=['geocolor'])."""
+    """A way to request just one GOES product is preserved (products=['geocolor'])
+    -- a single GOES product dispatches the un-blended fetch_goes_animation."""
     bbox = tuple(_INCIDENT["bbox"])
 
     def _fake_goes(b, band, *a, **k):
         assert band == "geocolor"
-        return [_goes_frame("geocolor", "GeoColor", 1, _GOES_TIMES[0], bbox)]
+        return [
+            LayerURI(
+                layer_id=f"goes-anim-geocolor-{_GOES_TIMES[0]}",
+                name=f"GOES GeoColor step 1 {_GOES_TIMES[0]} (GOES-18)",
+                layer_type="raster",
+                uri=f"s3://fake/geocolor/{_GOES_TIMES[0]}.tif",
+                style_preset="goes_rgb_animation",
+                role="context",
+                units=None,
+                bbox=bbox,
+            )
+        ]
 
     def _fake_peek(product, b, s, e):
         return 1
@@ -545,11 +558,11 @@ def test_viirs_run_is_single_polar_product_unchanged():
 
 
 def test_default_goes_run_empty_is_not_ok_honesty_floor():
-    """A confirmed default (dual-product) GOES run that produced NO frames for
-    EITHER product must NOT read status=ok -- the honesty floor holds with two
-    products too."""
+    """A confirmed default (blended) GOES run whose blend fetcher produced NO
+    frames must NOT read status=ok -- the honesty floor holds for the blend path
+    too."""
 
-    def _fake_goes(*a, **k):
+    def _fake_blend(*a, **k):
         from grace2_agent.tools.fetch_goes_animation import GOESAnimEmptyError
 
         raise GOESAnimEmptyError("no frames")
@@ -562,7 +575,7 @@ def test_default_goes_run_empty_is_not_ok_honesty_floor():
         {
             "geocode_location": _reg(_fake_geocode_precise),
             "fetch_wfigs_incident": _reg(_fake_wfigs),
-            "fetch_goes_animation": _reg(_fake_goes),
+            "fetch_goes_blend_animation": _reg(_fake_blend),
         },
     ), patch(
         "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",

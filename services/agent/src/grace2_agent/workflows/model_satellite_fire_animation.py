@@ -25,11 +25,17 @@ JPSS/VIIRS polar). It chains:
          window BEFORE all frames are fetched (the #154 confirm / granularity-
          gate philosophy, applied at the workflow layer).
     -- on confirm=True --
-      -> dispatch the RIGHT imagery fetcher per product via the TOOL_REGISTRY
-         (fetch_goes_animation for GOES geostationary, fetch_viirs_day_fire for
-         JPSS polar), each run in asyncio.to_thread (NEVER block the asyncio loop)
-      -> the fetchers already emit per-frame LayerURIs in the postprocess_flood
-         SHAPE (distinct keys + shared style_preset + a '<PRODUCT> <ISO-time>
+      -> dispatch the RIGHT imagery fetcher per path via the TOOL_REGISTRY, each
+         run in asyncio.to_thread (NEVER block the asyncio loop):
+           * GOES (default): fetch_goes_blend_animation -- pulls BOTH co-temporal
+             GeoColor + Fire Temperature frames per timestep and BLENDS them into
+             ONE composite RGB frame (GeoColor base + active-fire glow, the CIRA
+             "GeoColor and Fire Temperature" look) -> ONE scrubber group, not two.
+           * GOES (single product requested): fetch_goes_animation for that one
+             product -> one un-blended group.
+           * JPSS polar: fetch_viirs_day_fire -> one Day Fire group.
+      -> the fetchers emit per-frame LayerURIs in the postprocess_flood SHAPE
+         (distinct keys + shared style_preset + a '<PRODUCT> step <N> <ISO-time>
          (<sat>)' NAME token + identical bbox), so detectSequentialGroups +
          SequenceScrubber animate them with NO web change
       -> overlay fetch_firms_active_fire (historical date) + fetch_nifc_fire_
@@ -107,6 +113,13 @@ class SatelliteFireAnimationInputError(SatelliteFireAnimationError):
 
 #: GOES geostationary products -> fetch_goes_animation.
 GOES_PRODUCTS: tuple[str, ...] = ("geocolor", "fire_temperature")
+
+#: The two GOES products the blend composites (base = true-color GeoColor,
+#: overlay = active-fire Fire Temperature). When BOTH are requested (the default)
+#: the GOES path folds them into ONE blended scrubber via fetch_goes_blend_
+#: animation instead of emitting two separate per-product groups.
+_BLEND_BASE_PRODUCT: str = "geocolor"
+_BLEND_FIRE_PRODUCT: str = "fire_temperature"
 
 #: JPSS/VIIRS polar products -> fetch_viirs_day_fire.
 VIIRS_PRODUCTS: tuple[str, ...] = ("day_fire",)
@@ -822,59 +835,55 @@ async def model_satellite_fire_animation(
             ),
         }
 
-    # --- Stage 3 (confirmed): dispatch the imagery fetcher per product. ---
+    # --- Stage 3 (confirmed): dispatch the imagery fetcher(s) per the plan. ---
+    #
+    # The GOES path FOLDS the co-temporal GeoColor + Fire Temperature pair into
+    # ONE blended scrubber: when BOTH GOES products are requested (the default),
+    # dispatch fetch_goes_blend_animation ONCE -> one composite group (GeoColor
+    # base + active-fire glow), NOT two separate groups. A SINGLE GOES product
+    # (only one of the two requested) still emits that one un-blended group via
+    # fetch_goes_animation. VIIRS day_fire stays a single polar product.
     all_layers: list[LayerURI] = []
     per_product_frames: dict[str, int] = {}
-    for product in products:
-        fetcher_name = _product_to_fetcher(product)
-        fetcher = _registry_fn(fetcher_name)
-        if pipeline_emitter is not None:
-            step = await pipeline_emitter.add_step(
-                name=f"Fetch {product} frames", tool_name=fetcher_name
-            )
-            await pipeline_emitter.mark_running(step)
-        else:
-            step = None
-        try:
-            if _is_polar_product(product):
-                frames = await asyncio.to_thread(
-                    fetcher,
-                    resolved_bbox,
-                    satellite or "all",
-                    product,
-                    "conus",
-                    start_iso,
-                    end_iso,
-                )
-            else:
-                frames = await asyncio.to_thread(
-                    fetcher,
-                    resolved_bbox,
-                    product,
-                    satellite or "goes-18",
-                    "conus",
-                    start_iso,
-                    end_iso,
-                )
-        except Exception as exc:  # noqa: BLE001 -- one empty product must not sink the rest
-            if pipeline_emitter is not None and step is not None:
-                await pipeline_emitter.mark_failed(
-                    step, "IMAGERY_FETCH_FAILED", f"{fetcher_name} failed: {exc}"
-                )
-            logger.warning(
-                "model_satellite_fire_animation: %s for product=%s produced no "
-                "frames (%s)",
-                fetcher_name,
-                product,
-                exc,
-            )
-            per_product_frames[product] = 0
-            continue
-        frame_list = list(frames) if isinstance(frames, list) else [frames]
-        per_product_frames[product] = len(frame_list)
-        all_layers.extend(frame_list)
-        if pipeline_emitter is not None and step is not None:
-            await pipeline_emitter.mark_complete(step)
+
+    goes_requested = [p for p in products if p in GOES_PRODUCTS]
+    polar_requested = [p for p in products if _is_polar_product(p)]
+    blend_goes = (
+        _BLEND_BASE_PRODUCT in goes_requested and _BLEND_FIRE_PRODUCT in goes_requested
+    )
+
+    # (a) GOES blended path: one fetch_goes_blend_animation -> one group.
+    if blend_goes:
+        blend_frames = await _dispatch_goes_blend(
+            resolved_bbox,
+            satellite or "goes-18",
+            start_iso,
+            end_iso,
+            pipeline_emitter,
+        )
+        all_layers.extend(blend_frames)
+        # Attribute the blended frame count to BOTH source products (each
+        # contributed one frame per blended frame) so frame_counts stays honest
+        # for the two requested products.
+        for p in (_BLEND_BASE_PRODUCT, _BLEND_FIRE_PRODUCT):
+            per_product_frames[p] = len(blend_frames)
+
+    # (b) Single GOES product (un-blended): only one of the two requested. When
+    # the pair was blended in (a), there is nothing un-blended left to emit.
+    for product in [] if blend_goes else goes_requested:
+        frames = await _dispatch_single_goes(
+            resolved_bbox, product, satellite or "goes-18", start_iso, end_iso, pipeline_emitter
+        )
+        per_product_frames[product] = len(frames)
+        all_layers.extend(frames)
+
+    # (c) VIIRS / polar products: unchanged single-product fetch.
+    for product in polar_requested:
+        frames = await _dispatch_polar(
+            resolved_bbox, product, satellite or "all", start_iso, end_iso, pipeline_emitter
+        )
+        per_product_frames[product] = len(frames)
+        all_layers.extend(frames)
 
     # --- Stage 4 (confirmed): static co-registered overlays (best-effort). ---
     overlay_layers: list[LayerURI] = []
@@ -924,10 +933,149 @@ async def model_satellite_fire_animation(
         "n_overlays": len(overlay_layers),
         "layers": [_layer_summary(layer, published) for layer in all_layers + overlay_layers],
         "message": (
-            f"Animated {n_frames} frame(s) across {len(products)} product(s) with "
-            f"{len(overlay_layers)} overlay(s) for {incident_name}."
+            (
+                f"Animated {n_frames} blended GeoColor + Fire Temperature frame(s) "
+                f"(one scrubber) with {len(overlay_layers)} overlay(s) for "
+                f"{incident_name}."
+            )
+            if blend_goes
+            else (
+                f"Animated {n_frames} frame(s) across {len(products)} product(s) "
+                f"with {len(overlay_layers)} overlay(s) for {incident_name}."
+            )
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Stage-3 dispatch helpers (one per imagery path; each runs the heavy sync
+# fetcher in asyncio.to_thread so the asyncio loop / WS heartbeat never blocks).
+# --------------------------------------------------------------------------- #
+
+
+async def _dispatch_goes_blend(
+    bbox: tuple[float, float, float, float],
+    satellite: str,
+    start_iso: str,
+    end_iso: str,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> list[LayerURI]:
+    """Dispatch fetch_goes_blend_animation -> ONE blended GeoColor+Fire Temperature group.
+
+    Fetches BOTH co-temporal GOES products per timestep and blends them into one
+    composite RGB frame (CIRA look), returning a single ordered scrubber group.
+    The heavy per-frame fetch + raster blend runs in asyncio.to_thread (off-loop).
+    A failure / empty run returns ``[]`` (the caller honesty-floors the whole run).
+    """
+    fetcher_name = "fetch_goes_blend_animation"
+    fetcher = _registry_fn(fetcher_name)
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name="Fetch GeoColor + Fire Temperature blended frames",
+            tool_name=fetcher_name,
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+    try:
+        frames = await asyncio.to_thread(
+            fetcher, bbox, satellite, "conus", start_iso, end_iso
+        )
+    except Exception as exc:  # noqa: BLE001 -- an empty blend must not crash the run
+        if pipeline_emitter is not None and step is not None:
+            await pipeline_emitter.mark_failed(
+                step, "IMAGERY_FETCH_FAILED", f"{fetcher_name} failed: {exc}"
+            )
+        logger.warning(
+            "model_satellite_fire_animation: %s produced no blended frames (%s)",
+            fetcher_name,
+            exc,
+        )
+        return []
+    frame_list = list(frames) if isinstance(frames, list) else [frames]
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return frame_list
+
+
+async def _dispatch_single_goes(
+    bbox: tuple[float, float, float, float],
+    product: str,
+    satellite: str,
+    start_iso: str,
+    end_iso: str,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> list[LayerURI]:
+    """Dispatch fetch_goes_animation for ONE GOES product (un-blended single group)."""
+    fetcher_name = _product_to_fetcher(product)
+    fetcher = _registry_fn(fetcher_name)
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name=f"Fetch {product} frames", tool_name=fetcher_name
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+    try:
+        frames = await asyncio.to_thread(
+            fetcher, bbox, product, satellite, "conus", start_iso, end_iso
+        )
+    except Exception as exc:  # noqa: BLE001 -- one empty product must not sink the rest
+        if pipeline_emitter is not None and step is not None:
+            await pipeline_emitter.mark_failed(
+                step, "IMAGERY_FETCH_FAILED", f"{fetcher_name} failed: {exc}"
+            )
+        logger.warning(
+            "model_satellite_fire_animation: %s for product=%s produced no frames (%s)",
+            fetcher_name,
+            product,
+            exc,
+        )
+        return []
+    frame_list = list(frames) if isinstance(frames, list) else [frames]
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return frame_list
+
+
+async def _dispatch_polar(
+    bbox: tuple[float, float, float, float],
+    product: str,
+    satellite: str,
+    start_iso: str,
+    end_iso: str,
+    pipeline_emitter: "PipelineEmitter | None",
+) -> list[LayerURI]:
+    """Dispatch fetch_viirs_day_fire for ONE JPSS/VIIRS polar product (unchanged)."""
+    fetcher_name = _product_to_fetcher(product)
+    fetcher = _registry_fn(fetcher_name)
+    if pipeline_emitter is not None:
+        step = await pipeline_emitter.add_step(
+            name=f"Fetch {product} frames", tool_name=fetcher_name
+        )
+        await pipeline_emitter.mark_running(step)
+    else:
+        step = None
+    try:
+        frames = await asyncio.to_thread(
+            fetcher, bbox, satellite, product, "conus", start_iso, end_iso
+        )
+    except Exception as exc:  # noqa: BLE001 -- one empty product must not sink the rest
+        if pipeline_emitter is not None and step is not None:
+            await pipeline_emitter.mark_failed(
+                step, "IMAGERY_FETCH_FAILED", f"{fetcher_name} failed: {exc}"
+            )
+        logger.warning(
+            "model_satellite_fire_animation: %s for product=%s produced no frames (%s)",
+            fetcher_name,
+            product,
+            exc,
+        )
+        return []
+    frame_list = list(frames) if isinstance(frames, list) else [frames]
+    if pipeline_emitter is not None and step is not None:
+        await pipeline_emitter.mark_complete(step)
+    return frame_list
 
 
 # --------------------------------------------------------------------------- #
@@ -1071,11 +1219,13 @@ async def run_model_satellite_fire_animation(
 
     Composes the full fire-animation pipeline: resolve the named incident
     (NIFC/WFIGS) -> AOI bbox + time window -> per-frame satellite imagery
-    (GOES-18 GeoColor + Fire Temperature for an intra-day 5-minute loop, OR
-    JPSS/VIIRS Day Fire for a multi-day irregular polar series) -> a scrubbable
-    animation, with FIRMS hot pixels + the NIFC perimeter overlaid. STOPS at a
-    bbox/window REVIEW gate first so the user sees + can adjust the AOI and the
-    window BEFORE all frames are fetched.
+    (GOES-18 GeoColor + Fire Temperature BLENDED into one composite loop for an
+    intra-day 5-minute animation -- GeoColor base with the active fire glowing on
+    top, the CIRA "GeoColor and Fire Temperature" look -- OR JPSS/VIIRS Day Fire
+    for a multi-day irregular polar series) -> a scrubbable animation, with FIRMS
+    hot pixels + the NIFC perimeter overlaid. STOPS at a bbox/window REVIEW gate
+    first so the user sees + can adjust the AOI and the window BEFORE all frames
+    are fetched.
 
     When to use:
         - "Recreate the CIRA GOES fire animation of the fires near Eureka Utah."
@@ -1095,7 +1245,10 @@ async def run_model_satellite_fire_animation(
     Params:
         incident_name: the named fire incident (e.g. "Iron", "Santa Rosa Island").
         products: list of imagery products. GOES: "geocolor", "fire_temperature";
-            VIIRS: "day_fire". Default ["geocolor", "fire_temperature"] (GOES).
+            VIIRS: "day_fire". Default ["geocolor", "fire_temperature"] (GOES) --
+            when BOTH GOES products are present they are BLENDED into ONE composite
+            scrubber (GeoColor base + active-fire glow); request a single product
+            (e.g. ["geocolor"]) for one un-blended group.
         state: optional US state filter for the incident lookup ("UT"/"US-UT").
         start_utc / end_utc: ISO-8601 UTC window bounds. Defaults: GOES ~6.5h,
             VIIRS ~4 days, never before the WFIGS discovery time.

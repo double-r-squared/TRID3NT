@@ -7066,9 +7066,12 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "fetch_goes_satellite",
         # fire-animation demos S3/J3: the per-frame SLIDER stitch + reproject +
         # COG-write loop is heavy multi-second sync work (one frame chain per
-        # timestamp); off-load so it never stalls the WS heartbeat. Both bodies
+        # timestamp); off-load so it never stalls the WS heartbeat. The bodies
         # are emit-free (the surrounding emit_tool_call wrapper does the emit).
+        # fetch_goes_blend_animation is heavier still (two product fetches + a
+        # per-frame RGB blend per timestamp) -- same off-load rationale.
         "fetch_goes_animation",
+        "fetch_goes_blend_animation",
         "fetch_viirs_day_fire",
         "fetch_cama_flood_discharge",
         "fetch_gtsm_tide_surge",
