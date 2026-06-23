@@ -300,6 +300,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # CIRA combined product) -- filed alongside fetch_goes_animation, cross-listed
     # to 'fire' via SECONDARY_CATEGORIES.
     "fetch_goes_blend_animation": "weather_atmosphere",
+    # fire-animation demo B+C: HISTORICAL Fire Temperature animation from the RAW
+    # noaa-goes18 S3 ABI-L2-MCMIPC archive (any past date) -- filed alongside
+    # fetch_goes_animation, cross-listed to 'fire' via SECONDARY_CATEGORIES.
+    "fetch_goes_archive_animation": "weather_atmosphere",
     "fetch_era5_reanalysis": "weather_atmosphere",
     "fetch_asos_metar": "weather_atmosphere",
     "fetch_raws_weather": "weather_atmosphere",
@@ -476,6 +480,9 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "fetch_goes_animation": ("fire",),
     # The blended GeoColor + Fire Temperature animation fetcher: same cross-list.
     "fetch_goes_blend_animation": ("fire",),
+    # The HISTORICAL raw-S3-archive Fire Temperature animation fetcher: same
+    # cross-list (it is a fire-branch demo path for any past date).
+    "fetch_goes_archive_animation": ("fire",),
     # The satellite fire-animation composer spans hazard_modeling (it composes a
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).
