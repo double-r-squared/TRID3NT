@@ -49,6 +49,7 @@ from ..tool_arg_normalizer import LatLonCoercionError, coerce_latlon
 from ..workflows.postprocess_modflow import (
     PostprocessMODFLOWError,
     postprocess_modflow,
+    publish_modflow_quantities,
 )
 from ..workflows.solve_progress import drive_live_solve_progress
 from ..workflows.run_modflow import (
@@ -321,6 +322,45 @@ async def run_modflow_job(
             plume.plume_area_km2,
             plume.uri,
         )
+
+        # --- levers STEP 3: ADDITIVE registry quantities (gated) ------------
+        # The plume above is the byte-identical headline. When the registry
+        # quantities flag is on, ALSO publish the concentration ANIMATION (all
+        # saved UCN steps) + the GWF head / water-table as context layers via
+        # the shared executor. Non-fatal: a failure here never sinks the plume.
+        import os as _os
+
+        if _os.environ.get("GRACE2_MODFLOW_REGISTRY_QUANTITIES", "").lower() in (
+            "1", "true", "on", "yes"
+        ):
+            try:
+                from ..workflows.register_published_manifest import (
+                    register_manifest_layers,
+                )
+
+                reg = await asyncio.to_thread(
+                    lambda: publish_modflow_quantities(
+                        run_outputs_uri,
+                        run_id=staging.run_id,
+                        model_crs=staging.model_crs,
+                        register_manifest_layers=register_manifest_layers,
+                        deck_dir=staging.local_deck_dir,
+                        bbox=plume.bbox,
+                    )
+                )
+                emitter = current_emitter()
+                if emitter is not None and reg is not None:
+                    for extra_layer in getattr(reg, "layers", []) or []:
+                        try:
+                            await emitter.add_loaded_layer(extra_layer)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("could not add registry layer: %s", exc)
+            except Exception as exc:  # noqa: BLE001 - additive layers are best-effort
+                logger.warning(
+                    "run_modflow_job registry-quantity publish failed (non-fatal): %s",
+                    exc,
+                )
+
         return plume
 
     except asyncio.CancelledError:

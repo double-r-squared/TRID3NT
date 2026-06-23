@@ -49,7 +49,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from .common import BBox, GraceModel
+from .common import BBox, EngineRunArgsMixin, GraceModel
 from .execution import LayerURI
 
 __all__ = [
@@ -120,8 +120,15 @@ DEFAULT_TARGET_RESOLUTION_M: float = 10.0  # target cell size, m (spike used 10 
 DEFAULT_MANNING_OVERLAND: float = 0.03  # overland Manning n (spike value)
 
 
-class SWMMRunArgs(GraceModel):
+class SWMMRunArgs(EngineRunArgsMixin):
     """Forcing + structure parameters for a quasi-2D PySWMM urban-flood run.
+
+    Adopts ``EngineRunArgsMixin`` (levers STEP 3): ``advanced_physics`` keys are
+    validated against ``physics_registry.PHYSICS_REGISTRY["swmm"]``
+    (routing_method / routing_step_s / variable_step / threads) and merged into
+    the SWMM ``[OPTIONS]`` block at deck write; ``None`` => byte-identical
+    DYNWAVE deck. ``temporal_mode`` / ``output_frames`` are inert for SWMM today
+    (the depth animation already emits frames from the .out).
 
     Returned/assembled by the urban composer after agent-confirmed parameter
     extraction; consumed by the SWMM worker/adapter. The agent confirms these

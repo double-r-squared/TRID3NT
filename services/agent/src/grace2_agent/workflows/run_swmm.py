@@ -224,6 +224,32 @@ def build_and_stage_swmm_deck(
     # budget, the building obstruction modes, the SCS-CN / Green-Ampt
     # infiltration, the barrier snapping (red wall / green flap), and the single
     # boundary outfall. Thread every SWMMRunArgs field through.
+    # levers STEP 3: validate + resolve advanced_physics (OPTIONS overrides).
+    # None => {} (byte-identical DYNWAVE deck). A bad key/value raises a typed
+    # SWMM_PHYSICS_INVALID (honest correction, never a silently-wrong deck).
+    from .physics_registry import (
+        PhysicsRegistryError,
+        applied_physics_delta,
+        validate_and_resolve_physics,
+    )
+
+    try:
+        resolved_physics = validate_and_resolve_physics(
+            "swmm", getattr(run_args, "advanced_physics", None)
+        )
+    except PhysicsRegistryError as exc:
+        raise SWMMWorkflowError(
+            "SWMM_PHYSICS_INVALID",
+            message=f"invalid advanced_physics: {exc}",
+            details={"run_id": rid, "engine": "swmm", "key": getattr(exc, "key", None)},
+        ) from exc
+    if resolved_physics:
+        logger.info(
+            "run_swmm advanced_physics applied run_id=%s delta=%s",
+            rid,
+            applied_physics_delta("swmm", resolved_physics),
+        )
+
     total_depth = run_args.total_rain_depth_mm
     build_kwargs: dict[str, Any] = dict(
         dem_path=dem_path,
@@ -237,6 +263,7 @@ def build_and_stage_swmm_deck(
         manning_overland=float(run_args.manning_overland),
         barriers=run_args.barriers,
         enable_autoscale=bool(enable_autoscale),
+        advanced_physics=resolved_physics or None,
     )
     # total_rain_depth_mm is optional on SWMMRunArgs (the Atlas-14 lookup may
     # not have populated it); the builder has a sane default, so only override

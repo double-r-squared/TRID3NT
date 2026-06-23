@@ -988,6 +988,7 @@ def build_swmm_mesh(
     nesting_exponent: float = 0.62,
     sim_routing_step_s: float = 2.0,
     enable_autoscale: bool = True,
+    advanced_physics: dict | None = None,
 ) -> BuildResult:
     """Build a quasi-2D SWMM ``.inp`` deck from a DEM (+ buildings + barriers).
 
@@ -1132,6 +1133,23 @@ def build_swmm_mesh(
         "MINIMUM_STEP": 0.5,
         "THREADS": 1,
     }
+
+    # levers STEP 3: advanced_physics OPTIONS overrides (ALREADY VALIDATED by
+    # physics_registry.validate_and_resolve_physics("swmm", ...)). The registry
+    # keys map onto SWMM OPTIONS keys: routing_method -> FLOW_ROUTING,
+    # routing_step_s -> ROUTING_STEP, variable_step -> VARIABLE_STEP,
+    # threads -> THREADS. None / {} => byte-identical DYNWAVE deck.
+    _phys = dict(advanced_physics or {})
+    _SWMM_OPTION_BY_KEY = {
+        "routing_method": "FLOW_ROUTING",
+        "routing_step_s": "ROUTING_STEP",
+        "variable_step": "VARIABLE_STEP",
+        "threads": "THREADS",
+    }
+    for _k, _opt in _SWMM_OPTION_BY_KEY.items():
+        if _k in _phys:
+            inp[OPTIONS][_opt] = _phys[_k]
+
     inp[REPORT] = {
         "INPUT": "NO", "CONTROLS": "NO", "SUBCATCHMENTS": "NONE",
         "NODES": "ALL", "LINKS": "ALL",

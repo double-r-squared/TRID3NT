@@ -551,6 +551,43 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # reads as a height map (bare/low near 0 -> tall canopy at the top of the
     # ramp). ADDITIVE -- the entries above stay byte-identical.
     "canopy_height_m": ("0,40", "greens"),
+    # ----------------------------------------------------------------------- #
+    # engine-coverage-levers STEP 3 -- NEW published output quantities.
+    # ADDITIVE; every entry above stays byte-identical. A SPEC.style_preset that
+    # is NOT in this registry silently falls through to a percentile rescale
+    # (a physically-wrong colormap), so a CI guard
+    # (test_output_quantity_style_presets_resolve) asserts every engine
+    # OUTPUT_QUANTITIES style_preset resolves HERE.
+    #
+    # MODFLOW head / water-table (m, local datum). A continuous head surface
+    # rendered with a perceptually-uniform viridis ramp over a generous head
+    # band so the gradient reads as a potentiometric surface. (The plume
+    # timeseries reuses continuous_plume_concentration above -- not a new key.)
+    "continuous_head_m": ("0,50", "viridis"),
+    # Landlab discarded fields the component chain already computes. Drainage
+    # area spans many orders of magnitude -> a high-contrast viridis (the
+    # percentile fallback would also work, but pinning a key keeps the colormap
+    # stable across runs); slope is a 0..1 rise/run gradient -> a ylorrd "steep
+    # = hot" ramp; relative wetness in [0,1] -> a blues "wetter = darker" ramp;
+    # overland discharge (m^3/s) -> the same blues family as wetness but a wider
+    # band; the deterministic factor-of-safety field is dimensionless with
+    # FoS<1 = failure -> a rdylgn ramp (low/red = unstable, high/green = stable)
+    # rescaled 0..2 so FoS=1 sits at the diverging midpoint.
+    "continuous_drainage_area": ("0,1000000", "viridis"),
+    "continuous_slope": ("0,1", "ylorrd"),
+    "continuous_relative_wetness": ("0,1", "blues"),
+    "continuous_discharge_m3s": ("0,50", "blues"),
+    "continuous_factor_of_safety": ("0,2", "rdylgn"),
+    # SWMM additional node/link outputs the Output API already exposes.
+    # Node FLOODING_LOSSES (surface flooding rate, cfs/cms) and PONDED_VOLUME
+    # (ponded water volume) read as "how much water is ponding / where does it
+    # surcharge" -> a blues ramp; conduit FLOW_RATE (signed, m^3/s) -> a
+    # diverging rdbu centered on 0 (direction-aware); conduit FLOW_VELOCITY
+    # (m/s) -> a viridis speed ramp.
+    "continuous_flooding_losses": ("0,5", "blues"),
+    "continuous_ponded_volume": ("0,1000", "blues"),
+    "diverging_conduit_flow": ("-10,10", "rdbu"),
+    "continuous_conduit_velocity": ("0,5", "viridis"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an

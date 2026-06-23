@@ -47,12 +47,15 @@ __all__ = [
     "PostprocessMODFLOWError",
     "postprocess_modflow",
     "postprocess_river_seepage",
+    "publish_modflow_quantities",
     "compute_plume_metrics",
     "compute_seepage_metrics",
     "PLUME_DETECTION_FLOOR_MGL",
     "PLUME_STYLE_PRESET",
     "SEEPAGE_STYLE_PRESET",
+    "HEAD_STYLE_PRESET",
     "GWF_CBC_FILENAME",
+    "GWF_HDS_FILENAME",
     "RUNS_BUCKET_DEFAULT",
 ]
 
@@ -898,3 +901,307 @@ def _infer_grid_shape_from_cbc(cbc_path: Path) -> tuple[int, int]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("could not infer grid shape from %s: %s", cbc_path, exc)
     return 40, 40
+
+
+# --------------------------------------------------------------------------- #
+# levers STEP 3 -- NEW published quantities (registry-driven, ADDITIVE).
+#
+# The EXISTING plume + seepage stay on the byte-identical old postprocess path
+# above. These helpers build the NEW quantities (concentration ANIMATION across
+# all saved UCN steps + the GWF head / water-table) as registry readers and
+# publish them through the shared executor (publish_quantities). Gated DEFAULT
+# behind GRACE2_MODFLOW_REGISTRY_QUANTITIES until live-proven per engine.
+# --------------------------------------------------------------------------- #
+#: GWF head filename the OC HEAD FILEOUT writes (gwt_adapter).
+GWF_HDS_FILENAME: str = "gwf_model.hds"
+
+#: continuous head / water-table style preset (publish_layer._TITILER_STYLE_REGISTRY).
+HEAD_STYLE_PRESET: str = "continuous_head_m"
+
+#: MF6 inactive/dry-cell sentinel magnitude.
+_MF6_DRY_SENTINEL: float = 1e29
+
+
+def _resolve_gwf_hds_path(run_outputs_uri: str) -> Path:
+    """Locate the GWF head file (``gwf_model.hds``) from a run output.
+
+    Mirrors ``_resolve_gwf_cbc_path`` (s3 / gs / local), but targets the head
+    FILEOUT. Raises ``PostprocessMODFLOWError("HEAD_OUTPUT_READ_FAILED")`` when
+    the head file cannot be located / fetched.
+    """
+    if run_outputs_uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="modflow-hds-"))
+        local_target = tmpdir / GWF_HDS_FILENAME
+        source = (
+            run_outputs_uri
+            if run_outputs_uri.endswith(".hds")
+            else run_outputs_uri.rstrip("/") + f"/{GWF_HDS_FILENAME}"
+        )
+        bucket_name, _, obj_key = source[len("s3://"):].partition("/")
+        try:
+            import shutil as _shutil
+
+            resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+            with local_target.open("wb") as fh:
+                _shutil.copyfileobj(resp["Body"], fh)
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "HEAD_OUTPUT_READ_FAILED",
+                message=f"could not fetch GWF head from {source}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+        return local_target
+    if run_outputs_uri.startswith("gs://"):
+        try:
+            import fsspec  # type: ignore[import-not-found]
+
+            fs = fsspec.filesystem("gcs")
+            tmpdir = Path(tempfile.mkdtemp(prefix="modflow-hds-"))
+            local_target = tmpdir / GWF_HDS_FILENAME
+            candidate = (
+                run_outputs_uri
+                if run_outputs_uri.endswith(".hds")
+                else f"{run_outputs_uri.rstrip('/')}/{GWF_HDS_FILENAME}"
+            )
+            fs.get(candidate, str(local_target))
+            return local_target
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "HEAD_OUTPUT_READ_FAILED",
+                message=f"could not fetch GWF head from {run_outputs_uri}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+
+    p = Path(run_outputs_uri.replace("file://", ""))
+    if p.is_file() and p.suffix == ".hds":
+        return p
+    if p.is_dir():
+        hits = sorted(glob.glob(str(p / "**" / GWF_HDS_FILENAME), recursive=True))
+        if not hits:
+            hits = sorted(glob.glob(str(p / "**" / "*.hds"), recursive=True))
+        if hits:
+            return Path(hits[0])
+    raise PostprocessMODFLOWError(
+        "HEAD_OUTPUT_READ_FAILED",
+        message=f"no {GWF_HDS_FILENAME} found under {run_outputs_uri}",
+        details={"run_outputs_uri": run_outputs_uri},
+    )
+
+
+def _read_head_grid(hds_path: Path) -> Any:
+    """Read the FINAL-timestep, max-over-layers head grid (m, 2D).
+
+    GWF head output is a binary HEADFILE-format array; flopy reads it via
+    ``HeadFile``. ``get_data(totim=last)`` returns ``(nlay, nrow, ncol)``; we
+    take ``nanmax`` over the layer axis (the water-table = the uppermost active
+    head) and mask the MF6 dry/inactive sentinel to NaN.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+    try:
+        hobj = flopy.utils.HeadFile(str(hds_path))
+        times = hobj.get_times()
+        if not times:
+            raise PostprocessMODFLOWError(
+                "HEAD_OUTPUT_EMPTY",
+                message=f"{hds_path} carries no head timesteps",
+                details={"hds_path": str(hds_path)},
+            )
+        data = hobj.get_data(totim=times[-1])
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"could not read head from {hds_path}: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+    arr = np.asarray(data, dtype="float64")
+    if arr.ndim == 3:
+        grid = np.nanmax(arr, axis=0)
+    elif arr.ndim == 2:
+        grid = arr
+    else:
+        grid = np.squeeze(arr)
+    grid = np.where(np.abs(grid) > _MF6_DRY_SENTINEL, np.nan, grid)
+    return grid
+
+
+def _read_concentration_steps(ucn_path: Path) -> tuple[list[Any], Any]:
+    """Read ALL saved transport steps -> (per-step 2D grids, final/peak grid).
+
+    Each step is the max-over-layers concentration; the PEAK is the final step
+    (matches the existing plume). Used by the concentration-animation reader.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "PLUME_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"ucn_path": str(ucn_path)},
+        ) from exc
+
+    def _to2d(data: Any) -> Any:
+        a = np.asarray(data, dtype="float64")
+        if a.ndim == 3:
+            a2 = np.nanmax(a, axis=0)
+        elif a.ndim == 2:
+            a2 = a
+        else:
+            a2 = np.squeeze(a)
+        return np.where(np.abs(a2) > _MF6_DRY_SENTINEL, np.nan, a2)
+
+    try:
+        cobj = flopy.utils.HeadFile(str(ucn_path), text="CONCENTRATION")
+        times = cobj.get_times()
+        if not times:
+            raise PostprocessMODFLOWError(
+                "PLUME_OUTPUT_EMPTY",
+                message=f"{ucn_path} carries no concentration timesteps",
+                details={"ucn_path": str(ucn_path)},
+            )
+        grids = [_to2d(cobj.get_data(totim=t)) for t in times]
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "PLUME_OUTPUT_READ_FAILED",
+            message=f"could not read concentration steps from {ucn_path}: {exc}",
+            details={"ucn_path": str(ucn_path)},
+        ) from exc
+    return grids, grids[-1]
+
+
+def _modflow_src_transform(geo: dict[str, Any] | None, nrow: int) -> Any:
+    """Build the rasterio source transform from the deck georegistration."""
+    import rasterio  # type: ignore[import-not-found]
+
+    if geo is not None:
+        west = geo["xorigin"]
+        north = geo["yorigin"] + nrow * geo["delc"]
+        return rasterio.transform.from_origin(west, north, geo["delr"], geo["delc"])
+    return rasterio.Affine.identity()
+
+
+def publish_modflow_quantities(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    register_manifest_layers: Any,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> Any:
+    """Publish the NEW MODFLOW quantities (concentration animation + head).
+
+    Builds registry readers bound to the in-memory grids, then routes them
+    through the shared ``publish_quantities`` executor (ONE registrar). The
+    EXISTING plume + seepage layers are produced by the byte-identical old
+    postprocess path; this ADDS the animation + water-table layers.
+
+    Returns the executor's ``register_manifest_layers`` result. Never publishes
+    the ``default_on=False`` provenance rows (plume-concentration / river-seepage).
+    """
+    from dataclasses import replace as _dc_replace
+
+    from grace2_contracts.output_quantities import (
+        RasterField,
+        TimeseriesField,
+        get_output_registry,
+    )
+
+    from . import publish_quantities as _pq
+
+    geo = _grid_georegistration_from_deck(deck_dir)
+    cell_area_m2 = (
+        float(geo["delr"]) * float(geo["delc"]) if geo is not None else 2500.0
+    )
+
+    import numpy as np  # type: ignore[import-not-found]
+
+    # --- concentration animation reader (all saved UCN steps) --------------- #
+    ucn_path = _resolve_ucn_path(run_outputs_uri)
+    conc_grids, conc_peak = _read_concentration_steps(ucn_path)
+    nrow_c = int(np.asarray(conc_peak).shape[0])
+    conc_transform = _modflow_src_transform(geo, nrow_c)
+
+    def _mask_floor(a: Any) -> Any:
+        import numpy as np  # type: ignore[import-not-found]
+
+        return np.where(a > PLUME_DETECTION_FLOOR_MGL, a, np.nan).astype("float32")
+
+    def _conc_raster(grid: Any) -> RasterField:
+        max_conc, area = compute_plume_metrics(grid, cell_area_m2)
+        return RasterField(
+            grid=grid,
+            src_crs=model_crs,
+            src_transform=conc_transform,
+            reproject=True,
+            mask=_mask_floor,
+            crs_roundtrip_guard=False,
+            metrics={
+                "max_concentration_mgl": max_conc,
+                "plume_area_km2": area,
+            },
+        )
+
+    def _conc_ts_reader(_ctx: Any) -> TimeseriesField:
+        return TimeseriesField(
+            n_steps=len(conc_grids),
+            read_step=lambda i: _conc_raster(conc_grids[i]),
+            peak=_conc_raster(conc_peak),
+            quantity_label="Plume concentration",
+        )
+
+    # --- head / water-table reader (final-step .hds) ------------------------ #
+    hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+    head_grid = np.asarray(_read_head_grid(hds_path), dtype="float64")
+    nrow_h = int(head_grid.shape[0]) if head_grid.ndim == 2 else nrow_c
+    head_transform = _modflow_src_transform(geo, nrow_h)
+
+    def _head_reader(_ctx: Any) -> RasterField:
+        finite = head_grid[np.isfinite(head_grid)]
+        max_head = float(np.max(finite)) if finite.size else 0.0
+        min_head = float(np.min(finite)) if finite.size else 0.0
+        return RasterField(
+            grid=head_grid,
+            src_crs=model_crs,
+            src_transform=head_transform,
+            reproject=True,
+            crs_roundtrip_guard=False,
+            metrics={"max_head_m": max_head, "min_head_m": min_head},
+        )
+
+    readers = {
+        "plume-concentration-ts": _conc_ts_reader,
+        "water-table": _head_reader,
+    }
+    specs = [
+        _dc_replace(spec, reader=readers[spec.quantity_id])
+        for spec in get_output_registry("modflow")
+        if spec.quantity_id in readers
+    ]
+
+    def _upload(cog: Path, rid: str, _bucket: Any = None, *, dest_filename: str) -> str:
+        return _upload_cog(cog, rid, runs_bucket, cog_filename=dest_filename)
+
+    return _pq.publish_quantities(
+        "modflow",
+        run_id=run_id,
+        upload=_upload,
+        register_manifest_layers=register_manifest_layers,
+        specs=specs,
+        bbox=bbox,
+    )

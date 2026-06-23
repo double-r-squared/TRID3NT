@@ -100,8 +100,31 @@ def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
     build_spec is exactly the shape ``job_ini.render_openquake_deck`` consumes
     (bbox + IMT + poe + grid spacing + max distance + GMPE + the G-R source
     params) plus the output globs for the worker's upload step.
+
+    levers STEP 3: the validated ``advanced_physics`` (truncation_level /
+    rupture_mesh_spacing_km / width_of_mfd_bin / area_source_discretization_km)
+    is MERGED into the build_spec, and ``uniform_hazard_spectra`` is flipped on
+    (the classical run already exports hazard curves; UHS needs the flag). None
+    => no keys merged => byte-identical job.ini. Invalid keys raise a typed
+    ``OpenQuakeWorkflowError("OQ_PHYSICS_INVALID")``.
     """
-    return {
+    from .physics_registry import (
+        PhysicsRegistryError,
+        validate_and_resolve_physics,
+    )
+
+    try:
+        resolved = validate_and_resolve_physics(
+            "openquake", getattr(run_args, "advanced_physics", None)
+        )
+    except PhysicsRegistryError as exc:
+        raise OpenQuakeWorkflowError(
+            "OQ_PHYSICS_INVALID",
+            message=f"invalid advanced_physics: {exc}",
+            details={"engine": "openquake", "key": getattr(exc, "key", None)},
+        ) from exc
+
+    spec = {
         "bbox": list(run_args.bbox),
         "imt": run_args.imt,
         "poe": float(run_args.poe),
@@ -117,6 +140,17 @@ def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
         # rendered deck for provenance.
         "outputs": ["output/*.csv", "*.csv"],
     }
+    # Merge validated physics overrides (the worker render_job_ini reads them).
+    spec.update(resolved)
+    # levers STEP 3: request UHS export when the registry-quantities flag is on
+    # (default OFF -> byte-identical classical job.ini). The agent reads the
+    # exported UHS + hazard-curve CSVs into ScalarField metrics in
+    # publish_openquake_quantities.
+    if os.environ.get("GRACE2_OPENQUAKE_REGISTRY_QUANTITIES", "").lower() in (
+        "1", "true", "on", "yes"
+    ):
+        spec["uniform_hazard_spectra"] = True
+    return spec
 
 
 # --------------------------------------------------------------------------- #

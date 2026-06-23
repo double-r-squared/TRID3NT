@@ -223,6 +223,13 @@ def render_gmpe_logic_tree_xml(
 """
 
 
+#: levers STEP 3 -- UHS spectral-acceleration periods. When uniform_hazard_spectra
+#: is enabled the IML map must carry an SA(period) ladder (a UHS is the SA value
+#: at each period for a fixed PoE), so we inject this ladder alongside the
+#: requested IMT. A standard short->long period ladder (Sa at 0.1..2.0 s).
+_UHS_SA_PERIODS: tuple[float, ...] = (0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0)
+
+
 def render_job_ini(
     bbox: tuple[float, float, float, float],
     *,
@@ -235,6 +242,12 @@ def render_job_ini(
     description: str = "GRACE-2 classical PSHA",
     source_model_logic_tree_filename: str = "source_model_logic_tree.xml",
     gmpe_logic_tree_filename: str = "gmpe_logic_tree.xml",
+    # --- advanced-physics overrides (levers STEP 3; ADDITIVE, default-match) - #
+    truncation_level: float = 3.0,
+    rupture_mesh_spacing_km: float = 5.0,
+    width_of_mfd_bin: float = 0.2,
+    area_source_discretization_km: float = 10.0,
+    uniform_hazard_spectra: bool = False,
 ) -> str:
     """Render the classical-PSHA ``job.ini`` config text.
 
@@ -242,6 +255,14 @@ def render_job_ini(
     grid spacing is converted from km to decimal degrees. The intensity_measure_
     types_and_levels maps the requested ``imt`` to the IML ladder; ``poes`` picks
     the hazard-map return period.
+
+    levers STEP 3: ``truncation_level`` / ``rupture_mesh_spacing_km`` /
+    ``width_of_mfd_bin`` / ``area_source_discretization_km`` are the
+    advanced-physics overrides (defaults reproduce the pre-STEP-3 literals
+    byte-for-byte). ``uniform_hazard_spectra`` flips UHS export on (the classical
+    run already computes hazard curves, so they export by default with
+    ``--exports csv``; UHS additionally needs this flag + an SA(period) IML
+    ladder, which is injected when enabled).
     """
     min_lon, min_lat, max_lon, max_lat = bbox
     grid_deg = round(_km_to_deg(site_grid_spacing_km), 6)
@@ -252,6 +273,25 @@ def render_job_ini(
         f"{max_lon} {max_lat}, {min_lon} {max_lat}"
     )
     iml_str = _imls_string(imls)
+    iml_list = iml_str.replace(" ", ", ")
+    # The IML map carries the requested IMT; when UHS is on, ALSO carry the SA
+    # period ladder (each on the same IML list) so the UHS export has spectra.
+    imt_levels = {imt: f"[{iml_list}]"}
+    if uniform_hazard_spectra:
+        for _p in _UHS_SA_PERIODS:
+            imt_levels[f"SA({_p})"] = f"[{iml_list}]"
+    imtl_str = "{" + ", ".join(
+        f'"{k}": {v}' for k, v in imt_levels.items()
+    ) + "}"
+
+    # Preserve the pre-STEP-3 integer literal ``truncation_level = 3`` byte-for-
+    # byte when the (default) value is a whole number; a fractional override
+    # renders as the float. OpenQuake parses both identically.
+    def _num(v: float) -> str:
+        f = float(v)
+        return str(int(f)) if f.is_integer() else repr(f)
+
+    trunc_str = _num(truncation_level)
     return f"""[general]
 description = {description}
 calculation_mode = classical
@@ -265,9 +305,9 @@ region_grid_spacing = {grid_deg}
 number_of_logic_tree_samples = 0
 
 [erf]
-rupture_mesh_spacing = 5.0
-width_of_mfd_bin = 0.2
-area_source_discretization = 10.0
+rupture_mesh_spacing = {rupture_mesh_spacing_km}
+width_of_mfd_bin = {width_of_mfd_bin}
+area_source_discretization = {area_source_discretization_km}
 
 [site_params]
 reference_vs30_type = measured
@@ -279,8 +319,8 @@ reference_depth_to_1pt0km_per_sec = 50.0
 source_model_logic_tree_file = {source_model_logic_tree_filename}
 gsim_logic_tree_file = {gmpe_logic_tree_filename}
 investigation_time = {investigation_time_years}
-intensity_measure_types_and_levels = {{"{imt}": [{iml_str.replace(' ', ', ')}]}}
-truncation_level = 3
+intensity_measure_types_and_levels = {imtl_str}
+truncation_level = {trunc_str}
 maximum_distance = {max_distance_km}
 
 [output]
@@ -288,7 +328,7 @@ export_dir = output
 mean = true
 quantiles =
 hazard_maps = true
-uniform_hazard_spectra = false
+uniform_hazard_spectra = {"true" if uniform_hazard_spectra else "false"}
 poes = {poe}
 """
 
@@ -338,6 +378,9 @@ def render_openquake_deck(build_spec: dict[str, Any]) -> OpenQuakeDeck:
     )
     smlt_xml = render_source_model_logic_tree_xml("source_model.xml")
     gmpelt_xml = render_gmpe_logic_tree_xml(gmpe)
+    # levers STEP 3: advanced-physics overrides + UHS flag (all default-match,
+    # so a build_spec without them renders byte-identically). The agent merges
+    # the validated PHYSICS_REGISTRY["openquake"] keys into the build_spec.
     job_ini = render_job_ini(
         bbox,
         imt=imt,
@@ -345,6 +388,17 @@ def render_openquake_deck(build_spec: dict[str, Any]) -> OpenQuakeDeck:
         investigation_time_years=inv_time,
         site_grid_spacing_km=grid_km,
         max_distance_km=max_dist,
+        truncation_level=float(build_spec.get("truncation_level", 3.0)),
+        rupture_mesh_spacing_km=float(
+            build_spec.get("rupture_mesh_spacing_km", 5.0)
+        ),
+        width_of_mfd_bin=float(build_spec.get("width_of_mfd_bin", 0.2)),
+        area_source_discretization_km=float(
+            build_spec.get("area_source_discretization_km", 10.0)
+        ),
+        uniform_hazard_spectra=bool(
+            build_spec.get("uniform_hazard_spectra", False)
+        ),
     )
     return OpenQuakeDeck(
         job_ini=job_ini,

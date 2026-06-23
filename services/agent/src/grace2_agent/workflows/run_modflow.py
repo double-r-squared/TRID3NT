@@ -710,6 +710,35 @@ def build_and_stage_modflow_deck(
             along_river_source=bool(getattr(run_args, "along_river_source", False)),
         )
 
+    # --- 1b. advanced-physics overrides (levers STEP 3) ---------------------
+    # Validate + resolve the run_args.advanced_physics dict against the per-engine
+    # PHYSICS_REGISTRY. None => {} (byte-identical conservative-tracer deck). A
+    # bad key / out-of-range value raises a typed PhysicsRegistryError surfaced as
+    # MODFLOW_PHYSICS_INVALID (the user/LLM gets an honest correction, never a
+    # silently-wrong deck). The resolved delta is echoed for narration.
+    from .physics_registry import (
+        PhysicsRegistryError,
+        applied_physics_delta,
+        validate_and_resolve_physics,
+    )
+
+    try:
+        resolved_physics = validate_and_resolve_physics(
+            "modflow", getattr(run_args, "advanced_physics", None)
+        )
+    except PhysicsRegistryError as exc:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_PHYSICS_INVALID",
+            message=f"invalid advanced_physics: {exc}",
+            details={"run_id": rid, "engine": "modflow", "key": getattr(exc, "key", None)},
+        ) from exc
+    if resolved_physics:
+        logger.info(
+            "run_modflow advanced_physics applied run_id=%s delta=%s",
+            rid,
+            applied_physics_delta("modflow", resolved_physics),
+        )
+
     # --- 1. Build the FLAT deck via the engine adapter ----------------------
     try:
         manifest_obj = build_modflow_deck(
@@ -721,6 +750,7 @@ def build_and_stage_modflow_deck(
             porosity=run_args.porosity,
             workdir=str(flat_dir),
             write=True,
+            advanced_physics=resolved_physics or None,
             **river_kwargs,
         )
     except MODFLOWWorkflowError:

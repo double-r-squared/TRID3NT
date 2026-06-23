@@ -57,7 +57,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from .common import BBox, GraceModel
+from .common import BBox, EngineRunArgsMixin, GraceModel
 from .execution import LayerURI
 
 __all__ = [
@@ -101,8 +101,14 @@ DEFAULT_RAINFALL_INTENSITY_MM_HR: float = 50.0  # rainfall intensity, mm/hr
 DEFAULT_STORM_DURATION_HR: float = 2.0  # storm duration, hours
 
 
-class LandlabRunArgs(GraceModel):
+class LandlabRunArgs(EngineRunArgsMixin):
     """Forcing + structure parameters for a Landlab surface-process run.
+
+    Adopts ``EngineRunArgsMixin`` (levers STEP 3): ``advanced_physics`` keys are
+    validated against ``physics_registry.PHYSICS_REGISTRY["landlab"]``
+    (overland_alpha / mannings_n / flow_director) and applied at the
+    ``OverlandFlow`` / ``FlowAccumulator`` component-build seam in the worker
+    chain; ``None`` => byte-identical component chain.
 
     Returned/assembled by the landslide composer after agent-confirmed parameter
     extraction; consumed by the Landlab worker / adapter. The agent confirms

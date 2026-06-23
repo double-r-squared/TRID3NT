@@ -103,8 +103,31 @@ def build_landlab_build_spec(run_args: LandlabRunArgs) -> dict[str, Any]:
     rainfall params and vice-versa, but sending all is harmless — the chain only
     reads the ones it needs). Pure (no IO), unit-testable on a synthetic
     ``LandlabRunArgs``.
+
+    levers STEP 3: ``advanced_physics`` (flow_director / overland_alpha /
+    mannings_n) is validated against ``PHYSICS_REGISTRY["landlab"]`` and the
+    resolved keys are MERGED into the build_spec (the chain reads them directly
+    at the FlowAccumulator / OverlandFlow seam). ``None`` => no keys merged =>
+    byte-identical component chain. An invalid key/value raises a typed
+    ``LandlabWorkflowError("LANDLAB_PHYSICS_INVALID")``.
     """
-    return {
+    from .physics_registry import (
+        PhysicsRegistryError,
+        validate_and_resolve_physics,
+    )
+
+    try:
+        resolved = validate_and_resolve_physics(
+            "landlab", getattr(run_args, "advanced_physics", None)
+        )
+    except PhysicsRegistryError as exc:
+        raise LandlabWorkflowError(
+            "LANDLAB_PHYSICS_INVALID",
+            message=f"invalid advanced_physics: {exc}",
+            details={"engine": "landlab", "key": getattr(exc, "key", None)},
+        ) from exc
+
+    spec = {
         "analysis": run_args.analysis,
         "target_resolution_m": float(run_args.target_resolution_m),
         # infinite-slope LandslideProbability parameters
@@ -119,6 +142,10 @@ def build_landlab_build_spec(run_args: LandlabRunArgs) -> dict[str, Any]:
         "rainfall_intensity_mm_hr": float(run_args.rainfall_intensity_mm_hr),
         "storm_duration_hr": float(run_args.storm_duration_hr),
     }
+    # Merge the validated physics overrides (the chain reads flow_director /
+    # overland_alpha / mannings_n). Absent => byte-identical.
+    spec.update(resolved)
+    return spec
 
 
 def stage_landlab_manifest(

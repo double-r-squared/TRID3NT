@@ -39,13 +39,27 @@ from .cog_io import CogIoError
 __all__ = [
     "PostprocessLandlabError",
     "postprocess_landlab",
+    "publish_landlab_quantities",
     "compute_landlab_metrics",
     "LANDSLIDE_STYLE_PRESET",
     "OVERLAND_STYLE_PRESET",
     "UNSTABLE_PROBABILITY_THRESHOLD",
+    "SECONDARY_QUANTITY_BY_TOKEN",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_landlab")
+
+#: levers STEP 3: map the worker secondary-field TOKEN (the key in the
+#: completion ``result.secondary_field_files`` map + the
+#: ``landlab_secondary_<token>.tif`` filename) onto its OUTPUT_QUANTITIES
+#: ``quantity_id``. The agent publishes only the tokens present in this map.
+SECONDARY_QUANTITY_BY_TOKEN: dict[str, str] = {
+    "drainage_area": "landlab-drainage-area",
+    "slope": "landlab-slope",
+    "relative_wetness": "landlab-relative-wetness",
+    "discharge": "landlab-discharge",
+    "factor_of_safety": "landlab-factor-of-safety",
+}
 
 #: The TiTiler style preset key the orchestrator registers in
 #: ``_TITILER_STYLE_REGISTRY`` (the shared-append snippet). Susceptibility =
@@ -387,3 +401,120 @@ def postprocess_landlab(
         uri,
     )
     return [layer], metrics
+
+
+# --------------------------------------------------------------------------- #
+# levers STEP 3 -- NEW published quantities (drainage_area / slope /
+# relative_wetness / discharge / factor_of_safety).
+#
+# The EXISTING susceptibility primary stays on the byte-identical
+# ``postprocess_landlab`` path above. These ADDITIVE context layers come from
+# the SECONDARY field COGs the worker now writes (each computed by the same
+# component chain). The reader reads each secondary COG's band + CRS into a
+# RasterField and routes it through the shared executor (publish_quantities).
+# --------------------------------------------------------------------------- #
+def _read_cog_grid_and_georef(cog_path: Path) -> tuple[Any, str, Any]:
+    """Read a secondary COG's band 1 + CRS + transform (the reproject source).
+
+    Returns ``(grid, src_crs, src_transform)`` so the executor warps the
+    metric-CRS worker field to EPSG:4326. NaN no-data preserved.
+    """
+    try:
+        import numpy as np
+        import rasterio
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessLandlabError(
+            "LANDLAB_DEPENDENCY_MISSING",
+            message=f"rasterio/numpy unavailable for secondary field read: {exc}",
+        ) from exc
+    if not Path(cog_path).exists():
+        raise PostprocessLandlabError(
+            "LANDLAB_OUTPUT_READ_FAILED",
+            message=f"Landlab secondary COG not found at {cog_path}",
+            details={"cog_path": str(cog_path)},
+        )
+    with rasterio.open(cog_path) as ds:
+        arr = ds.read(1).astype("float64")
+        nodata = ds.nodata
+        src_crs = str(ds.crs) if ds.crs is not None else "EPSG:4326"
+        src_transform = ds.transform
+    if nodata is not None and np.isfinite(nodata):
+        arr = np.where(arr == nodata, np.nan, arr)
+    return arr, src_crs, src_transform
+
+
+def publish_landlab_quantities(
+    secondary_cogs_by_token: dict[str, str | Path],
+    *,
+    run_id: str,
+    register_manifest_layers: Any,
+    runs_bucket: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> Any:
+    """Publish the NEW Landlab quantities from the worker secondary COGs.
+
+    ``secondary_cogs_by_token`` maps a worker token (``"drainage_area"`` /
+    ``"slope"`` / ``"relative_wetness"`` / ``"discharge"`` /
+    ``"factor_of_safety"``) to the LOCAL path of that field's COG (the composer
+    downloads them from the Batch output alongside the primary field). Builds
+    registry readers + routes them through the shared executor (ONE registrar).
+
+    Returns the executor result, or ``None`` when no secondary COGs were
+    supplied (a chain may compute none).
+    """
+    from dataclasses import replace as _dc_replace
+
+    from grace2_contracts.output_quantities import (
+        RasterField,
+        get_output_registry,
+    )
+
+    from . import publish_quantities as _pq
+
+    if not secondary_cogs_by_token:
+        return None
+
+    # quantity_id -> token (invert SECONDARY_QUANTITY_BY_TOKEN for the specs).
+    qid_to_token = {qid: tok for tok, qid in SECONDARY_QUANTITY_BY_TOKEN.items()}
+
+    def _make_reader(cog_path: str | Path):
+        grid, src_crs, src_transform = _read_cog_grid_and_georef(Path(cog_path))
+
+        def _reader(_ctx: Any) -> RasterField:
+            import numpy as np
+
+            finite = grid[np.isfinite(grid)]
+            mx = float(np.max(finite)) if finite.size else 0.0
+            return RasterField(
+                grid=grid,
+                src_crs=src_crs,
+                src_transform=src_transform,
+                reproject=src_crs.upper() != "EPSG:4326",
+                crs_roundtrip_guard=False,
+                metrics={},
+            )
+
+        return _reader
+
+    specs = []
+    for spec in get_output_registry("landlab"):
+        token = qid_to_token.get(spec.quantity_id)
+        if token is None or token not in secondary_cogs_by_token:
+            continue
+        specs.append(
+            _dc_replace(spec, reader=_make_reader(secondary_cogs_by_token[token]))
+        )
+    if not specs:
+        return None
+
+    def _upload(cog: Path, rid: str, _bucket: Any = None, *, dest_filename: str) -> str:
+        return _upload_cog_to_runs_bucket(cog, rid, runs_bucket, dest_filename=dest_filename)
+
+    return _pq.publish_quantities(
+        "landlab",
+        run_id=run_id,
+        upload=_upload,
+        register_manifest_layers=register_manifest_layers,
+        specs=specs,
+        bbox=bbox,
+    )

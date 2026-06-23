@@ -102,16 +102,31 @@ def test_registry_schema_version_is_one() -> None:
     assert OUTPUT_REGISTRY_SCHEMA_VERSION == 1
 
 
-def test_registry_is_empty_scaffold_default_off() -> None:
-    # STEP 2: every engine ships an EMPTY tuple (DEFAULT-OFF; STEP 3 fills these).
-    for engine, specs in OUTPUT_QUANTITIES.items():
-        assert specs == (), f"{engine} should be an empty scaffold in STEP 2"
+def test_step3_engines_populated_others_empty() -> None:
+    # STEP 3: the four migrated engines (modflow / landlab / openquake / swmm)
+    # carry declarative OutputQuantitySpec rows; SFINCS / GeoClaw / SWAN stay
+    # EMPTY (STEP 0 / STEP 4). The DECLARATIVE half (no reader) lives in the
+    # contract; the reader is bound agent-side.
+    for engine in ("modflow", "landlab", "openquake", "swmm"):
+        specs = OUTPUT_QUANTITIES[engine]
+        assert specs, f"{engine} should be populated in STEP 3"
+        # contracts ship the declarative half only -- readers are bound agent-side.
+        assert all(s.reader is None for s in specs), (
+            f"{engine} scaffold rows must not carry a reader in the contract"
+        )
+        # at least one NEW (default_on) published quantity per migrated engine.
+        assert any(s.default_on for s in specs)
+    for engine in ("sfincs", "geoclaw", "swan"):
+        assert OUTPUT_QUANTITIES[engine] == (), f"{engine} should stay empty"
 
 
 def test_get_output_registry_known_and_unknown() -> None:
     assert get_output_registry("sfincs") == ()
     assert get_output_registry("SFINCS") == ()  # case-insensitive
     assert get_output_registry("does-not-exist") == ()
+    # a migrated engine resolves its populated tuple (case-insensitive).
+    assert get_output_registry("MODFLOW") == get_output_registry("modflow")
+    assert len(get_output_registry("modflow")) >= 1
 
 
 def test_output_quantity_spec_is_frozen() -> None:

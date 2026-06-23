@@ -80,6 +80,15 @@ class ChainResult:
     # which output field name the chain produced (for the COG band metadata).
     output_field_name: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    #: levers STEP 3 -- the additional grids the chain ALREADY computes but the
+    #: pre-STEP-3 worker discarded (drainage_area / slope / relative_wetness /
+    #: discharge / factor_of_safety). Each is a (H, W) NaN-masked float array
+    #: keyed by a STABLE token the agent maps onto an OutputQuantitySpec:
+    #: {"drainage_area", "slope", "relative_wetness", "discharge",
+    #: "factor_of_safety"}. Empty for a chain that does not compute a given
+    #: field (e.g. overland_flow has discharge but no factor_of_safety). The
+    #: entrypoint writes each as its own COG so the agent can publish it.
+    secondary_fields: dict[str, Any] = field(default_factory=dict)
 
 
 def run_component_chain(
@@ -179,9 +188,21 @@ def _run_landslide_probability(
     # field the component actually consumes (per the Landlab LandslideProbability
     # API: required input fields are ``topographic__slope`` +
     # ``topographic__specific_contributing_area`` + the soil__ fields).
+    # levers STEP 3: advanced_physics["flow_director"] selects the flow-routing
+    # director (D8 default; Dinf / MFD per the registry). build_spec carries the
+    # ALREADY-VALIDATED resolved value (or the default). FlowDirectorD8/Dinf/MFD
+    # are the Landlab director names; map the short registry token onto them.
+    _DIRECTOR_MAP = {
+        "D8": "FlowDirectorD8",
+        "Dinf": "FlowDirectorDINF",
+        "MFD": "FlowDirectorMFD",
+    }
+    director = _DIRECTOR_MAP.get(
+        str(spec.get("flow_director", "D8")), "FlowDirectorD8"
+    )
     fa = FlowAccumulator(
         grid,
-        flow_director="FlowDirectorD8",
+        flow_director=director,
         depression_finder="DepressionFinderAndRouter",
     )
     fa.run_one_step()
@@ -316,6 +337,31 @@ def _run_landslide_probability(
     prob[nodata_mask] = np.nan
     fos[nodata_mask] = np.nan
 
+    # levers STEP 3: collect the additional grids the chain already computed
+    # (the pre-STEP-3 worker discarded these). Each is reshaped to (H, W) and
+    # NaN-masked on the closed/no-data cells, ready for its own COG.
+    def _grid2d(node_field: str) -> Any:
+        try:
+            a = np.asarray(grid.at_node[node_field], dtype="float64").reshape(
+                nrows, ncols
+            )
+        except Exception:  # noqa: BLE001 - a field the run did not populate
+            return None
+        a[nodata_mask] = np.nan
+        return a
+
+    secondary: dict[str, Any] = {}
+    da = _grid2d("drainage_area")
+    if da is not None:
+        secondary["drainage_area"] = da
+    sl = _grid2d("topographic__slope")
+    if sl is not None:
+        secondary["slope"] = sl
+    rw = _grid2d("soil__mean_relative_wetness")
+    if rw is not None:
+        secondary["relative_wetness"] = rw
+    secondary["factor_of_safety"] = fos
+
     active = np.isfinite(prob)
     n_active = int(active.sum())
     if n_active == 0:
@@ -347,6 +393,7 @@ def _run_landslide_probability(
         mean_probability_of_failure=mean_pof,
         output_field_name="landslide__probability_of_failure",
         extra={"factor_of_safety_field": fos},
+        secondary_fields=secondary,
     )
 
 
@@ -418,9 +465,18 @@ def _run_overland_flow(
     rain_ms = intensity_mm_hr / 1000.0 / 3600.0  # mm/hr -> m/s
     duration_s = duration_hr * 3600.0
 
-    of = OverlandFlow(grid, steep_slopes=True)
+    # levers STEP 3: advanced_physics overland_alpha / mannings_n override the
+    # OverlandFlow stability coefficient + roughness (build_spec carries the
+    # validated resolved values; absent => Landlab defaults, byte-identical).
+    of_kwargs: dict[str, Any] = {"steep_slopes": True}
+    if spec.get("mannings_n") is not None:
+        of_kwargs["mannings_n"] = float(spec["mannings_n"])
+    if spec.get("overland_alpha") is not None:
+        of_kwargs["alpha"] = float(spec["overland_alpha"])
+    of = OverlandFlow(grid, **of_kwargs)
 
     peak = np.zeros(grid.number_of_nodes, dtype="float64")
+    peak_q = np.zeros(grid.number_of_nodes, dtype="float64")
     elapsed = 0.0
     # Bounded step budget so a pathological AOI cannot loop forever.
     max_steps = int(spec.get("max_overland_steps", 2000))
@@ -433,11 +489,28 @@ def _run_overland_flow(
         of.overland_flow()
         depth = np.asarray(grid.at_node["surface_water__depth"], dtype="float64")
         peak = np.maximum(peak, depth)
+        # levers STEP 3: track the peak per-NODE discharge magnitude. OverlandFlow
+        # carries ``surface_water__discharge`` on LINKS (m^2/s per unit width);
+        # map the max-incident-link magnitude to each node for a per-cell raster.
+        try:
+            q_link = np.abs(
+                np.asarray(grid.at_link["surface_water__discharge"], dtype="float64")
+            )
+            q_node = grid.map_max_of_node_links_to_node(q_link)
+            peak_q = np.maximum(peak_q, np.asarray(q_node, dtype="float64"))
+        except Exception:  # noqa: BLE001 - discharge field/mapping unavailable
+            pass
         elapsed += of.dt
         steps += 1
 
     peak_grid = peak.reshape(nrows, ncols)
     peak_grid[nodata_mask] = np.nan
+
+    secondary: dict[str, Any] = {}
+    if np.any(peak_q > 0.0):
+        q_grid = peak_q.reshape(nrows, ncols)
+        q_grid[nodata_mask] = np.nan
+        secondary["discharge"] = q_grid
 
     active = np.isfinite(peak_grid)
     n_active = int(active.sum())
@@ -466,4 +539,5 @@ def _run_overland_flow(
         mean_probability_of_failure=0.0,
         output_field_name="surface_water__depth",
         extra={"max_depth_m": max_depth, "n_steps": steps},
+        secondary_fields=secondary,
     )

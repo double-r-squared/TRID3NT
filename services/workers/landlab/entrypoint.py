@@ -102,6 +102,12 @@ RUNS_BUCKET = os.environ.get("GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs")
 #: + any glob matches from completion.json output_uris).
 FIELD_COG_NAME = "landlab_field.tif"
 
+#: levers STEP 3: per-secondary-field COG filename. The agent maps the
+#: ``<token>`` back onto an OutputQuantitySpec
+#: (drainage_area / slope / relative_wetness / discharge / factor_of_safety).
+def _secondary_cog_name(token: str) -> str:
+    return f"landlab_secondary_{token}.tif"
+
 
 def _utc_now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -348,6 +354,22 @@ def _run_landlab(
     field_cog = cwd / FIELD_COG_NAME
     _write_field_cog(chain.field, field_cog, transform=transform, crs=crs)
 
+    # levers STEP 3: write each additional field the chain computed as its own
+    # COG (the agent reprojects + publishes them as context layers). A field
+    # that is all-NaN / absent is skipped (no empty layer). The
+    # ``secondary_field_files`` map (token -> relative filename) goes in the
+    # result block so the agent maps each onto its OutputQuantitySpec.
+    import numpy as _np
+
+    secondary_files: dict[str, str] = {}
+    for token, grid_field in (chain.secondary_fields or {}).items():
+        arr = _np.asarray(grid_field, dtype="float64")
+        if arr.size == 0 or not _np.any(_np.isfinite(arr)):
+            continue
+        sec_name = _secondary_cog_name(token)
+        _write_field_cog(arr, cwd / sec_name, transform=transform, crs=crs)
+        secondary_files[token] = sec_name
+
     result_block = {
         "analysis": chain.analysis,
         "unstable_area_fraction": float(chain.unstable_area_fraction),
@@ -356,6 +378,7 @@ def _run_landlab(
         "output_field_name": chain.output_field_name,
         "resolution_m": float(resolution_m),
         "grid_crs": crs,
+        "secondary_field_files": secondary_files,
     }
     return result_block, field_cog
 

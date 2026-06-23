@@ -71,7 +71,10 @@ from .postprocess_flood import (
 __all__ = [
     "PostprocessSWMMError",
     "postprocess_swmm",
+    "publish_swmm_quantities",
     "scatter_node_depths_to_grid",
+    "scatter_node_attr_to_grid",
+    "scatter_link_attr_to_grid",
     "compute_swmm_depth_metrics",
     "FLOOD_DEPTH_STYLE_PRESET",
     "NODATA_DEPTH_M",
@@ -168,6 +171,100 @@ def scatter_node_depths_to_grid(
         d = float(depth)
         # sub-threshold (and non-positive) cells are dry -> NaN.
         grid[i, j] = d if d >= NODATA_DEPTH_M else np.nan
+    return grid
+
+
+# --------------------------------------------------------------------------- #
+# levers STEP 3: generalized scatter for ANY node/link attribute.
+#
+# The existing depth scatter masks SUB-THRESHOLD cells to NaN (a dry-depth
+# convention). The generic scatter has NO dry-floor (a flooding rate / ponded
+# volume / conduit flow of 0 is meaningful "no flow", masked to NaN only when it
+# is exactly 0 so the renderer hides null cells but keeps every active value).
+# --------------------------------------------------------------------------- #
+def _parse_conduit_link(name: str) -> tuple[int, int] | None:
+    """Parse an overland conduit name ``L_<fi>_<fj>__<ti>_<tj>`` -> the (ti, tj)
+    DOWNSTREAM cell (where the flow lands). Returns ``None`` for the boundary
+    feeder ``L_OUTLET`` / a flap-gate ``FLAP_*`` / any non-overland link.
+    """
+    if not isinstance(name, str) or not name.startswith("L_") or "__" not in name:
+        return None
+    _frm, _, to = name.partition("__")
+    parts = to.split("_")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def scatter_node_attr_to_grid(
+    value_by_node: dict[str, float],
+    grid_shape: tuple[int, int],
+    *,
+    signed: bool = False,
+) -> Any:
+    """Scatter a ``{node_name: value}`` snapshot onto the mesh ``(H, W)`` grid.
+
+    Each cell ``(i, j)`` owns node ``S_{i}_{j}`` (the builder convention). Cells
+    with no node stay NaN. A value of EXACTLY 0 is masked to NaN (no flow / no
+    pond -> the renderer hides it); every non-zero value is kept. When
+    ``signed`` is False, negative values are clamped to NaN (a magnitude field
+    like FLOODING_LOSSES / PONDED_VOLUME is non-negative); when True the sign is
+    preserved (a diverging field). Pure numpy.
+    """
+    import numpy as np  # local
+
+    nrows, ncols = int(grid_shape[0]), int(grid_shape[1])
+    grid = np.full((nrows, ncols), np.nan, dtype="float64")
+    for name, raw in value_by_node.items():
+        rc = _parse_cell_node(name)
+        if rc is None:
+            continue
+        i, j = rc
+        if not (0 <= i < nrows and 0 <= j < ncols):
+            continue
+        v = float(raw)
+        if v == 0.0 or (not signed and v < 0.0):
+            continue  # leave NaN (no flow / clamp negative magnitude)
+        grid[i, j] = v
+    return grid
+
+
+def scatter_link_attr_to_grid(
+    value_by_link: dict[str, float],
+    grid_shape: tuple[int, int],
+    *,
+    signed: bool = False,
+) -> Any:
+    """Scatter a ``{conduit_name: value}`` snapshot onto the DOWNSTREAM cell grid.
+
+    Each overland conduit ``L_<fi>_<fj>__<ti>_<tj>`` deposits its value at the
+    downstream cell ``(ti, tj)`` (where the flow lands). When two conduits share
+    a downstream cell the LARGER MAGNITUDE wins (the headline flow/velocity at
+    that cell). Zero -> NaN; negatives kept iff ``signed``. Boundary feeders /
+    flap gates are skipped. Pure numpy.
+    """
+    import numpy as np  # local
+
+    nrows, ncols = int(grid_shape[0]), int(grid_shape[1])
+    grid = np.full((nrows, ncols), np.nan, dtype="float64")
+    for name, raw in value_by_link.items():
+        rc = _parse_conduit_link(name)
+        if rc is None:
+            continue
+        i, j = rc
+        if not (0 <= i < nrows and 0 <= j < ncols):
+            continue
+        v = float(raw)
+        if v == 0.0:
+            continue
+        if not signed:
+            v = abs(v)
+        cur = grid[i, j]
+        if np.isnan(cur) or abs(v) > abs(cur):
+            grid[i, j] = v
     return grid
 
 
@@ -738,3 +835,181 @@ def _affine_from_build(build: Any) -> Any:
             details={"transform": t},
         )
     return Affine(t[0], t[1], t[2], t[3], t[4], t[5])
+
+
+# --------------------------------------------------------------------------- #
+# levers STEP 3 -- NEW published quantities (FLOODING_LOSSES / PONDED_VOLUME /
+# conduit FLOW_RATE / conduit FLOW_VELOCITY).
+#
+# The EXISTING per-node INVERT_DEPTH peak + frames stay on the byte-identical
+# ``postprocess_swmm`` path above. The Output binary API is ALREADY open there;
+# this ADDS the other node/link attributes the Output API exposes (the audit's
+# item 4) as additive per-cell PEAK rasters via the shared executor.
+# --------------------------------------------------------------------------- #
+#: token -> (OutputQuantitySpec.quantity_id, Output-API attr name, scope, signed)
+#: scope = "node" | "link"; signed selects the diverging vs magnitude scatter.
+_SWMM_NEW_QUANTITIES: tuple[tuple[str, str, str, str, bool], ...] = (
+    ("swmm-flooding-losses", "FLOODING_LOSSES", "node", "Node flooding rate", False),
+    ("swmm-ponded-volume", "PONDED_VOLUME", "node", "Ponded volume", False),
+    ("swmm-conduit-flow", "FLOW_RATE", "link", "Conduit flow", True),
+    ("swmm-conduit-velocity", "FLOW_VELOCITY", "link", "Conduit velocity", False),
+)
+
+
+def _read_swmm_attr_peak_grid(
+    out_path: str,
+    grid_shape: tuple[int, int],
+    *,
+    attr_name: str,
+    scope: str,
+    signed: bool,
+) -> Any:
+    """Read every reporting step's node/link attr -> the PEAK-magnitude grid.
+
+    Uses the pyswmm ``Output`` binary API: for a NODE attr,
+    ``out.node_attribute(NodeAttribute.<attr>, t)`` -> ``{node: value}``; for a
+    LINK attr, ``out.link_attribute(LinkAttribute.<attr>, t)`` -> ``{link:
+    value}``. We scatter each step (node-> own cell, link-> downstream cell) and
+    keep the per-cell PEAK MAGNITUDE across steps. Raises a typed
+    ``PostprocessSWMMError`` on a missing dep / read failure. Returns the peak
+    ``(H, W)`` grid (NaN where no flow).
+    """
+    try:
+        import numpy as np
+        from pyswmm import Output
+        from swmm.toolkit.shared_enum import LinkAttribute, NodeAttribute
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessSWMMError(
+            "SWMM_DEPENDENCY_MISSING",
+            message=f"pyswmm / swmm.toolkit unavailable for .out attr read: {exc}",
+            details={"out_path": out_path, "attr": attr_name},
+        ) from exc
+
+    if not Path(out_path).exists():
+        raise PostprocessSWMMError(
+            "SWMM_OUTPUT_READ_FAILED",
+            message=f"SWMM .out not found at {out_path}",
+            details={"out_path": out_path},
+        )
+
+    peak: Any = None
+    try:
+        with Output(out_path) as out:
+            n_steps = len(out.times)
+            if n_steps <= 0:
+                raise PostprocessSWMMError(
+                    "SWMM_OUTPUT_EMPTY",
+                    message="SWMM .out carries no reporting timesteps",
+                    details={"out_path": out_path},
+                )
+            for t in range(n_steps):
+                if scope == "node":
+                    enum_val = getattr(NodeAttribute, attr_name)
+                    by_id = out.node_attribute(enum_val, t)
+                    grid = scatter_node_attr_to_grid(by_id, grid_shape, signed=signed)
+                else:
+                    enum_val = getattr(LinkAttribute, attr_name)
+                    by_id = out.link_attribute(enum_val, t)
+                    grid = scatter_link_attr_to_grid(by_id, grid_shape, signed=signed)
+                if peak is None:
+                    peak = grid
+                else:
+                    # keep the per-cell PEAK MAGNITUDE (NaN-safe).
+                    take = (~np.isnan(grid)) & (
+                        np.isnan(peak) | (np.abs(grid) > np.abs(peak))
+                    )
+                    peak = np.where(take, grid, peak)
+    except PostprocessSWMMError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessSWMMError(
+            "SWMM_OUTPUT_READ_FAILED",
+            message=f"could not read {attr_name} from {out_path}: {exc}",
+            details={"out_path": out_path, "attr": attr_name},
+        ) from exc
+    # ``np`` is bound from the try-body import above (we only reach here when it
+    # succeeded; the except clauses re-raise).
+    if peak is None:
+        peak = np.full(
+            (int(grid_shape[0]), int(grid_shape[1])), np.nan, dtype="float64"
+        )
+    return peak
+
+
+def publish_swmm_quantities(
+    run: Any,
+    build: Any,
+    *,
+    run_id: str,
+    register_manifest_layers: Any,
+    runs_bucket: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> Any:
+    """Publish the NEW SWMM quantities (flooding / ponded / conduit flow+vel).
+
+    Reads each attribute's PEAK-magnitude grid from the same solved ``.out`` the
+    depth path used, builds registry readers, and routes them through the shared
+    executor (ONE registrar). Returns the executor result. A quantity whose grid
+    is entirely empty (all NaN) is still emitted as a (blank) layer only if it
+    has any finite cell; otherwise the executor's reader returns an empty grid
+    and the layer simply renders nothing -- never raises.
+    """
+    from dataclasses import replace as _dc_replace
+
+    from grace2_contracts.output_quantities import (
+        RasterField,
+        get_output_registry,
+    )
+
+    from . import publish_quantities as _pq
+
+    out_path = str(getattr(run, "out_path"))
+    grid_shape = tuple(getattr(build, "grid_shape"))
+    grid_crs = str(getattr(build, "crs"))
+    grid_transform = _affine_from_build(build)
+    resolution_m = float(getattr(build, "resolution_m"))
+
+    by_qid = {
+        qid: (attr, scope, signed)
+        for (qid, attr, scope, _label, signed) in _SWMM_NEW_QUANTITIES
+    }
+
+    def _make_reader(qid: str):
+        attr, scope, signed = by_qid[qid]
+
+        def _reader(_ctx: Any) -> RasterField:
+            import numpy as np
+
+            grid = _read_swmm_attr_peak_grid(
+                out_path, grid_shape, attr_name=attr, scope=scope, signed=signed
+            )
+            finite = grid[np.isfinite(grid)]
+            mx = float(np.nanmax(np.abs(finite))) if finite.size else 0.0
+            return RasterField(
+                grid=grid,
+                src_crs=grid_crs,
+                src_transform=grid_transform,
+                reproject=True,
+                crs_roundtrip_guard=True,
+                metrics={f"{qid}_peak": mx},
+            )
+
+        return _reader
+
+    specs = [
+        _dc_replace(spec, reader=_make_reader(spec.quantity_id))
+        for spec in get_output_registry("swmm")
+        if spec.quantity_id in by_qid
+    ]
+
+    def _upload(cog: Path, rid: str, _bucket: Any = None, *, dest_filename: str) -> str:
+        return _upload_cog_to_runs_bucket(cog, rid, runs_bucket, dest_filename=dest_filename)
+
+    return _pq.publish_quantities(
+        "swmm",
+        run_id=run_id,
+        upload=_upload,
+        register_manifest_layers=register_manifest_layers,
+        specs=specs,
+        bbox=bbox,
+    )

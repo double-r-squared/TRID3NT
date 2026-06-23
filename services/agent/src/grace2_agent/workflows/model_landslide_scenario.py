@@ -191,7 +191,7 @@ def _fetch_dem_for_landslide(
 
 def _download_batch_landlab_outputs(
     run_result: Any, run_id: str
-) -> tuple[str, dict[str, Any], str]:
+) -> tuple[str, dict[str, Any], str, dict[str, str]]:
     """Download the Batch field COG + read the worker's typed ``result`` block.
 
     The Landlab worker uploads ``landlab_field.tif`` under
@@ -199,7 +199,14 @@ def _download_batch_landlab_outputs(
     ``result`` block in completion.json. We re-read completion.json (small,
     already on S3) to find the field key + the result block, download the COG via
     the SAME boto3 client the solver dispatch uses, and return ``(local_cog,
-    result_block, tmp_dir)``.
+    result_block, tmp_dir, secondary_local_by_token)``.
+
+    levers STEP 3: the worker also writes per-secondary-field COGs
+    (``landlab_secondary_<token>.tif``) and records them in
+    ``result.secondary_field_files`` (token -> filename). We download each that
+    is present and return ``secondary_local_by_token`` (token -> local path) so
+    the composer can publish the additional quantities. A missing/undownloadable
+    secondary COG is skipped (never sinks the primary).
 
     Raises ``LandlabWorkflowError("LANDLAB_BATCH_OUTPUT_MISSING")`` when a
     'complete' run produced no downloadable field COG (a real failure, never a
@@ -263,7 +270,18 @@ def _download_batch_landlab_outputs(
             ),
             details={"run_id": run_id, "runs_bucket": runs_bucket},
         )
-    return local_field, result_block, tmp_dir
+
+    # levers STEP 3: download the secondary-field COGs the worker recorded.
+    secondary_local_by_token: dict[str, str] = {}
+    sec_files = result_block.get("secondary_field_files")
+    if isinstance(sec_files, dict):
+        for token, fname in sec_files.items():
+            key = f"{run_id}/{fname}"
+            local = _download(key)
+            if local is not None:
+                secondary_local_by_token[str(token)] = local
+
+    return local_field, result_block, tmp_dir, secondary_local_by_token
 
 
 def _cleanup_dir(path: str) -> None:
@@ -394,7 +412,12 @@ async def model_landslide_scenario(
     # --- Step 4: download the field COG + read the worker result block ------
     batch_run_id = getattr(run_result, "run_id", None) or rid
     async with substep(current_emitter(), "download_landlab_outputs"):
-        local_field, result_block, batch_out_dir = await asyncio.to_thread(
+        (
+            local_field,
+            result_block,
+            batch_out_dir,
+            secondary_cogs,
+        ) = await asyncio.to_thread(
             _download_batch_landlab_outputs, run_result, batch_run_id
         )
 
@@ -408,6 +431,40 @@ async def model_landslide_scenario(
                 analysis=run_args.analysis,
                 result=result_block,
             )
+
+        # levers STEP 3 (gated): ALSO publish the secondary fields (drainage
+        # area / slope / relative wetness / discharge / factor-of-safety) as
+        # context layers. Non-fatal -- a failure never sinks the primary.
+        import os as _os
+
+        if secondary_cogs and _os.environ.get(
+            "GRACE2_LANDLAB_REGISTRY_QUANTITIES", ""
+        ).lower() in ("1", "true", "on", "yes"):
+            try:
+                from .postprocess_landlab import publish_landlab_quantities
+                from .register_published_manifest import register_manifest_layers
+
+                reg = await asyncio.to_thread(
+                    lambda: publish_landlab_quantities(
+                        secondary_cogs,
+                        run_id=rid,
+                        register_manifest_layers=register_manifest_layers,
+                        bbox=tuple(bbox),
+                    )
+                )
+                emitter_now = current_emitter()
+                if emitter_now is not None and reg is not None:
+                    for extra_layer in getattr(reg, "layers", []) or []:
+                        try:
+                            await emitter_now.add_loaded_layer(extra_layer)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("could not add landlab registry layer: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "model_landslide_scenario registry-quantity publish failed "
+                    "(non-fatal): %s",
+                    exc,
+                )
     finally:
         _cleanup_dir(batch_out_dir)
 

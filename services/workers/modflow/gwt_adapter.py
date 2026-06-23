@@ -364,6 +364,9 @@ def build_modflow_deck(
     river_rbot_by_cell: dict[tuple[int, int], float] | None = None,
     river_stage_by_cell: dict[tuple[int, int], float] | None = None,
     along_river_source: bool = False,
+    # --- advanced-physics overrides (levers STEP 3; ADDITIVE, optional) ----- #
+    advanced_physics: dict | None = None,
+    save_concentration_all_steps: bool = True,
 ) -> DeckManifest:
     """Assemble a complete MF6 GWF+GWT spill deck and (optionally) write it.
 
@@ -700,19 +703,44 @@ def build_modflow_deck(
     )
     flopy.mf6.ModflowGwtic(gwt, strt=0.0, filename=f"{gwt_name}.ic")
     flopy.mf6.ModflowGwtadv(gwt, scheme="TVD", filename=f"{gwt_name}.adv")
+
+    # --- advanced-physics overrides (levers STEP 3) -------------------------- #
+    # The agent passes an ALREADY-VALIDATED resolved dict (range/type checked by
+    # physics_registry.validate_and_resolve_physics("modflow", ...)). None / {}
+    # => byte-identical conservative-tracer deck (every default below reproduces
+    # today's exact GwtDsp / GwtMst call). The keys mirror the registry
+    # deck_target pointers (GwtDsp:alh / GwtDsp:ath1 / GwtMst:distcoef /
+    # GwtMst:bulk_density / GwtMst:decay).
+    phys = dict(advanced_physics or {})
+    alh = float(phys.get("long_dispersivity_m", LONGITUDINAL_DISPERSIVITY_M))
+    if "trans_dispersivity_m" in phys:
+        ath1 = float(phys["trans_dispersivity_m"])
+    else:
+        ath1 = LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_HORIZONTAL_RATIO
+    atv = LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_VERTICAL_RATIO
     flopy.mf6.ModflowGwtdsp(
         gwt,
-        alh=LONGITUDINAL_DISPERSIVITY_M,
-        ath1=LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_HORIZONTAL_RATIO,
-        atv=LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_VERTICAL_RATIO,
+        alh=alh,
+        ath1=ath1,
+        atv=atv,
         filename=f"{gwt_name}.dsp",
     )
+
     # Mobile storage: porosity controls pore velocity (v = q / porosity).
-    flopy.mf6.ModflowGwtmst(
-        gwt,
-        porosity=porosity,
-        filename=f"{gwt_name}.mst",
-    )
+    # advanced_physics may additionally enable LINEAR sorption (distcoef = Kd +
+    # bulk_density => a retardation factor) and FIRST_ORDER decay -- both DEFAULT
+    # OFF (a conservative tracer) so an absent key is byte-identical.
+    mst_kwargs: dict = {"porosity": porosity, "filename": f"{gwt_name}.mst"}
+    kd = phys.get("sorption_kd")
+    if kd is not None and float(kd) > 0.0:
+        mst_kwargs["sorption"] = "LINEAR"
+        mst_kwargs["distcoef"] = float(kd)
+        mst_kwargs["bulk_density"] = float(phys.get("bulk_density", 1600.0))
+    decay = phys.get("decay_rate_per_day")
+    if decay is not None and float(decay) > 0.0:
+        mst_kwargs["first_order_decay"] = True
+        mst_kwargs["decay"] = float(decay)
+    flopy.mf6.ModflowGwtmst(gwt, **mst_kwargs)
 
     # Mass-loading source. SRC injects mass/time directly (g/day here)
     # regardless of local concentration — the spill-loading model. The source
@@ -750,11 +778,19 @@ def build_modflow_deck(
         filename=f"{gwt_name}.ssm",
     )
 
+    # levers STEP 3: save ALL transport steps (not just LAST) so the agent can
+    # publish a concentration ANIMATION (plume-concentration-ts). The existing
+    # final-step plume reads totim=times[-1], so saving ALL is byte-identical for
+    # that quantity -- it simply ALSO keeps the intermediate steps the animation
+    # needs. ``save_concentration_all_steps=False`` restores the old LAST-only OC
+    # (kept as a reversible seam). BUDGET stays LAST (the seepage path reads only
+    # the final RIV budget).
+    conc_save = "ALL" if save_concentration_all_steps else "LAST"
     flopy.mf6.ModflowGwtoc(
         gwt,
         concentration_filerecord=f"{gwt_name}.ucn",
         budget_filerecord=f"{gwt_name}.cbc",
-        saverecord=[("CONCENTRATION", "LAST"), ("BUDGET", "LAST")],
+        saverecord=[("CONCENTRATION", conc_save), ("BUDGET", "LAST")],
         filename=f"{gwt_name}.oc",
     )
 

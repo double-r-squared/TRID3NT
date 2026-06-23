@@ -897,6 +897,42 @@ async def model_urban_flood_swmm(
     # emission is skipped - the frames still live in `layers` for tests to assert.
     emitted_frames = await _emit_frame_layers(emitter, frame_layers, staging.run_id)
 
+    # --- levers STEP 3 (gated): ADDITIVE registry quantities -----------------
+    # The depth peak + frames above are the byte-identical headline. When the
+    # registry-quantities flag is on, ALSO publish FLOODING_LOSSES / PONDED_VOLUME
+    # / conduit FLOW_RATE / FLOW_VELOCITY as context layers from the SAME .out.
+    # Non-fatal: a failure here never sinks the depth layers.
+    import os as _os
+
+    if _os.environ.get("GRACE2_SWMM_REGISTRY_QUANTITIES", "").lower() in (
+        "1", "true", "on", "yes"
+    ):
+        try:
+            from .postprocess_swmm import publish_swmm_quantities
+            from .register_published_manifest import register_manifest_layers
+
+            reg = await asyncio.to_thread(
+                lambda: publish_swmm_quantities(
+                    run,
+                    staging.build,
+                    run_id=staging.run_id,
+                    register_manifest_layers=register_manifest_layers,
+                    bbox=tuple(bbox),
+                )
+            )
+            if emitter is not None and reg is not None:
+                for extra_layer in getattr(reg, "layers", []) or []:
+                    try:
+                        await emitter.add_loaded_layer(extra_layer)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("could not add swmm registry layer: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "model_urban_flood_swmm registry-quantity publish failed "
+                "(non-fatal): %s",
+                exc,
+            )
+
     # OBSERVABILITY (NATE): the completion log surfaces n_buildings_dropped (the
     # count of building footprints applied as OBSTACLES - holes in the mesh, the
     # "drop" representation) ALONGSIDE n_buildings_affected. The prior log showed

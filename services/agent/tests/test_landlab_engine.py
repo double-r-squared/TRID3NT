@@ -406,6 +406,8 @@ def test_model_landslide_scenario_chain_mocked(tmp_path, monkeypatch):
     _write_synthetic_field_cog(field_cog, values=field)
 
     def _fake_download(run_result, run_id):  # noqa: ANN001
+        # levers STEP 3: _download_batch_landlab_outputs now returns a 4-tuple
+        # (the 4th is the secondary-field token->local-path map; empty here).
         return (
             str(field_cog),
             {
@@ -414,6 +416,7 @@ def test_model_landslide_scenario_chain_mocked(tmp_path, monkeypatch):
                 "mean_probability_of_failure": 0.2,
             },
             str(tmp_path / "batch-out"),
+            {},
         )
 
     monkeypatch.setattr(M, "_download_batch_landlab_outputs", _fake_download)

@@ -48,7 +48,7 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
-from .common import BBox, GraceModel
+from .common import BBox, EngineRunArgsMixin, GraceModel
 from .execution import LayerURI
 
 __all__ = [
@@ -87,8 +87,15 @@ DEFAULT_GMPE: str = "BooreAtkinson2008"
 _IMT_RE = re.compile(r"^(PGA|PGV|SA\(\d+(\.\d+)?\))$")
 
 
-class OpenQuakeRunArgs(GraceModel):
+class OpenQuakeRunArgs(EngineRunArgsMixin):
     """Parameters for a classical probabilistic-seismic-hazard (PSHA) run.
+
+    Adopts ``EngineRunArgsMixin`` (levers STEP 3): ``advanced_physics`` keys are
+    validated against ``physics_registry.PHYSICS_REGISTRY["openquake"]``
+    (truncation_level / rupture_mesh_spacing_km / width_of_mfd_bin /
+    area_source_discretization_km) and threaded into the ``job.ini`` deck;
+    ``None`` => byte-identical classical-PSHA deck. ``temporal_mode`` /
+    ``output_frames`` are inert for OpenQuake (no animation).
 
     Returned/assembled by the seismic composer after agent-confirmed parameter
     extraction; consumed by the OpenQuake worker (``services/workers/openquake``)

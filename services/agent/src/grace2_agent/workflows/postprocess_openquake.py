@@ -44,7 +44,10 @@ logger = logging.getLogger("grace2_agent.workflows.postprocess_openquake")
 __all__ = [
     "PostprocessOpenQuakeError",
     "postprocess_openquake",
+    "publish_openquake_quantities",
     "parse_hazard_map_csv",
+    "parse_hazard_curve_csv",
+    "parse_uhs_csv",
     "rasterize_hazard_sites",
     "compute_hazard_metrics",
     "SEISMIC_HAZARD_STYLE_PRESET",
@@ -483,4 +486,179 @@ def postprocess_openquake(
         max_hazard_value=max_val,
         hazard_area_km2=hazard_area_km2,
         n_sites=n_sites,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# levers STEP 3 -- NEW non-raster quantities: hazard CURVES + UHS (ScalarField).
+#
+# The classical PSHA run ALREADY exports a mean hazard CURVE CSV
+# (hazard_curve-mean-<IMT>_*.csv); enabling uniform_hazard_spectra also exports
+# a UHS CSV (hazard_uhs-mean_*.csv). These are NON-RASTER products: they do not
+# fit cog / cog_timeseries. Per the levers plan we route them to the run METRICS
+# (the ScalarField emitter branch of publish_quantities) + leave the
+# conversational-analysis CHART producer (a Vega-Lite PoE-vs-IML / SA-vs-period
+# line chart) as a FOLLOW-UP (the chart_tools producers consume layer URIs, not
+# the OpenQuake curve CSVs -- a new producer is a separate deliverable). A true
+# non-raster product table (the full curve / spectrum as a structured payload)
+# is likewise DEFERRED; here we surface the load-bearing summary scalars.
+# --------------------------------------------------------------------------- #
+def parse_hazard_curve_csv(text: str) -> dict[str, Any]:
+    """Parse a mean hazard-CURVE CSV into summary scalars (no LLM).
+
+    OpenQuake's ``hazard_curve-mean-<IMT>_*.csv`` carries a ``#`` banner, then a
+    header ``lon,lat,depth,poe-<iml1>,poe-<iml2>,...`` and one row per site (the
+    PoE at each IML). We extract the IML ladder (from the ``poe-<iml>`` column
+    names) and the MEAN PoE across sites at each IML, returning a compact
+    summary: the IML list, the mean-PoE-by-IML list, and the count of sites.
+    """
+    lines = [
+        ln for ln in text.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    if not lines:
+        return {}
+    reader = csv.reader(io.StringIO("\n".join(lines)))
+    header = next(reader, None)
+    if not header:
+        return {}
+    cols = [c.strip() for c in header]
+    # PoE columns are named "poe-<iml>" (OpenQuake convention).
+    iml_cols: list[tuple[int, float]] = []
+    for i, name in enumerate(cols):
+        low = name.lower()
+        if low.startswith("poe-"):
+            try:
+                iml_cols.append((i, float(name.split("-", 1)[1])))
+            except (ValueError, IndexError):
+                continue
+    if not iml_cols:
+        return {}
+    sums = [0.0] * len(iml_cols)
+    n = 0
+    for raw in reader:
+        if not raw:
+            continue
+        try:
+            for k, (ci, _iml) in enumerate(iml_cols):
+                sums[k] += float(raw[ci])
+            n += 1
+        except (ValueError, IndexError):
+            continue
+    if n == 0:
+        return {}
+    imls = [iml for _ci, iml in iml_cols]
+    mean_poe = [s / n for s in sums]
+    return {
+        "hazard_curve_imls_g": imls,
+        "hazard_curve_mean_poe": mean_poe,
+        "hazard_curve_n_sites": n,
+    }
+
+
+def parse_uhs_csv(text: str) -> dict[str, Any]:
+    """Parse a UHS CSV into summary scalars (no LLM).
+
+    OpenQuake's ``hazard_uhs-mean_*.csv`` carries a ``#`` banner, then a header
+    ``lon,lat,depth,<poe>~SA(<period>),...`` (or ``~PGA``) and one row per site:
+    the spectral acceleration at each period for the fixed PoE. We extract the
+    period ladder + the MEAN SA across sites at each period.
+    """
+    lines = [
+        ln for ln in text.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+    if not lines:
+        return {}
+    reader = csv.reader(io.StringIO("\n".join(lines)))
+    header = next(reader, None)
+    if not header:
+        return {}
+    cols = [c.strip() for c in header]
+    period_cols: list[tuple[int, float]] = []
+    for i, name in enumerate(cols):
+        # column like "0.1~SA(0.2)" or "0.1~PGA" -> period 0.2 / 0.0.
+        if "SA(" in name:
+            try:
+                period = float(name.split("SA(", 1)[1].rstrip(")"))
+                period_cols.append((i, period))
+            except (ValueError, IndexError):
+                continue
+        elif name.upper().endswith("PGA"):
+            period_cols.append((i, 0.0))
+    if not period_cols:
+        return {}
+    sums = [0.0] * len(period_cols)
+    n = 0
+    for raw in reader:
+        if not raw:
+            continue
+        try:
+            for k, (ci, _p) in enumerate(period_cols):
+                sums[k] += float(raw[ci])
+            n += 1
+        except (ValueError, IndexError):
+            continue
+    if n == 0:
+        return {}
+    periods = [p for _ci, p in period_cols]
+    mean_sa = [s / n for s in sums]
+    return {
+        "uhs_periods_s": periods,
+        "uhs_mean_sa_g": mean_sa,
+        "uhs_n_sites": n,
+    }
+
+
+def publish_openquake_quantities(
+    *,
+    run_id: str,
+    register_manifest_layers: Any,
+    hazard_curve_csv_text: str | None = None,
+    uhs_csv_text: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> Any:
+    """Publish the NEW OpenQuake quantities (hazard curves + UHS) as SCALARS.
+
+    Both are non-raster products: the readers return ``ScalarField`` so the
+    shared executor merges their summary into the manifest METRICS (no layer).
+    A ``None`` CSV / an unparseable CSV yields an empty ScalarField (skipped).
+    Returns the executor result.
+    """
+    from dataclasses import replace as _dc_replace
+
+    from grace2_contracts.output_quantities import (
+        ScalarField,
+        get_output_registry,
+    )
+
+    from . import publish_quantities as _pq
+
+    def _curve_reader(_ctx: Any) -> ScalarField:
+        return ScalarField(
+            values=parse_hazard_curve_csv(hazard_curve_csv_text or "")
+        )
+
+    def _uhs_reader(_ctx: Any) -> ScalarField:
+        return ScalarField(values=parse_uhs_csv(uhs_csv_text or ""))
+
+    readers = {"hazard-curves": _curve_reader, "uhs": _uhs_reader}
+    specs = [
+        _dc_replace(spec, reader=readers[spec.quantity_id])
+        for spec in get_output_registry("openquake")
+        if spec.quantity_id in readers
+    ]
+
+    def _upload(cog: Path, rid: str, _bucket: Any = None, *, dest_filename: str) -> str:
+        # Scalars never write a COG; this is only here to satisfy the executor
+        # signature (it is never invoked for a ScalarField).
+        return _upload_cog(cog, rid, None)
+
+    return _pq.publish_quantities(
+        "openquake",
+        run_id=run_id,
+        upload=_upload,
+        register_manifest_layers=register_manifest_layers,
+        specs=specs,
+        bbox=bbox,
     )

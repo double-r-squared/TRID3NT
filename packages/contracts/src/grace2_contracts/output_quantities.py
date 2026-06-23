@@ -177,19 +177,230 @@ class OutputQuantitySpec:
 
 
 # --------------------------------------------------------------------------- #
-# Per-engine registry scaffold (EMPTY today - per-engine migration is STEP 3).
+# Per-engine registry (STEP 3: MODFLOW / Landlab / OpenQuake / SWMM migrated).
 # --------------------------------------------------------------------------- #
-#: engine -> ordered tuple of OutputQuantitySpec. EMPTY per engine in STEP 2
-#: (DEFAULT-OFF: nothing published through the executor until STEP 3 migrates an
-#: engine onto it). The engine keys match the postprocess/run module engine
-#: tokens so STEP 3 can fill these in place without a key rename.
+#: engine -> ordered tuple of OutputQuantitySpec. The DECLARATIVE half lives
+#: here (id / kind / style_preset / units / role / label); the ``reader`` is
+#: bound on the AGENT side (this module ships in ``grace2_contracts`` which must
+#: stay pydantic/rasterio-free, so a reader that needs rasterio/flopy/pyswmm
+#: cannot live here). Each engine's agent-side ``*_quantity_readers`` module
+#: clones these scaffold rows with a bound reader (``dataclasses.replace``) and
+#: hands the runtime specs to ``publish_quantities``.
+#:
+#: DEFAULT-OFF discipline: ``default_on`` gates which quantities the executor
+#: publishes. The EXISTING headline quantity per engine (plume / susceptibility /
+#: hazard-map / invert-depth) keeps coming from the engine's BYTE-IDENTICAL old
+#: postprocess path, so it is declared with ``default_on=False`` here purely as
+#: provenance (the executor skips it). The NEW quantities are ``default_on=True``
+#: (they are additive layers the old path never produced) and ride the executor.
+#:
+#: SFINCS / GeoClaw / SWAN stay EMPTY (STEP 0 / STEP 4, out of scope here).
 OUTPUT_QUANTITIES: dict[str, tuple[OutputQuantitySpec, ...]] = {
     "sfincs": (),
-    "swmm": (),
-    "modflow": (),
+    "swmm": (
+        # EXISTING headline (peak invert depth) -- old postprocess path owns it.
+        OutputQuantitySpec(
+            quantity_id="swmm-depth",
+            kind="timeseries",
+            name="Peak flood depth",
+            style_preset="continuous_flood_depth",
+            units="meters",
+            role="primary",
+            default_on=False,
+            doc="Per-node INVERT_DEPTH scattered to the mesh (existing path).",
+        ),
+        # NEW: node FLOODING_LOSSES (surface flooding rate) -> per-cell raster.
+        OutputQuantitySpec(
+            quantity_id="swmm-flooding-losses",
+            kind="raster",
+            name="Node flooding rate",
+            style_preset="continuous_flooding_losses",
+            units="m^3/s",
+            role="context",
+            default_on=True,
+            doc="Peak per-node FLOODING_LOSSES (surface surcharge rate).",
+        ),
+        # NEW: node PONDED_VOLUME -> per-cell raster.
+        OutputQuantitySpec(
+            quantity_id="swmm-ponded-volume",
+            kind="raster",
+            name="Ponded volume",
+            style_preset="continuous_ponded_volume",
+            units="m^3",
+            role="context",
+            default_on=True,
+            doc="Peak per-node PONDED_VOLUME (standing water held at a node).",
+        ),
+        # NEW: conduit FLOW_RATE (signed) -> per-cell raster (link->downstream cell).
+        OutputQuantitySpec(
+            quantity_id="swmm-conduit-flow",
+            kind="raster",
+            name="Conduit flow",
+            style_preset="diverging_conduit_flow",
+            units="m^3/s",
+            role="context",
+            default_on=True,
+            doc="Peak per-conduit FLOW_RATE scattered to the link's cell.",
+        ),
+        # NEW: conduit FLOW_VELOCITY -> per-cell raster.
+        OutputQuantitySpec(
+            quantity_id="swmm-conduit-velocity",
+            kind="raster",
+            name="Conduit velocity",
+            style_preset="continuous_conduit_velocity",
+            units="m/s",
+            role="context",
+            default_on=True,
+            doc="Peak per-conduit FLOW_VELOCITY scattered to the link's cell.",
+        ),
+    ),
+    "modflow": (
+        # EXISTING headline (final-step plume) -- old postprocess path owns it.
+        OutputQuantitySpec(
+            quantity_id="plume-concentration",
+            kind="raster",
+            name="Contaminant Plume (peak concentration)",
+            style_preset="continuous_plume_concentration",
+            units="mg/L",
+            role="primary",
+            default_on=False,
+            doc="Final-step max-over-layers concentration (existing path).",
+        ),
+        # NEW: ALL saved transport steps -> peak + animation frames.
+        OutputQuantitySpec(
+            quantity_id="plume-concentration-ts",
+            kind="timeseries",
+            name="Plume concentration",
+            style_preset="continuous_plume_concentration",
+            units="mg/L",
+            role="primary",
+            default_on=True,
+            doc="All saved UCN transport steps as a concentration animation.",
+        ),
+        # NEW: GWF head / water table (one more .hds read).
+        OutputQuantitySpec(
+            quantity_id="water-table",
+            kind="raster",
+            name="Water table (head)",
+            style_preset="continuous_head_m",
+            units="meters",
+            role="context",
+            default_on=True,
+            doc="Final-step max-over-layers GWF head from the saved .hds.",
+        ),
+        # EXISTING seepage -- old postprocess path owns it (provenance only).
+        OutputQuantitySpec(
+            quantity_id="river-seepage",
+            kind="raster",
+            name="River Seepage (gaining / losing reach)",
+            style_preset="diverging_river_seepage",
+            units="m^3/day",
+            role="primary",
+            default_on=False,
+            doc="Per-cell signed RIV exchange flux (existing path).",
+        ),
+    ),
     "geoclaw": (),
-    "landlab": (),
-    "openquake": (),
+    "landlab": (
+        # EXISTING headline (the analysis-selected primary field).
+        OutputQuantitySpec(
+            quantity_id="landlab-susceptibility",
+            kind="raster",
+            name="Landslide susceptibility",
+            style_preset="continuous_landslide_susceptibility",
+            units="probability",
+            role="primary",
+            default_on=False,
+            doc="Probability-of-failure / peak-depth primary (existing path).",
+        ),
+        # NEW: discarded grids the component chain already computes (worker
+        # emits each as its own COG; the agent reprojects + publishes them).
+        OutputQuantitySpec(
+            quantity_id="landlab-drainage-area",
+            kind="raster",
+            name="Drainage area",
+            style_preset="continuous_drainage_area",
+            units="m^2",
+            role="context",
+            default_on=True,
+            doc="Upstream contributing drainage area (FlowAccumulator).",
+        ),
+        OutputQuantitySpec(
+            quantity_id="landlab-slope",
+            kind="raster",
+            name="Topographic slope",
+            style_preset="continuous_slope",
+            units="m/m",
+            role="context",
+            default_on=True,
+            doc="Topographic steepest slope (rise/run).",
+        ),
+        OutputQuantitySpec(
+            quantity_id="landlab-relative-wetness",
+            kind="raster",
+            name="Relative wetness",
+            style_preset="continuous_relative_wetness",
+            units="fraction",
+            role="context",
+            default_on=True,
+            doc="Soil mean relative wetness (LandslideProbability).",
+        ),
+        OutputQuantitySpec(
+            quantity_id="landlab-discharge",
+            kind="raster",
+            name="Surface-water discharge",
+            style_preset="continuous_discharge_m3s",
+            units="m^3/s",
+            role="context",
+            default_on=True,
+            doc="Surface-water discharge (overland routing).",
+        ),
+        OutputQuantitySpec(
+            quantity_id="landlab-factor-of-safety",
+            kind="raster",
+            name="Factor of safety",
+            style_preset="continuous_factor_of_safety",
+            units="dimensionless",
+            role="context",
+            default_on=True,
+            doc="Deterministic infinite-slope factor of safety (FoS<1 fails).",
+        ),
+    ),
+    "openquake": (
+        # EXISTING headline hazard MAP -- old postprocess path owns the raster.
+        OutputQuantitySpec(
+            quantity_id="seismic-hazard",
+            kind="raster",
+            name="Seismic hazard map",
+            style_preset="continuous_seismic_pga",
+            units="g",
+            role="primary",
+            default_on=False,
+            doc="Per-site hazard value rasterized (existing path).",
+        ),
+        # NEW: hazard CURVES (PoE vs IML) -> scalars/metrics + chart (no raster).
+        OutputQuantitySpec(
+            quantity_id="hazard-curves",
+            kind="scalar",
+            name="Hazard curves",
+            style_preset="continuous_seismic_pga",
+            units="g",
+            role="context",
+            default_on=True,
+            doc="Mean hazard curve(s) (PoE vs IML) -> metrics + chart path.",
+        ),
+        # NEW: uniform hazard spectrum (SA vs period) -> scalars/metrics + chart.
+        OutputQuantitySpec(
+            quantity_id="uhs",
+            kind="scalar",
+            name="Uniform hazard spectrum",
+            style_preset="continuous_seismic_pga",
+            units="g",
+            role="context",
+            default_on=True,
+            doc="Uniform hazard spectrum (SA vs period) -> metrics + chart.",
+        ),
+    ),
     "swan": (),
 }
 

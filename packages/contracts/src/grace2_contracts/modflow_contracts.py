@@ -41,7 +41,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 
-from .common import GraceModel
+from .common import EngineRunArgsMixin, GraceModel
 from .execution import LayerURI
 
 # Streambed defaults for the RIV head-dependent river<->aquifer flux package
@@ -71,8 +71,16 @@ DEFAULT_AQUIFER_K_MS: float = 1e-4  # hydraulic conductivity, m/s (sandy coastal
 DEFAULT_POROSITY: float = 0.3  # effective porosity, dimensionless
 
 
-class MODFLOWRunArgs(GraceModel):
+class MODFLOWRunArgs(EngineRunArgsMixin):
     """Forcing parameters for a MODFLOW 6 + MF6-GWT groundwater run.
+
+    Adopts ``EngineRunArgsMixin`` (levers STEP 3): ``temporal_mode`` (default
+    ``"steady"``, no-op for the demo deck), ``output_frames`` (default 24), and
+    ``advanced_physics`` (default ``None``). ``advanced_physics`` keys are
+    validated against ``physics_registry.PHYSICS_REGISTRY["modflow"]`` (sorption
+    Kd / bulk density / first-order decay / longitudinal+transverse dispersivity)
+    and applied at the ``GwtMst`` / ``GwtDsp`` deck seam; ``None`` =>
+    byte-identical conservative-tracer deck.
 
     Returned/assembled by the Case 2 composer after agent-confirmed parameter
     extraction; consumed by ``run_modflow_job`` (agent) and the ``flopy``
