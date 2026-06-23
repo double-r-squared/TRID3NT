@@ -2389,5 +2389,13 @@
     "kind": "agent",
     "subagent_tokens": 132772,
     "note": "web 3D terrain first cut"
+  },
+  {
+    "id": "worker-side-postprocess-spike",
+    "date": "2026-06-23",
+    "kind": "workflow",
+    "agents": 5,
+    "subagent_tokens": 795553,
+    "note": "scope offloading NetCDF->COG postprocess to the Batch worker"
   }
 ]
