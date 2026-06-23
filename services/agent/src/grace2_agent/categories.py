@@ -365,6 +365,12 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "clip_raster_to_bbox": "geographic_primitives",
     "clip_raster_to_polygon": "geographic_primitives",
     "clip_vector_to_polygon": "geographic_primitives",
+    # QGIS-wrapping backlog (DigitizingTools + Profile tool) -- clean-room GEOS
+    # reimplementations via shapely/rasterio (GPL-clean), siblings of clip/cross-section.
+    "merge_features": "geographic_primitives",
+    "cut_features_with_polygon": "geographic_primitives",
+    "fill_gaps": "geographic_primitives",
+    "compute_terrain_profile": "geographic_primitives",
     "compute_zonal_statistics": "geographic_primitives",
     # NATE 2026-06-17: fast layer-extent + fit-the-map tool. Replaces the
     # sandbox bbox-math anti-pattern and drives the zoom-to map-command.
