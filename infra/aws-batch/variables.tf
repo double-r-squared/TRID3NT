@@ -84,20 +84,81 @@ variable "spot_bid_percentage" {
 variable "instance_types" {
   type        = list(string)
   description = <<-EOT
-    EC2 instance types eligible for the compute environment. "optimal" lets
+    EC2 instance types eligible for the SPOT compute environment. "optimal" lets
     Batch pick the best available SPOT instance from the c4/c5/m4/m5 families
     automatically. To lock to a specific family (e.g. for predictable NUMA
     topology with SFINCS OpenMP), specify explicit types such as
     ["c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge"]. x86_64 only — the SFINCS
     binary in deltares/sfincs-cpu is compiled for amd64.
   EOT
-  # Auto vertical scaling per case (NATE 2026-06-17): the agent now selects a
+  # Auto vertical scaling per case (NATE 2026-06-17): the agent selects a
   # compute_class from the AOI/mesh element count (small 4 vCPU -> standard 8 ->
-  # large 16 -> the new xlarge 48 vCPU / 96 GiB). The default is locked to the
-  # c7i family across the FULL vCPU ladder so Batch can place each class on a
-  # single right-sized box (predictable NUMA topology for the SFINCS/SWMM
-  # OpenMP solve): c7i.xlarge (4) / 2xlarge (8) / 4xlarge (16) / 12xlarge (48,
-  # the xlarge tier). All x86_64, all SPOT-eligible in us-west-2. NOT applied —
-  # authored for NATE to `tofu apply`.
-  default = ["c7i.xlarge", "c7i.2xlarge", "c7i.4xlarge", "c7i.12xlarge"]
+  # large 16 -> the xlarge 48 vCPU / 96 GiB).
+  #
+  # SPOT-CAPACITY BROADENING (TRACK SPOT 2026-06-23): a long SFINCS run sat
+  # RUNNABLE 70 min because no 16-vCPU c7i SPOT capacity was available in any AZ.
+  # SPOT_CAPACITY_OPTIMIZED only helps when there are MANY pools to choose from;
+  # a single family (c7i) is a single pool per (size, AZ). We now span FIVE
+  # x86_64 compute/general-purpose families across the same vCPU ladder so each
+  # compute_class can be placed from many independent SPOT pools (family x size x
+  # AZ), drastically lowering "no capacity" odds. All are SPOT-eligible in
+  # us-west-2 and amd64 (the deltares/sfincs-cpu + pyswmm images are amd64):
+  #
+  #   4 vCPU  ("small"):   c7i.xlarge   c6i.xlarge   c5.xlarge   m7i.xlarge   r7i.xlarge
+  #   8 vCPU  ("standard"): c7i.2xlarge c6i.2xlarge  c5.2xlarge  m7i.2xlarge  r7i.2xlarge
+  #   16 vCPU ("large"):    c7i.4xlarge c6i.4xlarge  c5.4xlarge  m7i.4xlarge  r7i.4xlarge
+  #   48 vCPU ("xlarge"):   c7i.12xlarge c6i.12xlarge c5.12xlarge(48) m7i.12xlarge r7i.12xlarge
+  #
+  # Batch matches each job's resourceRequirements (vCPU/MEMORY) against this pool
+  # and picks the cheapest-with-most-capacity instance that fits; the r7i (high
+  # memory) and m7i (balanced) members only get selected when c-family capacity is
+  # scarce, so steady-state cost stays compute-family-low. NOT applied — authored
+  # for NATE to `tofu apply`.
+  default = [
+    # 4 vCPU tier (compute_class "small")
+    "c7i.xlarge", "c6i.xlarge", "c5.xlarge", "m7i.xlarge", "r7i.xlarge",
+    # 8 vCPU tier (compute_class "standard")
+    "c7i.2xlarge", "c6i.2xlarge", "c5.2xlarge", "m7i.2xlarge", "r7i.2xlarge",
+    # 16 vCPU tier (compute_class "large" — the long-SFINCS class that starved)
+    "c7i.4xlarge", "c6i.4xlarge", "c5.4xlarge", "m7i.4xlarge", "r7i.4xlarge",
+    # 48 vCPU tier (compute_class "xlarge")
+    "c7i.12xlarge", "c6i.12xlarge", "c5.12xlarge", "m7i.12xlarge", "r7i.12xlarge",
+  ]
+}
+
+variable "ondemand_instance_types" {
+  type        = list(string)
+  description = <<-EOT
+    EC2 instance types eligible for the ON-DEMAND fallback compute environment.
+    Same families/sizes as the SPOT pool so a job that cannot be placed on (or
+    keeps getting reclaimed from) SPOT lands on an identically-sized on-demand
+    box. x86_64 only.
+  EOT
+  # Mirrors var.instance_types exactly: the on-demand fallback must be able to
+  # place every compute_class the SPOT CE can. Kept as a SEPARATE variable so an
+  # operator can, if ever needed, narrow the (more expensive) on-demand pool
+  # without touching the SPOT pool. NOT applied — authored for NATE to apply.
+  default = [
+    "c7i.xlarge", "c6i.xlarge", "c5.xlarge", "m7i.xlarge", "r7i.xlarge",
+    "c7i.2xlarge", "c6i.2xlarge", "c5.2xlarge", "m7i.2xlarge", "r7i.2xlarge",
+    "c7i.4xlarge", "c6i.4xlarge", "c5.4xlarge", "m7i.4xlarge", "r7i.4xlarge",
+    "c7i.12xlarge", "c6i.12xlarge", "c5.12xlarge", "m7i.12xlarge", "r7i.12xlarge",
+  ]
+}
+
+variable "ondemand_max_vcpus" {
+  type        = number
+  description = <<-EOT
+    Maximum aggregate vCPUs the ON-DEMAND fallback compute environment may use.
+    Sized to complete ONE largest-class job (48 vCPU "xlarge") plus headroom,
+    NOT to mirror the full SPOT max — on-demand is the safety net for runs that
+    must finish when SPOT cannot place them, not a parallel-throughput tier.
+    Capping it bounds the worst-case on-demand bill if SPOT capacity is scarce
+    for an extended window.
+  EOT
+  # 64 vCPU: fits one xlarge (48 vCPU) job with room, or a large (16) + standard
+  # (8) + small (4) concurrently. Lower than the 96-vCPU SPOT max on purpose —
+  # on-demand is fallback-only, so it should not be able to fan out as wide as
+  # the cheap SPOT tier. NOT applied — authored for NATE to `tofu apply`.
+  default = 64
 }

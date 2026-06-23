@@ -23,13 +23,26 @@
 #      always-on for WebSocket + Gemini calls but no longer needs compute
 #      headroom for SFINCS runs.
 #
-#   4. SPOT with SPOT_CAPACITY_OPTIMIZED.
-#      This allocation strategy lets Batch select the SPOT pool with the most
-#      available capacity, reducing interruption rates on c/m instance families.
+#   4. SPOT with SPOT_CAPACITY_OPTIMIZED, broad pool, on-demand fallback.
+#      SPOT_CAPACITY_OPTIMIZED lets Batch select the SPOT pool with the most
+#      available capacity, reducing interruption rates AND placement failures.
+#      Its value is proportional to how MANY pools it can choose from, so the
+#      SPOT CE's instance pool is broadened to five x86_64 families x four sizes
+#      (see var.instance_types) — far more (family x size x AZ) pools than the
+#      old single-family list that left a 16-vCPU job RUNNABLE for 70 min.
 #      bid_percentage=100 bids up to On-Demand price; Batch still only pays the
-#      current SPOT price (which is typically 60-80% below On-Demand for
-#      c7i/m7i). A 100% bid prevents Batch from failing to source capacity when
-#      SPOT prices spike temporarily.
+#      current SPOT price (typically 60-80% below On-Demand for c7i/m7i). A 100%
+#      bid prevents Batch from failing to source capacity when SPOT prices spike.
+#
+#      SPOT CAPACITY REBALANCING: AWS Batch managed compute environments do NOT
+#      expose an EC2 Capacity-Rebalancing toggle through the aws_batch_compute_
+#      environment resource (the schema has no such field — Batch owns the
+#      internal Spot/EC2 Fleet and sets its own interruption-handling). The
+#      provider-supported, in-Batch equivalent IS the SPOT_CAPACITY_OPTIMIZED
+#      allocation strategy, which is already enabled here; broadening the pool
+#      (above) is the other lever. The hard guarantee that a reclaimed/unplaceable
+#      run still FINISHES is the on-demand fallback CE (grace2-solvers-ondemand)
+#      attached to the queue at lower priority, not a rebalancing flag.
 #
 #   5. Public subnets, no NAT.
 #      The four us-west-2 subnets in var.subnet_ids have auto-assign public IP
@@ -482,11 +495,92 @@ resource "aws_batch_compute_environment" "sfincs_spot" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# BATCH COMPUTE ENVIRONMENT — grace2-solvers-ondemand (FALLBACK)
+#
+# WHY (TRACK SPOT 2026-06-23): long SFINCS runs have failed two ways on the
+# SPOT-only substrate — (1) reclaimed mid-run (host terminated, exit -15; a
+# reclaimed attempt restarts from element 0, so even with retryStrategy the wall
+# clock balloons), and (2) sat RUNNABLE 70 min because no 16-vCPU SPOT capacity
+# was placeable. This is an ON-DEMAND compute environment attached to the SAME
+# grace2-solvers queue at a LOWER priority (higher order number) than the SPOT
+# CE. Batch always tries the highest-priority placeable CE first, so:
+#   - normal path: jobs land on SPOT (cost-optimal, the default).
+#   - SPOT cannot place (no capacity) OR a SPOT attempt is reclaimed and the
+#     retry also cannot find SPOT capacity: Batch falls back to this on-demand
+#     CE, guaranteeing the run completes instead of stalling RUNNABLE forever.
+#
+# COST-SAFE: this CE is ENABLED but scale-to-zero (min/desired = 0), so it costs
+# NOTHING until Batch actually has to place a job here; it only runs instances
+# when SPOT could not. Its max_vcpus is capped below the SPOT max (var.
+# ondemand_max_vcpus default 64 vs SPOT 96) so the fallback cannot fan out as a
+# wide on-demand throughput tier — it is a "must finish" safety net only.
+#
+# type EC2 (on-demand) => NO spot_iam_fleet_role / bid_percentage. We use
+# BEST_FIT_PROGRESSIVE so that if the single most-preferred on-demand instance
+# type lacks capacity, Batch progresses to additional types from the broadened
+# var.ondemand_instance_types pool (mirrors the broadened SPOT pool).
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_batch_compute_environment" "sfincs_ondemand" {
+  # Same name_prefix + create_before_destroy rationale as the SPOT CE above:
+  # compute_resources changes force a REPLACEMENT, and a fixed name would make
+  # Batch refuse to delete the old CE while the queue still references it. The
+  # prefix gives a zero-gap swap; the agent never references this CE by name
+  # (it submits to the QUEUE).
+  compute_environment_name_prefix = "grace2-solvers-ondemand-"
+  type                            = "MANAGED"
+  state                           = "ENABLED"
+
+  service_role = aws_iam_role.batch_service.arn
+
+  compute_resources {
+    type = "EC2"
+    # BEST_FIT_PROGRESSIVE: try the cheapest fitting on-demand type, and if that
+    # type is capacity-constrained, progress to other types in the pool. (SPOT_
+    # CAPACITY_OPTIMIZED is SPOT-only and invalid for an EC2/on-demand CE.)
+    allocation_strategy = "BEST_FIT_PROGRESSIVE"
+
+    # Scale-to-zero: no standing on-demand capacity. Instances launch ONLY when
+    # Batch places a job here (i.e. when SPOT could not take it).
+    min_vcpus     = 0
+    max_vcpus     = var.ondemand_max_vcpus
+    desired_vcpus = 0
+
+    instance_type = var.ondemand_instance_types
+
+    # Same public subnets, security group, and ECS instance role/profile as the
+    # SPOT CE — instances reach ECR/S3 via public IP, no NAT.
+    subnets            = var.subnet_ids
+    security_group_ids = [aws_security_group.batch.id]
+    instance_role      = aws_iam_instance_profile.ecs_instance.arn
+
+    # NOTE: no spot_iam_fleet_role and no bid_percentage — those are SPOT-only.
+
+    tags = {
+      Name = "grace2-batch-ondemand-instance"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.batch_service_managed]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BATCH JOB QUEUE — grace2-solvers
 #
 # ENGINE-AGNOSTIC: all solver job definitions (SFINCS, MODFLOW, QGIS, sandbox)
 # submit to this queue. If different solver types need different priority tiers,
 # add a second queue backed by the same CE rather than creating a new CE.
+#
+# SPOT-FIRST, ON-DEMAND-FALLBACK ORDERING (TRACK SPOT 2026-06-23): Batch tries
+# the LOWEST order number first. order=1 is the SPOT CE (cost-optimal default);
+# order=2 is the on-demand CE. A job only lands on on-demand when the SPOT CE
+# cannot place it (no capacity) — including on a retry after a SPOT reclamation.
+# This keeps SPOT as the default while guaranteeing completion for runs that
+# must finish.
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_batch_job_queue" "solvers" {
@@ -494,9 +588,17 @@ resource "aws_batch_job_queue" "solvers" {
   state    = "ENABLED"
   priority = 1
 
+  # order=1 (highest priority): SPOT — the cost-optimal default.
   compute_environment_order {
     order               = 1
     compute_environment = aws_batch_compute_environment.sfincs_spot.arn
+  }
+
+  # order=2 (lower priority): ON-DEMAND fallback — used only when SPOT cannot
+  # place the job (no capacity / repeated reclamation).
+  compute_environment_order {
+    order               = 2
+    compute_environment = aws_batch_compute_environment.sfincs_ondemand.arn
   }
 }
 

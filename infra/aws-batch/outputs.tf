@@ -37,8 +37,13 @@ output "ecr_repository_url_sfincs_quadtree" {
 }
 
 output "compute_environment_arn" {
-  description = "ARN of the Batch compute environment. Reference this when adding additional job queues or compute environments in future."
+  description = "ARN of the SPOT Batch compute environment (order=1 on the queue, the cost-optimal default). Reference this when adding additional job queues or compute environments in future."
   value       = aws_batch_compute_environment.sfincs_spot.arn
+}
+
+output "compute_environment_arn_ondemand" {
+  description = "ARN of the ON-DEMAND fallback Batch compute environment (order=2 on the queue). Jobs land here only when the SPOT CE cannot place them (no capacity / repeated reclamation), guaranteeing long runs finish."
+  value       = aws_batch_compute_environment.sfincs_ondemand.arn
 }
 
 output "batch_service_role_arn" {
