@@ -251,6 +251,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # news/incident -> bbox+window -> per-frame imagery -> scrubber-group
     # composer (review-gated). Cross-listed to fire + news_events below.
     "run_model_satellite_fire_animation": "hazard_modeling",
+    # fire-demo Track A: the UNATTENDED GOES fire-animation composer (auto-snaps
+    # the window to available SLIDER frames + proceeds without a confirm gate).
+    # Cross-listed to fire below.
+    "run_model_goes_fire_animation": "hazard_modeling",
     "run_model_groundwater_contamination_scenario": "hazard_modeling",
     "run_modflow_job": "hazard_modeling",
     "run_swmm_urban_flood": "hazard_modeling",
@@ -476,6 +480,12 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).
     "run_model_satellite_fire_animation": ("fire", "news_events"),
+    # The UNATTENDED GOES fire-animation composer spans hazard_modeling (it
+    # composes the GOES imagery pipeline) AND fire (it is the fire-branch
+    # animation demo). No news_events cross-list -- it takes an AOI bbox directly
+    # rather than ingesting fire news (that front half is the review-gated
+    # run_model_satellite_fire_animation's lane).
+    "run_model_goes_fire_animation": ("fire",),
 }
 
 

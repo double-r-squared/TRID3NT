@@ -324,6 +324,13 @@ from ..workflows import model_river_seepage_scenario as _model_river_seepage_sce
 # review-gated GOES/JPSS animation workflow is in TOOL_REGISTRY at startup.
 from ..workflows import model_satellite_fire_animation as _model_satellite_fire_animation  # noqa: E402,F401 - fire-animation demos S5/J5: registers run_model_satellite_fire_animation (incident lookup -> bbox+window review gate -> GOES/VIIRS per-frame imagery -> FIRMS+NIFC overlays -> publish)
 
+# fire-demo Track A: the UNATTENDED GOES fire-animation composer carries its OWN
+# @register_tool (run_model_goes_fire_animation); import it so the no-confirm-gate
+# GOES animation workflow is in TOOL_REGISTRY at startup. It auto-snaps the
+# requested window to the nearest available SLIDER frames and proceeds without
+# parking (the sibling of model_satellite_fire_animation that does NOT review-gate).
+from ..workflows import model_goes_fire_animation as _model_goes_fire_animation  # noqa: E402,F401 - fire-demo Track A: registers run_model_goes_fire_animation (auto-snap window -> GOES GeoColor+Fire Temperature per-frame imagery -> FIRMS overlay -> publish; NO confirm gate)
+
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest
 # of the tool surface. Importing the module fires its two ``@register_tool``
