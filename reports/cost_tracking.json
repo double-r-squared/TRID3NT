@@ -2397,5 +2397,26 @@
     "agents": 5,
     "subagent_tokens": 795553,
     "note": "scope offloading NetCDF->COG postprocess to the Batch worker"
+  },
+  {
+    "job_id": "session-20260623-modflow-demo-scoping-wcws8u1fu",
+    "sprint": 17,
+    "description": "Workflow (5 agents): audit live MODFLOW capability (agent tools/FloPy build, worker/Batch/postproc, proven-E2E + Batch run history, data spine) + recommend max-coverage demo. Verdict: plume-from-news-article runs NOW on local-exec mf6 (magnitude-proven job-0228 Twin Falls TCE); GWF+GWT coupled deck; FTW which-ag-field-affected is the max-coverage demo but needs 2 files (~90pct reuse); MODFLOW Batch path inert by default; animation/water-table env-gated; hydrogeology all hardcoded demo constants.",
+    "model": "opus",
+    "subagent_tokens": 607925
+  },
+  {
+    "job_id": "session-20260623-goes-port-scoping-a86ed1aa",
+    "sprint": 17,
+    "description": "Agent (read-only): scope the GOES fire port + resolution unlock -> surgical plan. Finding: main already has detector/fire_baked/read-core (54803e4) + C07 fix (4940ec9); port ONLY true_color band + standalone fetch_goes_active_fire + enhance_satellite_image; thread additive res_deg (default _OUT_RES_DEG); reuse main FIRE_* names not d7f-1 AF_* rename; enhance cherry-picks clean.",
+    "model": "opus",
+    "subagent_tokens": 85470
+  },
+  {
+    "job_id": "session-20260623-phase2-resolution-scoping-a5732931",
+    "sprint": 17,
+    "description": "Agent (read-only): scope phase-2 fetch resolution lever -> change-list. Finding: the fixed 1024px bites only 3 Tier-2 raster entries (3DEP/NLCD-WCS/LANDFIRE-WCS) via generic catalog_fetch; fix = reuse _pc_stac.bbox_pixel_dims + optional target_resolution_m + native_resolution_m CatalogEntry field + WorldPop 100m opt-in; defer _pc_stac clamp.",
+    "model": "opus",
+    "subagent_tokens": 81979
   }
 ]
