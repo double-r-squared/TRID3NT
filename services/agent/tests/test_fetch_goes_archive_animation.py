@@ -733,7 +733,85 @@ def test_default_thresholds_are_defensible():
     assert FIRE_BT_DIFF_MIN_K == pytest.approx(10.0)
     assert FIRE_DETECT_BANDS["shortwave"] == "CMI_C07"
     assert FIRE_DETECT_BANDS["longwave"] == "CMI_C13"
-    assert set(ARCHIVE_BANDS) == {"fire_temperature", "fire_hotspots", "fire_baked"}
+    # The three original thermal/fire products plus the additive true_color band.
+    assert set(ARCHIVE_BANDS) == {
+        "fire_temperature",
+        "true_color",
+        "fire_hotspots",
+        "fire_baked",
+    }
+
+
+# ---- true_color band: finer res, CIMSS synthetic green, defaults unchanged -----
+
+
+def test_default_res_grid_unchanged_for_thermal_bands():
+    """The existing thermal/fire bands MUST stay on the 0.02 deg grid -- a fixed
+    bbox produces the SAME (width, height) as before the res_deg plumbing, and an
+    explicit _OUT_RES_DEG is byte-identical to the default."""
+    bbox = (-114.0, 39.0, -113.0, 40.0)  # 1x1 degree
+    _, w_default, h_default = mod._grid_for_bbox(bbox)
+    assert (w_default, h_default) == (50, 50)  # 1.0 / 0.02 == 50
+    _, w_explicit, h_explicit = mod._grid_for_bbox(bbox, mod._OUT_RES_DEG)
+    assert (w_explicit, h_explicit) == (w_default, h_default)
+    # _resolve_res_deg pins every thermal/fire band to _OUT_RES_DEG regardless of
+    # any true_color override.
+    for band in ("fire_temperature", "fire_hotspots", "fire_baked"):
+        assert mod._resolve_res_deg(band, None) == mod._OUT_RES_DEG
+        assert mod._resolve_res_deg(band, 0.001) == mod._OUT_RES_DEG
+
+
+def test_true_color_reaches_finer_resolution():
+    """true_color reprojects onto the finer _TRUE_COLOR_RES_DEG (0.005 deg ~0.5 km)
+    grid -- a 4x-finer cell than the 0.02 deg thermal grid for the SAME bbox."""
+    bbox = (-114.0, 39.0, -113.0, 40.0)
+    _, w_thermal, h_thermal = mod._grid_for_bbox(bbox, mod._OUT_RES_DEG)
+    _, w_tc, h_tc = mod._grid_for_bbox(bbox, mod._resolve_res_deg("true_color", None))
+    assert mod._TRUE_COLOR_RES_DEG == pytest.approx(0.005)
+    assert mod._resolve_res_deg("true_color", None) == pytest.approx(0.005)
+    assert w_tc == 4 * w_thermal
+    assert h_tc == 4 * h_thermal
+    # An explicit override wins.
+    assert mod._resolve_res_deg("true_color", 0.0025) == pytest.approx(0.0025)
+
+
+def test_true_color_rgb_synthetic_green_recipe():
+    """_true_color_rgb composites R=C02, B=C01, synthetic G=a*R+b*veg+c*B with the
+    CIMSS coefficients (0.45, 0.10, 0.45) and a brightening gamma; NaN -> 0."""
+    a, b, c = mod.TRUE_COLOR_GREEN_COEFFS
+    assert (a, b, c) == (0.45, 0.10, 0.45)
+    assert mod.TRUE_COLOR_GAMMA == pytest.approx(1.0 / 2.2)
+    assert mod.TRUE_COLOR_BANDS == {
+        "red": "CMI_C02",
+        "blue": "CMI_C01",
+        "veggie": "CMI_C03",
+    }
+    red = np.array([[0.6, 0.0]], dtype=np.float32)
+    blue = np.array([[0.4, 0.0]], dtype=np.float32)
+    veg = np.array([[0.5, np.nan]], dtype=np.float32)
+    rgb = mod._true_color_rgb(red, blue, veg)
+    assert rgb.shape == (3, 1, 2)
+    assert rgb.dtype == np.uint8
+    # Pixel 0: synthetic green = 0.45*0.6 + 0.10*0.5 + 0.45*0.4 = 0.5 (pre-gamma);
+    # each channel gamma-stretched then * 255. Gamma<1 brightens, so each value is
+    # >= its linear value.
+    g = mod.TRUE_COLOR_GAMMA
+    assert rgb[0, 0, 0] == int(round((0.6 ** g) * 255.0))
+    expected_green01 = 0.45 * 0.6 + 0.10 * 0.5 + 0.45 * 0.4
+    assert rgb[1, 0, 0] == int(round((expected_green01 ** g) * 255.0))
+    assert rgb[2, 0, 0] == int(round((0.4 ** g) * 255.0))
+    # Pixel 1: all-zero (NaN veg -> 0) reads black.
+    assert rgb[0, 0, 1] == 0 and rgb[1, 0, 1] == 0 and rgb[2, 0, 1] == 0
+
+
+def test_true_color_alias_normalization_and_unknown_band():
+    """natural_color / geocolor_raw normalize to true_color; an unknown band still
+    raises GOESArchiveInputError."""
+    assert mod._BAND_ALIASES["natural_color"] == "true_color"
+    assert mod._BAND_ALIASES["geocolor_raw"] == "true_color"
+    assert mod._PRODUCT_LABELS["true_color"] == "True Color (Archive)"
+    assert mod._PRODUCT_ID_SLUGS["true_color"] == "truecolor"
+    assert mod._PRODUCT_STYLE_PRESETS["true_color"] == "goes_rgb_animation"
 
 
 # ---- the fire-only RGBA isolation: alpha 0 off-fire, >0 only at fire -------

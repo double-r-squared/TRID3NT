@@ -96,6 +96,9 @@ __all__ = [
     "FIRE_TEMP_RED_KELVIN_RANGE",
     "FIRE_TEMP_GREEN_REFL_MAX",
     "FIRE_TEMP_BLUE_REFL_MAX",
+    "TRUE_COLOR_BANDS",
+    "TRUE_COLOR_GAMMA",
+    "TRUE_COLOR_GREEN_COEFFS",
     "FIRE_DETECT_BANDS",
     "FIRE_BT_C07_MIN_K",
     "FIRE_BT_DIFF_MIN_K",
@@ -108,6 +111,7 @@ __all__ = [
     "_stretch_brightness_temp_red",
     "_stretch_reflectance",
     "_fire_temperature_rgb",
+    "_true_color_rgb",
     "_band_valid_dn_range",
     "_detect_active_fire_mask",
     "_fire_hotspots_rgba",
@@ -184,6 +188,27 @@ FIRE_TEMP_GREEN_REFL_MAX = 1.0
 #: BLUE reflectance stretch upper bound: 75 % == 0.75 reflectance factor.
 FIRE_TEMP_BLUE_REFL_MAX = 0.75
 
+#: The ABI CMI bands the daytime TRUE COLOR RGB composites. The ABI has NO native
+#: green band, so green is synthesized (CIMSS ABI true-color approximation) from
+#: the red (C02), blue (C01), and 0.86um veggie NIR (C03) reflectance bands. C02
+#: is the 0.5 km native band -- finer than the 2 km thermal bands -- which is why
+#: the true-color path runs at the finer ``_TRUE_COLOR_RES_DEG``.
+TRUE_COLOR_BANDS = {
+    "red": "CMI_C02",     # ABI band 2, 0.64um red, reflectance, 0.5 km native
+    "blue": "CMI_C01",    # ABI band 1, 0.47um blue, reflectance, 1 km native
+    "veggie": "CMI_C03",  # ABI band 3, 0.86um veggie NIR, reflectance, 1 km native
+}
+
+#: True-color reflectance gamma (~1/2.2). Visible reflectances are dim; a gamma
+#: stretch < 1 brightens the midtones so land/smoke read naturally (the standard
+#: true-color display gamma).
+TRUE_COLOR_GAMMA = 1.0 / 2.2
+
+#: CIMSS ABI synthetic-green coefficients: green = a*red + b*veggie + c*blue.
+#: (0.45, 0.10, 0.45) is the widely used CIMSS "true green" coefficient set that
+#: reproduces a natural-color scene from the ABI's red/blue/NIR bands.
+TRUE_COLOR_GREEN_COEFFS = (0.45, 0.10, 0.45)
+
 # ---------------------------------------------------------------------------
 # Active-fire DETECTION bands + thresholds (the fire-only isolation product).
 # ---------------------------------------------------------------------------
@@ -256,7 +281,7 @@ FIRE_HOTSPOT_RAMP_KELVIN_RANGE = (310.0, 350.0)
 #: fire-only isolation layer; ``fire_baked`` alpha-composites the fire over the
 #: Fire-Temp base into one opaque RGB. All three share the netCDF read + reproject
 #: core (no duplicated I/O).
-ARCHIVE_BANDS = ("fire_temperature", "fire_hotspots", "fire_baked")
+ARCHIVE_BANDS = ("fire_temperature", "true_color", "fire_hotspots", "fire_baked")
 
 #: Upper bound on emitted frames (mirrors fetch_goes_animation.MAX_ANIM_FRAMES /
 #: postprocess_flood.MAX_FLOOD_FRAMES=144). A wider window even-subsamples down
@@ -264,8 +289,15 @@ ARCHIVE_BANDS = ("fire_temperature", "fire_hotspots", "fire_baked")
 MAX_ARCHIVE_FRAMES: int = int(os.environ.get("GRACE2_MAX_ARCHIVE_FRAMES", "144"))
 
 #: Output resolution (degrees) for the EPSG:4326 reproject (~2 km, matching the
-#: ABI nominal sub-satellite resolution -- same as fetch_goes_satellite).
+#: ABI nominal sub-satellite resolution -- same as fetch_goes_satellite). This is
+#: the grid for the thermal/fire products (C07/C13 are 2 km native).
 _OUT_RES_DEG = 0.02
+
+#: Finer output resolution (degrees) for the daytime TRUE COLOR product (~0.5 km).
+#: The true-color RED band C02 is 0.5 km native -- far finer than the 2 km thermal
+#: bands -- so true_color reprojects onto this finer grid to keep the visible
+#: detail. Overridable per call via ``true_color_res_deg``.
+_TRUE_COLOR_RES_DEG = 0.005
 
 #: Bbox quantization (6dp) for cache-key stability.
 _BBOX_QUANTIZE_DP = 6
@@ -285,6 +317,7 @@ _PRODUCT_LABEL = "Fire Temperature (Archive)"
 #: product in its own scrubber group while sharing the "step <N> <ISO>" token.
 _PRODUCT_LABELS: dict[str, str] = {
     "fire_temperature": "Fire Temperature (Archive)",
+    "true_color": "True Color (Archive)",
     "fire_hotspots": "Active Fire Hotspots (Archive)",
     "fire_baked": "Fire Baked on Imagery (Archive)",
 }
@@ -297,16 +330,44 @@ _PRODUCT_LABELS: dict[str, str] = {
 #: needed in publish_layer because the passthrough handles RGB(A) directly.
 _PRODUCT_STYLE_PRESETS: dict[str, str] = {
     "fire_temperature": "goes_rgb_animation",
+    "true_color": "goes_rgb_animation",
     "fire_hotspots": "goes_fire_hotspots_rgba",
     "fire_baked": "goes_rgb_animation",
 }
 
-#: LayerURI id slug per band (keeps the three products' ids distinct).
+#: LayerURI id slug per band (keeps the products' ids distinct).
 _PRODUCT_ID_SLUGS: dict[str, str] = {
     "fire_temperature": "firetemp",
+    "true_color": "truecolor",
     "fire_hotspots": "firehot",
     "fire_baked": "firebaked",
 }
+
+#: Band-name aliases the LLM may invent for true_color -- normalized to the
+#: canonical ``true_color`` so a natural request still routes. ("geocolor" proper
+#: is a proprietary CIRA product; "geocolor_raw" maps here to the raw daytime
+#: true-color approximation we composite from the visible bands.)
+_BAND_ALIASES: dict[str, str] = {
+    "natural_color": "true_color",
+    "geocolor_raw": "true_color",
+}
+
+
+def _resolve_res_deg(band: str, true_color_res_deg: float | None) -> float:
+    """Pick the output cell size (degrees) for ``band``.
+
+    The thermal/fire products (``fire_temperature`` / ``fire_hotspots`` /
+    ``fire_baked``) ALWAYS use ``_OUT_RES_DEG`` (0.02 deg ~2 km) -- the C07/C13
+    bands are 2 km native, so a finer grid would only upsample. ``true_color``
+    uses the caller override when given, else the finer ``_TRUE_COLOR_RES_DEG``
+    (~0.5 km) so the 0.5 km native C02 detail survives. Keeping the thermal bands
+    pinned to ``_OUT_RES_DEG`` is what makes the existing products byte-identical.
+    """
+    if band == "true_color":
+        if true_color_res_deg is None:
+            return _TRUE_COLOR_RES_DEG
+        return float(true_color_res_deg)
+    return _OUT_RES_DEG
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +650,51 @@ def _fire_temperature_rgb(
         )
     rgb = np.stack([red, green, blue], axis=0)  # (3, H, W) in [0,1]
     return np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+
+
+def _true_color_rgb(
+    c02_red_refl: Any,
+    c01_blue_refl: Any,
+    c03_veggie_refl: Any,
+    *,
+    gamma: float = TRUE_COLOR_GAMMA,
+) -> Any:
+    """Composite the daytime TRUE COLOR RGB from the visible CMI reflectance bands.
+
+    R = C02 (0.64um red) reflectance.
+    B = C01 (0.47um blue) reflectance.
+    synthetic GREEN = a*R + b*C03(0.86um veggie) + c*B (CIMSS ABI true-color
+        approximation; ``TRUE_COLOR_GREEN_COEFFS`` == (0.45, 0.10, 0.45)). The ABI
+        has no native green band, so green is synthesized from red/blue/NIR.
+    Each channel clipped to [0,1], gamma-stretched (default ~1/2.2 to brighten the
+    dim visible reflectances), scaled to 0-255 uint8. Returns a ``(3, H, W)`` uint8
+    array (band-first, the rasterio write order). NaN -> 0 (no-data reads black).
+    Pure function (the testable true-color core).
+
+    Inputs must already carry physical reflectance units (CF scale_factor/
+    add_offset applied) and be co-registered (same shape) -- the per-frame
+    reproject upstream ensures that.
+    """
+    import numpy as np
+
+    red = np.nan_to_num(np.asarray(c02_red_refl, dtype=np.float32), nan=0.0)
+    blue = np.nan_to_num(np.asarray(c01_blue_refl, dtype=np.float32), nan=0.0)
+    veg = np.nan_to_num(np.asarray(c03_veggie_refl, dtype=np.float32), nan=0.0)
+    if not (red.shape == blue.shape == veg.shape):
+        raise GOESArchiveUpstreamError(
+            f"true-color band shapes differ: R={red.shape} B={blue.shape} "
+            f"VEG={veg.shape}; bands must be co-registered before compositing"
+        )
+    red = np.clip(red, 0.0, 1.0)
+    blue = np.clip(blue, 0.0, 1.0)
+    veg = np.clip(veg, 0.0, 1.0)
+    a, b, c = TRUE_COLOR_GREEN_COEFFS
+    green = np.clip(a * red + b * veg + c * blue, 0.0, 1.0)
+
+    g = max(1e-6, float(gamma))
+    rgb01 = np.stack([red, green, blue], axis=0)
+    rgb01 = np.power(rgb01, np.float32(g))  # gamma stretch (g<1 brightens)
+    return np.clip(np.rint(rgb01 * 255.0), 0, 255).astype(np.uint8)
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +1099,55 @@ def _reproject_fire_temperature(
     return rgb, out_transform, width, height
 
 
+def _reproject_true_color(
+    nc_path: str,
+    bbox: tuple[float, float, float, float],
+    res_deg: float = _TRUE_COLOR_RES_DEG,
+) -> Any:
+    """Read C02/C01/C03 from an MCMIPC netCDF, CF-scale + reproject each to EPSG:4326 over ``bbox``, composite daytime TRUE COLOR.
+
+    Mirrors ``_reproject_fire_temperature`` but reads the ``TRUE_COLOR_BANDS``
+    triple (red C02 / blue C01 / veggie C03) on the FINER ``res_deg`` grid
+    (``_TRUE_COLOR_RES_DEG`` ~0.5 km) so the 0.5 km native C02 detail survives.
+    Returns ``(rgb (3,H,W) uint8, transform, width, height)``. Delegates the
+    per-band read + warp + CF-unscale to the shared ``_read_archive_bands`` core
+    (no duplicated I/O).
+
+    Raises:
+        ``GOESArchiveUpstreamError``: rasterio/netCDF open / reproject failure.
+        ``GOESArchiveEmptyError``: bbox produces no valid visible pixels (off the
+            disk, or a fully nighttime AOI with no daytime reflectance).
+    """
+    import numpy as np
+
+    arrays, out_transform, width, height = _read_archive_bands(
+        nc_path,
+        bbox,
+        (TRUE_COLOR_BANDS["red"], TRUE_COLOR_BANDS["blue"], TRUE_COLOR_BANDS["veggie"]),
+        res_deg,
+    )
+    c02 = arrays[TRUE_COLOR_BANDS["red"]]
+    c01 = arrays[TRUE_COLOR_BANDS["blue"]]
+    c03 = arrays[TRUE_COLOR_BANDS["veggie"]]
+
+    # Honesty floor: refuse an all-NaN crop (bbox missed the disk / sector).
+    if not (
+        np.isfinite(c02).any() or np.isfinite(c01).any() or np.isfinite(c03).any()
+    ):
+        raise GOESArchiveEmptyError(
+            f"bbox={bbox} produces no valid true-color pixels "
+            "(likely outside the CONUS sector or behind the disk limb)"
+        )
+
+    rgb = _true_color_rgb(c02, c01, c03)
+    if not rgb.any():
+        raise GOESArchiveEmptyError(
+            f"bbox={bbox} true-color composite is all-black "
+            "(no visible reflectance in the AOI crop -- likely nighttime)"
+        )
+    return rgb, out_transform, width, height
+
+
 def _reproject_fire_hotspots(
     nc_path: str,
     bbox: tuple[float, float, float, float],
@@ -1173,16 +1328,22 @@ def _fetch_archive_frame_cog_bytes(
 
     Dispatches on ``band``:
       - ``fire_temperature`` -> 3-band Fire-Temp RGB COG (unchanged).
+      - ``true_color``       -> 3-band daytime true-color RGB COG (finer res).
       - ``fire_hotspots``    -> 4-band transparent fire-only RGBA COG.
       - ``fire_baked``       -> 3-band fire-baked-over-Fire-Temp RGB COG.
     All share the one netCDF download + the shared reproject core. ``res_deg``
-    defaults to ``_OUT_RES_DEG`` (the thermal/fire grid); a finer override keeps
-    the visible detail for the true-color path.
+    defaults to ``_OUT_RES_DEG`` (the thermal/fire grid); the true-color path
+    forwards the finer ``_TRUE_COLOR_RES_DEG`` so the visible detail survives.
     """
     bucket = _SATELLITE_BUCKETS[satellite]
     url = f"https://{bucket}.s3.amazonaws.com/{key}"
     nc_path = _download_to_tempfile(url)
     try:
+        if band == "true_color":
+            rgb, transform, width, height = _reproject_true_color(
+                nc_path, bbox, res_deg
+            )
+            return rgb_array_to_cog_bytes(rgb, transform, width, height)
         if band == "fire_hotspots":
             rgba, transform, width, height = _reproject_fire_hotspots(
                 nc_path, bbox, bt_c07_min_k, bt_diff_min_k, res_deg
@@ -1260,6 +1421,7 @@ def fetch_goes_archive_animation(
     band: str = "fire_temperature",
     bt_c07_min_k: float = FIRE_BT_C07_MIN_K,
     bt_diff_min_k: float = FIRE_BT_DIFF_MIN_K,
+    true_color_res_deg: float | None = None,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
@@ -1309,6 +1471,11 @@ def fetch_goes_archive_animation(
       one of:
         * ``"fire_temperature"`` -- the full Fire Temperature RGB (every warm
           pixel reds; the original product, unchanged).
+        * ``"true_color"`` (aka ``"natural_color"`` / ``"geocolor_raw"``) -- the
+          daytime TRUE COLOR RGB composited from the visible bands (R=C02 red,
+          B=C01 blue, synthetic CIMSS green from C02/C03/C01) at the finer ~0.5 km
+          native visible resolution. A natural-looking daytime base; goes black at
+          night (no visible reflectance).
         * ``"fire_hotspots"`` -- the ISOLATED active-fire layer: a TRANSPARENT
           RGBA COG where ONLY pixels the active-fire discriminator flags are
           colored on an orange->yellow->white hot ramp (by C07 intensity) and
@@ -1324,6 +1491,11 @@ def fetch_goes_archive_animation(
       (3.9um - 10.3um) brightness-temperature DIFFERENCE floor (K). The
       shortwave-vs-longwave split that separates genuine fire from warm land.
       Tunable up (15-20 K) to demand a stronger fire signal.
+    - ``true_color_res_deg`` (float | None, default None): output cell size in
+      degrees for the ``true_color`` band ONLY. None -> the native ~0.5 km
+      ``_TRUE_COLOR_RES_DEG`` (0.005 deg). Ignored for the thermal/fire bands,
+      which always stay at the 2 km ``_OUT_RES_DEG`` (0.02 deg). A finer value
+      gets its own cache namespace.
 
     **Active-fire detection (the ``fire_hotspots`` / ``fire_baked`` products):**
     A pixel is flagged active fire only when BOTH (C07 BT >= ``bt_c07_min_k``) AND
@@ -1362,12 +1534,30 @@ def fetch_goes_archive_animation(
             f"unknown satellite={satellite!r}; allowed: "
             f"{list(GOES_ARCHIVE_SATELLITES)}"
         )
+    # Normalize LLM-invented aliases (natural_color / geocolor_raw -> true_color)
+    # before the band check so a natural request still routes.
+    if isinstance(band, str):
+        band = _BAND_ALIASES.get(band, band)
     if band not in ARCHIVE_BANDS:
         raise GOESArchiveInputError(
             f"unknown band/product={band!r}; the raw-archive path supports "
-            f"{list(ARCHIVE_BANDS)} (GeoColor is a proprietary CIRA product -- use "
+            f"{list(ARCHIVE_BANDS)} (proprietary CIRA GeoColor -- use "
             "fetch_goes_animation for the recent GeoColor loop)"
         )
+    if true_color_res_deg is not None:
+        try:
+            true_color_res_deg = float(true_color_res_deg)
+        except (TypeError, ValueError):
+            raise GOESArchiveInputError(
+                f"true_color_res_deg must be numeric; got {true_color_res_deg!r}"
+            )
+        if not math.isfinite(true_color_res_deg) or true_color_res_deg <= 0.0:
+            raise GOESArchiveInputError(
+                "true_color_res_deg must be a positive finite degree value"
+            )
+    # Resolution is a USER lever: thermal/fire bands stay pinned to _OUT_RES_DEG
+    # (byte-identical to today); true_color uses the override or _TRUE_COLOR_RES_DEG.
+    res_deg = _resolve_res_deg(band, true_color_res_deg)
     try:
         bt_c07_min_k = float(bt_c07_min_k)
         bt_diff_min_k = float(bt_diff_min_k)
@@ -1428,6 +1618,11 @@ def fetch_goes_archive_animation(
             "satellite": satellite,
             "ts_start": ts_tag,
             "gamma": 1,
+            # Resolution is part of the cache key so finer frames get a distinct
+            # namespace. The thermal/fire bands resolve to _OUT_RES_DEG (0.02) so
+            # their key is the SAME value those bands always carried implicitly --
+            # the round(res_deg,6) entry is constant 0.02 for them, byte-stable.
+            "res_deg": round(res_deg, 6),
         }
         if band in ("fire_hotspots", "fire_baked"):
             params["bt_c07_min_k"] = round(bt_c07_min_k, 3)
@@ -1438,7 +1633,7 @@ def fetch_goes_archive_animation(
                 params=params,
                 ext="tif",
                 fetch_fn=lambda s=satellite, k=key: _fetch_archive_frame_cog_bytes(
-                    s, k, q_bbox, band, bt_c07_min_k, bt_diff_min_k
+                    s, k, q_bbox, band, bt_c07_min_k, bt_diff_min_k, res_deg
                 ),
             )
         except GOESArchiveEmptyError as exc:
