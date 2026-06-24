@@ -295,7 +295,14 @@ def build_layer_handles(layer_refs: dict[str, Any]) -> dict[str, Any]:
     handles["layers"] = {
         _sanitize_var_name(n): handles.get(_sanitize_var_name(n)) for n in (layer_refs or {})
     }
+    # Two dict aliases over the same {original_name: staged-local-path} mapping:
+    #   - ``layer_uris`` (the documented name), and
+    #   - ``layer_refs`` (the tool PARAMETER name the model passed) -- agents
+    #     reach for ``layer_refs[name]`` by instinct, so expose it as a working
+    #     path dict too. Both let user code do ``rasterio.open(layer_refs[name])``
+    #     when it prefers a path over the pre-opened ``<name>`` handle.
     handles["layer_uris"] = dict(layer_refs or {})
+    handles["layer_refs"] = dict(layer_refs or {})
     if errors:
         handles["_layer_errors"] = errors
     return handles

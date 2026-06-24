@@ -263,9 +263,13 @@ def code_exec_request(
     NAME IS EXACTLY THE layer_refs KEY -- already open (raster -> an OPEN rasterio
     dataset, vector -> a loaded geopandas GeoDataFrame). For key ``"peak"`` you get
     a variable ``peak`` (use ``peak.read(1)`` directly -- never ``rasterio.open``).
-    Also injected for each key: ``<name>_uri`` (the path string, only if you truly
-    need a path), and the dicts ``layers`` (name -> handle) and ``layer_uris``
-    (name -> source). A list-valued ref binds ``<name>`` to a LIST of open handles
+    Two ways, both work: use the open handle ``peak`` directly, OR open the staged
+    LOCAL path ``rasterio.open(layer_refs["peak"])`` -- the injected dict
+    ``layer_refs`` (and its alias ``layer_uris``) maps each key to its staged local
+    file path (NOT the original s3:// URI). Also injected: ``<name>_uri`` (that same
+    local path) and ``layers`` (name -> open handle). NEVER open the s3:// URI you
+    passed in -- only the injected handle or the ``layer_refs[name]`` local path
+    resolve. A list-valued ref binds ``<name>`` to a LIST of open handles
     plus ``<name>_uris``. Use SIMPLE identifier keys (letters/digits/underscore,
     not starting with a digit, e.g. ``peak``, ``frame_20``) so the variable name
     equals your key verbatim. If an open fails, the key holds the raw string and
