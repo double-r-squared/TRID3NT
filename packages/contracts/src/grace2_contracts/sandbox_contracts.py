@@ -104,6 +104,18 @@ class CodeExecRequestPayload(GraceModel):
     - ``layer_refs`` — ``{var_name: layer_uri}`` the sandbox will pre-open as
       rasterio/geopandas handles (or hand back as a URI string). Shown so the
       user sees which of their layers the code can touch. Default empty.
+
+      ADDITIVE multi-frame extension (sandbox-staging): a value may ALSO be a
+      LIST of URIs — an ordered set of animation-frame COGs (e.g. the per-step
+      flood-depth or GLM lightning frames for ``list_run_frames``). When the
+      value is a list the sandbox pre-opens it as an ORDERED LIST of handles
+      (``layer_handles[var] = [rasterio.open(p) for p in paths]``) so a snippet
+      can iterate frames (a gaussian glow over a flash sequence, a first/peak/
+      last panel). The single-string form is unchanged and byte-identical; this
+      is the substrate that makes per-frame visualizations just snippets, not
+      per-viz tools. The agent pre-fetches every URI (single or list) to a local
+      file and rewrites the refs to LOCAL paths before the jailed (network-denied)
+      executor opens them.
     - ``rationale`` — optional one-line, human-readable reason the agent is
       running this code ("computing the 95th-percentile flood depth over the
       city polygon"). Capped at 512 chars to keep it a caption, not a narrative.
@@ -117,7 +129,11 @@ class CodeExecRequestPayload(GraceModel):
     envelope_type: Literal["code-exec-request"] = "code-exec-request"
     code_exec_id: ULIDStr
     python_code: str = Field(min_length=1, max_length=64 * 1024)
-    layer_refs: dict[str, str] = Field(default_factory=dict)
+    #: ``{var: uri}`` OR ``{var: [uri, ...]}`` (ADDITIVE multi-frame extension).
+    #: A string value pre-opens a single handle (byte-identical legacy behaviour);
+    #: a list value pre-opens an ordered list of frame handles. The Union keeps
+    #: the single-string wire shape unchanged while admitting an ordered frame set.
+    layer_refs: dict[str, str | list[str]] = Field(default_factory=dict)
     rationale: str | None = Field(default=None, max_length=512)
 
 

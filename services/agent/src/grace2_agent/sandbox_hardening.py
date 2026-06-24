@@ -476,6 +476,7 @@ def wrap_with_jail(
     executor_path: str,
     payload_path: str,
     workdir: str,
+    staged_inputs_dir: str | None = None,
 ) -> tuple[list[str], dict[str, str]] | None:
     """Build the bubblewrap-jailed command, or ``None`` when the jail is off/absent.
 
@@ -582,6 +583,14 @@ def wrap_with_jail(
     # Re-bind the payload file ON TOP of the tmpfs workdir (later mounts layer
     # over earlier ones) so the child can read it despite the tmpfs.
     jail += ["--ro-bind-try", payload_path, payload_path]
+    # Re-bind the pre-fetched staged-inputs dir (the layer/frame COGs the agent
+    # downloaded before the run) READ-ONLY on top of the tmpfs workdir, so the
+    # network-denied executor can open them as LOCAL files. --unshare-net stays
+    # in force: the staged bytes are already local, no egress is needed or
+    # possible. The dir lives INSIDE workdir, so it must be re-bound after the
+    # workdir tmpfs mount (later mounts layer over earlier ones).
+    if staged_inputs_dir:
+        jail += ["--ro-bind-try", staged_inputs_dir, staged_inputs_dir]
     jail += ["--chdir", workdir]
     jail += jail_setenv_args(jail_env)
     # Rewrite the interpreter (cmd[0]) to the resolved real path; keep the rest.
@@ -596,6 +605,7 @@ def build_jailed_cmd(
     executor_path: str,
     payload_path: str,
     workdir: str,
+    staged_inputs_dir: str | None = None,
 ) -> tuple[list[str], dict[str, str], bool]:
     """Return ``(final_cmd, popen_env, jailed)``.
 
@@ -603,13 +613,18 @@ def build_jailed_cmd(
     ``popen_env`` is the env augmented with the venv ``PYTHONPATH``; otherwise
     ``cmd`` + ``child_env`` are returned unchanged with ``jailed=False``. The
     boolean lets the runner log the posture honestly + decide on the killpg /
-    chdir handling."""
+    chdir handling.
+
+    ``staged_inputs_dir`` (when present) is the agent-prefetched layer/frame dir
+    that gets a READ-ONLY bind into the jail so the network-denied executor can
+    open the COGs as local files (``--unshare-net`` is preserved)."""
     wrapped = wrap_with_jail(
         cmd,
         child_env,
         executor_path=executor_path,
         payload_path=payload_path,
         workdir=workdir,
+        staged_inputs_dir=staged_inputs_dir,
     )
     if wrapped is None:
         return cmd, child_env, False

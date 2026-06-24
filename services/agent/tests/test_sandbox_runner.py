@@ -20,6 +20,7 @@ No network. No Gemini. Pure local subprocess harness.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -352,3 +353,199 @@ def test_sandbox_execution_handle_shape() -> None:
     )
     assert h.mode == "cloud"
     assert "grace-2-python-sandbox" in h.execution_name
+
+
+# --------------------------------------------------------------------------- #
+# sandbox-staging: multi-frame layer_refs + the S3 pre-fetch -> local-path rewrite
+# --------------------------------------------------------------------------- #
+
+
+def _write_tiny_tif(path: str, fill: float) -> None:
+    """Write a 4x4 single-band float32 GeoTIFF filled with ``fill`` at ``path``."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    arr = np.full((4, 4), fill, dtype="float32")
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=4,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=from_origin(0, 4, 1, 1),
+    ) as dst:
+        dst.write(arr, 1)
+
+
+def test_single_uri_string_path_unchanged(tmp_path, monkeypatch) -> None:
+    """A SINGLE local .tif path opens to ONE rasterio handle bound to the var
+    (the legacy single-string contract, byte-identical).
+
+    Jail OFF: this exercises the executor's handle-OPENING logic over a local tif
+    outside the jail's binds; the jailed staged-path flow is covered separately by
+    ``test_staged_frames_open_under_jail_end_to_end``."""
+    monkeypatch.setenv("GRACE2_SANDBOX_BWRAP", "0")
+    tif = str(tmp_path / "depth.tif")
+    _write_tiny_tif(tif, 3.0)
+    code = (
+        "import rasterio\n"
+        "is_ds = hasattr(flood, 'read')\n"
+        "val = float(flood.read(1).mean()) if is_ds else -1.0\n"
+        "result = {'is_dataset': is_ds, 'mean': val, 'uri': flood_uri}\n"
+    )
+    env = run_sandbox_local(code, {"flood": tif})
+    assert env["status"] == "ok", env
+    val = env["result"]["value"]
+    assert val["is_dataset"] is True
+    assert val["mean"] == 3.0
+    assert val["uri"] == tif
+
+
+def test_list_valued_layer_refs_open_as_list_of_handles(tmp_path, monkeypatch) -> None:
+    """A LIST of local frame .tifs opens to an ORDERED LIST of handles bound to
+    the var (the multi-frame extension) — a snippet can iterate frames.
+
+    Jail OFF (executor handle-opening logic; see the single-uri test note)."""
+    monkeypatch.setenv("GRACE2_SANDBOX_BWRAP", "0")
+    frames = []
+    for i, fill in enumerate([1.0, 5.0, 9.0]):
+        p = str(tmp_path / f"frame_{i}.tif")
+        _write_tiny_tif(p, fill)
+        frames.append(p)
+    code = (
+        "import rasterio\n"
+        "means = [float(f.read(1).mean()) for f in frames]\n"
+        "result = {'n': len(frames), 'means': means, "
+        "'all_ds': all(hasattr(f, 'read') for f in frames), "
+        "'uris': frames_uris}\n"
+    )
+    env = run_sandbox_local(code, {"frames": frames})
+    assert env["status"] == "ok", env
+    val = env["result"]["value"]
+    assert val["n"] == 3
+    assert val["means"] == [1.0, 5.0, 9.0]  # ORDER preserved
+    assert val["all_ds"] is True
+    assert val["uris"] == frames
+
+
+def test_prefetch_rewrites_s3_uri_to_local_path(monkeypatch, tmp_path) -> None:
+    """``stage_layer_refs_locally`` downloads every s3:// URI (single OR list) into
+    the workdir and rewrites the refs to LOCAL paths; the executor only ever sees
+    local files (the jail is network-denied)."""
+    from grace2_agent import sandbox_runner as sr
+
+    fetched: list[str] = []
+
+    def _fake_read(uri: str) -> bytes:
+        fetched.append(uri)
+        return b"COG-BYTES-FOR-" + uri.encode()
+
+    # Patch the shared boto3 reader the staging path imports.
+    monkeypatch.setattr("grace2_agent.tools.cache.read_object_bytes_s3", _fake_read)
+
+    workdir = str(tmp_path / "wd")
+    os.makedirs(workdir, exist_ok=True)
+    refs = {
+        "flood": "s3://bucket/runs/peak.tif",
+        "frames": ["s3://bucket/runs/f0.tif", "s3://bucket/runs/f1.tif"],
+        "local": str(tmp_path / "already_local.tif"),  # untouched
+    }
+    rewritten, staged_dir = sr.stage_layer_refs_locally(refs, workdir)
+
+    # Every s3:// URI was fetched once, in order.
+    assert fetched == [
+        "s3://bucket/runs/peak.tif",
+        "s3://bucket/runs/f0.tif",
+        "s3://bucket/runs/f1.tif",
+    ]
+    # The single s3 ref rewrote to a LOCAL path inside the staged dir.
+    assert rewritten["flood"].startswith(workdir)
+    assert os.path.isfile(rewritten["flood"])
+    with open(rewritten["flood"], "rb") as fh:
+        assert fh.read() == b"COG-BYTES-FOR-s3://bucket/runs/peak.tif"
+    # The list ref rewrote to a LIST of local paths, order preserved.
+    assert isinstance(rewritten["frames"], list)
+    assert len(rewritten["frames"]) == 2
+    assert all(p.startswith(workdir) and os.path.isfile(p) for p in rewritten["frames"])
+    # The non-s3 (local) ref is passed through UNCHANGED.
+    assert rewritten["local"] == refs["local"]
+    # The staged dir is returned (something was staged) so the caller binds it.
+    assert staged_dir is not None and staged_dir.startswith(workdir)
+
+
+def test_staged_frames_open_under_jail_end_to_end(tmp_path, monkeypatch) -> None:
+    """THE multi-frame proof: s3:// frame URIs are pre-fetched into the staged
+    dir, bound READ-ONLY into the jail, and opened as an ORDERED LIST of rasterio
+    handles BY THE NETWORK-DENIED EXECUTOR — end to end, jail ON (when bwrap is
+    present). The fetch is monkeypatched to return REAL tif bytes (no network)."""
+    import io as _io
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    def _tif_bytes(fill: float) -> bytes:
+        buf = _io.BytesIO()
+        arr = np.full((4, 4), fill, dtype="float32")
+        with rasterio.open(
+            buf, "w", driver="GTiff", height=4, width=4, count=1,
+            dtype="float32", crs="EPSG:4326", transform=from_origin(0, 4, 1, 1),
+        ) as dst:
+            dst.write(arr, 1)
+        return buf.getvalue()
+
+    fills = {"s3://b/f0.tif": 2.0, "s3://b/f1.tif": 4.0, "s3://b/f2.tif": 6.0}
+
+    def _fake_read(uri: str) -> bytes:
+        return _tif_bytes(fills[uri])
+
+    monkeypatch.setattr("grace2_agent.tools.cache.read_object_bytes_s3", _fake_read)
+
+    code = (
+        "import rasterio\n"
+        "means = [float(f.read(1).mean()) for f in frames]\n"
+        "result = {'means': means, 'n': len(frames)}\n"
+    )
+    env = run_sandbox_local(code, {"frames": list(fills.keys())})
+    assert env["status"] == "ok", env
+    val = env["result"]["value"]
+    assert val["n"] == 3
+    assert val["means"] == [2.0, 4.0, 6.0]  # ORDER preserved through staging+jail
+
+
+def test_prefetch_no_staging_when_no_s3(tmp_path) -> None:
+    """When NO ref is an s3:// URI, staging is a no-op: refs are returned unchanged
+    and ``staged_dir`` is None (the caller skips the extra ro-bind)."""
+    from grace2_agent import sandbox_runner as sr
+
+    workdir = str(tmp_path / "wd")
+    os.makedirs(workdir, exist_ok=True)
+    refs = {"a": "/local/path.tif", "b": ["gs://legacy/f0.tif"]}
+    rewritten, staged_dir = sr.stage_layer_refs_locally(refs, workdir)
+    assert rewritten == refs
+    assert staged_dir is None
+
+
+def test_prefetch_degrades_on_fetch_failure(monkeypatch, tmp_path) -> None:
+    """A single failed s3 fetch degrades to the raw URI string (never crashes) so
+    the executor's _open_layer falls back + records a _layer_errors entry."""
+    from grace2_agent import sandbox_runner as sr
+
+    def _boom(uri: str) -> bytes:
+        raise RuntimeError("simulated S3 outage")
+
+    monkeypatch.setattr("grace2_agent.tools.cache.read_object_bytes_s3", _boom)
+
+    workdir = str(tmp_path / "wd")
+    os.makedirs(workdir, exist_ok=True)
+    rewritten, staged_dir = sr.stage_layer_refs_locally(
+        {"flood": "s3://bucket/x.tif"}, workdir
+    )
+    # The failed fetch handed back the raw URI (degrade-don't-crash).
+    assert rewritten["flood"] == "s3://bucket/x.tif"
+    # Nothing was successfully staged.
+    assert staged_dir is None

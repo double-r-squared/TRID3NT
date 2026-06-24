@@ -46,6 +46,39 @@ def test_request_payload_defaults() -> None:
     assert p.rationale is None
 
 
+def test_request_payload_accepts_list_valued_layer_refs() -> None:
+    """sandbox-staging: a layer_refs value may be an ORDERED LIST of frame URIs
+    (the multi-frame extension) alongside the legacy single-string form. Both
+    shapes coexist in one mapping and round-trip byte-identically."""
+    p = CodeExecRequestPayload(
+        code_exec_id=new_ulid(),
+        python_code="result = len(frames)",
+        layer_refs={
+            "peak": "s3://b/runs/peak.tif",  # single (legacy)
+            "frames": ["s3://b/runs/f0.tif", "s3://b/runs/f1.tif"],  # list (new)
+        },
+    )
+    assert p.layer_refs["peak"] == "s3://b/runs/peak.tif"
+    assert p.layer_refs["frames"] == ["s3://b/runs/f0.tif", "s3://b/runs/f1.tif"]
+    # JSON round-trip preserves both shapes exactly.
+    back = CodeExecRequestPayload.model_validate(json.loads(p.model_dump_json()))
+    assert back == p
+    assert isinstance(back.layer_refs["frames"], list)
+    assert isinstance(back.layer_refs["peak"], str)
+
+
+def test_request_payload_single_string_layer_refs_byte_identical() -> None:
+    """The legacy single-URI string form is UNCHANGED (regression guard)."""
+    p = CodeExecRequestPayload(
+        code_exec_id=new_ulid(),
+        python_code="result = dem.read(1).mean()",
+        layer_refs={"dem": "s3://bucket/dem.tif"},
+    )
+    assert p.layer_refs == {"dem": "s3://bucket/dem.tif"}
+    back = CodeExecRequestPayload.model_validate(json.loads(p.model_dump_json()))
+    assert back.layer_refs == {"dem": "s3://bucket/dem.tif"}
+
+
 def test_request_payload_rejects_empty_code() -> None:
     with pytest.raises(ValidationError):
         CodeExecRequestPayload(code_exec_id=new_ulid(), python_code="")

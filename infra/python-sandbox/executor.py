@@ -236,37 +236,61 @@ def install_network_guard() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def build_layer_handles(layer_refs: dict[str, str]) -> dict[str, Any]:
-    """Turn ``{layer_name: gs://...}`` into pre-opened rasterio/geopandas handles.
+def build_layer_handles(layer_refs: dict[str, Any]) -> dict[str, Any]:
+    """Turn ``{layer_name: path}`` into pre-opened rasterio/geopandas handles.
+
+    ``layer_refs`` accepts TWO value shapes (the ADDITIVE multi-frame extension):
+      - a SINGLE path/URI string  -> one handle bound to ``var``
+      - a LIST of frame paths     -> an ordered LIST of handles bound to ``var``
+        (so a snippet can iterate animation frames: ``for f in frames: ...``)
+
+    The agent pre-fetches every URI to a LOCAL file and rewrites the refs to those
+    local paths BEFORE this runs (the jail is network-denied), so in production
+    the values are local paths; a bare ``gs://``/``s3://`` URI still works in
+    un-jailed local dev (rasterio's /vsi drivers).
 
     For each ref we sniff the extension and open the appropriate handle:
-      - ``.tif`` / ``.tiff`` / ``.cog``           -> ``rasterio.open`` (via /vsigs or gcsfs)
+      - ``.tif`` / ``.tiff`` / ``.cog`` / ``.vrt``  -> ``rasterio.open``
       - ``.geojson`` / ``.json`` / ``.fgb`` /
-        ``.gpkg`` / ``.shp`` / ``.parquet``       -> ``geopandas.read_file`` / ``read_parquet``
-      - anything else                             -> the raw ``gs://`` URI string
+        ``.gpkg`` / ``.shp`` / ``.parquet``         -> ``geopandas.read_file`` / ``read_parquet``
+      - anything else                               -> the raw path/URI string
 
-    Opening is best-effort and lazy-tolerant: if rasterio/geopandas/gcsfs aren't
-    importable or the open fails, we fall back to handing the user the raw URI
-    string under the same key plus a ``<name>_uri`` alias, and record the error in
-    a ``_layer_errors`` dict the harness surfaces in stderr. We NEVER let a
-    layer-open failure crash the harness — the user code decides what to do.
+    Opening is best-effort and lazy-tolerant: a failed open hands back the raw
+    string under the same key and records the error in ``_layer_errors``. We NEVER
+    let a layer-open failure crash the harness — the user code decides what to do.
 
     The handles are exposed in the exec namespace under BOTH the layer name AND a
-    ``layers`` dict so user code can index either way.
+    ``layers`` dict so user code can index either way. A list-valued ref also
+    exposes a ``<var>_uris`` alias (the ordered list of source strings) alongside
+    the ``<var>_uri`` alias (the first frame, for single-frame fallbacks).
     """
     handles: dict[str, Any] = {}
     errors: dict[str, str] = {}
 
-    for name, uri in (layer_refs or {}).items():
+    for name, ref in (layer_refs or {}).items():
         var = _sanitize_var_name(name)
-        # Always expose the raw URI alias so user code has a fallback.
-        handles[f"{var}_uri"] = uri
-        try:
-            handle = _open_layer(uri)
-            handles[var] = handle
-        except Exception as exc:  # noqa: BLE001 — never crash on a bad layer
-            handles[var] = uri  # hand back the URI string
-            errors[name] = f"{type(exc).__name__}: {exc}"
+        if isinstance(ref, list):
+            # Ordered frame set -> a list of handles (open failures degrade
+            # per-frame to the raw string, recorded under name[i]).
+            frame_handles: list[Any] = []
+            for i, frame in enumerate(ref):
+                try:
+                    frame_handles.append(_open_layer(frame))
+                except Exception as exc:  # noqa: BLE001 — never crash on a bad frame
+                    frame_handles.append(frame)
+                    errors[f"{name}[{i}]"] = f"{type(exc).__name__}: {exc}"
+            handles[var] = frame_handles
+            # Aliases: the ordered source list + the first frame's URI.
+            handles[f"{var}_uris"] = list(ref)
+            handles[f"{var}_uri"] = ref[0] if ref else None
+        else:
+            # Single ref (legacy, byte-identical) -> one handle.
+            handles[f"{var}_uri"] = ref
+            try:
+                handles[var] = _open_layer(ref)
+            except Exception as exc:  # noqa: BLE001 — never crash on a bad layer
+                handles[var] = ref  # hand back the URI/path string
+                errors[name] = f"{type(exc).__name__}: {exc}"
 
     handles["layers"] = {
         _sanitize_var_name(n): handles.get(_sanitize_var_name(n)) for n in (layer_refs or {})

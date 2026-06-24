@@ -391,12 +391,51 @@ describe("SandboxCard — edge cases / graceful handling", () => {
     expect(screen.getByTestId("sandbox-result-too-large").textContent).toContain("4883");
   });
 
-  it("renders chart result with note", () => {
+  it("renders chart result with note when no PNG present", () => {
     const res: CodeExecResultPayload = {
       ...OK_RESULT,
       result: { kind: "chart", chart_id: "chart-xyz", title: "My chart" },
     };
     renderWithResult(res);
     expect(screen.getByTestId("sandbox-result-chart-note")).toBeTruthy();
+  });
+
+  it("renders chart PNG inline when png_base64 present and not truncated", () => {
+    // 1x1 transparent PNG (valid base64, content irrelevant to the test).
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const res: CodeExecResultPayload = {
+      ...OK_RESULT,
+      result: {
+        kind: "chart",
+        title: "Lightning glow",
+        png_base64: png,
+        png_truncated: false,
+      },
+    };
+    renderWithResult(res);
+    const wrap = screen.getByTestId("sandbox-result-chart-image");
+    expect(wrap).toBeTruthy();
+    const img = wrap.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img!.getAttribute("src")).toBe(`data:image/png;base64,${png}`);
+    // The note path is NOT taken when the PNG renders.
+    expect(screen.queryByTestId("sandbox-result-chart-note")).toBeNull();
+  });
+
+  it("falls back to the note when png_truncated is true (PNG dropped)", () => {
+    const res: CodeExecResultPayload = {
+      ...OK_RESULT,
+      result: {
+        kind: "chart",
+        title: "Huge figure",
+        png_base64: null,
+        png_truncated: true,
+      },
+    };
+    renderWithResult(res);
+    expect(screen.queryByTestId("sandbox-result-chart-image")).toBeNull();
+    const note = screen.getByTestId("sandbox-result-chart-note");
+    expect(note.textContent).toContain("too large");
   });
 });

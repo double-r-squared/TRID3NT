@@ -196,6 +196,106 @@ def _cleanup_workdir(workdir: str) -> None:
         pass
 
 
+#: Subdir of the per-run workdir that holds the pre-fetched layer/frame bytes.
+#: It is bound READ-ONLY into the bwrap jail (the jail is network-denied +
+#: credential-scrubbed by design, so the executor inside it CANNOT fetch S3 —
+#: the agent process, which HAS creds + network, pre-fetches here and rewrites
+#: the refs to these local paths).
+STAGED_INPUTS_DIRNAME = "staged_inputs"
+
+
+def _needs_staging(uri: Any) -> bool:
+    """True when ``uri`` is an ``s3://`` URI the agent must pre-fetch.
+
+    The live stack is S3-only (GCP decommissioned). A local path, a legacy
+    ``gs://`` string, or any non-``s3://`` value is handed through UNCHANGED — the
+    executor opens local paths directly and the un-jailed dev path can still use
+    rasterio's /vsi drivers for the rare legacy URI. Only ``s3://`` (which the
+    network-denied jail cannot reach) is staged here in the agent process."""
+    return isinstance(uri, str) and uri.startswith("s3://")
+
+
+def _stage_one_uri(uri: str, staged_dir: str, label: str, idx: int | None = None) -> str:
+    """Download ONE ``s3://`` URI to a local file under ``staged_dir``; return the path.
+
+    Reuses the shared boto3 reader (``cache.read_object_bytes_s3``) — the same
+    instance-role-correct S3 path ``analytical_qa._materialize_uri`` uses — so the
+    agent process (which HAS creds + network) materializes the bytes the jailed,
+    network-denied executor will open as a LOCAL file. A non-``s3://`` value is
+    returned unchanged (it never needed staging)."""
+    if not _needs_staging(uri):
+        return uri
+    from .tools.cache import read_object_bytes_s3
+
+    base = uri.rstrip("/").rsplit("/", 1)[-1] or f"{label}.bin"
+    # Sanitize + de-collide the on-disk name (frames share a stem).
+    safe = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in base)
+    prefix = f"{label}_{idx}_" if idx is not None else f"{label}_"
+    local_path = os.path.join(staged_dir, f"{prefix}{safe}")
+    data = read_object_bytes_s3(uri)
+    with open(local_path, "wb") as fh:
+        fh.write(data)
+    return local_path
+
+
+def stage_layer_refs_locally(
+    layer_refs: dict[str, Any] | None, workdir: str
+) -> tuple[dict[str, Any], str | None]:
+    """Pre-fetch every ``layer_refs`` URI to a local file; rewrite refs to paths.
+
+    Accepts BOTH ref shapes (the ADDITIVE multi-frame extension):
+      - ``{var: "s3://.../layer.tif"}``        -> ``{var: "<staged>/var_layer.tif"}``
+      - ``{var: ["s3://.../f0.tif", ...]}``    -> ``{var: ["<staged>/var_0_f0.tif", ...]}``
+
+    Returns ``(rewritten_refs, staged_dir_or_None)``. ``staged_dir`` is the dir the
+    caller binds READ-ONLY into the jail; it is ``None`` when nothing needed
+    staging (every ref was already a local path / unknown scheme), so the caller
+    skips the extra bind. A single FAILED fetch is non-fatal: the original URI
+    string is handed through under the same key (the executor's ``_open_layer``
+    falls back to the raw URI -> ``_layer_errors``), preserving the honest
+    degrade-don't-crash contract.
+    """
+    refs = layer_refs or {}
+    if not refs:
+        return {}, None
+
+    staged_dir = os.path.join(workdir, STAGED_INPUTS_DIRNAME)
+    rewritten: dict[str, Any] = {}
+    used_staging = False
+
+    for var, ref in refs.items():
+        if isinstance(ref, list):
+            out_list: list[Any] = []
+            for i, frame_uri in enumerate(ref):
+                if not _needs_staging(frame_uri):
+                    out_list.append(frame_uri)
+                    continue
+                try:
+                    os.makedirs(staged_dir, exist_ok=True)
+                    local = _stage_one_uri(frame_uri, staged_dir, var, idx=i)
+                    used_staging = True
+                    out_list.append(local)
+                except Exception as exc:  # noqa: BLE001 — degrade, never crash
+                    LOG.warning("sandbox stage frame failed var=%s idx=%d uri=%s: %s", var, i, frame_uri, exc)
+                    out_list.append(frame_uri)
+            rewritten[var] = out_list
+        elif _needs_staging(ref):
+            try:
+                os.makedirs(staged_dir, exist_ok=True)
+                local = _stage_one_uri(ref, staged_dir, var)
+                used_staging = True
+                rewritten[var] = local
+            except Exception as exc:  # noqa: BLE001 — degrade, never crash
+                LOG.warning("sandbox stage layer failed var=%s uri=%s: %s", var, ref, exc)
+                rewritten[var] = ref
+        else:
+            # A single non-s3 string, or any other shape — pass through unchanged
+            # (local path / legacy gs:// / unknown scheme the executor handles).
+            rewritten[var] = ref
+
+    return rewritten, (staged_dir if used_staging else None)
+
+
 def run_sandbox_local(
     python_code: str,
     layer_refs: dict[str, str] | None = None,
@@ -221,12 +321,21 @@ def run_sandbox_local(
     if not executor.exists():
         raise FileNotFoundError(f"sandbox executor not found at {executor}")
 
-    payload = {"python_code": python_code, "layer_refs": layer_refs or {}}
-
     # Per-run scratch dir: holds the payload file and serves as the child's cwd
     # (and, under the jail, the only writable bind besides /tmp). A private dir
     # per run keeps one Case's payload out of another's reach.
     workdir = tempfile.mkdtemp(prefix="grace2_sandbox_")
+
+    # PRE-FETCH stage (sandbox-staging): the jailed executor is network-denied +
+    # credential-scrubbed BY DESIGN, so it cannot read S3 itself. The AGENT
+    # process (which HAS creds + network) pre-fetches every layer_ref URI (single
+    # OR a list of animation frames) into a staged-inputs subdir of the workdir
+    # and rewrites the refs handed to the executor to LOCAL file paths. That dir
+    # is then bound read-only into the jail (see build_jailed_cmd). This is the
+    # substrate that lets a snippet read on-map layers + frames as local handles.
+    staged_refs, staged_dir = stage_layer_refs_locally(layer_refs, workdir)
+
+    payload = {"python_code": python_code, "layer_refs": staged_refs}
     payload_path = os.path.join(workdir, "payload.json")
     with open(payload_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
@@ -259,6 +368,7 @@ def run_sandbox_local(
             executor_path=str(executor),
             payload_path=payload_path,
             workdir=workdir,
+            staged_inputs_dir=staged_dir,
         )
         preexec_fn = sandbox_hardening.preexec_resource_limits(jailed=jailed)
         if jailed:
