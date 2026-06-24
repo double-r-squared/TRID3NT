@@ -64,7 +64,7 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1040,6 +1040,16 @@ def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
 #: round-trips through the projected grid can nudge a boundary cell out).
 _MASK_ELEV_BUFFER_M: float = 5.0
 
+#: Seaward water-level-boundary elevation cap (NAVD88 m) for ``setup_mask_bounds``
+#: ``btype="waterlevel"``. Active-domain EDGE cells at/below this bed elevation
+#: become msk==2 water-level boundary cells where the bzs surge series is applied.
+#: A low coastal cap (~+2 m) keeps the boundary on the Gulf-facing intertidal/
+#: low-berm edge (where surge physically enters) and off the higher inland domain
+#: edges, so the surge marches sea->land. Without these boundary cells the bzs
+#: forcing is inert and the interior never floods (the surge-inundation root
+#: cause fixed alongside the 10 h deck-window + rising-limb forcing).
+SEAWARD_BOUNDARY_ZMAX_M: float = 2.0
+
 #: Fallback active-cell mask bounds used when the DEM elevation range cannot be
 #: read (missing file, unreadable bytes, all-nodata). These are deliberately
 #: VERY wide so they NEVER exclude real land — a flood deck with an empty active
@@ -1733,8 +1743,33 @@ def _emit_surge_forcing_blocks(
     ``set_forcing_1d``, which the module-level pandas guard keeps callable on
     pandas >= 3.0.
     """
-    # --- 1. Water-level (surge + tide) boundary ---
+    # --- 0. Water-level BOUNDARY CELLS (msk=2) along the seaward active edge ---
+    # CRITICAL (surge inundation root cause): ``setup_mask_active`` only marks
+    # ACTIVE cells (msk=1); it does NOT create water-level boundary cells. SFINCS
+    # applies a bzs water-level boundary ONLY to msk==2 cells, so a deck with a
+    # bnd/bzs surge series but NO msk==2 cells leaves the surge INERT -- the
+    # interior zs stays pinned at zsini=0.0 for the whole run (proven live: run
+    # 01KVVWGKK05FRQP0BNHANFBVDE had msk all ==1, zero msk==2/3 cells, and zs
+    # output was 0.0 at every timestep; the only "wet" cells were below-datum
+    # bathymetry, so the front never advanced and runup never climbed land).
+    # ``setup_mask_bounds(btype="waterlevel", zmax=...)`` converts the active-
+    # domain EDGE cells whose bed elevation is at/below ``zmax`` into msk==2
+    # water-level boundary cells. Capping at a low coastal elevation keeps the
+    # boundary on the SEAWARD (low) edge and off the high inland edges, so the
+    # surge enters from the Gulf side and marches inland. Emitted ONLY when a
+    # water-level forcing member is present (a pure-pluvial deck is unaffected).
     wl = forcing.waterlevel
+    if wl is not None:
+        components.append("setup_mask_bounds:")
+        components.append('  btype: "waterlevel"')
+        # Seaward-edge cap: any active-edge cell at/below this elevation (NAVD88 m)
+        # becomes a water-level boundary cell. +2.0 m brackets the intertidal /
+        # low-berm coastal edge (where the surge physically enters) while excluding
+        # the higher inland domain edges.
+        components.append(f"  zmax: {SEAWARD_BOUNDARY_ZMAX_M}")
+        components.append("  reset_bounds: true")
+
+    # --- 1. Water-level (surge + tide) boundary ---
     if wl is not None:
         components.append("setup_waterlevel_forcing:")
         if wl.geodataset_uri:
@@ -1890,11 +1925,21 @@ def _generate_hydromt_yaml_config(
     # Time values MUST be in SFINCS format "YYYYMMDD HHMMSS" — sfincs_input.py
     # parses them with strptime(val, "%Y%m%d %H%M%S"). ISO 8601 format raises
     # ValueError inside setup_precip_forcing -> get_model_time() (job-0055).
-    sim_days = max(1, int(options.simulation_hours / 24))
-    tstop_day = 1 + sim_days
-    components.append(f'  tref: "20260101 000000"')
-    components.append(f'  tstart: "20260101 000000"')
-    components.append(f'  tstop: "202601{tstop_day:02d} 000000"')
+    #
+    # ``tstop`` is ``tstart + simulation_hours`` at SUB-DAY precision (datetime
+    # arithmetic), NOT a whole-day rounding. The old ``sim_days =
+    # max(1, int(simulation_hours / 24))`` floored EVERY sub-24h request to a full
+    # 24 h deck window: a requested 10 h surge ran 24 h, so the surge had already
+    # peaked + receded + held drained for 14 h, the wet front was already fully
+    # inland by frame 0, and the inundation read shallow. Anchoring tstop to the
+    # real requested hours makes SFINCS run exactly the forcing window, so the
+    # rising surge limb actually marches the front inland across frames.
+    _SFINCS_TREF = datetime(2026, 1, 1, 0, 0, 0)
+    _sim_hours = max(1.0, float(options.simulation_hours))
+    _tstop_dt = _SFINCS_TREF + timedelta(hours=_sim_hours)
+    components.append(f'  tref: "{_SFINCS_TREF.strftime("%Y%m%d %H%M%S")}"')
+    components.append(f'  tstart: "{_SFINCS_TREF.strftime("%Y%m%d %H%M%S")}"')
+    components.append(f'  tstop: "{_tstop_dt.strftime("%Y%m%d %H%M%S")}"')
     # --- Map-output cadence (flood-animation Phase 1, engine-agnostic) ---
     # ``dtout`` / ``dtmaxout`` are native sfincs.inp parameters (seconds) that
     # make SFINCS write TIME-VARYING map output — i.e. ``zs(time,n,m)`` snapshots

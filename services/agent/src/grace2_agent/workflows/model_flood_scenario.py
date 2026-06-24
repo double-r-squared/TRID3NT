@@ -2012,19 +2012,47 @@ def _synthesize_parametric_surge_forcing(
     base_m = 0.3
     win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
 
-    # Hourly samples across the deck window (>= 2 so set_forcing_1d accepts it).
-    n_steps = max(int(round(win_hr)), 2)
+    # --- RISING-LIMB ramp-and-hold hydrograph -------------------------------
+    # A SYMMETRIC raised-cosine bump (peak at mid-event, 0 at both ends) makes the
+    # surge crest at win_hr/2 and then DRAIN back to base by the window end -- the
+    # peak map captures a transient that has already pushed the front fully inland
+    # at the FIRST output frame, so the wet-front-advance test reads ratio ~1.0
+    # (no march). Instead drive a clear RISING LIMB: hold at the tidal base for a
+    # short pre-storm lead, ramp smoothly (raised half-cosine S-curve) up to the
+    # full peak over the first ~40% of the window, then HOLD near the peak for the
+    # remainder (a gentle final taper avoids a hard boundary discontinuity at
+    # tstop). The flood therefore MARCHES inland across frames as the boundary
+    # climbs, and the sustained hold lets the inundation reach its full connected
+    # extent + berm runup rather than a transient crest.
+    lead_hr = min(0.5, 0.05 * win_hr)            # brief pre-storm tidal lead
+    rise_hr = max(1.0, 0.40 * win_hr)            # ramp base -> peak over ~40%
+    rise_end_hr = lead_hr + rise_hr
+    taper_hr = min(0.5, 0.05 * win_hr)           # soft easing into tstop
+    taper_start_hr = max(rise_end_hr, win_hr - taper_hr)
+    taper_floor = 0.92                           # never drop below 92% of peak
+
+    # FINE sampling (~6 min) so the rising limb resolves across the minute-scale
+    # output cadence (>= 2 samples so set_forcing_1d accepts it).
+    _sample_s = 360.0
+    n_steps = max(int(round(win_hr * 3600.0 / _sample_s)), 2)
     secs = [float(i) * (win_hr * 3600.0) / float(n_steps) for i in range(n_steps + 1)]
-    # Raised-cosine surge bump peaking at mid-event: 0 at the ends, ``peak_m`` at
-    # the centre. A smooth rise-and-recede so the flood marches IN then drains.
-    t_peak_s = 0.5 * win_hr * 3600.0
-    span_s = 0.5 * win_hr * 3600.0
     values: list[float] = []
     for s in secs:
-        frac = (s - t_peak_s) / span_s  # -1 .. +1 across the window
-        frac = max(-1.0, min(1.0, frac))
-        bump = 0.5 * (1.0 + math.cos(math.pi * frac))  # 1 at centre, 0 at edges
-        values.append(round(base_m + peak_m * bump, 4))
+        hr = s / 3600.0
+        if hr <= lead_hr:
+            frac = 0.0
+        elif hr < rise_end_hr:
+            # raised half-cosine S-curve from 0 -> 1 across the rise window.
+            x = (hr - lead_hr) / rise_hr
+            frac = 0.5 * (1.0 - math.cos(math.pi * x))
+        elif hr < taper_start_hr:
+            frac = 1.0
+        else:
+            # gentle ease-down to taper_floor over the last taper window.
+            x = (hr - taper_start_hr) / max(taper_hr, 1e-6)
+            x = max(0.0, min(1.0, x))
+            frac = 1.0 - (1.0 - taper_floor) * 0.5 * (1.0 - math.cos(math.pi * x))
+        values.append(round(base_m + peak_m * frac, 4))
 
     # Offshore boundary points along the SEAWARD edge of the bbox. Without a
     # coastline lookup we cannot know which edge faces the sea, so we seed points
@@ -2070,13 +2098,16 @@ def _synthesize_parametric_surge_forcing(
     csv_path = write_bzs_timeseries_csv(series_by_id, _unique(stage, "bzs", "csv"))
     loc_path = write_locations_fgb(stations, _unique(stage, "bnd", "fgb"))
     logger.info(
-        "model_flood_scenario: synthesised PARAMETRIC surge hydrograph for "
-        "bbox=%s (return_period_yr=%s -> peak=%.2f m, base=%.2f m, %d steps over "
-        "%.0f hr, %d boundary points) -> bzs=%s bnd=%s",
+        "model_flood_scenario: synthesised PARAMETRIC RISING-LIMB surge hydrograph "
+        "for bbox=%s (return_period_yr=%s -> peak=%.2f m on base=%.2f m, ramp "
+        "%.1f->%.1f hr then hold, %d steps over %.0f hr, %d boundary points) "
+        "-> bzs=%s bnd=%s",
         bbox,
         return_period_yr,
         peak_m,
         base_m,
+        lead_hr,
+        rise_end_hr,
         len(secs),
         win_hr,
         len(stations),

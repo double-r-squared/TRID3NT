@@ -24,9 +24,14 @@ DECK-BUILD PATH FINDING (load-bearing -- read before re-running):
   HydroMT deck (``build_sfincs_model`` -> ``model_setup.setup_uri`` manifest, a
   plain SFINCS deck with ``sfincs.bnd`` + ``sfincs.bzs`` and NO snapwave keyword)
   and submit it on the REGULAR ``grace2-sfincs`` job-def via ``run_solver`` --
-  the plain SFINCS binary has no SnapWave requirement. PROVEN live: regular run
-  01KVVTF55Q3HY8MRE4TNJEVRTH / job 6130c689-... SUCCEEDED (exit 0), wrote
-  sfincs_map.nc; postprocess_flood emitted flood_depth_peak.tif + 144 frames.
+  the plain SFINCS binary has no SnapWave requirement. VERIFIED live: regular run
+  01KVVX1PT7C19GV2NAR2W1XQMW / job 13cce910-... SUCCEEDED (exit 0), wrote
+  sfincs_map.nc; postprocess_flood emitted flood_depth_peak.tif + 81 frames; the
+  interior surge climbed 0.30 m -> 3.80 m and all 3 verifier parts PASS. (The
+  earlier run 01KVVTF55Q... was all-but-inert: the deck had a bzs surge series but
+  NO msk==2 water-level boundary cells, so the surge never entered -- fixed by the
+  setup_mask_bounds emission + 10 h deck window + rising-limb forcing; see
+  verify_mexico_beach_surge.py's VERIFIED LIVE RUN note.)
 
   This driver therefore: (a) builds the regular-grid surge deck via
   build_sfincs_model (30 m, autoscale, no subgrid, storm_surge forcing_type ->
