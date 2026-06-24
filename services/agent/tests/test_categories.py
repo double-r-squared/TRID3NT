@@ -226,7 +226,7 @@ def test_list_tools_in_category_is_registered() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hot_set_has_twelve_tools() -> None:
+def test_hot_set_has_seventeen_tools() -> None:
     """Hot set: the original 8 (Wave 4.10 kickoff) + code_exec_request
     (job-0247 — cross-cutting capability, see OQ-0247-CODE-EXEC-NOT-IN-HOT-SET)
     + fetch_nws_event (job-0261 — validator rejected Gemini's correct
@@ -237,8 +237,12 @@ def test_hot_set_has_twelve_tools() -> None:
     + request_spatial_input (FR-AS-10 / FR-WC-16 — pause-the-turn user-draw
     action invoked at any point; same hot-set rationale as code_exec_request /
     compute_layer_bounds, else the urban-flood draw flow stalls on the post-hoc
-    allowed-set validator)."""
-    assert len(HOT_SET_TOOLS) == 12
+    allowed-set validator)
+    + the tool-retrieval STEP 0 floor (NATE 2026-06-23): publish_layer (survives
+    today ONLY via validate_function_call's auto-widen — a latent gap once the
+    catalog is trimmed) + the core analysis surface compute_zonal_statistics /
+    generate_histogram / generate_time_series / summarize_layer_statistics."""
+    assert len(HOT_SET_TOOLS) == 17
 
 
 def test_hot_set_contains_required_anchors() -> None:
@@ -268,6 +272,12 @@ def test_hot_set_contains_required_anchors() -> None:
         "code_exec_request",
         "compute_layer_bounds",
         "request_spatial_input",
+        # tool-retrieval STEP 0 floor (NATE 2026-06-23).
+        "publish_layer",
+        "compute_zonal_statistics",
+        "generate_histogram",
+        "generate_time_series",
+        "summarize_layer_statistics",
     }
     assert required == HOT_SET_TOOLS
 

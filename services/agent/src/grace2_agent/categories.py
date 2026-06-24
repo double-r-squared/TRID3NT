@@ -604,6 +604,19 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # urban-flood draw flow does not stall on the post-hoc allowed-set
         # validator (the job-0247 / job-0261 failure mode).
         "request_spatial_input",
+        # tool-retrieval STEP 0 (NATE 2026-06-23): the render + core-analysis
+        # surface that must NEVER be retrieved-out when the catalog is trimmed.
+        # publish_layer survives today ONLY via validate_function_call's
+        # auto-widen (job-0270) -- a latent gap that breaks the instant
+        # retrieve_visible_tools subsets the declarations. The analysis tools are
+        # the universal "answer a question about a layer" surface a user reaches
+        # for at any point ("what's the population below 3m / chart it"), so they
+        # belong in the floor like compute_layer_bounds above.
+        "publish_layer",
+        "compute_zonal_statistics",
+        "generate_histogram",
+        "generate_time_series",
+        "summarize_layer_statistics",
     }
 )
 
@@ -751,7 +764,15 @@ class AllowedToolSet:
         allowed: set[str] = set(hot_set)
         allowed.update(self._META_TOOLS)
         for cat in self.opened_categories:
-            allowed.update(tools_for_category(cat))
+            # Per-category guard: a single unknown id (e.g. registry skew -- a
+            # CATEGORIES id removed/renamed while a persisted Case still holds it
+            # open) must skip ONLY that category, never drop the rest of the
+            # monotonic allowed set. Without this, one stale opened id raised and
+            # collapsed the whole snapshot (tool-retrieval verify, 2026-06-23).
+            try:
+                allowed.update(tools_for_category(cat))
+            except UnknownCategoryError:
+                continue
         allowed.update(self.dispatched_tools)
         allowed.update(self.explicit_tools)
         return frozenset(allowed)

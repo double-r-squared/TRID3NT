@@ -80,7 +80,10 @@ def test_real_registry_tool_outside_hot_set_auto_widens() -> None:
     validator auto-widens the set and the dispatch proceeds. This is the
     exact live failure: Gemini called compute_colored_relief FIRST (correct
     routing) and the validator bounced it, burning detour iterations."""
-    for name in ("compute_colored_relief", "compute_hillshade", "publish_layer"):
+    # publish_layer moved INTO the hot set (tool-retrieval STEP 0, 2026-06-23), so
+    # it can no longer demonstrate the auto-widen path; compute_contours is a
+    # registry-valid tool still outside the hot set.
+    for name in ("compute_colored_relief", "compute_hillshade", "compute_contours"):
         allowed = AllowedToolSet()
         assert name not in allowed.as_frozenset(), (
             f"{name} unexpectedly in the hot set — test premise broken"
@@ -108,12 +111,12 @@ def test_auto_widen_is_cumulative_across_tools() -> None:
     allowed = AllowedToolSet()
     validate_function_call("compute_colored_relief", allowed)
     validate_function_call("compute_hillshade", allowed)
-    validate_function_call("publish_layer", allowed)
+    validate_function_call("compute_contours", allowed)  # publish_layer is now hot-set
     snapshot = allowed.as_frozenset()
     assert {
         "compute_colored_relief",
         "compute_hillshade",
-        "publish_layer",
+        "compute_contours",
     }.issubset(snapshot)
     assert HOT_SET_TOOLS.issubset(snapshot)
 

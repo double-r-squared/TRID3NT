@@ -2496,4 +2496,26 @@
     "model": "opus",
     "subagent_tokens": 75320
   }
+  ,
+  {
+    "job_id": "tool-retrieval-corpus-backfill-wf_dbb29ffd",
+    "sprint": 17,
+    "description": "TOOLS workflow (8 agents): docstring-grounded routing-query backfill for 46 uncovered tools -> tool_query_corpus.yaml. STEP 7.",
+    "model": "opus",
+    "subagent_tokens": 721576
+  },
+  {
+    "job_id": "tool-retrieval-verify-wf_77fa4272",
+    "sprint": 17,
+    "description": "TOOLS workflow (4 agents): adversarial refute-by-default verify of retrieve_visible_tools; found 2 MAJOR latent gaps (never-hide on registry-skew + fail-open short by 4), both fixed.",
+    "model": "opus",
+    "subagent_tokens": 347808
+  },
+  {
+    "job_id": "tool-retrieval-and-glm-recon-agents",
+    "sprint": 17,
+    "description": "TOOLS recon (est): GLM 3x Explore (conventions/registration/publish-path) + tool-retrieval 2x (discover_dataset ranking core + corpus-gap analysis). Estimated.",
+    "model": "opus",
+    "subagent_tokens": 250000
+  }
 ]
