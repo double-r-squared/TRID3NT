@@ -26,7 +26,9 @@ variable "web_cors_origins" {
   type = list(string)
   description = "Web origins allowed to read runs-bucket objects (Case-view snapshots, export zips) from a browser cross-origin fetch."
   default = [
-    "https://d125yfbyjrpbre.cloudfront.net",
+    "https://grace-2.vercel.app",      # LIVE frontend (Vercel) since 2026-06-23
+    "https://*.vercel.app",            # Vercel preview deploys (one wildcard, S3-supported)
+    "https://d125yfbyjrpbre.cloudfront.net", # legacy S3+CloudFront SPA (retained, not live)
     "http://localhost:5173",
     "http://localhost:4173",
   ]
