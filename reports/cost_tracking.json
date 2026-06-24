@@ -2565,5 +2565,54 @@
     "description": "Agent: redeploy main 7ec3ac7 agent+web. deployed==HEAD verified (5 markers + shadow active + executor resolves); web bundle live (VITE_BUILD_SHA 7ec3ac7) + CloudFront invalidated. Shadow recall@k collection ON.",
     "model": "opus",
     "subagent_tokens": 66230
+  },
+  {
+    "job_id": "wf-w6q4ds7nf-deferred-tools-sweep",
+    "sprint": 17,
+    "description": "Workflow: sweep code+reports+memory for postponed/stubbed/scoped-absent tool implementations, dedupe+prioritize across 4 agents into a 27-tool tiered tools-session kickoff (reports/inflight/tools-backlog/KICKOFF.md).",
+    "model": "opus",
+    "subagent_tokens": 373728
+  },
+  {
+    "job_id": "wf-w2vya2078-fold-aboveground-mexbeach",
+    "sprint": 17,
+    "description": "Workflow: generate inundation-above-ground COGs off-box for verified surge run 01KVVX1PT7 (81 frames+peak, zero existing-COG overwrites), 3-lens adversarial validate, backup-first no-clobber DynamoDB merge into NATE case 01KVVY3E (82->164 layers), 2-lens verify.",
+    "model": "opus",
+    "subagent_tokens": 388730
+  },
+  {
+    "job_id": "data-followup-live-drive-harness",
+    "sprint": 17,
+    "description": "Live data-followup E2E: built headless WS drive harness (SRP dev-account auth + handshake-drain + auto-confirm code-exec gate + capture). Drove deployed agent against dev case 01KVW6Z18 (surge run, then +above-ground). Proved simple data-QA live (precise on-land 3.76m/1.11m via summarize_layer_statistics); found code_exec blockers: bwrap-missing (fixed: dnf install bubblewrap 0.10.0 on AL2023) then sandbox-network-denied (agent must use layer_refs input-staging, not in-jail URL fetch).",
+    "model": "opus",
+    "subagent_tokens": 35990
+  },
+  {
+    "job_id": "code-exec-richpath-fix-deploy",
+    "sprint": 17,
+    "description": "Rich-figure data-followup CLOSED live: hardened code_exec_request tool docstring (layer_refs mandatory, no in-sandbox network, multi-panel example; commit 1137bb2) + deployed via grace2-runshell (139 tools, executor resolves). Re-drive proved agent now declares layer_refs -> sandbox executes -> 6-panel above-ground PNG rendered in chat. Honesty floor caught agent's own area unit-bug. Follow-up: docstring says pre-opened handles but executor stages file paths (~8 iters); align to one-shot.",
+    "model": "opus",
+    "subagent_tokens": 0
+  },
+  {
+    "job_id": "code-exec-oneshot-and-durable-bwrap",
+    "sprint": 17,
+    "description": "#1 one-shot sandbox: investigated executor contract (handles ARE injected) -> root cause = agent reaches for layer_refs[name] which wasnt injected; fix d338409 injects layer_refs dict (staged paths) + hardened docstring (37f5d0a/d338409), verified locally both access paths open 279x101, deployed. #2 durable bwrap: baked bubblewrap into instance-bootstrap.sh dnf line (5acc31a). RESIDUAL: Sonnet nondeterministically populates layer_refs param (works when full, fails empty); reliability lever = system-prompt few-shot / Opus routing / analyze_layer tool.",
+    "model": "opus",
+    "subagent_tokens": 150192
+  },
+  {
+    "job_id": "code-exec-oneshot-levers-deploy",
+    "sprint": 17,
+    "description": "One-shot reliability levers SHIPPED + PROVEN: (a) system-prompt few-shot (cf1a58e) + (b) Opus-4.5 auto-routing for analytical/code_exec turns (3e63455, registered + verified toolConfig). Deployed; re-drive = ONE code_exec call -> 6-panel above-ground figure rendered in 41.9s (was 5-8 attempts). Investigation wf wcuxpwctr.",
+    "model": "opus",
+    "subagent_tokens": 0
+  },
+  {
+    "job_id": "code-exec-revert-opus-intent",
+    "sprint": 17,
+    "description": "NATE course-correct: dropped Opus model-routing + keyword intent-matching (commit 829809b reverts the bedrock_adapter Opus reg + server.py intent block from 3e63455). KEPT the python sandbox + executor layer_refs injection + code_exec docstring + SYSTEM_PROMPT few-shot. Deployed. Confirm-drive: Sonnet (default, no Opus) + sandbox + existing-data layer_refs -> figure from the real run COGs, one code_exec call, agent self-caught its unit bug. End state = figures from EXISTING data via the sandbox, no model routing, no fabrication.",
+    "model": "opus",
+    "subagent_tokens": 0
   }
 ]
