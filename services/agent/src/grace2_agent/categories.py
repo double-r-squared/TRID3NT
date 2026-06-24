@@ -366,6 +366,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # weather_atmosphere with its fetch_goes_satellite sibling).
     "fetch_wfigs_incident": "fire",
     "fetch_viirs_day_fire": "fire",
+    # fire-port: the STANDALONE GOES split-window active-fire detector (the
+    # Matson-Dozier C07-vs-C13 discriminator surfaced as its own atomic tool);
+    # PRIMARY fire. Cross-listed to weather_atmosphere via SECONDARY_CATEGORIES.
+    "fetch_goes_active_fire": "fire",
     # ---- 8. coastal -------------------------------------------------------
     "fetch_gtsm_tide_surge": "coastal",
     "fetch_noaa_coops_tides": "coastal",
@@ -490,6 +494,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # The HISTORICAL raw-S3-archive Fire Temperature animation fetcher: same
     # cross-list (it is a fire-branch demo path for any past date).
     "fetch_goes_archive_animation": ("fire",),
+    # The STANDALONE GOES split-window active-fire detector is PRIMARY fire but
+    # materially belongs to the weather_atmosphere lane too (it reads raw GOES ABI
+    # like its fetch_goes_satellite / fetch_goes_archive_animation siblings).
+    "fetch_goes_active_fire": ("weather_atmosphere",),
     # The image polish/enhance tool is a generic geographic_primitives raster
     # primitive (composable on ANY RGB COG) but materially belongs to the
     # weather_atmosphere lane too -- it is the cosmetic finishing pass a user

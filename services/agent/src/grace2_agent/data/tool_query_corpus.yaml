@@ -315,6 +315,14 @@ fetch_goes_archive_animation:
   - "animate the GOES true color daytime imagery loop over this fire from the archive"
   - "make a natural-color GOES timelapse at the finest native visible resolution for this AOI"
 
+fetch_goes_active_fire:
+  - "where is the active fire in this AOI right now from GOES"
+  - "detect the active-fire hot pixels with the GOES split-window discriminator"
+  - "run the Matson-Dozier C07-vs-C13 active-fire detector over this bbox"
+  - "give me a transparent GOES hotspot overlay of genuine active fire, not warm land"
+  - "flag the burning pixels in this scene from raw GOES ABI brightness temperatures"
+  - "show GOES active fire detections as a hot-pixel raster I can lay over a basemap"
+
 fetch_viirs_day_fire:
   - "recreate the JPSS VIIRS Day Fire animation over a four-day window"
   - "animate the VIIRS Day Fire passes over the Channel Islands day by day"
