@@ -523,8 +523,21 @@ def _tier2_ogc_fetch(entry: CatalogEntry, params: dict[str, Any]) -> tuple[bytes
     crs_param = params.get("crs", "EPSG:4326")
     version_param = params.get("version")
     image_format_param = params.get("format")
-    width_px = int(params.get("width_px", 1024))
-    height_px = int(params.get("height_px", 1024))
+    # Phase-2 resolution lever: width/height default to None so fetch_ogc_layer
+    # computes an extent-aware raster grid from the bbox. When the caller does
+    # not pin a target_resolution_m, fall back to the entry's curated
+    # native_resolution_m (e.g. 10 m for 3DEP, 30 m for NLCD/LANDFIRE) so the
+    # auto-grid targets the source's native ground sampling instead of a fixed
+    # 1024 px that coarsened large AOIs.
+    _wp = params.get("width_px")
+    _hp = params.get("height_px")
+    width_px = int(_wp) if _wp is not None else None
+    height_px = int(_hp) if _hp is not None else None
+    target_resolution_m = params.get("target_resolution_m")
+    if target_resolution_m is not None:
+        target_resolution_m = float(target_resolution_m)
+    elif entry.native_resolution_m is not None:
+        target_resolution_m = float(entry.native_resolution_m)
     where_clause = params.get("where", "1=1")
 
     url = entry.urls[0]
@@ -600,6 +613,7 @@ def _tier2_ogc_fetch(entry: CatalogEntry, params: dict[str, Any]) -> tuple[bytes
         version=version,
         width_px=width_px,
         height_px=height_px,
+        target_resolution_m=target_resolution_m,
         where_clause=where_clause,
     )
     ext = _ext_for_content_type(resp.content_type, service_type)
@@ -694,7 +708,16 @@ def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_
               a MapServer (e.g. ``28`` for FEMA NFHL flood hazard zones).
             - ``service_type`` (Tier 2): override URL sniffing
               (``"WCS"`` / ``"WMS"`` / ``"WFS"`` / ``"ARCGIS_REST"``).
-            - ``width_px`` / ``height_px`` (Tier 2 raster): pixel dimensions.
+            - ``width_px`` / ``height_px`` (Tier 2 raster): explicit pixel
+              dimensions. Optional — when omitted, the dispatch derives an
+              extent-aware raster grid from ``bbox`` (resolution lever below).
+            - ``target_resolution_m`` (Tier 2 raster): ground cell size in
+              metres for the auto-computed grid (the fetch-side resolution
+              lever). Omit to target the entry's curated
+              ``native_resolution_m`` (e.g. 10 m for 3DEP, 30 m for
+              NLCD/LANDFIRE), falling back to a bounded 30 m default; pass a
+              finer value (e.g. ``10``) on a large AOI to opt into more pixels.
+              Each axis is clamped to 4096 px so payloads stay bounded.
             - ``crs`` (Tier 2): default ``"EPSG:4326"``.
             - ``where`` (Tier 2 ArcGIS REST): ESRI WHERE clause.
             - ``query`` (Tier 3): extra HTTPS query params.

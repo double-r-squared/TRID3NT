@@ -58,6 +58,10 @@ entries:
     vintage: "2026"
     last_verified: "2026-06-07"
     status: active
+    # Phase-2 resolution lever: 3DEP's canonical seamless product is 1/3-arc-sec
+    # (~10 m). The Tier-2 catalog_fetch dispatch targets this native cell size
+    # for its extent-aware raster grid (was a fixed 1024 px that coarsened large AOIs).
+    native_resolution_m: 10.0
     how_to_use: |
       OGC WCS GetCoverage is the canonical model-input path (same lesson as NLCD
       per job-0044). Append ?service=WCS&version=1.0.0&request=GetCoverage&
@@ -826,6 +830,9 @@ entries:
     vintage: "2021 (vintages 2001, 2004, 2006, 2008, 2011, 2013, 2016, 2019, 2021)"
     last_verified: "2026-06-07"
     status: active
+    # Phase-2 resolution lever: NLCD's native grid is 30 m. The Tier-2
+    # catalog_fetch dispatch targets this cell size for its extent-aware grid.
+    native_resolution_m: 30.0
     how_to_use: |
       WCS 1.0.0 GetCoverage:
         https://www.mrlc.gov/geoserver/mrlc_download/NLCD_2021_Land_Cover_L48/ows
@@ -982,6 +989,9 @@ entries:
     vintage: "LF2022 (2022 disturbance)"
     last_verified: "2026-06-07"
     status: active
+    # Phase-2 resolution lever: LANDFIRE fuels products are 30 m. The Tier-2
+    # catalog_fetch dispatch targets this cell size for its extent-aware grid.
+    native_resolution_m: 30.0
     how_to_use: |
       WCS endpoint pattern: https://edcintl.cr.usgs.gov/geoserver/landfire/conus_lf2022/ows
         ?service=WCS&request=GetCapabilities (probe first to confirm coverage names)

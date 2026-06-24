@@ -144,6 +144,14 @@ class CatalogEntry(GraceModel):
     # Actionable-catalog payload (§F.1.2 Mode 1).
     how_to_use: str = Field(min_length=1)
 
+    # Native ground resolution in metres for raster Tier-2 entries (phase-2
+    # resolution lever). Optional + additive: when set, the generic
+    # ``catalog_fetch`` Tier-2 dispatch targets this cell size for the
+    # extent-aware raster grid instead of a fixed pixel count; left ``None``
+    # for vector entries and rasters without a curated native resolution
+    # (those fall back to the adapter's bounded 30 m default).
+    native_resolution_m: float | None = None
+
     # Conditional credential field (see cross-field rule).
     api_key_secret_ref: str | None = None
 

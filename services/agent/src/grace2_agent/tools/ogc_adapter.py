@@ -50,6 +50,8 @@ from typing import Any, Literal
 
 import requests
 
+from . import _pc_stac
+
 __all__ = [
     "OGCAdapterError",
     "OGCResponse",
@@ -59,6 +61,19 @@ __all__ = [
 ]
 
 logger = logging.getLogger("grace2_agent.tools.ogc_adapter")
+
+#: Phase-2 resolution lever (job: fetch-side adjustable resolution). When a
+#: raster Tier-2 service (WMS/WCS/ImageServer) is requested WITHOUT explicit
+#: width_px/height_px, the adapter computes an extent-aware grid from the bbox
+#: at this default cell size (metres). Callers opt into finer/coarser via
+#: ``target_resolution_m`` (e.g. the catalog forwards an entry's
+#: ``native_resolution_m``). The previous fixed-1024 default coarsened large
+#: AOIs; this targets a real ground resolution instead.
+_DEFAULT_OGC_CELL_M = 30.0
+#: Hard cap on each computed raster axis so a large AOI never materializes an
+#: enormous grid (bounds the response payload). ``bbox_pixel_dims`` clamps to
+#: this on both axes.
+_OGC_PX_MAX = 4096
 
 #: Recognized Tier-2 service flavors. ``ARCGIS_REST`` is the ESRI MapServer /
 #: FeatureServer / ImageServer dialect — strictly speaking not OGC, but the
@@ -267,8 +282,9 @@ def fetch_ogc_layer(
     service_type: ServiceType = "WMS",
     image_format: str = "image/geotiff",
     version: str = "1.0.0",
-    width_px: int = 1024,
-    height_px: int = 1024,
+    width_px: int | None = None,
+    height_px: int | None = None,
+    target_resolution_m: float | None = None,
     timeout_s: float = 120.0,
     user_agent: str | None = None,
     extra_params: dict[str, Any] | None = None,
@@ -308,8 +324,20 @@ def fetch_ogc_layer(
         version: OGC service version string. Defaults to ``"1.0.0"`` (WCS
             sweet spot per job-0044); WMS callers typically pass ``"1.1.1"``;
             WFS callers ``"2.0.0"`` or ``"1.1.0"``.
-        width_px, height_px: pixel dimensions for raster responses (WMS /
-            WCS). Ignored for WFS / ArcGIS REST.
+        width_px, height_px: pixel dimensions for raster responses (WMS / WCS /
+            ImageServer). Ignored for WFS / ArcGIS REST (MapServer query).
+            When BOTH are left ``None`` (the default), a raster request derives
+            an extent-aware grid from ``bbox`` at ``target_resolution_m`` (or
+            the ``_DEFAULT_OGC_CELL_M`` 30 m fallback), each axis clamped to
+            ``_OGC_PX_MAX`` (4096). Passing explicit ints is byte-identical to
+            the prior fixed behavior — the computed-grid path only runs when
+            neither is given.
+        target_resolution_m: optional ground cell size in metres for the
+            auto-computed raster grid. Phase-2 resolution lever: callers (e.g.
+            ``catalog_fetch`` forwarding an entry's ``native_resolution_m``)
+            opt into finer/coarser output without hard-coding pixel counts.
+            Ignored when explicit ``width_px``/``height_px`` are given, or for
+            vector (WFS / MapServer query) service types.
         timeout_s: request timeout (NFR-R-1).
         user_agent: override the descriptive User-Agent header.
         extra_params: extra query parameters merged after the default set
@@ -327,6 +355,26 @@ def fetch_ogc_layer(
         empty / sub-64-byte body. Callers translate to the engine's
         ``UpstreamAPIError`` taxonomy.
     """
+    # Phase-2 resolution lever: when a raster request leaves BOTH width/height
+    # unset, derive an extent-aware grid from the bbox at the target ground
+    # resolution (or the 30 m fallback), clamped to ``_OGC_PX_MAX`` per axis.
+    # Explicit ints pass through untouched (byte-identical to prior behavior).
+    # Vector service types ignore width/height; resolve to a harmless int so
+    # the builders that consume them always receive concrete pixel counts.
+    if width_px is None and height_px is None:
+        grid_bbox = bbox or (-180.0, -90.0, 180.0, 90.0)
+        width_px, height_px = _pc_stac.bbox_pixel_dims(
+            grid_bbox,
+            target_resolution_m if target_resolution_m is not None else _DEFAULT_OGC_CELL_M,
+            px_max=_OGC_PX_MAX,
+        )
+    else:
+        # One axis given but not the other: mirror it so both are concrete.
+        if width_px is None:
+            width_px = height_px
+        if height_px is None:
+            height_px = width_px
+
     if service_type == "WMS":
         params: dict[str, str] = _build_wms_params(
             layer_name=layer_name,

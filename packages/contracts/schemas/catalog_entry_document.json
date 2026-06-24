@@ -67,6 +67,18 @@
       "title": "Name",
       "type": "string"
     },
+    "native_resolution_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Native Resolution M"
+    },
     "schema_version": {
       "const": "v1",
       "default": "v1",
