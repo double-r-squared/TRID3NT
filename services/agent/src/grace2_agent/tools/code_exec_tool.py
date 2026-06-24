@@ -246,30 +246,55 @@ def code_exec_request(
     """Run user-confirmed ad-hoc Python over on-map layers in a secure sandbox.
 
     Use this when: the user asks a quantitative follow-up about a layer already on
-    the map that no existing analytical tool answers directly — a custom
-    aggregation, a percentile, a cross-tabulation, a derived statistic — and you
-    need to compute it from the layer's actual pixels/features. Write a short
-    Python snippet that assigns the answer to a variable named ``result`` (a
-    scalar, a dict, a pandas DataFrame, or a matplotlib Figure); the sandbox
-    pre-opens each ``layer_refs`` entry as a rasterio/geopandas handle named after
-    its key. The user is shown the exact code and must approve it before it runs.
+    the map that no existing analytical tool answers directly - a custom
+    aggregation, a percentile, a cross-tabulation, a derived field, or a custom
+    multi-panel figure - and you need to compute it from the layer's actual
+    pixels/features. Write a short Python snippet that assigns the answer to a
+    variable named ``result`` (a scalar, a dict, a pandas DataFrame, or a
+    matplotlib Figure); the user is shown the exact code and must approve it first.
+
+    CRITICAL - HOW TO ACCESS DATA (the sandbox has NO network):
+    The sandbox is network-isolated. You CANNOT download anything from inside it -
+    ``rasterio.open("s3://...")``, ``rasterio.open("https://...")``,
+    ``urllib`` / ``requests`` / ``boto3`` against a URL, or any DNS lookup WILL
+    FAIL. To use ANY layer, COG, or run frame you MUST list its URI in
+    ``layer_refs``; the sandbox pre-fetches it OFF the loop and hands it to your
+    code already-open as a handle named after its key (raster -> an OPEN rasterio
+    dataset, vector -> a loaded geopandas GeoDataFrame), plus a ``<name>_uri``
+    string alias. Reference that handle DIRECTLY in your code - do NOT re-open it.
+    Example for a multi-panel above-ground figure::
+
+        layer_refs = {
+            "peak": "s3://.../inundation_above_ground_peak.tif",
+            "f20":  "s3://.../inundation_above_ground_frame_20.tif",
+            "f40":  "s3://.../inundation_above_ground_frame_40.tif",
+        }
+        # in python_code: `peak` is ALREADY an open rasterio dataset
+        arr = peak.read(1)            # NOT rasterio.open(peak_uri)
+
+    Pass every frame COG you need as its own ``layer_refs`` entry. Get the exact
+    COG URIs from the Case's layer list or from ``list_run_frames``.
 
     Do NOT use this for: fetching new data (use a ``fetch_*`` tool), running a
     hazard model (use a ``run_model_*`` workflow), producing a standard chart (use
     ``generate_histogram`` / ``generate_damage_distribution`` etc.), or anything a
-    purpose-built atomic tool already does — the sandbox is the escape hatch for
-    genuinely ad-hoc computation, not a replacement for the tool catalog. Never
-    use it to reach the network (egress is denied) or to write data.
+    purpose-built atomic tool already does - the sandbox is the escape hatch for
+    genuinely ad-hoc computation, not a replacement for the tool catalog. It cannot
+    reach the network (declare every input in ``layer_refs``) or write data out.
 
     Args:
         python_code: The Python to run. Assign the answer to ``result``. Each
             ``layer_refs`` key is available as a pre-opened handle of that name
-            (raster -> rasterio dataset, vector -> geopandas GeoDataFrame) plus a
-            ``<name>_uri`` string alias. ``numpy``/``pandas``/``rasterio``/
-            ``geopandas``/``matplotlib`` are importable.
-        layer_refs: Optional ``{var_name: layer_uri}`` of on-map layers to expose
-            to the code. Pass the ``gs://`` / layer URIs of the layers the
-            computation needs; omit for pure-compute snippets.
+            (raster -> an OPEN rasterio dataset, vector -> a geopandas
+            GeoDataFrame) plus a ``<name>_uri`` string alias. Reference the handle
+            directly; do NOT call ``rasterio.open`` / ``urllib`` / ``requests`` on
+            a URL (no network - it will fail). ``numpy`` / ``pandas`` /
+            ``rasterio`` / ``geopandas`` / ``matplotlib`` are importable.
+        layer_refs: ``{var_name: layer_uri}`` of the on-map layers / run-frame COGs
+            the computation needs - REQUIRED for any snippet that reads data, since
+            the sandbox has no network. Pass the ``s3://`` (or layer) URIs; each
+            becomes a pre-opened handle of that name. Omit only for pure-compute
+            snippets that touch no layer.
         rationale: Optional one-line reason shown on the confirm card so the user
             understands what they're approving.
 
