@@ -381,6 +381,8 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_gtsm_tide_surge": "coastal",
     "fetch_noaa_coops_tides": "coastal",
     "fetch_noaa_slr_scenarios": "coastal",
+    "fetch_noaa_slr_confidence": "coastal",
+    "fetch_noaa_slr_marsh": "coastal",
     # SFINCS North Star P1: merged coastal topo-bathymetry DEM (NOAA NCEI CUDEM
     # 1/9 arc-sec + USGS 3DEP land) — the bathymetric input the coastal SFINCS
     # bed needs (fetch_dem alone is land-only). EPSG:32616 NAVD88 positive-up.
@@ -478,6 +480,9 @@ PRIMARY_CATEGORY: dict[str, str] = {
 #: lists. Membership is additive: the validator treats a tool as allowed if it
 #: matches either the primary or any secondary category it carries.
 SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
+    # NOAA SLR marsh-migration is a coastal product (primary) that materially
+    # belongs to conservation/ecology too (it projects wetland habitat transition).
+    "fetch_noaa_slr_marsh": ("conservation_ecology",),
     "run_pelicun_damage_assessment": ("damage_assessment",),
     "run_pelicun_with_buildings": ("damage_assessment",),
     "fetch_usace_nsi": ("damage_assessment",),

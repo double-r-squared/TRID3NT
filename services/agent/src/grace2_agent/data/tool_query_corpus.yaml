@@ -247,6 +247,22 @@ fetch_noaa_slr_scenarios:
   - "I need the NOAA SLR viewer data for planning-level analysis in Charleston"
   - "compare 0.5-foot and 3-foot sea-level-rise footprints for this coastline"
 
+fetch_noaa_slr_confidence:
+  - "how confident is the sea-level-rise inundation mapping at 3 feet here"
+  - "show me the NOAA SLR mapping confidence raster for this coast"
+  - "where is the sea-level-rise inundation high vs low confidence at 2 ft"
+  - "give me the SLR mapping uncertainty overlay for this coastline"
+  - "flag the low-confidence sea-level-rise areas before I report exposure"
+  - "NOAA SLR viewer confidence layer at 5 feet for this estuary"
+
+fetch_noaa_slr_marsh:
+  - "how does the marsh migrate under 3 feet of sea-level rise"
+  - "show me the NOAA marsh-migration projection for this estuary"
+  - "where do coastal wetlands shift or drown under 2 ft of SLR"
+  - "give me the salt-marsh migration raster for this coastline"
+  - "project the tidal marsh transition under a 6-foot sea-level-rise scenario"
+  - "NOAA SLR viewer marsh layer at 1.5 feet for this bay"
+
 fetch_mrms_qpe:
   - "how much rain fell over Houston during this storm event?"
   - "show me radar-derived precipitation accumulation for this flood event"
