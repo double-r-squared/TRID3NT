@@ -434,17 +434,31 @@ def _build_vector_wms_url(
 #: Token-boundary matching (not substring) so e.g. a layer_id like
 #: ``"demo-flood"`` does NOT match ``dem``.
 _TERRAIN_STYLE_TOKENS = frozenset(
-    {"dem", "relief", "hillshade", "slope", "aspect", "terrain", "elevation"}
+    # slope/aspect REMOVED 2026-06-24 (tools-backlog #3): they now carry real
+    # colormaps (slope_angle_deg ylorrd / aspect_compass_deg hsv) via the style
+    # registry, routed by _infer_style_preset below. dem/relief/hillshade/terrain/
+    # elevation STAY grayscale -- bare DEM + shaded relief render correctly unstyled.
+    {"dem", "relief", "hillshade", "terrain", "elevation"}
 )
+
+#: tools-backlog #3 -- URI/id token -> the slope/aspect colormap preset, applied
+#: BEFORE the terrain passthrough so an auto-inferred slope/aspect layer is
+#: colormapped (not left grayscale and not mis-defaulted to flood depth).
+_SLOPE_ASPECT_PRESET_BY_TOKEN: dict[str, str] = {
+    "slope": "slope_angle_deg",
+    "aspect": "aspect_compass_deg",
+}
 
 
 def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     """Family-aware default style preset (job-0269b).
 
-    Returns ``""`` (no preset → QGIS default rendering) for terrain-family
-    rasters, else ``"continuous_flood_depth"`` — the pre-0269b default, so
-    flood/plume publishes that relied on it are unchanged. Tokenizes BOTH
-    the resolved URI and the layer_id on non-alphanumerics and matches
+    Returns the slope/aspect colormap preset for those families (tools-backlog
+    #3), ``""`` (no preset → QGIS default rendering) for the remaining terrain
+    rasters (dem/relief/hillshade/terrain/elevation), else
+    ``"continuous_flood_depth"`` — the pre-0269b default, so flood/plume
+    publishes that relied on it are unchanged. Tokenizes BOTH the resolved URI
+    and the layer_id on non-alphanumerics and matches
     whole tokens against ``_TERRAIN_STYLE_TOKENS``.
     """
     import re as _re
@@ -452,6 +466,9 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     tokens = set(
         _re.split(r"[^a-z0-9]+", f"{layer_uri} {layer_id}".lower())
     )
+    for token, preset in _SLOPE_ASPECT_PRESET_BY_TOKEN.items():
+        if token in tokens:
+            return preset
     if tokens & _TERRAIN_STYLE_TOKENS:
         return ""
     return "continuous_flood_depth"
@@ -589,21 +606,20 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "diverging_conduit_flow": ("-10,10", "rdbu"),
     "continuous_conduit_velocity": ("0,5", "viridis"),
     # tools-backlog #3 -- per-tool colormaps replacing the generic continuous_dem
-    # placeholder, for the data rasters NOT shadowed by the F51 terrain passthrough.
-    # ADDITIVE; entries above stay byte-identical. Impervious surface is a 0..100
-    # percent -> a reds "more paved = redder" ramp; population is people-per-pixel
-    # (WorldPop ~100 m / ACS) -> a magma density ramp.
-    # NOTE: compute_slope / compute_aspect / compute_hillshade are single-band
-    # terrain rasters whose source_class URLs (slope/aspect/hillshade) ALWAYS match
-    # the terrain-token passthrough above and render grayscale (a DELIBERATE,
-    # TESTED F51 decision -- test_publish_layer_titiler_style_resolver_f51 +
-    # test_publish_layer_style_inference). Giving slope/aspect a colormap means
-    # scoping that passthrough down + reversing those tests. DEFERRED (NATE
-    # 2026-06-24): the slope-angle (ylorrd 0,60) + cyclic aspect (hsv 0,360)
-    # colormaps + their legends ship TOGETHER with the styling UI -- NOT landed
-    # solo here. (Hillshade SHOULD stay grayscale -- shaded relief.)
+    # placeholder. ADDITIVE; entries above stay byte-identical. Impervious surface
+    # is 0..100 percent -> a reds "more paved = redder" ramp; population is
+    # people-per-pixel (WorldPop ~100 m / ACS) -> a magma density ramp. Slope ANGLE
+    # in DEGREES (0..90; most terrain <60) -> a "steep = hot" ylorrd ramp; aspect is
+    # a COMPASS direction (0..360) -> the cyclic hsv ramp so North reads the same
+    # hue at 0 and 360. To reach these, "slope"/"aspect" were removed from
+    # _TERRAIN_STYLE_TOKENS (the terrain passthrough now keeps ONLY dem/relief/
+    # hillshade/terrain/elevation grayscale; hillshade SHOULD stay grayscale as
+    # shaded relief). NATE 2026-06-24: the backend colormaps land HERE; the
+    # Orchestrator finishes by wiring the frontend legends + substrate.
     "impervious_surface_pct": ("0,100", "reds"),
     "population_density": ("0,250", "magma"),
+    "slope_angle_deg": ("0,60", "ylorrd"),
+    "aspect_compass_deg": ("0,360", "hsv"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an

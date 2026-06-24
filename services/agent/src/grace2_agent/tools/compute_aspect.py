@@ -405,7 +405,7 @@ def compute_aspect(
         name=f"Aspect ({algorithm}, {'zero-flat' if zero_for_flat else 'nodata-flat'})",
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # grayscale via the F51 terrain passthrough. DEFERRED (NATE 2026-06-24): the cyclic aspect colormap (hsv) + its compass legend ship TOGETHER with the styling UI; not landed solo because it reverses the tested F51 terrain-passthrough behavior. tools-backlog #3.
+        style_preset="aspect_compass_deg",  # tools-backlog #3: cyclic compass-aspect hsv ramp (deg). Backend colormap here; the Orchestrator wires the frontend compass legend (NATE 2026-06-24).
         role="context",
         units="degrees",
     )

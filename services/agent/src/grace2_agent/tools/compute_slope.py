@@ -403,7 +403,7 @@ def compute_slope(
         name=f"Slope ({output_unit}, {algorithm}) [{unit_label}]",
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # grayscale via the F51 terrain passthrough. DEFERRED (NATE 2026-06-24): the slope-angle colormap (ylorrd) + its legend ship TOGETHER with the styling UI; not landed solo because it reverses the tested F51 terrain-passthrough behavior. tools-backlog #3.
+        style_preset="slope_angle_deg",  # tools-backlog #3: slope-angle ylorrd ramp (deg). Backend colormap here; the Orchestrator wires the frontend legend (NATE 2026-06-24).
         role="context",
         units=output_unit,
     )

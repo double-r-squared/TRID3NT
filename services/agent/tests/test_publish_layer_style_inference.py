@@ -10,8 +10,9 @@ def test_terrain_families_get_no_preset():
     assert _infer_style_preset(
         "gs://b/cache/static-30d/hillshade/abc.tif", "hillshade-asheville"
     ) == ""
-    assert _infer_style_preset("gs://b/cache/static-30d/slope/x.tif", "slope-1") == ""
-    assert _infer_style_preset("gs://b/cache/static-30d/aspect/x.tif", "aspect-1") == ""
+    # tools-backlog #3: slope/aspect now infer their colormap presets (not "").
+    assert _infer_style_preset("gs://b/cache/static-30d/slope/x.tif", "slope-1") == "slope_angle_deg"
+    assert _infer_style_preset("gs://b/cache/static-30d/aspect/x.tif", "aspect-1") == "aspect_compass_deg"
     assert _infer_style_preset("gs://b/cache/static-30d/dem/x.tif", "my-dem") == ""
 
 
