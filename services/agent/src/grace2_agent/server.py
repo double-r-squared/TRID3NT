@@ -151,7 +151,11 @@ from .secrets_handler import (
     handle_secret_revoke,
     handle_secrets_list,
 )
-from .telemetry import compute_args_hash, emit_tool_call_event
+from .telemetry import (
+    compute_args_hash,
+    emit_shadow_selection_event,
+    emit_tool_call_event,
+)
 from .tool_arg_normalizer import normalize_args
 from .uri_registry import (
     activate_registry,
@@ -194,6 +198,59 @@ logger = logging.getLogger("grace2_agent.server")
 # writes (Appendix D.6) are NOT a trigger — that carveout is documented in
 # the report, not represented as data here.
 CONFIRMATION_TRIGGERS: set[str] = set()
+
+# ---------------------------------------------------------------------------
+# Tool-retrieval mode (tool-retrieval kickoff — orchestrator half).
+#
+# Three modes, read once at import time following the GRACE2_DYNAMIC_HOT_SET /
+# GRACE2_SYNC_TOOL_OFFLOAD env idiom (NO code change to flip):
+#
+#   off     (DEFAULT) -- the catalog is the FULL flat registry, untouched. This
+#                        is BYTE-IDENTICAL to the pre-feature behavior: no
+#                        retrieval is even computed, no shadow record is logged.
+#   shadow            -- compute the WOULD-BE-visible set via
+#                        retrieve_visible_tools and LOG it as shadow telemetry,
+#                        but STILL build declarations over the FULL registry.
+#                        ZERO behavior change (the model sees all tools); the
+#                        log feeds the recall@k dashboard.
+#   enforce           -- subset TOOL_REGISTRY to the visible set BEFORE building
+#                        declarations (and UNION the visible set into the Case's
+#                        monotonic AllowedToolSet so a once-visible tool never
+#                        leaves within a Case). Locked OFF on cloud until recall@k
+#                        proves >= 0.99/flow.
+#
+# K is the discover top-k for retrieve_visible_tools (default 25; the function
+# clamps to [1, MAX_K]).
+_TOOL_RETRIEVAL_VALID_MODES = frozenset({"off", "shadow", "enforce"})
+_TOOL_RETRIEVAL_MODE = (
+    os.environ.get("GRACE2_TOOL_RETRIEVAL", "off").strip().lower()
+)
+if _TOOL_RETRIEVAL_MODE not in _TOOL_RETRIEVAL_VALID_MODES:
+    # Unknown value -> fail-safe to the no-op default (never silently enforce).
+    _TOOL_RETRIEVAL_MODE = "off"
+
+
+def _tool_retrieval_k() -> int:
+    """Resolve GRACE2_TOOL_RETRIEVAL_K (default 25); fall back to the default on
+    any parse error. Read per-call so a test can override via the env without a
+    module reload."""
+    from .tools.tool_retrieval import DEFAULT_K
+
+    raw = os.environ.get("GRACE2_TOOL_RETRIEVAL_K")
+    if raw is None:
+        return DEFAULT_K
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_K
+
+
+def _tool_retrieval_mode() -> str:
+    """Current tool-retrieval mode. Reads the env LIVE (not the import-time
+    snapshot) so a test / runtime flip is honored; unknown -> 'off' (fail-safe
+    to the no-op default, never silently enforce)."""
+    mode = os.environ.get("GRACE2_TOOL_RETRIEVAL", "off").strip().lower()
+    return mode if mode in _TOOL_RETRIEVAL_VALID_MODES else "off"
 
 # job-0233: the ``code_exec_request`` confirm gate validity window (seconds).
 # Running arbitrary Python is a deliberate user decision; the gate gets the same
@@ -2044,7 +2101,95 @@ async def _stream_gemini_reply(
     started_at = asyncio.get_running_loop().time()
 
     # Build tool declarations + system prompt for this request.
-    tool_decls = build_tool_declarations(TOOL_REGISTRY)
+    #
+    # Tool-retrieval (tool-retrieval kickoff, orchestrator half). Default OFF =
+    # the full flat registry, BYTE-IDENTICAL to the pre-feature behavior (no
+    # retrieval computed). In ``shadow`` we compute the WOULD-BE-visible set and
+    # LOG it for recall@k, but STILL build declarations over the FULL registry
+    # (ZERO behavior change -- the model still sees every tool). In ``enforce``
+    # we subset TOOL_REGISTRY to the visible set BEFORE build_tool_declarations
+    # and UNION the visible set into the Case's monotonic AllowedToolSet so a
+    # once-visible tool never leaves within a Case. ANY retrieval error / empty
+    # result FAILS OPEN to the full registry for that turn (never empty /
+    # core-only), logged. The cachePoint TAIL is inserted downstream by
+    # bedrock_adapter (after tools), so subsetting the dict here preserves it.
+    _retrieval_registry = TOOL_REGISTRY
+    _retrieval_mode = _tool_retrieval_mode()
+    if _retrieval_mode in ("shadow", "enforce"):
+        try:
+            from .tools.tool_retrieval import retrieve_visible_tools
+
+            _retrieval_k = _tool_retrieval_k()
+            _visible = retrieve_visible_tools(
+                user_text, state.allowed_tool_set, _retrieval_k
+            )
+            if not _visible:
+                # FAIL-OPEN: an empty result must never trim the catalog.
+                raise ValueError("retrieve_visible_tools returned empty")
+            # Shadow telemetry (fire-and-forget, never-raise). Logged in BOTH
+            # shadow and enforce so recall@k can be measured in either mode.
+            try:
+                emit_shadow_selection_event(
+                    session_id=state.session_id,
+                    turn_id=pipeline_id,
+                    user_text=user_text,
+                    visible_tools=_visible,
+                    mode=_retrieval_mode,
+                    k=_retrieval_k,
+                    full_registry_size=len(TOOL_REGISTRY),
+                    model_id=bedrock_model,
+                )
+            except Exception:  # noqa: BLE001 — telemetry must never break dispatch
+                logger.warning(
+                    "tool-retrieval: shadow emit failed", exc_info=True
+                )
+            if _retrieval_mode == "enforce":
+                # UNION the visible set into the Case's monotonic AllowedToolSet
+                # FIRST (so it never shrinks across turns), then subset the
+                # registry to the resulting snapshot. as_frozenset() already
+                # carries the core floor + accrued tools; intersecting with the
+                # registry keeps only real, registered tools.
+                try:
+                    state.allowed_tool_set.add_tools(_visible)
+                    _allowed_snapshot = set(
+                        state.allowed_tool_set.as_frozenset()
+                    )
+                except Exception:  # noqa: BLE001 — never shrink on a snapshot fault
+                    logger.warning(
+                        "tool-retrieval: allowed-set union failed; "
+                        "FAIL-OPEN to full registry",
+                        exc_info=True,
+                    )
+                    _allowed_snapshot = set(TOOL_REGISTRY)
+                _subset = _allowed_snapshot & set(TOOL_REGISTRY)
+                if _subset:
+                    _retrieval_registry = {
+                        name: entry
+                        for name, entry in TOOL_REGISTRY.items()
+                        if name in _subset
+                    }
+                    logger.info(
+                        "tool-retrieval enforce: %d/%d tools visible "
+                        "(turn=%s session=%s)",
+                        len(_retrieval_registry),
+                        len(TOOL_REGISTRY),
+                        pipeline_id,
+                        state.session_id,
+                    )
+                else:
+                    logger.warning(
+                        "tool-retrieval enforce: empty subset; "
+                        "FAIL-OPEN to full registry"
+                    )
+        except Exception:  # noqa: BLE001 — any fault FAILS OPEN to the full catalog
+            logger.warning(
+                "tool-retrieval: selection failed; FAIL-OPEN to full registry "
+                "(mode=%s)",
+                _retrieval_mode,
+                exc_info=True,
+            )
+            _retrieval_registry = TOOL_REGISTRY
+    tool_decls = build_tool_declarations(_retrieval_registry)
 
     # GCP decommissioned: the agent runs on Bedrock, whose prompt caching is
     # its own ``cachePoint`` mechanism (bedrock_adapter). The Vertex-only
@@ -2532,6 +2677,9 @@ async def _stream_gemini_reply(
                     cached_content_token_count=_tel_cached_tokens,
                     result_usable=_tel_result_usable,
                     model_id=bedrock_model,
+                    # turn_id = the per-user-message dispatch (pipeline) id: the
+                    # recall@k join key against this turn's shadow-selection row.
+                    turn_id=pipeline_id,
                 )
                 # job-B10: pass the thought_signature harvested off the
                 # function_call Part through to the replayed model turn.
@@ -7164,6 +7312,14 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "compute_ndvi",
         "fetch_naip",
         "fetch_mobi",
+        # fetch_glm_lightning (GOES GLM optical-lightning): heavy SYNC fetcher
+        # now LIVE on the box (multi-granule netCDF download + per-granule
+        # in-AOI group filter + raster/COG write). Emit-free body (the
+        # surrounding emit_tool_call wrapper does the emit), so off-load so it
+        # never blocks the asyncio loop / starves the WS heartbeat
+        # (feedback_no_sync_blocking_on_asyncio_loop). Escalated by the
+        # tools-session (tool-retrieval kickoff #6).
+        "fetch_glm_lightning",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /

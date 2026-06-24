@@ -153,6 +153,7 @@ async def _write_to_mongo(
     result_usable: bool | None = None,
     routed_ok: bool | None = None,
     model_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Emit one tool-call telemetry record to MongoDB via the MCP Persistence.
 
@@ -201,6 +202,13 @@ async def _write_to_mongo(
         )
 
         body = doc.model_dump(mode="json", by_alias=True)
+        # ``turn_id`` (the per-user-message dispatch / pipeline id) is the recall@k
+        # join key (tool-retrieval shadow). The typed ToolCallTelemetryDocument is
+        # ``extra="forbid"`` so it is NOT a model field; inject it onto the wire
+        # body AFTER the validated dump so a recall@k reader can join a dispatched
+        # llm tool to ITS turn's shadow-selection row without a contract change.
+        if turn_id is not None:
+            body["turn_id"] = turn_id
 
         await persistence._mcp.call_tool(
             "insert-one",
@@ -233,6 +241,7 @@ async def emit_tool_call_event(
     result_usable: bool | None = None,
     routed_ok: bool | None = None,
     model_id: str | None = None,
+    turn_id: str | None = None,
 ) -> None:
     """Emit one tool-call telemetry record (non-blocking).
 
@@ -320,6 +329,7 @@ async def emit_tool_call_event(
                 result_usable=result_usable,
                 routed_ok=routed_ok,
                 model_id=model_id,
+                turn_id=turn_id,
             )
         )
         return
@@ -339,6 +349,10 @@ async def emit_tool_call_event(
         "result_usable": result_usable,
         "routed_ok": routed_ok,
         "model_id": model_id,
+        # turn_id (pipeline id) — recall@k join key (tool-retrieval shadow).
+        # Omitted (absent, not null) when the caller did not supply it so old
+        # readers + records stay byte-compatible.
+        **({"turn_id": turn_id} if turn_id is not None else {}),
     }
     path = _get_telemetry_path()
     # Fire-and-forget: the event loop schedules the write; we do not await it.
@@ -352,6 +366,183 @@ def compute_args_hash(args: dict | None) -> str:
     digest logic.  Safe to call from sync contexts (no I/O).
     """
     return _hash_args(args)
+
+
+# --------------------------------------------------------------------------- #
+# Tool-retrieval SHADOW telemetry (tool-retrieval kickoff — orchestrator half).
+#
+# Shadow mode computes the WOULD-BE-visible tool set per turn via
+# ``retrieve_visible_tools`` WITHOUT changing the catalog the model actually
+# sees (the model still sees the full registry). We log that would-be set so a
+# recall@k measurement (tool_catalog_http.build_telemetry_summary) can compare
+# it against the tools the LLM actually dispatched that turn, per North-Star
+# flow. recall = |dispatched-llm-tools that WERE in the retrieved set| /
+# |dispatched-llm-tools|.
+#
+# Same dual-sink discipline as ``emit_tool_call_event``: written to the SAME
+# ``tool_call_telemetry`` MongoDB collection when Persistence is bound (carrying
+# a ``record_type="tool_retrieval_shadow"`` discriminator so a reader can split
+# these rows from the per-tool ``tool_call`` rows), PLUS the /tmp JSONL fallback
+# when Persistence is unbound. Fire-and-forget; NEVER raises — telemetry must
+# never break the dispatch loop (mirrors ``emit_tool_call_event``).
+# --------------------------------------------------------------------------- #
+
+#: The discriminator stamped on every shadow-selection record so a reader can
+#: separate them from per-tool ``tool_call`` rows that share the sink.
+SHADOW_RECORD_TYPE = "tool_retrieval_shadow"
+
+
+def build_shadow_selection_record(
+    *,
+    session_id: str,
+    turn_id: str,
+    user_text: str,
+    visible_tools: "set[str] | frozenset[str] | list[str]",
+    mode: str,
+    k: int,
+    full_registry_size: int | None = None,
+    ts: str | None = None,
+    model_id: str | None = None,
+) -> dict:
+    """Build the per-turn shadow-selection record (pure — no I/O).
+
+    Split out so tests can assert the record SHAPE without touching the sink.
+    ``visible_tools`` is the would-be-visible set ``retrieve_visible_tools``
+    returned for this turn; ``turn_id`` is the per-user-message dispatch id (the
+    ``pipeline_id``) so recall@k can join a dispatched llm tool to ITS turn's set.
+
+    ``user_text`` is truncated to keep the record bounded; the full text is not
+    needed for recall (the join key is ``turn_id``).
+    """
+    try:
+        visible_sorted = sorted({str(t) for t in (visible_tools or [])})
+    except Exception:  # noqa: BLE001 — defensive; never break the dispatch loop
+        visible_sorted = []
+    text = user_text if isinstance(user_text, str) else ""
+    return {
+        "record_type": SHADOW_RECORD_TYPE,
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "ts": ts or now_iso_utc(),
+        "user_text": text[:280],
+        "mode": mode,
+        "k": int(k),
+        "visible_tools": visible_sorted,
+        "visible_count": len(visible_sorted),
+        "full_registry_size": full_registry_size,
+        "model_id": model_id,
+    }
+
+
+def emit_shadow_selection_event(
+    *,
+    session_id: str,
+    turn_id: str,
+    user_text: str,
+    visible_tools: "set[str] | frozenset[str] | list[str]",
+    mode: str,
+    k: int,
+    full_registry_size: int | None = None,
+    model_id: str | None = None,
+) -> None:
+    """Emit one tool-retrieval shadow-selection record (non-blocking).
+
+    Fire-and-forget + NEVER raises (mirrors ``emit_tool_call_event``): the write
+    is scheduled as an asyncio task and the caller does not await it. Backend
+    selection mirrors the per-tool path — the bound MongoDB ``tool_call_telemetry``
+    collection (with the ``record_type`` discriminator) when Persistence is bound,
+    else the local-file JSONL fallback.
+    """
+    try:
+        record = build_shadow_selection_record(
+            session_id=session_id,
+            turn_id=turn_id,
+            user_text=user_text,
+            visible_tools=visible_tools,
+            mode=mode,
+            k=k,
+            full_registry_size=full_registry_size,
+            model_id=model_id,
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never break the dispatch loop
+        logger.warning("shadow telemetry: record build failed", exc_info=True)
+        return
+
+    try:
+        persistence: "Persistence | None" = get_persistence()
+    except Exception:  # noqa: BLE001
+        persistence = None
+
+    if persistence is not None:
+        try:
+            asyncio.ensure_future(
+                _write_shadow_to_mongo(persistence, record)
+            )
+        except Exception:  # noqa: BLE001 — fall through to the file path
+            logger.warning(
+                "shadow telemetry: mongo schedule failed; falling to file",
+                exc_info=True,
+            )
+        else:
+            return
+
+    # Local-file fallback (same JSONL sink as the per-tool path).
+    path = _get_telemetry_path()
+    try:
+        asyncio.ensure_future(_write_line(path, record))
+    except Exception:  # noqa: BLE001 — telemetry must never break the dispatch loop
+        logger.warning("shadow telemetry: file schedule failed", exc_info=True)
+
+
+async def _write_shadow_to_mongo(
+    persistence: "Persistence", record: dict
+) -> None:
+    """Insert one shadow-selection record into the ``tool_call_telemetry``
+    collection via the MCP client. Never raises (logged at WARNING).
+
+    The shadow record carries a ``record_type`` discriminator + a ``visible_tools``
+    array that the per-tool ``ToolCallTelemetryDocument`` schema does not model, so
+    it is inserted as a raw document (the summary reader keys off ``record_type``).
+    """
+    try:
+        from grace2_contracts import new_ulid
+        from grace2_contracts.mongo_collections import TELEMETRY_COLLECTION
+        from .persistence import DEFAULT_DATABASE
+
+        body = dict(record)
+        body["_id"] = new_ulid()
+        # The TTL index keys off ``called_at_utc`` on the per-tool rows; mirror it
+        # so a shadow row expires on the same 90-day schedule.
+        ts = record.get("ts")
+        if isinstance(ts, str):
+            normalized = ts.replace("Z", "+00:00")
+            try:
+                body["called_at_utc"] = datetime.fromisoformat(normalized)
+            except ValueError:
+                body["called_at_utc"] = datetime.now(timezone.utc)
+        else:
+            body["called_at_utc"] = datetime.now(timezone.utc)
+
+        await persistence._mcp.call_tool(
+            "insert-one",
+            {
+                "database": DEFAULT_DATABASE,
+                "collection": TELEMETRY_COLLECTION,
+                "document": body,
+            },
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never break the dispatch loop
+        logger.warning(
+            "shadow telemetry mongo write failed turn=%s session=%s",
+            record.get("turn_id"),
+            record.get("session_id"),
+            exc_info=True,
+        )
+
+
+def now_iso_utc() -> str:
+    """ISO-8601 UTC timestamp (millisecond precision, trailing Z)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 # --------------------------------------------------------------------------- #
@@ -646,4 +837,9 @@ __all__ = [
     "build_solve_telemetry_record",
     "record_solve_telemetry",
     "build_live_solve_progress",
+    # tool-retrieval shadow telemetry (orchestrator half).
+    "SHADOW_RECORD_TYPE",
+    "build_shadow_selection_record",
+    "emit_shadow_selection_event",
+    "now_iso_utc",
 ]

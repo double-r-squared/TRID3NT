@@ -135,6 +135,51 @@ export interface SolveTelemetrySection {
   wall_clock_p95_s: number;
 }
 
+// --- recall@k section (tool-retrieval SHADOW, tool-retrieval kickoff) ------ //
+//
+// Recall of the tool-retrieval shadow selection: of the tools the LLM actually
+// dispatched in a turn, what fraction were present in that turn's would-be-
+// visible set. Surfaced so NATE can watch recall climb toward the >= 0.99/flow
+// enforce gate before flipping the cloud flag. Absent on summaries emitted
+// before the shadow wiring landed -> the section hides.
+export interface RecallFlowRow {
+  /** North-Star flow id: "SWMM" | "SFINCS" | "MODFLOW". */
+  flow: string;
+  /** Recall for this flow (0..1). null = no measurable dispatches yet. */
+  recall: number | null;
+  /** Turns attributed to this flow (dispatched its terminal solver). */
+  turns: number;
+  /** Dispatched llm tools across those turns. */
+  dispatches: number;
+  hits: number;
+  misses: number;
+}
+
+export interface RecallMissedTool {
+  /** Tool the LLM used that retrieval would have DROPPED. */
+  name: string;
+  /** Times it was missed in the window. */
+  count: number;
+  /** Flows it was missed under (may be empty for non-flow turns). */
+  flows: string[];
+}
+
+export interface RecallAtKSection {
+  /** Overall recall@k (0..1). null = no measurable turns yet. */
+  overall: number | null;
+  /** Turns with a shadow row AND >= 1 llm dispatch. */
+  turns_measured: number;
+  /** Total dispatched llm tools across measured turns. */
+  dispatches_measured: number;
+  hits: number;
+  misses: number;
+  /** The k the shadow rows were taken at (modal). null when unknown. */
+  k: number | null;
+  by_flow: RecallFlowRow[];
+  /** Tools the LLM used that retrieval would have dropped (recall MISSES). */
+  missed_tools: RecallMissedTool[];
+}
+
 export interface RoutingDashboardSummary {
   total_dispatches: number;
   session_count: number;
@@ -171,6 +216,11 @@ export interface RoutingDashboardSummary {
   by_model?: RoutingDashboardModelRow[];
   /** Big-sim solve telemetry (NATE 2026-06-17). Absent on older summaries. */
   solve_telemetry?: SolveTelemetrySection;
+  /**
+   * Tool-retrieval SHADOW recall@k (tool-retrieval kickoff). Absent on
+   * summaries emitted before the shadow wiring landed -> the section hides.
+   */
+  recall_at_k?: RecallAtKSection;
   /** Provenance — "mongo" | "file" | "empty" | "telemetry". */
   source: string;
 }
@@ -1119,6 +1169,203 @@ export function RoutingQualityDashboard({
                     ))}
                   </tbody>
                 </table>
+              )}
+
+              {/* --- Tool-retrieval recall@k (tool-retrieval kickoff) ------- */}
+              {/* Recall of the SHADOW selection: of the tools the LLM actually */}
+              {/* used in a turn, what fraction were in that turn's would-be-    */}
+              {/* visible set. Watched toward the >= 0.99/flow enforce gate.     */}
+              {/* Hidden entirely when the summary carries no recall_at_k        */}
+              {/* (pre-shadow-wiring payload); honest empty line when no turns   */}
+              {/* have been measured (shadow mode not yet exercised).            */}
+              {summary.recall_at_k && (
+                <>
+                  <div style={sectionHeadingStyle}>
+                    Tool-retrieval recall@k
+                    {summary.recall_at_k.k != null ? (
+                      <span style={{ ...subtitleStyle, marginLeft: 8 }}>
+                        k = {summary.recall_at_k.k}
+                      </span>
+                    ) : null}
+                  </div>
+                  {summary.recall_at_k.turns_measured === 0 ? (
+                    <div
+                      data-testid="grace2-routing-dashboard-no-recall"
+                      style={{
+                        color: "#9aa0ad",
+                        fontSize: 11,
+                        fontStyle: "italic",
+                        padding: "4px 0 8px",
+                      }}
+                    >
+                      No shadow-mode turns measured yet. Run the agent with
+                      GRACE2_TOOL_RETRIEVAL=shadow to record recall@k.
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        data-testid="grace2-routing-dashboard-recall-overall"
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 10,
+                          marginBottom: 8,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 22,
+                            fontWeight: 600,
+                            fontVariantNumeric: "tabular-nums",
+                            color:
+                              (summary.recall_at_k.overall ?? 0) >= 0.99
+                                ? "#a7e8b0"
+                                : "#dfe5f0",
+                          }}
+                        >
+                          {formatNullablePct(summary.recall_at_k.overall)}
+                        </span>
+                        <span style={subtitleStyle}>
+                          overall ({summary.recall_at_k.hits}/
+                          {summary.recall_at_k.dispatches_measured} dispatches
+                          across {summary.recall_at_k.turns_measured} turn
+                          {summary.recall_at_k.turns_measured === 1 ? "" : "s"})
+                        </span>
+                      </div>
+                      <table
+                        data-testid="grace2-routing-dashboard-recall-table"
+                        style={tableStyle}
+                      >
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>Flow</th>
+                            <th style={{ ...thStyle, textAlign: "right" }}>
+                              Recall
+                            </th>
+                            <th style={{ ...thStyle, textAlign: "right" }}>
+                              Turns
+                            </th>
+                            <th style={{ ...thStyle, textAlign: "right" }}>
+                              Dispatches
+                            </th>
+                            <th style={{ ...thStyle, textAlign: "right" }}>
+                              Misses
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {summary.recall_at_k.by_flow.map((f) => (
+                            <tr
+                              key={f.flow}
+                              data-testid="grace2-routing-dashboard-recall-flow-row"
+                              data-flow={f.flow}
+                            >
+                              <td
+                                style={{
+                                  ...tdStyle,
+                                  fontFamily:
+                                    "'JetBrains Mono', 'Fira Code', monospace",
+                                  fontSize: 11,
+                                  color: "#dfe5f0",
+                                }}
+                              >
+                                {f.flow}
+                              </td>
+                              <td
+                                data-testid="grace2-routing-dashboard-recall-flow-cell"
+                                style={{
+                                  ...tdStyle,
+                                  textAlign: "right",
+                                  color:
+                                    f.recall != null && f.recall >= 0.99
+                                      ? "#a7e8b0"
+                                      : "#cfd3dc",
+                                }}
+                              >
+                                {formatNullablePct(f.recall)}
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right" }}>
+                                {formatCount(f.turns)}
+                              </td>
+                              <td style={{ ...tdStyle, textAlign: "right" }}>
+                                {formatCount(f.dispatches)}
+                              </td>
+                              <td
+                                style={{
+                                  ...tdStyle,
+                                  textAlign: "right",
+                                  color: f.misses > 0 ? "#f9c1c1" : "#cfd3dc",
+                                }}
+                              >
+                                {formatCount(f.misses)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      {/* Missed-tool list -- the tools the LLM used that      */}
+                      {/* retrieval would have DROPPED. The actionable signal   */}
+                      {/* for tuning before enforce.                            */}
+                      <div
+                        style={{
+                          ...sectionHeadingStyle,
+                          textTransform: "none",
+                          fontSize: 11,
+                          marginTop: 10,
+                        }}
+                      >
+                        Missed tools (retrieval would have dropped)
+                      </div>
+                      {summary.recall_at_k.missed_tools.length === 0 ? (
+                        <div
+                          data-testid="grace2-routing-dashboard-no-missed-tools"
+                          style={{
+                            color: "#a7e8b0",
+                            fontSize: 11,
+                            padding: "4px 0 8px",
+                          }}
+                        >
+                          None — every dispatched tool was in its turn's
+                          retrieved set.
+                        </div>
+                      ) : (
+                        <div
+                          data-testid="grace2-routing-dashboard-missed-tools"
+                          style={{ paddingBottom: 8 }}
+                        >
+                          {summary.recall_at_k.missed_tools.map((m) => (
+                            <span
+                              key={m.name}
+                              data-testid="grace2-routing-dashboard-missed-tool"
+                              data-tool-name={m.name}
+                              style={{
+                                ...chainPillStyle,
+                                borderColor: "#6b3030",
+                              }}
+                            >
+                              <code
+                                style={{
+                                  fontFamily:
+                                    "'JetBrains Mono', 'Fira Code', monospace",
+                                  color: "#f9c1c1",
+                                }}
+                              >
+                                {m.name}
+                              </code>
+                              <span style={{ color: "#9aa0ad" }}>
+                                × {m.count}
+                                {m.flows.length > 0
+                                  ? ` (${m.flows.join(", ")})`
+                                  : ""}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
               )}
 
               {/* Recent chains */}
