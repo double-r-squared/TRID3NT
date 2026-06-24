@@ -473,6 +473,7 @@ def _reproject_and_clip(
     nc_path: str,
     variable: str,
     bbox: tuple[float, float, float, float],
+    target_res_deg: float = 0.02,
 ) -> bytes:
     """Reproject the requested ``variable`` to EPSG:4326 over ``bbox``; return COG bytes.
 
@@ -536,9 +537,12 @@ def _reproject_and_clip(
             )
 
         # Compute output grid: roughly preserve native resolution but resampled
-        # into the EPSG:4326 bbox. Use ~0.02° (~2 km at the equator, matching
-        # the ABI nominal sub-satellite-point resolution) as a sensible target.
-        out_res_deg = 0.02
+        # into the EPSG:4326 bbox. Default ~0.02° (~2 km at the equator, matching
+        # the ABI nominal sub-satellite-point resolution); a caller MAY pass a
+        # finer ``target_res_deg`` (e.g. 0.005° ~0.5 km) to keep the native
+        # visible-band detail. The default is unchanged, so every current call is
+        # byte-identical.
+        out_res_deg = target_res_deg
         width = max(1, int(math.ceil((max_lon - min_lon) / out_res_deg)))
         height = max(1, int(math.ceil((max_lat - min_lat) / out_res_deg)))
         out_transform = from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
@@ -635,6 +639,7 @@ def _fetch_goes_bytes(
     bbox: tuple[float, float, float, float],
     band: str,
     satellite: str,
+    target_res_deg: float = 0.02,
 ) -> bytes:
     """End-to-end fetch: list most-recent MCMIPC → download → reproject → COG bytes."""
     variable = _band_to_variable(band)
@@ -651,7 +656,7 @@ def _fetch_goes_bytes(
 
     nc_path = _download_to_tempfile(url)
     try:
-        return _reproject_and_clip(nc_path, variable, bbox)
+        return _reproject_and_clip(nc_path, variable, bbox, target_res_deg)
     finally:
         try:
             os.unlink(nc_path)
@@ -675,6 +680,7 @@ def fetch_goes_satellite(
     bbox: tuple[float, float, float, float],
     band: str = "visible",
     satellite: str = "goes-16",
+    target_res_deg: float | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -756,18 +762,34 @@ def fetch_goes_satellite(
     q_bbox = _round_bbox(bbox)
     valid_time = _round_valid_time(datetime.now(timezone.utc))
 
+    # Resolution is a USER lever: default 0.02 deg (~2 km) when unset so every
+    # current call is byte-identical; an explicit ``target_res_deg`` (e.g. 0.005
+    # deg ~0.5 km for the visible band) drops into the reproject AND the cache key
+    # so a finer frame gets its own cache namespace and never collides with the
+    # default-res object.
+    res_deg = 0.02 if target_res_deg is None else float(target_res_deg)
+    if not math.isfinite(res_deg) or res_deg <= 0.0:
+        raise GOESInputError(
+            f"target_res_deg must be a positive finite degree value; got "
+            f"{target_res_deg!r}"
+        )
+
     params = {
         "bbox": list(q_bbox),
         "band": band,
         "satellite": satellite,
         "valid_time": valid_time,
     }
+    # Additive cache-key entry ONLY when overridden, so the default-res cache key
+    # stays byte-identical to the pre-change key.
+    if target_res_deg is not None:
+        params["res_deg"] = round(res_deg, 6)
 
     result = read_through(
         metadata=_METADATA,
         params=params,
         ext="tif",
-        fetch_fn=lambda: _fetch_goes_bytes(q_bbox, band, satellite),
+        fetch_fn=lambda: _fetch_goes_bytes(q_bbox, band, satellite, res_deg),
     )
     assert result.uri is not None, (
         "fetch_goes_satellite is cacheable; uri must be set by read_through"

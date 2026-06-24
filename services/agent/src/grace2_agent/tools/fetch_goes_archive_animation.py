@@ -789,6 +789,7 @@ def _band_valid_dn_range(ncvar: Any) -> tuple[int, int]:
 
 def _grid_for_bbox(
     bbox: tuple[float, float, float, float],
+    res_deg: float = _OUT_RES_DEG,
 ) -> tuple[Any, int, int]:
     """Build the output EPSG:4326 ``(transform, width, height)`` for ``bbox``.
 
@@ -796,12 +797,17 @@ def _grid_for_bbox(
     the IDENTICAL grid (the detection bands, the base, and the fire overlay are
     therefore always co-registered with no extra resample). Lifted out of
     ``_reproject_fire_temperature`` so the read core is not duplicated.
+
+    ``res_deg`` is the output cell size in degrees; it defaults to ``_OUT_RES_DEG``
+    (0.02 deg ~2 km) so every existing caller produces the SAME grid as before. A
+    finer override (e.g. ``_TRUE_COLOR_RES_DEG`` 0.005 deg ~0.5 km) yields a
+    proportionally larger grid for the visible true-color bands.
     """
     from rasterio.transform import from_bounds
 
     min_lon, min_lat, max_lon, max_lat = bbox
-    width = max(1, int(math.ceil((max_lon - min_lon) / _OUT_RES_DEG)))
-    height = max(1, int(math.ceil((max_lat - min_lat) / _OUT_RES_DEG)))
+    width = max(1, int(math.ceil((max_lon - min_lon) / res_deg)))
+    height = max(1, int(math.ceil((max_lat - min_lat) / res_deg)))
     out_transform = from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
     return out_transform, width, height
 
@@ -920,15 +926,18 @@ def _read_archive_bands(
     nc_path: str,
     bbox: tuple[float, float, float, float],
     variables: tuple[str, ...],
+    res_deg: float = _OUT_RES_DEG,
 ) -> tuple[dict[str, Any], Any, int, int]:
     """Read + CF-scale + reproject a set of CMI bands onto ONE shared EPSG:4326 grid.
 
     Returns ``({variable: phys_array}, transform, width, height)``. Every band is
-    on the identical grid (``_grid_for_bbox``), so the Fire-Temp composite, the
-    fire detection (C07 vs C13), and the bake overlay are all co-registered with
-    no extra resample. The shared read core both products consume.
+    on the identical grid (``_grid_for_bbox`` at ``res_deg``), so the Fire-Temp
+    composite, the fire detection (C07 vs C13), and the bake overlay are all
+    co-registered with no extra resample. ``res_deg`` defaults to ``_OUT_RES_DEG``
+    (0.02 deg) so the thermal/fire products are unchanged; the true-color path
+    forwards the finer ``_TRUE_COLOR_RES_DEG``.
     """
-    out_transform, width, height = _grid_for_bbox(bbox)
+    out_transform, width, height = _grid_for_bbox(bbox, res_deg)
     arrays: dict[str, Any] = {}
     for var in variables:
         arrays[var] = _warp_band_to_physical(
@@ -940,13 +949,15 @@ def _read_archive_bands(
 def _reproject_fire_temperature(
     nc_path: str,
     bbox: tuple[float, float, float, float],
+    res_deg: float = _OUT_RES_DEG,
 ) -> Any:
     """Read C07/C06/C05 from an MCMIPC netCDF, CF-scale + reproject each to EPSG:4326 over ``bbox``, composite Fire Temperature.
 
     Returns a ``(3, H, W)`` uint8 RGB array plus the output ``(transform, W, H)``:
     ``(rgb, transform, width, height)``. Delegates the per-band netCDF read +
     warp + CF-unscale to the shared ``_read_archive_bands`` core (no duplicated
-    I/O).
+    I/O). ``res_deg`` defaults to ``_OUT_RES_DEG`` so the Fire-Temp grid is
+    unchanged.
 
     Raises:
         ``GOESArchiveUpstreamError``: rasterio/netCDF open / reproject failure.
@@ -958,6 +969,7 @@ def _reproject_fire_temperature(
         nc_path,
         bbox,
         (FIRE_TEMP_BANDS["red"], FIRE_TEMP_BANDS["green"], FIRE_TEMP_BANDS["blue"]),
+        res_deg,
     )
     c07 = arrays[FIRE_TEMP_BANDS["red"]]
     c06 = arrays[FIRE_TEMP_BANDS["green"]]
@@ -986,6 +998,7 @@ def _reproject_fire_hotspots(
     bbox: tuple[float, float, float, float],
     bt_c07_min_k: float = FIRE_BT_C07_MIN_K,
     bt_diff_min_k: float = FIRE_BT_DIFF_MIN_K,
+    res_deg: float = _OUT_RES_DEG,
 ) -> Any:
     """Read C07 (3.9um) + C13 (10.3um) BT from an MCMIPC netCDF -> the fire-only RGBA array.
 
@@ -1007,6 +1020,7 @@ def _reproject_fire_hotspots(
         nc_path,
         bbox,
         (FIRE_DETECT_BANDS["shortwave"], FIRE_DETECT_BANDS["longwave"]),
+        res_deg,
     )
     c07 = arrays[FIRE_DETECT_BANDS["shortwave"]]
     c13 = arrays[FIRE_DETECT_BANDS["longwave"]]
@@ -1026,6 +1040,7 @@ def _reproject_fire_baked(
     bbox: tuple[float, float, float, float],
     bt_c07_min_k: float = FIRE_BT_C07_MIN_K,
     bt_diff_min_k: float = FIRE_BT_DIFF_MIN_K,
+    res_deg: float = _OUT_RES_DEG,
 ) -> Any:
     """Read all bands once -> Fire-Temp base + fire-only RGBA -> bake fire over base.
 
@@ -1047,6 +1062,7 @@ def _reproject_fire_baked(
             FIRE_TEMP_BANDS["blue"],    # C05
             FIRE_DETECT_BANDS["longwave"],  # C13 (detection longwave)
         ),
+        res_deg,
     )
     c07 = arrays[FIRE_TEMP_BANDS["red"]]
     c06 = arrays[FIRE_TEMP_BANDS["green"]]
@@ -1151,6 +1167,7 @@ def _fetch_archive_frame_cog_bytes(
     band: str = "fire_temperature",
     bt_c07_min_k: float = FIRE_BT_C07_MIN_K,
     bt_diff_min_k: float = FIRE_BT_DIFF_MIN_K,
+    res_deg: float = _OUT_RES_DEG,
 ) -> bytes:
     """Download one MCMIPC netCDF -> the requested product COG bytes.
 
@@ -1158,7 +1175,9 @@ def _fetch_archive_frame_cog_bytes(
       - ``fire_temperature`` -> 3-band Fire-Temp RGB COG (unchanged).
       - ``fire_hotspots``    -> 4-band transparent fire-only RGBA COG.
       - ``fire_baked``       -> 3-band fire-baked-over-Fire-Temp RGB COG.
-    All three share the one netCDF download + the shared reproject core.
+    All share the one netCDF download + the shared reproject core. ``res_deg``
+    defaults to ``_OUT_RES_DEG`` (the thermal/fire grid); a finer override keeps
+    the visible detail for the true-color path.
     """
     bucket = _SATELLITE_BUCKETS[satellite]
     url = f"https://{bucket}.s3.amazonaws.com/{key}"
@@ -1166,16 +1185,18 @@ def _fetch_archive_frame_cog_bytes(
     try:
         if band == "fire_hotspots":
             rgba, transform, width, height = _reproject_fire_hotspots(
-                nc_path, bbox, bt_c07_min_k, bt_diff_min_k
+                nc_path, bbox, bt_c07_min_k, bt_diff_min_k, res_deg
             )
             return _rgba_array_to_cog_bytes(rgba, transform, width, height)
         if band == "fire_baked":
             rgb, transform, width, height = _reproject_fire_baked(
-                nc_path, bbox, bt_c07_min_k, bt_diff_min_k
+                nc_path, bbox, bt_c07_min_k, bt_diff_min_k, res_deg
             )
             return rgb_array_to_cog_bytes(rgb, transform, width, height)
         # Default: the original full Fire Temperature product (unchanged).
-        rgb, transform, width, height = _reproject_fire_temperature(nc_path, bbox)
+        rgb, transform, width, height = _reproject_fire_temperature(
+            nc_path, bbox, res_deg
+        )
         return rgb_array_to_cog_bytes(rgb, transform, width, height)
     finally:
         try:

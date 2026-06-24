@@ -306,7 +306,7 @@ def test_cache_miss_invokes_fetch_fn_and_writes_store():
     fake_gcs = FakeStorageClient()
     fetch_count = {"n": 0}
 
-    def fake_fetch(bbox, band, satellite):
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
         fetch_count["n"] += 1
         return _fake_cog_bytes("MISS")
 
@@ -332,7 +332,7 @@ def test_cache_hit_skips_inner_fetch():
     fake_gcs = FakeStorageClient()
     fetch_count = {"n": 0}
 
-    def fake_fetch(bbox, band, satellite):
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
         fetch_count["n"] += 1
         return _fake_cog_bytes("HIT")
 
@@ -354,7 +354,7 @@ def test_different_bands_produce_different_cache_keys():
     """Different bands cache under different URIs even with the same bbox + satellite."""
     fake_gcs = FakeStorageClient()
 
-    def fake_fetch(bbox, band, satellite):
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
         return _fake_cog_bytes(f"BAND_{band}")
 
     with patch(
@@ -375,7 +375,7 @@ def test_different_satellites_produce_different_cache_keys():
     """Different satellites cache under different URIs even with the same bbox + band."""
     fake_gcs = FakeStorageClient()
 
-    def fake_fetch(bbox, band, satellite):
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
         return _fake_cog_bytes(f"SAT_{satellite}")
 
     with patch(
@@ -395,7 +395,7 @@ def test_different_bboxes_produce_different_cache_keys():
     """Different bboxes cache under different URIs."""
     fake_gcs = FakeStorageClient()
 
-    def fake_fetch(bbox, band, satellite):
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
         return _fake_cog_bytes(f"BBOX_{bbox[0]}")
 
     with patch(
