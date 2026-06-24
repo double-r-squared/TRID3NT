@@ -2621,5 +2621,19 @@
     "description": "Read-only Agent dispatch: decision-ready MODFLOW next-push options menu grounded in code+reports. Surfaced that the river-seepage engine AND contamination-x-Fields-of-the-World demo are both ALREADY BUILT in code (sprint-17 J9 + FTW merge), unproven-live. Recommendation: Option A (contamination-plume x FTW affected-fields, S-effort prove+ship, zero Batch/key dep, named NATE demo + real USGS Long Island TCE analog) -> B (river-seepage) -> C (Batch entrypoint S3-port, the GCS-shaped worker gap) -> D (reactive transport).",
     "model": "opus",
     "subagent_tokens": 121509
+  },
+  {
+    "job_id": "modflow-A-groundwork-agents",
+    "sprint": 17,
+    "description": "MODFLOW Option A groundwork (read-only): (1) contamination-FTW pipeline research - USGS Long Island TCE analog, EPA TCE MCL 0.005 mg/L threshold, Ames IA AOI + CSB crop_name, AND caught the load-bearing grid bug (2km spill-centered grid vs 3km up-gradient offset -> fields outside grid). (2) Option C worker-port scope - found the MODFLOW entrypoint is ALREADY S3-aware (original GCS-shaped claim wrong); C = 1 env knob + smoke test, not a port.",
+    "model": "opus+sonnet",
+    "subagent_tokens": 216871
+  },
+  {
+    "job_id": "modflow-A-engine-fix",
+    "sprint": 17,
+    "description": "MODFLOW Option A engine fix (2 specialist agents, local mf6 6.7.0, on branch modflow-grid-containment-fix). Agent 1 (grid, died on 529 after 66 tool-uses but left verified work): AOI-aware adaptive grid containing spill+fields (c32fd8f). Agent 2 (physics calibration, NATE picked spill-at-field-edge): solubility-capped CNC source (peak 53342->1100 mg/L = TCE solubility) + offset 0.5->0.1km field-edge placement (f4b83eb). PROVEN local: Ames AOI now 2/238 fields affected (Soybeans 22.7, Corn 0.066 mg/L) above the 0.005 MCL, mf6 Normal termination, honesty floor verified, 76 tests pass (1 pre-existing GRACE2_RUNS_BUCKET failure). NOT pushed/deployed; deploy needs MODFLOW worker-image rebuild + agent deploy.",
+    "model": "opus",
+    "subagent_tokens": 307052
   }
 ]
