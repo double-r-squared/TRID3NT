@@ -22,11 +22,21 @@ trap 'rm -rf "$STAGE"' EXIT
 
 cp -a "$REPO_ROOT/services/agent/src/grace2_agent" "$STAGE/"
 cp -a "$REPO_ROOT/packages/contracts/src/grace2_contracts" "$STAGE/"
+# sandbox-staging: ship the Python-sandbox executor harness too. It is NOT part of
+# either Python package (it lives in the container build context infra/python-sandbox/),
+# but code_exec_request shells out to it as a subprocess; without it on-box, the
+# resolved executor path does not exist and code_exec_request fails closed with a
+# FileNotFoundError. We stage it under a dedicated subdir so the on-box script can
+# place it at a stable path and point GRACE2_SANDBOX_EXECUTOR at it. (executor.py is
+# standalone -- stdlib only, plus an optional in-jail grace2_contracts.chart_contracts
+# import handled by the executor's own PYTHONPATH.)
+mkdir -p "$STAGE/python_sandbox"
+cp -a "$REPO_ROOT/infra/python-sandbox/executor.py" "$STAGE/python_sandbox/executor.py"
 find "$STAGE" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$STAGE" -name '*.pyc' -delete 2>/dev/null || true
 
 TGZ="$STAGE/agent_deploy_src.tgz"
-tar czf "$TGZ" -C "$STAGE" grace2_agent grace2_contracts
+tar czf "$TGZ" -C "$STAGE" grace2_agent grace2_contracts python_sandbox
 SHA="$(sha256sum "$TGZ" | cut -d' ' -f1)"
 printf '%s\n' "$SHA" > "$TGZ.sha256"
 

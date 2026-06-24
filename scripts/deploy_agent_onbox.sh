@@ -66,7 +66,37 @@ $SUDO cp -a /tmp/agent_deploy/grace2_agent/.     "$AGENT_DIR"/
 $SUDO cp -a /tmp/agent_deploy/grace2_contracts/. "$CONTRACTS_DIR"/
 echo "rollback: restore *.bak-$TS over the live dirs + restart $SERVICE"
 
+echo "== install python-sandbox executor (code_exec_request) =="
+# sandbox-staging: executor.py is NOT in either Python package (it lives in the
+# repo's container build context), so the bundle ships it under python_sandbox/.
+# Install it to a stable on-box path and point GRACE2_SANDBOX_EXECUTOR at it.
+# Without this, sandbox_runner._executor_path() cannot resolve on the /opt/grace2
+# site-packages install (its repo-root walk-up + parents[4] fallback both miss),
+# and code_exec_request fails closed with FileNotFoundError. The env override is
+# honored FIRST + unconditionally, so this is the robust resolution.
+# Anchor the install path on the venv ROOT (dirname of the venv bin dir), which is
+# stable across deploys and independent of the site-packages depth. Falls back to
+# /opt/grace2 if BINDIR could not be resolved.
+VENV_ROOT="$(dirname "$BINDIR")"; [ -d "$VENV_ROOT" ] || VENV_ROOT="/opt/grace2"
+EXECUTOR_DIR="$VENV_ROOT/python-sandbox"                            # e.g. /opt/grace2/.venv/python-sandbox
+EXECUTOR_PATH="$EXECUTOR_DIR/executor.py"
+if [ -f /tmp/agent_deploy/python_sandbox/executor.py ]; then
+  $SUDO mkdir -p "$EXECUTOR_DIR"
+  $SUDO cp -a /tmp/agent_deploy/python_sandbox/executor.py "$EXECUTOR_PATH"
+  echo "executor installed: $EXECUTOR_PATH"
+else
+  echo "WARN: executor.py missing from bundle -- code_exec_request will fail closed"
+  EXECUTOR_PATH=""
+fi
+
 echo "== env drop-in =="
+# Inject GRACE2_SANDBOX_EXECUTOR into the per-deploy env vars (idempotent: replace
+# any prior value rather than append a duplicate) so the agent resolves the executor
+# via the override path installed above.
+if [ -n "$EXECUTOR_PATH" ]; then
+  _filtered=(); for kv in "${ENVVARS[@]}"; do case "$kv" in GRACE2_SANDBOX_EXECUTOR=*) ;; *) _filtered+=("$kv");; esac; done
+  ENVVARS=("${_filtered[@]}" "GRACE2_SANDBOX_EXECUTOR=$EXECUTOR_PATH")
+fi
 $SUDO mkdir -p "/etc/systemd/system/$SERVICE.service.d"
 { echo "[Service]"; for kv in "${ENVVARS[@]}"; do echo "Environment=$kv"; done; } \
   | $SUDO tee "/etc/systemd/system/$SERVICE.service.d/50-grace2-deploy.conf" >/dev/null
@@ -82,8 +112,17 @@ echo "--- health ---"; curl -s -m 10 localhost:8766/api/health; echo
 CAT="$(curl -s -m 20 localhost:8766/api/tool-catalog)"
 echo "--- tool count ---"; printf '%s' "$CAT" | grep -oE '"name"[[:space:]]*:' | wc -l
 echo "--- new tools ---"
-for n in run_swan_waves fetch_wfigs_incident fetch_goes_animation fetch_viirs_day_fire run_model_satellite_fire_animation; do
+for n in run_swan_waves fetch_wfigs_incident fetch_goes_animation fetch_viirs_day_fire run_model_satellite_fire_animation fetch_glm_lightning list_run_frames code_exec_request; do
   if printf '%s' "$CAT" | grep -q "\"$n\""; then echo "  $n = True"; else echo "  $n = MISSING"; fi
 done
+echo "--- sandbox executor resolves ---"
+"$PY" -c "
+import os
+os.environ.setdefault('GRACE2_SANDBOX_EXECUTOR', '${EXECUTOR_PATH:-}')
+from grace2_agent.sandbox_runner import _executor_path
+p = _executor_path()
+print('  GRACE2_SANDBOX_EXECUTOR=%s' % os.environ.get('GRACE2_SANDBOX_EXECUTOR', ''))
+print('  _executor_path()=%s  exists=%s' % (p, p.exists()))
+" 2>&1 || echo "  executor resolve check FAILED"
 echo "--- service ---"; $SUDO systemctl is-active "$SERVICE"
 echo "== done =="

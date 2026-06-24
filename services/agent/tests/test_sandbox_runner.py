@@ -549,3 +549,49 @@ def test_prefetch_degrades_on_fetch_failure(monkeypatch, tmp_path) -> None:
     assert rewritten["flood"] == "s3://bucket/x.tif"
     # Nothing was successfully staged.
     assert staged_dir is None
+
+
+# --------------------------------------------------------------------------- #
+# executor-path resolution (deploy executor-shipping gap)
+# --------------------------------------------------------------------------- #
+
+
+def test_executor_path_honors_env_override_first(monkeypatch, tmp_path) -> None:
+    """GRACE2_SANDBOX_EXECUTOR is honored FIRST, unconditionally, before any
+    repo-root walk-up.
+
+    This is the seam the agent deploy relies on: on the /opt/grace2 site-packages
+    install the repo-root walk-up + parents[4] fallback both miss (executor.py is
+    not on the import path), so deploy_agent_onbox.sh installs the bundled
+    executor.py to a stable path and points this env var at it. Resolving via the
+    override -- even to a path that does not exist yet -- proves the on-box fix
+    closes the FileNotFoundError-fails-closed gap deterministically.
+    """
+    from grace2_agent import sandbox_runner as sr
+
+    override = tmp_path / "python-sandbox" / "executor.py"
+    monkeypatch.setenv("GRACE2_SANDBOX_EXECUTOR", str(override))
+    assert sr._executor_path() == override
+
+    # Whitespace-only / empty override is ignored -> falls through to the walk-up.
+    monkeypatch.setenv("GRACE2_SANDBOX_EXECUTOR", "   ")
+    resolved = sr._executor_path()
+    assert resolved.name == "executor.py"
+    assert resolved.parent.name == "python-sandbox"
+
+
+def test_executor_path_default_walkup_resolves_in_repo() -> None:
+    """With NO override (dev/repo layout) the walk-up finds the real
+    infra/python-sandbox/executor.py and it exists on disk."""
+    import os as _os
+
+    from grace2_agent import sandbox_runner as sr
+
+    prior = _os.environ.pop("GRACE2_SANDBOX_EXECUTOR", None)
+    try:
+        p = sr._executor_path()
+        assert p.exists(), f"executor not found at {p}"
+        assert p.parts[-2:] == ("python-sandbox", "executor.py")
+    finally:
+        if prior is not None:
+            _os.environ["GRACE2_SANDBOX_EXECUTOR"] = prior
