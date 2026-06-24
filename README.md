@@ -12,13 +12,24 @@ dam-break, landslide susceptibility, and impact/loss - 100+ geospatial tools and
 60+ live data sources behind a single conversation. Every solve runs on AWS
 Batch Spot (scale-to-zero); the map serves 24/7 even when the agent is asleep.
 
-**Live - entry points:**
+**Live - entry points** (frontend on **Vercel**; backends on **AWS behind CloudFront**):
 
-- **Landing page** (the public entry point): <https://d125yfbyjrpbre.cloudfront.net/>
+- **Landing page** (the public entry point): <https://grace-2.vercel.app/>
   - shown to first-time visitors; returning sessions skip straight to the app.
-  Force the landing page any time at <https://d125yfbyjrpbre.cloudfront.net/landing>.
-- **App**: <https://d125yfbyjrpbre.cloudfront.net/app>
-- **Privacy**: <https://d125yfbyjrpbre.cloudfront.net/privacy>
+  Force the landing page any time at <https://grace-2.vercel.app/landing>.
+- **App**: <https://grace-2.vercel.app/app>
+- **Privacy**: <https://grace-2.vercel.app/privacy>
+
+The static SPA is served by **Vercel** (auto-deployed on every push to `main`; see
+[Deployment](#deployment)). It connects to the AWS backends behind the CloudFront
+edge `d125yfbyjrpbre.cloudfront.net`:
+
+- `wss://d125yfbyjrpbre.cloudfront.net/ws` - agent WebSocket (chat, tool calls, pipeline)
+- `https://d125yfbyjrpbre.cloudfront.net/cog` + `/tiles` - TiTiler COG raster tiles
+- `https://d125yfbyjrpbre.cloudfront.net/api` - data-source catalog
+
+(The legacy S3+CloudFront SPA at `d125yfbyjrpbre.cloudfront.net/app` is retained
+but is no longer the live frontend.)
 
 See [`docs/srs/INDEX.md`](docs/srs/INDEX.md) for the section-addressed canonical
 SRS (or [`docs/SRS_v0.3.md`](docs/SRS_v0.3.md) for the regenerated monolith).
@@ -68,9 +79,10 @@ The web client talks to a cloud agent over a WebSocket; the agent calls the LLM
 DynamoDB. Raster results render through TiTiler; vector results render inline.
 
 ```
- Browser (React + MapLibre GL JS)  ──  S3 + CloudFront (SPA)
-   │  WSS: chat, tool calls, pipeline        │  HTTPS: COG raster tiles
-   │  HTTPS: /api                            ▼
+ Browser (React + MapLibre GL JS)  ──  Vercel (static SPA, grace-2.vercel.app)
+   │  the SPA reaches the AWS backends via CloudFront d125yfbyjrpbre.cloudfront.net:
+   │  WSS /ws: chat, tool calls, pipeline    │  HTTPS /cog + /tiles: COG raster tiles
+   │  HTTPS /api: data-source catalog        ▼
    ▼                                   TiTiler  (tiny always-on EC2 box)
  Agent service (EC2, auto-stop / wake)       ▲ reads COGs from S3
    │  LLM: AWS Bedrock                        │
@@ -102,7 +114,7 @@ always-on tier); and long-running runs are cancellable end-to-end.
 ## Repository layout
 
 ```
-web/                  React + MapLibre web client (S3 + CloudFront)
+web/                  React + MapLibre web client (Vercel; web/vercel.json)
 services/agent/       Bedrock agent service (EC2, WebSocket, tool registry)
 services/workers/     Batch solver workers (SFINCS deck-builder, SWMM, ...)
 packages/contracts/   pydantic v2 shared contracts (envelopes, case, secrets)
@@ -148,8 +160,13 @@ python -m pytest tests/      # acceptance + unit suites
 
 ## Deployment
 
-- **Web:** `npm run build` -> `aws s3 sync dist/ s3://grace2-hazard-web-.../` ->
-  CloudFront invalidation.
+- **Web (frontend):** hosted on **Vercel**, auto-deployed on `git push origin main`
+  (Vercel root dir `web/`, `web/vercel.json` runs `npm run build` -> `dist`, live at
+  <https://grace-2.vercel.app>). Vercel env vars (the public `VITE_*`, incl.
+  `VITE_GRACE2_WS_URL`) are set in the **Vercel dashboard**, not the gitignored
+  `web/.env.production.local`. (The old `aws s3 sync dist/ s3://grace2-hazard-web-.../`
+  + CloudFront invalidation deployed the legacy S3+CloudFront SPA and is no longer
+  the live path.)
 - **Agent:** file-swap onto the EC2 box (`/opt/grace2`) via SSM, then
   `systemctl restart grace2-agent`; the box auto-stops when idle and wakes on
   demand.
