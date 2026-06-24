@@ -9,7 +9,7 @@
 // SecretsPanel). The `onOpenSecrets` prop is kept OPTIONAL for backwards
 // compatibility, but the Secrets pill only renders when it is supplied.
 
-import { IconSettings, IconKey } from "./icons";
+import { IconSettings, IconKey, IconEye, IconEyeOff } from "./icons";
 
 export interface BottomRowButtonsProps {
   onOpenSettings: () => void;
@@ -24,6 +24,17 @@ export interface BottomRowButtonsProps {
    * the mobile drawer can fold them into its footer.
    */
   variant?: "floating" | "inline";
+  /**
+   * LANE D (NATE) - the desktop "Show/Hide legend" toggle moved here so it sits
+   * NEXT TO the Settings button (out of the way) instead of the floating
+   * bottom-center pill. `legendHidden` is the current state; `onToggleLegend`
+   * flips it. Rendered ONLY when `onToggleLegend` is supplied AND a legend has
+   * content to show (`legendHasContent`), so it never appears with nothing to
+   * reveal. App owns the state (controlled), mirroring the mobile pattern.
+   */
+  legendHidden?: boolean;
+  onToggleLegend?: () => void;
+  legendHasContent?: boolean;
 }
 
 const rowStyle: React.CSSProperties = {
@@ -95,6 +106,9 @@ export function BottomRowButtons({
   onOpenSettings,
   onOpenSecrets,
   variant = "floating",
+  legendHidden,
+  onToggleLegend,
+  legendHasContent,
 }: BottomRowButtonsProps): JSX.Element {
   const isInline = variant === "inline";
   // Desktop (floating) = square icon-only; mobile drawer (inline) = labeled pill.
@@ -116,6 +130,25 @@ export function BottomRowButtons({
         <IconSettings size={iconSize} />
         {isInline && <span>Settings</span>}
       </button>
+      {/* LANE D (NATE) - the legend show/hide toggle, moved NEXT TO Settings so
+          it is out of the way (replaces the floating bottom-center pill on
+          desktop). Only shown when there is a legend to toggle. */}
+      {onToggleLegend && legendHasContent && (
+        <button
+          data-testid="grace2-bottom-row-legend-toggle"
+          onClick={onToggleLegend}
+          style={pillStyle}
+          aria-label={legendHidden ? "Show legend" : "Hide legend"}
+          title={legendHidden ? "Show legend" : "Hide legend"}
+        >
+          {legendHidden ? (
+            <IconEyeOff size={iconSize} />
+          ) : (
+            <IconEye size={iconSize} />
+          )}
+          {isInline && <span>{legendHidden ? "Show legend" : "Hide legend"}</span>}
+        </button>
+      )}
       {/* job-0321 F29 — the standalone Secrets pill is retired (API keys now
           live inside Settings). Rendered ONLY for legacy callers that still
           pass `onOpenSecrets`; new callers omit it. */}

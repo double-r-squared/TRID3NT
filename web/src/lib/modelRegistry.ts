@@ -73,6 +73,16 @@ export const SELECTABLE_MODELS: ModelEntry[] = [
     accentColor: "#c2603c",
     supportsPromptCache: true,
   },
+  {
+    // User-pickable ONLY (no auto-routing). Verified invokable with toolConfig
+    // 2026-06-24. Anthropic -> cachePoint OK. Default stays Sonnet; the user
+    // must deliberately select this, so prod cost is never silently bumped.
+    id: "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    label: "Claude Opus 4.5",
+    provider: "Anthropic",
+    accentColor: "#c2603c",
+    supportsPromptCache: true,
+  },
 ];
 
 // SELECTABLE_MODELS is always non-empty (5 entries defined above).

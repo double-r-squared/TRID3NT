@@ -148,6 +148,15 @@ export interface LayerLegendProps {
    * keys themselves still render when not hidden.
    */
   suppressShowPill?: boolean;
+  /**
+   * LANE D (desktop dock) - the open desktop LEFT rail width (px) and RIGHT chat
+   * width (px), used ONLY to center the desktop docked legend strip in the
+   * VISIBLE map gutter (it shifts right by half the left inset, left by half the
+   * right inset). 0 / undefined => centered on the full viewport. Ignored on
+   * mobile (the snap pipeline is used there).
+   */
+  desktopLeftInsetPx?: number;
+  desktopRightInsetPx?: number;
 }
 
 /**
@@ -272,6 +281,17 @@ const VERTICAL_KEY_WIDTH = 76;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
 
+// LANE D (desktop dock) - FIXED metrics for the static bottom-center desktop
+// legend strip. No scaling: these are constants (NATE: "fixed size, no scaling,
+// it just sticks there"). Each key is a compact horizontal card; the gradient
+// BAR flexes to absorb slack so the value+unit labels never wrap.
+const DESKTOP_DOCK_BOTTOM_PX = 16;
+const DESKTOP_DOCK_GAP_PX = 8;
+const DESKTOP_DOCK_KEY_WIDTH = 200;
+const DESKTOP_DOCK_TITLE_FONT = 11;
+const DESKTOP_DOCK_LABEL_FONT = 10;
+const DESKTOP_DOCK_BAR_THICKNESS = 12;
+
 /**
  * Selects one legend key per eligible raster layer, in stack order
  * (top-of-stack first).
@@ -381,7 +401,11 @@ export function LayerLegend({
   hidden: hiddenProp,
   onHiddenChange,
   suppressShowPill,
+  desktopLeftInsetPx = 0,
+  desktopRightInsetPx = 0,
 }: LayerLegendProps): JSX.Element | null {
+  const dockLeftInsetPx = Math.max(0, desktopLeftInsetPx);
+  const dockRightInsetPx = Math.max(0, desktopRightInsetPx);
   // One key per eligible raster layer, in stack order.
   const keyModels = useMemo(() => selectKeyModels(layers), [layers]);
 
@@ -815,6 +839,49 @@ export function LayerLegend({
     );
   }
 
+  // LANE D (NATE's explicit DECISION) - on DESKTOP, STOP snapping the legend to
+  // the AOI bbox edges. Render a SINGLE fixed-position docked legend strip at the
+  // BOTTOM CENTER of the map gutter: fixed size, NO scaling, NO drag, NO resize,
+  // NO AOI-snap. It just sticks there. This is the default and we stop developing
+  // legend positioning further. The whole AOI-snap / drag / resize / scale
+  // machinery above stays ONLY for mobile (the `!isMobile` gate). The strip is
+  // centered in the VISIBLE gutter by offsetting half the (right chat - left
+  // rail) panel delta, and z stays under chat/panels (LEGEND_Z_INDEX).
+  if (!isMobile) {
+    // Rendered directly (NOT portaled) so it stays a DESCENDANT of the map
+    // container (the job-0321 F43 contract: the legend lives inside grace2-map).
+    // position:fixed still pins it to the viewport; the map container is
+    // position:absolute;inset:0 inside a position:fixed app shell, so fixed
+    // coordinates map 1:1 to the gutter.
+    return (
+      <div
+        data-testid="grace2-layer-legend"
+        data-legend-docked="desktop"
+        style={{
+          position: "fixed",
+          bottom: DESKTOP_DOCK_BOTTOM_PX,
+          // Center in the gutter between the left rail and the right chat: shift
+          // right by half the left-rail width, left by half the chat width.
+          left: `calc(50% + ${Math.round((dockLeftInsetPx - dockRightInsetPx) / 2)}px)`,
+          transform: "translateX(-50%)",
+          display: "flex",
+          flexDirection: "row",
+          flexWrap: "nowrap",
+          gap: DESKTOP_DOCK_GAP_PX,
+          maxWidth: "92vw",
+          overflowX: "auto",
+          pointerEvents: "auto",
+          // Below the chat (z=32) + panels (z=20); above the map.
+          zIndex: LEGEND_Z_INDEX,
+        }}
+      >
+        {keyModels.map((model) => (
+          <DesktopLegendKey key={model.layerId} model={model} />
+        ))}
+      </div>
+    );
+  }
+
   // The wrapper keeps a stable testid so existing tests + Map.tsx mounting
   // expectations hold. It is a zero-size placeholder; the actual key cards
   // portal to document.body with position:fixed so they escape the map
@@ -912,8 +979,10 @@ export function LayerLegend({
         // A vertical bar needs a sensible height to read as a tall colorbar.
         const verticalBarHeight = Math.round(120 * scale);
 
-        const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
-        const maxText = `${maxLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+        // LANE D unit fix: NON-BREAKING SPACE ( ) between value + unit so
+        // "(m)" can never wrap to a new line; the bar (flex:1) absorbs slack.
+        const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+        const maxText = `${maxLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
 
         const keyCard = (
           <div
@@ -1151,6 +1220,104 @@ export function LayerLegend({
           `legend-dropzone-${sig.side}`,
         ),
       )}
+    </div>
+  );
+}
+
+/**
+ * LANE D (desktop dock) - a single STATIC legend key card for the bottom-center
+ * desktop strip. Fixed metrics (no AOI scaling), horizontal only, no drag /
+ * resize / hide control. The value+unit use a NON-BREAKING SPACE so "(m)" never
+ * wraps to a new line (NATE: "the legend goes to a new line for (m) ... it should
+ * shrink the gradient or just extend the bar"); the gradient BAR is the flex:1
+ * element that absorbs slack, and the labels are flexShrink:0 nowrap, so the bar
+ * shrinks before the unit can ever wrap.
+ */
+function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
+  const preset = model.preset;
+  // FRAME-TRUTH: parsed-from-URL rescale + colormap are the source of truth when
+  // present; the style_preset is the fallback (mirrors the snap-render loop).
+  const minLabel = model.rescale ? model.rescale.min : preset.minValue;
+  const maxLabel = model.rescale ? model.rescale.max : preset.maxValue;
+  // The preset unit is meaningful only for the preset's own scale; a URL rescale
+  // is an arbitrary layer, so drop the unit there (never mislabel).
+  const unitLabel = model.rescale ? "" : preset.unit;
+  const stops = model.colormapStops ?? preset.stops;
+  const gradient = buildGradient(stops);
+  //   = NON-BREAKING SPACE: keeps the value and its unit on ONE line.
+  const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+  const maxText = `${maxLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+  return (
+    <div
+      data-testid="grace2-layer-legend-key"
+      data-legend-orientation="horizontal"
+      data-legend-side="bottom"
+      style={{
+        width: DESKTOP_DOCK_KEY_WIDTH,
+        flex: "0 0 auto",
+        padding: "7px 10px 8px",
+        background: "rgba(17,18,23,0.85)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 10,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
+        fontFamily: "system-ui, sans-serif",
+        color: "#eee",
+      }}
+    >
+      <div
+        data-testid="layer-legend-title"
+        style={{
+          fontSize: DESKTOP_DOCK_TITLE_FONT,
+          fontWeight: 600,
+          letterSpacing: "0.03em",
+          color: "#ddd",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          marginBottom: 5,
+        }}
+      >
+        {preset.label}
+      </div>
+      <div
+        data-testid="layer-legend-value-row"
+        style={{ display: "flex", alignItems: "center", gap: 6 }}
+      >
+        <span
+          data-testid="layer-legend-min-label"
+          style={{
+            fontSize: DESKTOP_DOCK_LABEL_FONT,
+            color: "#bbb",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {minText}
+        </span>
+        <div
+          data-testid="layer-legend-bar"
+          style={{
+            // The bar yields width so the labels (flexShrink:0) never wrap.
+            flex: 1,
+            minWidth: 0,
+            height: DESKTOP_DOCK_BAR_THICKNESS,
+            borderRadius: 3,
+            background: gradient,
+            border: "1px solid rgba(255,255,255,0.12)",
+          }}
+        />
+        <span
+          data-testid="layer-legend-max-label"
+          style={{
+            fontSize: DESKTOP_DOCK_LABEL_FONT,
+            color: "#bbb",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {maxText}
+        </span>
+      </div>
     </div>
   );
 }

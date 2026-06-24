@@ -357,6 +357,10 @@ export function App(): JSX.Element {
   // the legend keeps its own internal hide state (this stays false). Cleared on
   // Case exit (item c) along with the scrubber + legend.
   const [legendHiddenMobile, setLegendHiddenMobile] = useState<boolean>(false);
+  // LANE D (NATE): the DESKTOP legend is now a CONTROLLED toggle owned by App
+  // too (like mobile), so its Show/Hide control can live in BottomRowButtons
+  // NEXT TO Settings instead of the floating bottom-center pill. Default shown.
+  const [legendHiddenDesktop, setLegendHiddenDesktop] = useState<boolean>(false);
 
   // Auth state (job-0123, sprint-12-mega Wave 2).
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -1562,12 +1566,46 @@ export function App(): JSX.Element {
     [activeCaseId, caseSelectedButUnsettled, wsStatus],
   );
 
+  // LANE B #4 (no-replay): suppress the loading shimmer REPLAY on a re-enter /
+  // same-bbox switch when the layers are already present and the active Case +
+  // bbox are unchanged since the last paint. Track the last painted
+  // (caseId, bboxKey) in a ref; update it whenever the active Case has layers
+  // painted and is NOT loading. `suppressLoadingReplay` is true when the current
+  // context matches that last paint AND layers are present - i.e. nothing
+  // genuinely new is being fetched, so any transient `layersLoading` (a
+  // reconnect / re-select / resume re-pull) must not re-arm the shimmer. A
+  // genuine NEW fetch (different case, different bbox, or no layers yet) is not
+  // suppressed. This is a ref read, not a hook, so it does not affect the #310
+  // hook-count rule.
+  const lastPaintedRef = useRef<{ caseId: string | null; bboxKey: string } | null>(
+    null,
+  );
+  const caseBboxKey = useMemo(() => {
+    const b = asBbox(activeSession?.case.bbox ?? null);
+    return b ? b.join(",") : "";
+  }, [activeSession]);
+  const suppressLoadingReplay =
+    layers.length > 0 &&
+    lastPaintedRef.current !== null &&
+    lastPaintedRef.current.caseId === activeCaseId &&
+    lastPaintedRef.current.bboxKey === caseBboxKey;
+  useEffect(() => {
+    // Record the last paint once the active Case's layers are present and the
+    // load has settled, so a subsequent same-context re-enter is recognized as a
+    // replay (and suppressed above).
+    if (activeCaseId !== null && layers.length > 0 && !layersLoading) {
+      lastPaintedRef.current = { caseId: activeCaseId, bboxKey: caseBboxKey };
+    }
+  }, [activeCaseId, layers.length, layersLoading, caseBboxKey]);
+
   // NATE item 1 - resolve the AOI-bbox loading-animation render descriptor from
   // the live signals (pure state machine, unit-tested in lib/bbox_progress). Must
   // be a HOOK computed BEFORE the AuthGate early-return (same #310 rule as
   // layersLoading above). `connecting` is exempt from the user toggle inside the
   // resolver, so a transport drop always shows the scan border. `hasBbox` is the
-  // projected AOI rect being present (the overlay's anchor).
+  // projected AOI rect being present (the overlay's anchor). LANE E threads
+  // `terrain3d` so 3D suppresses the (misaligned) 2D overlay in favor of the
+  // in-map line glow; LANE B #4 threads `suppressLoadingReplay`.
   const bboxProgress = useMemo(
     () =>
       resolveBboxProgress({
@@ -1577,8 +1615,19 @@ export function App(): JSX.Element {
         connecting: wsStatus === "connecting" || wsStatus === "reconnecting",
         simRunning,
         animationsEnabled: bboxAnimEnabled,
+        terrain3d: terrain3dEnabled,
+        suppressLoadingReplay,
       }),
-    [aoiScreenRect, layers.length, layersLoading, wsStatus, simRunning, bboxAnimEnabled],
+    [
+      aoiScreenRect,
+      layers.length,
+      layersLoading,
+      wsStatus,
+      simRunning,
+      bboxAnimEnabled,
+      terrain3dEnabled,
+      suppressLoadingReplay,
+    ],
   );
 
   // ITEM 1 (NATE 2026-06-22) - does the CURRENT case context already have an AOI
@@ -1666,13 +1715,14 @@ export function App(): JSX.Element {
         /* Lift the projected AOI rect so the SequenceScrubber (inside
            LayerPanel) can pin bottom-center of the AOI box like the legend. */
         onAoiScreenRectChange={setAoiScreenRect}
-        /* Item b (NATE 2026-06-20)  -  on MOBILE the legend show/hide is App-owned
-           so the toggle can live INSIDE the expanded Layers section (off the chat
-           composer); the floating pill is suppressed. On desktop the legend keeps
-           its own internal hide state (these stay undefined => uncontrolled). */
-        legendHidden={isMobile ? legendHiddenMobile : undefined}
-        onLegendHiddenChange={isMobile ? setLegendHiddenMobile : undefined}
-        suppressLegendShowPill={isMobile}
+        /* Item b (NATE 2026-06-20) + LANE D (NATE) - the legend show/hide is
+           App-owned on BOTH platforms now. MOBILE: the toggle lives INSIDE the
+           expanded Layers section. DESKTOP: it lives in BottomRowButtons next to
+           Settings (LANE D). Either way the floating bottom-center pill is
+           suppressed (suppressLegendShowPill always true). */
+        legendHidden={isMobile ? legendHiddenMobile : legendHiddenDesktop}
+        onLegendHiddenChange={isMobile ? setLegendHiddenMobile : setLegendHiddenDesktop}
+        suppressLegendShowPill={true}
         /* CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  NATE: "no case layers
            should be loaded when we are in the cases section; they should only be
            rendered when we have entered a Case." When no Case is entered
@@ -1693,6 +1743,11 @@ export function App(): JSX.Element {
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
         mobile={isMobile}
+        /* LANE B #3 - the desktop left rail (CasesPanel / CaseView) is a fixed
+           288px when open; 0 on mobile or when collapsed. Threaded so fitBounds
+           pads the occluded left side and the AOI box centers in the visible
+           gutter instead of snapping behind the rail. */
+        leftPanelWidthPx={!isMobile && !leftCollapsed ? 288 : 0}
         /* NATE 2026-06-22 (item 4) - recolor the SINGLE on-map AOI rectangle to
            purple while a sim runs (revert to blue when done). No second box is
            drawn; the same blue analysis-extent box's stroke is mutated. */
@@ -1989,6 +2044,12 @@ export function App(): JSX.Element {
       {!isMobile && !leftCollapsed && (
         <BottomRowButtons
           onOpenSettings={() => setSettingsOpen(true)}
+          /* LANE D (NATE) - the desktop "Show/Hide legend" toggle sits NEXT TO
+             Settings (out of the way), replacing the floating bottom-center
+             pill. Only renders when there is a legend to toggle. */
+          legendHidden={legendHiddenDesktop}
+          onToggleLegend={() => setLegendHiddenDesktop((h) => !h)}
+          legendHasContent={legendHasContent(layers)}
         />
       )}
 

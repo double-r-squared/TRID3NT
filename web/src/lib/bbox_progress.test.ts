@@ -32,9 +32,11 @@ describe("resolveBboxProgress - overlay state machine (item 1)", () => {
     expect(s.toggleExempt).toBe(false);
   });
 
-  it("SUBSEQUENT load (loading, layers already exist) -> SCAN border (no cover)", () => {
+  it("SUBSEQUENT load (loading, layers already exist) -> FILL grid (LANE C desktop visual)", () => {
+    // LANE C: the grid-fill shimmer is now the loading visual regardless of
+    // layerCount (the faint translucent grid does not hide existing layers).
     const s = resolveBboxProgress({ ...BASE, layersLoading: true, layerCount: 3 });
-    expect(s.mode).toBe("scan");
+    expect(s.mode).toBe("fill");
     expect(s.tone).toBe("blue");
   });
 
@@ -92,6 +94,73 @@ describe("resolveBboxProgress - overlay state machine (item 1)", () => {
 
   it("idle (bbox present, nothing loading) -> none", () => {
     expect(resolveBboxProgress({ ...BASE }).mode).toBe("none");
+  });
+
+  // LANE E (3D): the 2D overlay is suppressed entirely in 3D terrain mode (the
+  // in-map line-layer pulse-glow takes over), for every loading state.
+  it("3D terrain suppresses the 2D overlay for loading (-> none)", () => {
+    expect(
+      resolveBboxProgress({ ...BASE, terrain3d: true, layersLoading: true, layerCount: 0 })
+        .mode,
+    ).toBe("none");
+    expect(
+      resolveBboxProgress({ ...BASE, terrain3d: true, layersLoading: true, layerCount: 3 })
+        .mode,
+    ).toBe("none");
+  });
+
+  it("3D terrain suppresses even the connecting + sim scan (in-map glow carries it)", () => {
+    expect(
+      resolveBboxProgress({ ...BASE, terrain3d: true, connecting: true }).mode,
+    ).toBe("none");
+    expect(
+      resolveBboxProgress({ ...BASE, terrain3d: true, simRunning: true, layerCount: 2 })
+        .mode,
+    ).toBe("none");
+  });
+
+  // LANE B #4 (no-replay): a re-enter / same-bbox switch with layers already
+  // present must NOT re-arm the loading shimmer.
+  it("suppresses the loading replay when case+bbox unchanged and layers exist", () => {
+    expect(
+      resolveBboxProgress({
+        ...BASE,
+        layersLoading: true,
+        layerCount: 3,
+        suppressLoadingReplay: true,
+      }).mode,
+    ).toBe("none");
+  });
+
+  it("still shows fill on a genuine first fetch even when replay-suppress is set", () => {
+    // No layers yet => not a replay; the first-fetch fill must still show.
+    expect(
+      resolveBboxProgress({
+        ...BASE,
+        layersLoading: true,
+        layerCount: 0,
+        suppressLoadingReplay: true,
+      }).mode,
+    ).toBe("fill");
+  });
+
+  it("replay-suppress does NOT hide the connecting cue or a running sim", () => {
+    expect(
+      resolveBboxProgress({
+        ...BASE,
+        connecting: true,
+        layerCount: 3,
+        suppressLoadingReplay: true,
+      }).mode,
+    ).toBe("scan");
+    expect(
+      resolveBboxProgress({
+        ...BASE,
+        simRunning: true,
+        layerCount: 3,
+        suppressLoadingReplay: true,
+      }).mode,
+    ).toBe("scan");
   });
 });
 

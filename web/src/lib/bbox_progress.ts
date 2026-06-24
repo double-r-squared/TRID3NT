@@ -39,6 +39,24 @@ export interface BboxProgressSignals {
   simRunning: boolean;
   /** The user's persisted enable flag for the loading animations. */
   animationsEnabled: boolean;
+  /**
+   * LANE E (3D): true when MapLibre 3D terrain is enabled. In 3D the camera is
+   * pitched/rotated so the AXIS-ALIGNED 2D DOM overlay no longer traces the
+   * tilted AOI box; the in-map line-layer pulse-glow (terrain_3d.ts) takes over
+   * instead. So 3D suppresses the 2D overlay (mode "none") for the loading
+   * states. Optional (defaults false) so existing callers / tests are unchanged.
+   */
+  terrain3d?: boolean;
+  /**
+   * LANE B #4 (no-replay): true when the active Case + bbox are UNCHANGED since
+   * the last paint AND layers are already present, i.e. a re-enter / same-bbox
+   * switch where nothing genuinely new is being fetched. When set, the
+   * subsequent-load loading visual (fill / scan) is suppressed so the loading
+   * shimmer does NOT replay over already-rendered layers. The CONNECTING cue and
+   * a running SIM still show (they are real in-progress signals, not replays).
+   * Optional (defaults false) so existing callers / tests are unchanged.
+   */
+  suppressLoadingReplay?: boolean;
 }
 
 /** The render descriptor `resolveBboxProgress` returns. */
@@ -77,6 +95,14 @@ export function resolveBboxProgress(s: BboxProgressSignals): BboxProgressState {
   // 1. Nothing to anchor against.
   if (!s.hasBbox) return NONE;
 
+  // LANE E (3D): in 3D terrain mode the 2D DOM overlay can only be axis-aligned
+  //    so it floats off the tilted/pitched AOI box. Suppress the 2D overlay for
+  //    the CONNECTING / SIM / LOADING states; the in-map line-layer pulse-glow
+  //    (terrain_3d.ts) carries the "working" cue instead. Checked first so 3D
+  //    never paints a misaligned scan, including the toggle-exempt connecting
+  //    one. (When 3D is off this branch is a no-op and 2D behaves as before.)
+  if (s.terrain3d) return NONE;
+
   // 2. Connecting / reconnecting: a blue scan border, ALWAYS ON. Highest
   //    priority after the anchor gate so a transport drop is always visible.
   if (s.connecting) {
@@ -95,17 +121,19 @@ export function resolveBboxProgress(s: BboxProgressSignals): BboxProgressState {
     return { mode: "scan", tone: "purple", toggleExempt: false };
   }
 
-  // 5 + 6. Loading a Case / a layer: SCAN when layers already exist (never
-  //    cover them), FILL shimmer on the FIRST fetch (no layers yet -> ok to
-  //    cover the empty box).
+  // 5. Loading a Case / a layer. LANE C: NATE wants the GRID-FILL shimmer as the
+  //    desktop loading visual (not the sweeping scan line), so emit FILL for the
+  //    loading state regardless of layerCount. The fill grid lattice is faint /
+  //    translucent so it does not hide existing layers. LANE B #4: but when the
+  //    active Case + bbox are unchanged and layers are already present (a
+  //    re-enter / same-bbox switch, no genuine new fetch), suppress the replay so
+  //    the shimmer does NOT re-arm over already-rendered layers.
   if (s.layersLoading) {
-    if (s.layerCount > 0) {
-      return { mode: "scan", tone: "blue", toggleExempt: false };
-    }
+    if (s.suppressLoadingReplay && s.layerCount > 0) return NONE;
     return { mode: "fill", tone: "blue", toggleExempt: false };
   }
 
-  // 7. Idle.
+  // 6. Idle.
   return NONE;
 }
 

@@ -103,6 +103,16 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
         "provider": "Amazon",
         "supportsPromptCache": False,
     },
+    {
+        # User-pickable only (NO auto-routing). Opus 4.5 verified invokable WITH
+        # toolConfig in 226996537797/us-west-2 on 2026-06-24. Anthropic ->
+        # cachePoint OK. Default stays Sonnet; a user must deliberately select
+        # this, so prod cost is never silently bumped.
+        "id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "label": "Claude Opus 4.5",
+        "provider": "Anthropic",
+        "supportsPromptCache": True,
+    },
 ]
 
 #: Fast-lookup set of the ids the in-chat selector may legitimately send. The

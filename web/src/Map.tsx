@@ -90,7 +90,9 @@ import {
   buildTerrain3dCameraPose,
   buildFlat2dCameraPose,
   TERRAIN_3D_EASE_MS,
+  startAoiPulseGlow,
   type TerrainMapLike,
+  type AoiPulseGlowHandle,
 } from "./lib/terrain_3d";
 import {
   fetchVectorAsGeoJson,
@@ -446,6 +448,16 @@ export interface MapViewProps {
    * only logs a TODO. Threaded so the future wire-up has the value.
    */
   contoursEnabled?: boolean;
+  /**
+   * LANE B #3 (panel-aware fit) - the current width (px) of the desktop LEFT
+   * rail (CasesPanel / CaseView) when it is open, else 0. fitBounds otherwise
+   * centers the AOI bbox in the WHOLE canvas, so it lands behind the open
+   * left rail / right chat panel ("snapping to the left snaps away from the
+   * bbox"). The zoom-to / region-choice fits add this (left) + chatWidthPx
+   * (right) as asymmetric padding so the box centers in the VISIBLE map gutter.
+   * Undefined / 0 = no left rail (mobile, or collapsed) -> uniform padding.
+   */
+  leftPanelWidthPx?: number;
 }
 
 /**
@@ -568,6 +580,49 @@ const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
 // SECOND box is drawn - the same single rectangle changes color.
 const ANALYSIS_EXTENT_COLOR_IDLE = "#4D96FF"; // blue (default).
 const ANALYSIS_EXTENT_COLOR_SIM = "#a855f7"; // purple (sim in progress).
+
+/**
+ * LANE B #3 (panel-aware fitBounds) - build an asymmetric PaddingOptions that
+ * adds the occluded desktop panel widths so a fit centers the bbox in the
+ * VISIBLE map gutter, not behind the panels. The left rail (CasesPanel /
+ * CaseView, `leftPanelPx`) occludes the left; the chat panel (`chatPx`, only
+ * when not collapsed) occludes the right. On mobile both are 0 -> a uniform
+ * scalar `base` pad. The padding is clamped to keep each axis' total below the
+ * canvas dimension (MapLibre throws when left+right >= width or top+bottom >=
+ * height), with a 24px safety floor so the box never fills edge-to-edge.
+ */
+function panelAwareFitPadding(
+  m: MapLibreMap,
+  base: number,
+  leftPanelPx: number,
+  chatPx: number,
+  chatCollapsed: boolean,
+  mobile: boolean,
+): maplibregl.PaddingOptions {
+  const leftExtra = mobile ? 0 : Math.max(0, leftPanelPx);
+  const rightExtra = mobile || chatCollapsed ? 0 : Math.max(0, chatPx);
+  let left = base + leftExtra;
+  let right = base + rightExtra;
+  const top = base;
+  const bottom = base;
+  try {
+    const canvas = m.getCanvas();
+    const w = canvas.clientWidth || canvas.width || 0;
+    if (w > 0) {
+      // Keep left + right strictly below the canvas width (leave a 24px gutter
+      // for the box itself) so fitBounds never throws on an over-padded axis.
+      const maxSide = Math.max(0, w - 24);
+      if (left + right > maxSide) {
+        const scale = maxSide / (left + right);
+        left = Math.floor(left * scale);
+        right = Math.floor(right * scale);
+      }
+    }
+  } catch {
+    /* no canvas yet (SSR / pre-mount) - fall back to the unclamped pads */
+  }
+  return { top, bottom, left, right };
+}
 
 /**
  * INCIDENT FIX 2026-06-16  -  hung-tile resilience. The reconcile + layer-add
@@ -2303,7 +2358,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -2396,6 +2451,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
   // The TRUE projected AOI rectangle the legend snaps against (all four corners).
   const [legendRect, setLegendRect] = useState<LegendScreenRect | null>(null);
+  // LANE C (flicker): the last legendRect we COMMITTED to state, used to skip a
+  // setLegendRect (and the MapView re-render it triggers) when the per-render
+  // reprojection yields the identical rect - the map's 'render' event fires
+  // every paint, so without this guard the legend subtree churned continuously.
+  const lastLocalRectRef = useRef<LegendScreenRect | null>(null);
   const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
   // FIX 4 (NATE 2026-06-17)  -  the AOI bbox's ON-SCREEN width in px, projected on
   // each map move/zoom (same listeners as legendAnchor). Null when there is no
@@ -3001,6 +3061,42 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     if (m) setAnalysisExtentSimColor(m, simRunning);
   }, [simRunning]);
 
+  // LANE E (3D AOI pulse-glow) - in 3D terrain mode the 2D scan overlay is
+  // suppressed (resolveBboxProgress -> "none") because its axis-aligned rect no
+  // longer traces the pitched/rotated AOI box. Carry the "working" cue with an
+  // in-map PULSE-GLOW on the REAL AOI line layer instead: it is geographic
+  // geometry, so it drapes over terrain and follows the camera, hugging the box.
+  // Start the rAF glow when 3D is on AND an AOI box is present; stop + restore
+  // the static line paint when 3D turns off or the box clears. (re-keyed on
+  // simRunning so the static restore on teardown lands after a sim-color swap;
+  // the glow itself only touches width/opacity/blur, never color, so the
+  // sim-color effect above keeps owning blue<->purple.)
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !terrain3dEnabled || aoiBbox === null) return undefined;
+    let handle: AoiPulseGlowHandle | null = null;
+    // The AOI line layer may not be added yet (zoom-to draw can race the 3D
+    // toggle); arm on the next idle if it is missing, else start now.
+    const begin = (): void => {
+      const mm = map.current;
+      if (!mm) return;
+      if (!mm.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) {
+        mm.once("idle", begin);
+        return;
+      }
+      handle = startAoiPulseGlow(mm, ANALYSIS_EXTENT_LINE_LAYER_ID);
+    };
+    begin();
+    return () => {
+      handle?.stop();
+      // After stopping the glow, re-assert the correct (blue/purple) static
+      // stroke for the current sim state (the glow left width/opacity/blur at
+      // their static values; color is owned by the sim-color effect).
+      const mm = map.current;
+      if (mm) setAnalysisExtentSimColor(mm, simRunningRef.current);
+    };
+  }, [terrain3dEnabled, aoiBbox, simRunning]);
+
   // Subscribe to theme prop changes and swap the basemap source+layer
   // (job-0076 bundled enhancement). The swap pattern:
   //   1. Pick the lowest-priority existing flood-overlay layer as the
@@ -3137,7 +3233,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             window.matchMedia("(prefers-reduced-motion: reduce)").matches;
           m.fitBounds(
             [[minLon, minLat], [maxLon, maxLat]],
-            { padding: 40, duration: prefersReducedMotion ? 0 : 1200 },
+            {
+              // LANE B #3 - panel-aware padding so the bbox centers in the
+              // VISIBLE gutter, not behind the open chat / left rail.
+              padding: panelAwareFitPadding(
+                m,
+                40,
+                leftPanelWidthPx,
+                chatWidthPx ?? 0,
+                chatCollapsed ?? false,
+                mobile ?? false,
+              ),
+              duration: prefersReducedMotion ? 0 : 1200,
+            },
           );
           // Remember the last extent corners so a late style (re)load (theme
           // setStyle, case-reopen remount) can re-assert the rectangle. Stays
@@ -3251,6 +3359,21 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             // missing/half-built extent is harmless and self-heals on next draw.
           }
         } else {
+          // LANE B #1 (durable exit-clear): the deferred-to-idle clear can be
+          // STARVED on exit-to-root - the reset-view flyTo (800ms) plus any
+          // wedged basemap tile keeps the map busy, so 'idle' never fires and the
+          // dashed AOI rectangle LINGERS after leaving a Case (NATE: "the bbox is
+          // STILL THERE when I exit the case"). removeLayer/removeSource are safe
+          // whenever the layer/source exists regardless of style-load state, so
+          // attempt the removal IMMEDIATELY in a try/catch as well (a starved
+          // 'idle' can no longer strand the rectangle). The m.once('idle') below
+          // stays as a belt-and-suspenders for the case where the layer was not
+          // yet built when this command arrived.
+          try {
+            clearAnalysisExtent(m);
+          } catch {
+            /* best-effort immediate clear  -  the idle backup below retries */
+          }
           m.once("idle", () => {
             if (!map.current) return;
             try {
@@ -3473,6 +3596,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // When the rect can't be projected / is off-screen we clear all three so the
       // legend reverts to its bottom-center fallback (it never vanishes).
       const rect = computeBboxScreenRect(cur, aoiBbox);
+      // LANE C (flicker): m.on('render') fires on EVERY map repaint (far more
+      // often under the v5 globe projection), and each frame called
+      // setLegendRect with a fresh object + no equality guard - so MapView
+      // re-rendered continuously while the map painted, churning the whole
+      // legend / scrubber subtree. Only push new legend state when the four
+      // edges (or the null<->present transition) actually change.
+      const prevLocal = lastLocalRectRef.current;
+      const sameLocal =
+        (prevLocal == null && rect == null) ||
+        (prevLocal != null &&
+          rect != null &&
+          prevLocal.left === rect.left &&
+          prevLocal.top === rect.top &&
+          prevLocal.right === rect.right &&
+          prevLocal.bottom === rect.bottom);
+      if (sameLocal) return;
+      lastLocalRectRef.current = rect;
       if (rect) {
         setLegendRect(rect);
         setLegendAnchor({ left: (rect.left + rect.right) / 2, top: rect.bottom });
@@ -3866,7 +4006,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               [minLon, minLat],
               [maxLon, maxLat],
             ],
-            { padding: 48, duration: 600, maxZoom: 8 },
+            {
+              // LANE B #3 - panel-aware padding (see the zoom-to fit above).
+              padding: panelAwareFitPadding(
+                m,
+                48,
+                leftPanelWidthPx,
+                chatWidthPx ?? 0,
+                chatCollapsed ?? false,
+                mobile ?? false,
+              ),
+              duration: 600,
+              maxZoom: 8,
+            },
           );
         } catch {
           /* fitBounds can throw on a degenerate bbox  -  leave the camera */
@@ -4034,6 +4186,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         hidden={legendHidden}
         onHiddenChange={onLegendHiddenChange}
         suppressShowPill={suppressLegendShowPill}
+        /* LANE D (desktop dock) - center the static bottom-center legend strip
+           in the VISIBLE gutter between the left rail + right chat panel. */
+        desktopLeftInsetPx={leftPanelWidthPx}
+        desktopRightInsetPx={chatCollapsed ? 0 : chatWidthPx ?? 0}
       />
 
       {/* F74b / FIX 2 / FIX 3  -  feature-click/tap-to-inspect popup. Shown when a

@@ -13,7 +13,7 @@
 // The wrapper element (data-testid "grace2-layer-legend") is now a full-bleed,
 // click-through container; the positioned/sized card is the KEY element.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
   LayerLegend,
@@ -36,8 +36,32 @@ import {
   getAnimationController,
 } from "./lib/animation_controller";
 
+// LANE D (NATE's DECISION): the AOI-snap / drag / resize / scale / CCW legend
+// behavior is now MOBILE-ONLY (on desktop the legend is a static bottom-center
+// docked strip - see the "desktop docked legend" block at the end). So the snap
+// pipeline tests below run in MOBILE mode: stub window.matchMedia so useIsMobile
+// reports mobile by default. Desktop-specific tests (the #157 pill block and the
+// desktop-dock block) override matchMedia per-test/per-block. Restored each test.
+let _matchMediaOriginal: typeof window.matchMedia | undefined;
+function stubMatchMedia(mobile: boolean): void {
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("max-width") ? mobile : false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+}
 beforeEach(() => {
   setAnimationController(new AnimationController());
+  _matchMediaOriginal = window.matchMedia;
+  stubMatchMedia(true); // default: mobile (the snap pipeline is mobile-only now)
+});
+afterEach(() => {
+  window.matchMedia = _matchMediaOriginal as typeof window.matchMedia;
 });
 
 function makeLayer(overrides: Partial<ProjectLayerSummary> = {}): ProjectLayerSummary {
@@ -651,15 +675,22 @@ describe("LayerLegend  -  Show-legend pill position vs mobile composer (#157)", 
     expect(MOBILE_LEGEND_PILL_BOTTOM_CSS).toContain("env(safe-area-inset-bottom)");
   });
 
-  it("keeps the pill at the low bottom-center position on DESKTOP", () => {
+  it("DESKTOP no longer has an in-legend hide control or floating pill (LANE D)", () => {
+    // LANE D (NATE's DECISION): on desktop the legend is a static bottom-center
+    // docked strip with NO in-legend hide control - the Show/Hide toggle moved
+    // to BottomRowButtons (next to Settings), and the floating bottom-center
+    // pill is gone. So neither the per-key hide button nor the floating
+    // "show legend" pill render on desktop.
     const restore = mockIsMobile(false);
     try {
       render(<LayerLegend layers={[makeLayer()]} />);
-      fireEvent.click(screen.getByTestId("layer-legend-hide"));
-      const pill = screen.getByTestId("grace2-layer-legend-show");
-      // Desktop: original low position (a bare px value jsdom stores fine),
-      // no composer to clear.
-      expect(pill.style.bottom).toBe(`${DESKTOP_LEGEND_PILL_BOTTOM_PX}px`);
+      expect(screen.queryByTestId("layer-legend-hide")).toBeNull();
+      expect(screen.queryByTestId("grace2-layer-legend-show")).toBeNull();
+      // The docked strip itself renders (the legend content is still shown).
+      expect(screen.getByTestId("grace2-layer-legend")).toHaveAttribute(
+        "data-legend-docked",
+        "desktop",
+      );
     } finally {
       restore();
     }
@@ -1410,5 +1441,72 @@ describe("MobileLegendToggle", () => {
     expect(btn).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(btn);
     expect(onToggle).toHaveBeenCalledWith(false);
+  });
+});
+
+// --- LANE D: DESKTOP docked legend strip (NATE's DECISION) -------------------- //
+//
+// On DESKTOP the legend is a single STATIC bottom-center docked strip: fixed
+// size, NO scaling, NO drag, NO resize, NO AOI-snap. The whole snap/drag/resize
+// machinery is mobile-only (tested above with the mobile matchMedia stub). These
+// tests force DESKTOP (matchMedia mobile=false).
+describe("LayerLegend  -  desktop docked strip (LANE D)", () => {
+  beforeEach(() => {
+    stubMatchMedia(false); // DESKTOP
+  });
+
+  it("renders a static bottom-center docked strip (no snap/drag/resize)", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-docked", "desktop");
+    // The docked strip pins to a fixed bottom; it is NOT an AOI-snapped card.
+    expect(root.style.position).toBe("fixed");
+    expect(root.style.bottom).toBe("16px");
+    // No drag handle / resize handle / drop-zones on desktop.
+    expect(screen.queryByTestId("layer-legend-resize")).toBeNull();
+    expect(screen.queryByTestId("layer-legend-dropzone")).toBeNull();
+    // The key + title still render (content contract preserved).
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent(
+      "Max flood depth (m)",
+    );
+  });
+
+  it("the (m) unit uses a non-breaking space so it never wraps from the value", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const minLabel = screen.getByTestId("layer-legend-min-label");
+    // The label is "<value> <unit>" (NBSP), never a regular space (which
+    // could wrap). continuous_flood_depth has unit "m".
+    expect(minLabel.textContent).toBe("0\u00a0m"); // NBSP between value + unit
+    expect(minLabel.textContent).not.toContain("0 m"); // never a plain ASCII space
+    // The gradient bar is the flex element that absorbs slack (flex:1; minWidth:0).
+    const bar = screen.getByTestId("layer-legend-bar");
+    expect(bar.style.flexGrow).toBe("1");
+    // minWidth:0 lets the bar shrink to absorb slack (happy-dom stores "0").
+    expect(bar.style.minWidth).toBe("0");
+  });
+
+  it("does not render the AOI-snapped multi-card wrapper attributes on desktop", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "a" }), makeLayer({ layer_id: "b" })]}
+        aoiRect={{ left: 100, top: 100, right: 500, bottom: 300 }}
+      />,
+    );
+    // Even with an aoiRect supplied, desktop ignores the snap pipeline: the keys
+    // carry no per-side snap (all bottom/horizontal) and there is exactly one
+    // docked root.
+    const roots = screen.getAllByTestId("grace2-layer-legend");
+    expect(roots).toHaveLength(1);
+    for (const key of screen.getAllByTestId("grace2-layer-legend-key")) {
+      expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+      expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    }
+  });
+
+  it("renders nothing when hidden + suppressShowPill (desktop pill is in BottomRowButtons)", () => {
+    render(<LayerLegend layers={[makeLayer()]} hidden suppressShowPill />);
+    expect(screen.queryByTestId("grace2-layer-legend")).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-show")).toBeNull();
   });
 });

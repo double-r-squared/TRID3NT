@@ -255,6 +255,122 @@ export function buildTerrainDemSource(
   };
 }
 
+// --- LANE E: 3D AOI line-layer pulse-glow -------------------------------- //
+//
+// In 3D the camera is pitched/rotated, so the 2D axis-aligned scan overlay
+// (BboxProgressOverlay) no longer traces the tilted AOI box and "looks weird"
+// (NATE). resolveBboxProgress returns mode "none" in 3D; this helper carries the
+// "working" cue INSTEAD by pulsing the REAL on-map AOI line layer
+// (ANALYSIS_EXTENT_LINE_LAYER_ID) bright -> normal -> bright. Because the line
+// layer is geographic geometry it drapes over terrain and follows the camera
+// automatically, so the glow always hugs the box.
+//
+// A single requestAnimationFrame loop drives a sine wave over line-width,
+// line-opacity, and line-blur (the blur ramps up at the bright peak to read as a
+// true glow halo). The caller owns start/stop; stop() restores the static paint.
+
+/** Structural subset of maplibre-gl Map the pulse-glow needs (paint mutation). */
+export interface PulseGlowMapLike {
+  getLayer(id: string): unknown;
+  setPaintProperty(layerId: string, name: string, value: unknown): void;
+}
+
+/** A handle returned by `startAoiPulseGlow`; call `stop()` to end the loop and
+ *  restore the static AOI line paint. Idempotent. */
+export interface AoiPulseGlowHandle {
+  stop(): void;
+}
+
+/** The static (non-glowing) AOI line paint, restored on stop. Matches the
+ *  drawAnalysisExtent defaults (line-width 1.5, line-opacity 0.9, no blur). */
+const AOI_STATIC_WIDTH = 1.5;
+const AOI_STATIC_OPACITY = 0.9;
+const AOI_STATIC_BLUR = 0;
+
+/** Glow peak/trough metrics. ~1.6s period matches the existing
+ *  grace2-bbox-border-pulse cadence; width 1.5<->3.5, opacity 0.55<->1.0,
+ *  blur 0<->2 reads as a bright<->normal pulse with a halo at the peak. */
+const GLOW_PERIOD_MS = 1600;
+const GLOW_WIDTH_MIN = 1.5;
+const GLOW_WIDTH_MAX = 3.5;
+const GLOW_OPACITY_MIN = 0.55;
+const GLOW_OPACITY_MAX = 1.0;
+const GLOW_BLUR_MAX = 2;
+
+/**
+ * Start a pulse-glow rAF loop on the AOI line layer. Returns a handle whose
+ * `stop()` cancels the loop and restores the static paint. Defensive: a missing
+ * layer / torn-down map / absent rAF (SSR / test env) makes start a safe no-op
+ * (stop is still callable). The loop self-cancels if the layer disappears.
+ *
+ * @param m       the live map (needs getLayer + setPaintProperty)
+ * @param layerId the AOI line layer id (ANALYSIS_EXTENT_LINE_LAYER_ID)
+ */
+export function startAoiPulseGlow(
+  m: PulseGlowMapLike,
+  layerId: string,
+): AoiPulseGlowHandle {
+  let rafId: number | null = null;
+  let stopped = false;
+  const hasRaf =
+    typeof requestAnimationFrame === "function" &&
+    typeof cancelAnimationFrame === "function";
+
+  const setStatic = (): void => {
+    try {
+      if (!m.getLayer(layerId)) return;
+      m.setPaintProperty(layerId, "line-width", AOI_STATIC_WIDTH);
+      m.setPaintProperty(layerId, "line-opacity", AOI_STATIC_OPACITY);
+      m.setPaintProperty(layerId, "line-blur", AOI_STATIC_BLUR);
+    } catch {
+      /* map torn down / style swapped mid-mutation - non-fatal */
+    }
+  };
+
+  const tick = (now: number): void => {
+    if (stopped) return;
+    try {
+      if (!m.getLayer(layerId)) {
+        // The AOI box went away (case exit / clear) - end the loop cleanly.
+        stop();
+        return;
+      }
+      // Sine in [0,1]: 0 at trough, 1 at the bright peak.
+      const phase = (now % GLOW_PERIOD_MS) / GLOW_PERIOD_MS;
+      const wave = (1 - Math.cos(phase * 2 * Math.PI)) / 2;
+      m.setPaintProperty(
+        layerId,
+        "line-width",
+        GLOW_WIDTH_MIN + (GLOW_WIDTH_MAX - GLOW_WIDTH_MIN) * wave,
+      );
+      m.setPaintProperty(
+        layerId,
+        "line-opacity",
+        GLOW_OPACITY_MIN + (GLOW_OPACITY_MAX - GLOW_OPACITY_MIN) * wave,
+      );
+      m.setPaintProperty(layerId, "line-blur", GLOW_BLUR_MAX * wave);
+    } catch {
+      /* mid-mutation race - skip this frame, keep looping */
+    }
+    if (hasRaf) rafId = requestAnimationFrame(tick);
+  };
+
+  function stop(): void {
+    if (stopped) return;
+    stopped = true;
+    if (rafId !== null && hasRaf) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    setStatic();
+  }
+
+  if (hasRaf) {
+    rafId = requestAnimationFrame(tick);
+  }
+  return { stop };
+}
+
 // --- thin MapLibre side-effect helpers ----------------------------------- //
 //
 // These are the ONLY map-touching functions. They are written defensively

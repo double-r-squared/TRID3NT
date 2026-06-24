@@ -817,7 +817,15 @@ describe("MapView  -  map-command zoom-to handler (job-0068 change 5 client side
     expect(m.fitBounds).toHaveBeenCalledOnce();
     const [bounds, opts] = m.fitBounds.mock.calls[0] as MockCallArgs;
     expect(bounds).toEqual([[-81.91, 26.55], [-81.75, 26.69]]);
-    expect((opts as { padding: number }).padding).toBe(40);
+    // LANE B #3: padding is now an asymmetric PaddingOptions object so the bbox
+    // centers in the visible gutter (panels excluded). With no panel props the
+    // four sides equal the base 40 pad.
+    expect((opts as { padding: unknown }).padding).toEqual({
+      top: 40,
+      bottom: 40,
+      left: 40,
+      right: 40,
+    });
     expect((opts as { duration: number }).duration).toBe(1200);
   });
 

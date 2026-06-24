@@ -125,6 +125,36 @@ export function dedupeByLayerId(
   return Array.from(byId.values());
 }
 
+/**
+ * LANE C (flicker): structural equality of two already-sorted layer lists by the
+ * fields that drive a render - layer_id + visible + opacity + z_index. The server
+ * re-emits a FULL authoritative session-state on every keepalive resume (~25s)
+ * and on every turn push; each rebuilt a brand-new array with new object refs,
+ * so the whole layers list re-rendered periodically (the visible "flashing" of
+ * the layers section). When the incoming set is structurally identical we return
+ * the SAME state ref from the reducer so useReducer bails out (no re-render).
+ */
+function layerSetsEqual(
+  a: ProjectLayerSummary[],
+  b: ProjectLayerSummary[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (!x || !y) return false;
+    if (
+      x.layer_id !== y.layer_id ||
+      x.visible !== y.visible ||
+      x.opacity !== y.opacity ||
+      x.z_index !== y.z_index
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelState {
   switch (action.type) {
     case "session-state": {
@@ -136,11 +166,16 @@ function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelSt
       // top of the server `visible` so a layer the user hid stays hidden across
       // a panel unmount->remount (mobile drawer collapse re-seeds from a fresh
       // session-state). No override => server value verbatim.
-      return {
-        layers: sortTopFirst(
-          applyVisibilityOverrides(dedupeByLayerId(incoming)),
-        ),
-      };
+      const next = sortTopFirst(
+        applyVisibilityOverrides(dedupeByLayerId(incoming)),
+      );
+      // LANE C (flicker): the server re-emits the full authoritative
+      // session-state on every keepalive resume (~25s) + every turn push. When
+      // the layer set is UNCHANGED (same ids/visible/opacity/z_index), return the
+      // SAME state ref so useReducer bails and the whole list does NOT re-render
+      // (the periodic "flashing of the layers section" NATE reports).
+      if (layerSetsEqual(state.layers, next)) return state;
+      return { layers: next };
     }
     case "map-command": {
       const cmd = action.payload;
@@ -1198,14 +1233,17 @@ export function LayerPanel({
         width: mobile ? LAYERS_WIDTH_DEFAULT_PX : clampLayersWidth(panelWidth),
         // Subtle gradient + hairline border + soft shadow for a sleeker,
         // more modern panel than the flat slab (job-0264 polish).
+        // LANE C (flicker): the gradient below is already ~0.96 alpha (near
+        // opaque), so the backdrop-filter blur added almost no visual depth but
+        // forced a backdrop RE-COMPOSITE against the continuously-repainting map
+        // on every frame - a classic backdrop-filter shimmer/flash over animated
+        // content (worse under the v5 globe's more-frequent repaints). Dropped.
         background:
           "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
         color: "#e8e8ec",
         borderRadius: 12,
         border: "1px solid rgba(255,255,255,0.06)",
         boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
         display: "flex",
         flexDirection: "column",
         fontFamily:
