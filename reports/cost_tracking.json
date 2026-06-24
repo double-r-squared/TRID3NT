@@ -2495,8 +2495,7 @@
     "description": "Agents (2): deploy main a640877 to the box. First stopped on dirty shared working tree (tools-session tool-retrieval WIP); re-run from a clean detached worktree shipped exactly committed main + verified deployed==HEAD (markers present, tool_retrieval.py absent), 138 tools live.",
     "model": "opus",
     "subagent_tokens": 75320
-  }
-  ,
+  },
   {
     "job_id": "tool-retrieval-corpus-backfill-wf_dbb29ffd",
     "sprint": 17,
@@ -2517,5 +2516,54 @@
     "description": "TOOLS recon (est): GLM 3x Explore (conventions/registration/publish-path) + tool-retrieval 2x (discover_dataset ranking core + corpus-gap analysis). Estimated.",
     "model": "opus",
     "subagent_tokens": 250000
+  },
+  {
+    "job_id": "session-20260624-fargate-plumbing-aeb651bd",
+    "sprint": 17,
+    "description": "Agent: finish Fargate-canary plumbing (byte-proxy + web ws.ts session carrier + broker-builder CodeBuild + first-connect provisioning + discovered tfvars). Broker 51 + web 1984 green. 2 infra blockers escalated (ACM cert + no-NAT egress).",
+    "model": "opus",
+    "subagent_tokens": 237034
+  },
+  {
+    "job_id": "session-20260624-mexbeach-wave-fix-a28dde67",
+    "sprint": 17,
+    "description": "Agent: fix + re-run Mexico Beach surge. Root cause = no msk==2 water-level boundary cells (surge never entered) + 24h-vs-10h window + bump-not-ramp limb. setup_mask_bounds fix -> all 3 verifier checks PASS (area 8pct, advance 4x, runup 4.22m). Real engine bug fix.",
+    "model": "opus",
+    "subagent_tokens": 173436
+  },
+  {
+    "job_id": "session-20260624-adopt-case-glue-a53b28bd",
+    "sprint": 17,
+    "description": "Agent: build adopt_run_into_case.py + adopt the 144-frame SFINCS run into NATE account (Case 01KVVX3E, 290 layers, live-tile render verified, schema-matched).",
+    "model": "opus",
+    "subagent_tokens": 91083
+  },
+  {
+    "job_id": "session-20260624-adopt-extend-manifestfree-ad817ed2",
+    "sprint": 17,
+    "description": "Agent: extend adopt-glue to manifest-free (build Case layers from S3 frame listing) + adopt the verified wave-fix run (Case 01KVVY3E, 82 layers, live-tile render verified).",
+    "model": "opus",
+    "subagent_tokens": 109585
+  },
+  {
+    "job_id": "session-20260624-tool-retrieval-shadow-a95be660",
+    "sprint": 17,
+    "description": "Agent: orchestrator half of tool-retrieval - GRACE2_TOOL_RETRIEVAL flag (default off) + shadow wiring at the tool-list site + shadow telemetry + recall@k in dashboard + fetch_glm_lightning offload. 7385 green, default-off byte-identical.",
+    "model": "opus",
+    "subagent_tokens": 183614
+  },
+  {
+    "job_id": "session-20260624-batch-integration-aceedfc6",
+    "sprint": 17,
+    "description": "Agent: integrate tool-retrieval-shadow + sandbox-staging onto main (additive unions resolved; mongo_query correctly not resurrected) + close executor-shipping gap (GRACE2_SANDBOX_EXECUTOR). 7449 green, web 1985.",
+    "model": "opus",
+    "subagent_tokens": 82125
+  },
+  {
+    "job_id": "session-20260624-redeploy-batch-ac8035e5",
+    "sprint": 17,
+    "description": "Agent: redeploy main 7ec3ac7 agent+web. deployed==HEAD verified (5 markers + shadow active + executor resolves); web bundle live (VITE_BUILD_SHA 7ec3ac7) + CloudFront invalidated. Shadow recall@k collection ON.",
+    "model": "opus",
+    "subagent_tokens": 66230
   }
 ]
