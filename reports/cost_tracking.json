@@ -2614,5 +2614,12 @@
     "description": "NATE course-correct: dropped Opus model-routing + keyword intent-matching (commit 829809b reverts the bedrock_adapter Opus reg + server.py intent block from 3e63455). KEPT the python sandbox + executor layer_refs injection + code_exec docstring + SYSTEM_PROMPT few-shot. Deployed. Confirm-drive: Sonnet (default, no Opus) + sandbox + existing-data layer_refs -> figure from the real run COGs, one code_exec call, agent self-caught its unit bug. End state = figures from EXISTING data via the sandbox, no model routing, no fabrication.",
     "model": "opus",
     "subagent_tokens": 0
+  },
+  {
+    "job_id": "modflow-nextpush-scoping",
+    "sprint": 17,
+    "description": "Read-only Agent dispatch: decision-ready MODFLOW next-push options menu grounded in code+reports. Surfaced that the river-seepage engine AND contamination-x-Fields-of-the-World demo are both ALREADY BUILT in code (sprint-17 J9 + FTW merge), unproven-live. Recommendation: Option A (contamination-plume x FTW affected-fields, S-effort prove+ship, zero Batch/key dep, named NATE demo + real USGS Long Island TCE analog) -> B (river-seepage) -> C (Batch entrypoint S3-port, the GCS-shaped worker gap) -> D (reactive transport).",
+    "model": "opus",
+    "subagent_tokens": 121509
   }
 ]
