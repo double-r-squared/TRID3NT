@@ -320,6 +320,11 @@ class SolverConfirmationCancelledError(RuntimeError):
 # composers join once they grow confirm-envelope builders (OQ-FIXWAVE-FLOOD-GATE).
 SOLVER_CONFIRM_TOOLS: set[str] = {
     "run_model_groundwater_contamination_scenario",
+    # ftw-affected-fields demo: the which-farm-fields composer runs the same
+    # MODFLOW plume (a consequence) before the affected-field analysis, so it
+    # joins the confirm set. The card is built from the call args
+    # (AOI/contaminant/release) + the up-gradient-placed spill point.
+    "run_model_contamination_affected_fields",
     # job-0256: flood solvers gated too — a live sandbox-only session was
     # observed running an unrequested SFINCS solve (~10-20 min). The card is
     # built from the call args (location/return period/duration).
@@ -5578,6 +5583,79 @@ async def _gate_on_solver_confirm(
                 kwargs["porosity"] = float(params["porosity"])
             envelope = _build_confirmation_envelope(
                 derived, MODFLOWRunArgs(**kwargs)
+            )
+        elif tool_name == "run_model_contamination_affected_fields":
+            # ftw-affected-fields demo: build the MODFLOW confirm card from the
+            # composer's explicit call args (AOI + contaminant + release). The
+            # spill point is placed up-gradient (west) of the AOI centroid by the
+            # same helper the composer uses, so the card shows the real point the
+            # solver will run. AOI resolution (geocode) is off the loop (the
+            # WS-heartbeat lives) via to_thread.
+            from .workflows.model_contamination_affected_fields import (
+                _build_confirmation_envelope as _build_aff_envelope,
+                place_spill_up_gradient,
+                resolve_aoi_bbox,
+                DEFAULT_UPGRADIENT_OFFSET_KM,
+            )
+            from grace2_contracts.modflow_contracts import MODFLOWRunArgs
+
+            location_query = params.get("location_query")
+            aoi_bbox = params.get("bbox")
+            article_text = params.get("article_text")
+            contaminant = params.get("contaminant") or "trichloroethylene"
+            release_rate_kg_s = params.get("release_rate_kg_s")
+            duration_days = params.get("duration_days")
+
+            # Article-driven runs extract the forcing in the composer; the live
+            # demo path supplies explicit params, so fall through (the composer
+            # surfaces its own typed error) when neither path is parameterized.
+            if article_text and str(article_text).strip():
+                from .workflows.model_groundwater_contamination_scenario import (
+                    extract_spill_parameters,
+                )
+
+                derived_aff = await asyncio.to_thread(
+                    extract_spill_parameters, str(article_text), False
+                )
+                contaminant = derived_aff["contaminant"]
+                release_rate_kg_s = derived_aff["release_rate_kg_s"]
+                duration_days = derived_aff["duration_days"]
+                if not location_query and derived_aff.get("location_name"):
+                    location_query = derived_aff["location_name"]
+            if release_rate_kg_s is None:
+                release_rate_kg_s = 0.05
+            if duration_days is None:
+                duration_days = 1.0
+
+            resolved_bbox, centroid = await asyncio.to_thread(
+                resolve_aoi_bbox, aoi_bbox, location_query
+            )
+            explicit_spill = params.get("spill_location_latlon")
+            if explicit_spill is not None:
+                spill_pt = (
+                    float(explicit_spill[0]),
+                    float(explicit_spill[1]),
+                )
+            else:
+                offset = params.get("upgradient_offset_km")
+                spill_pt = place_spill_up_gradient(
+                    centroid,
+                    float(offset) if offset is not None
+                    else DEFAULT_UPGRADIENT_OFFSET_KM,
+                )
+            aff_kwargs: dict[str, Any] = dict(
+                spill_location_latlon=spill_pt,
+                contaminant=contaminant,
+                release_rate_kg_s=float(release_rate_kg_s),
+                duration_days=float(duration_days),
+            )
+            if params.get("aquifer_k_ms") is not None:
+                aff_kwargs["aquifer_k_ms"] = float(params["aquifer_k_ms"])
+            if params.get("porosity") is not None:
+                aff_kwargs["porosity"] = float(params["porosity"])
+            envelope = _build_aff_envelope(
+                MODFLOWRunArgs(**aff_kwargs),
+                location_query or "the farmland AOI",
             )
         elif tool_name in ("run_model_flood_scenario",
                            "run_model_flood_habitat_scenario"):

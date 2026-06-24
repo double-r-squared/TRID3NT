@@ -256,6 +256,9 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # Cross-listed to fire below.
     "run_model_goes_fire_animation": "hazard_modeling",
     "run_model_groundwater_contamination_scenario": "hazard_modeling",
+    # ftw-affected-fields demo: the which-farm-fields-does-the-plume-reach
+    # composer (MODFLOW plume -> FTW field boundaries -> analyze_affected_fields).
+    "run_model_contamination_affected_fields": "hazard_modeling",
     "run_modflow_job": "hazard_modeling",
     "run_swmm_urban_flood": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
@@ -388,6 +391,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # ---- 9. damage_assessment ---------------------------------------------
     "compute_impact_envelope": "damage_assessment",
     "postprocess_pelicun": "damage_assessment",
+    # ftw-affected-fields demo: which farm fields a MODFLOW plume reaches +
+    # how badly (peak/mean concentration, affected cropland area, ranked). It is
+    # the agricultural-impact analogue of compute_impact_envelope (per-feature ->
+    # ranked aggregate -> headline), so it is PRIMARY-filed under damage_assessment;
+    # secondary cross-lists below put it in hazard_modeling (it scores a MODFLOW
+    # plume) and land_cover_development (it scores FTW agricultural fields).
+    "analyze_affected_fields": "damage_assessment",
     # ---- 10. flood_infrastructure -----------------------------------------
     "fetch_fema_nfhl_zones": "flood_infrastructure",
     "fetch_usace_levees": "flood_infrastructure",
@@ -462,6 +472,18 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "run_pelicun_damage_assessment": ("damage_assessment",),
     "run_pelicun_with_buildings": ("damage_assessment",),
     "fetch_usace_nsi": ("damage_assessment",),
+    # ftw-affected-fields demo: the affected-field analysis is PRIMARY-filed in
+    # damage_assessment (the impact-readout analogue) and materially belongs to
+    # hazard_modeling (it scores a MODFLOW plume) AND land_cover_development (it
+    # scores FTW/fiboa agricultural fields next to fetch_field_boundaries).
+    "analyze_affected_fields": ("hazard_modeling", "land_cover_development"),
+    # The which-fields composer is PRIMARY hazard_modeling (it runs MODFLOW) and
+    # cross-lists to damage_assessment (it produces the affected-field readout)
+    # AND land_cover_development (it is reached from the farm-fields lane).
+    "run_model_contamination_affected_fields": (
+        "damage_assessment",
+        "land_cover_development",
+    ),
     # NWS event ingest spans hazard_modeling (it's the news-event composer)
     # AND news_events (it's the canonical entry point to that category).
     "run_model_news_event_ingest": ("news_events",),

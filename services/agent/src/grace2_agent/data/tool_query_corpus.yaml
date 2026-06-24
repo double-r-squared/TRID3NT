@@ -631,6 +631,23 @@ compute_zonal_statistics:
   - "calculate the area of wetlands inside this fire perimeter"
   - "what fraction of developed land is in the flood zone?"
 
+analyze_affected_fields:
+  - "which farm fields does the contamination plume reach?"
+  - "tell me which agricultural fields the groundwater plume affects and how badly"
+  - "rank the affected farm fields by peak concentration in this contaminant plume"
+  - "which crops are hit by the spill plume and how much of each field is over the threshold?"
+  - "intersect the plume with the field boundaries and show the worst-hit fields"
+  - "how many fields does the contaminant reach above the detection threshold?"
+  - "which fields are contaminated by this groundwater plume, with the peak mg/L in each?"
+
+run_model_contamination_affected_fields:
+  - "model a contaminant spill near this farmland and tell me which fields it reaches"
+  - "model a groundwater plume up-gradient of these fields and rank the affected farm fields"
+  - "simulate a solvent leak near Ames Iowa and show which crops the plume contaminates"
+  - "place a spill west of the cropland, run the plume, and tell me which farm fields are hit"
+  - "which agricultural fields would a contaminant spill near this area affect? model it end to end"
+  - "run the groundwater contamination plume and the affected-field analysis for this farm area"
+
 # ---------------------------------------------------------------------------
 # Catalog / Discovery
 # ---------------------------------------------------------------------------
