@@ -223,6 +223,7 @@ from . import compute_colored_relief  # noqa: E402,F401 — job-0080: registers 
 from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_slope
 from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect
 from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
+from . import analyze_affected_fields  # noqa: E402,F401 — ftw-affected-fields demo: registers analyze_affected_fields (which farm fields a MODFLOW plume reaches; intersects the plume COG against FTW/fiboa field polygons via compute_zonal_statistics, joins crop_name, splits affected vs untouched at the plume detection threshold, ranks + headlines; honesty-floor 0-affected result)
 from . import compute_layer_bounds  # noqa: E402,F401 — NATE 2026-06-17: registers compute_layer_bounds (fast layer-extent + fit-the-map; replaces sandbox bbox math + drives zoom-to)
 from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
 from . import clip_raster_to_polygon  # noqa: E402,F401 — job-0106: registers clip_raster_to_polygon

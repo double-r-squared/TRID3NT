@@ -54,6 +54,7 @@ from __future__ import annotations
 from . import model_flood_habitat_scenario as _model_flood_habitat_scenario  # noqa: F401
 from . import model_flood_scenario as _model_flood_scenario  # noqa: F401
 from . import model_groundwater_contamination_scenario as _model_groundwater_contamination_scenario  # noqa: F401  — job-0228 Case 2 composer (news → MODFLOW → plume)
+from . import model_contamination_affected_fields as _model_contamination_affected_fields  # noqa: F401  -- ftw-affected-fields demo: MODFLOW plume -> FTW field boundaries -> analyze_affected_fields (which farm fields the plume reaches); registers run_model_contamination_affected_fields
 from . import model_news_event_ingest as _model_news_event_ingest  # noqa: F401  — job-0119 Case 2 composer
 from . import model_nws_flood_event_scenario as _model_nws_flood_event_scenario  # noqa: F401  — job-0229 Case 3 composer
 from . import pelicun_damage_with_buildings as _pelicun_damage_with_buildings  # noqa: F401  — job-0147 buildings→Pelicun composer
