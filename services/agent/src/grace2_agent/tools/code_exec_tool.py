@@ -253,15 +253,23 @@ def code_exec_request(
     variable named ``result`` (a scalar, a dict, a pandas DataFrame, or a
     matplotlib Figure); the user is shown the exact code and must approve it first.
 
-    CRITICAL - HOW TO ACCESS DATA (the sandbox has NO network):
-    The sandbox is network-isolated. You CANNOT download anything from inside it -
-    ``rasterio.open("s3://...")``, ``rasterio.open("https://...")``,
-    ``urllib`` / ``requests`` / ``boto3`` against a URL, or any DNS lookup WILL
-    FAIL. To use ANY layer, COG, or run frame you MUST list its URI in
-    ``layer_refs``; the sandbox pre-fetches it OFF the loop and hands it to your
-    code already-open as a handle named after its key (raster -> an OPEN rasterio
-    dataset, vector -> a loaded geopandas GeoDataFrame), plus a ``<name>_uri``
-    string alias. Reference that handle DIRECTLY in your code - do NOT re-open it.
+    CRITICAL - HOW TO ACCESS DATA (the sandbox has NO network, and NO file paths):
+    The sandbox is network-isolated AND there is NO filesystem path you can open.
+    You CANNOT download anything from inside it (``rasterio.open("s3://...")``,
+    ``urllib`` / ``requests`` / ``boto3``, any DNS) AND you must NOT guess a path:
+    there is no ``/layers/`` directory and no ``staged_inputs`` path to open. To use
+    ANY layer, COG, or run frame, list its URI in ``layer_refs``; the sandbox
+    pre-fetches it OFF the loop and injects it into your code AS A VARIABLE WHOSE
+    NAME IS EXACTLY THE layer_refs KEY -- already open (raster -> an OPEN rasterio
+    dataset, vector -> a loaded geopandas GeoDataFrame). For key ``"peak"`` you get
+    a variable ``peak`` (use ``peak.read(1)`` directly -- never ``rasterio.open``).
+    Also injected for each key: ``<name>_uri`` (the path string, only if you truly
+    need a path), and the dicts ``layers`` (name -> handle) and ``layer_uris``
+    (name -> source). A list-valued ref binds ``<name>`` to a LIST of open handles
+    plus ``<name>_uris``. Use SIMPLE identifier keys (letters/digits/underscore,
+    not starting with a digit, e.g. ``peak``, ``frame_20``) so the variable name
+    equals your key verbatim. If an open fails, the key holds the raw string and
+    the result's ``layer_errors`` says why -- check it instead of guessing a path.
     Example for a multi-panel above-ground figure::
 
         layer_refs = {
