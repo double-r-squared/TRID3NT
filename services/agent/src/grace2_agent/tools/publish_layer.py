@@ -598,8 +598,10 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # the terrain-token passthrough above and render grayscale (a DELIBERATE,
     # TESTED F51 decision -- test_publish_layer_titiler_style_resolver_f51 +
     # test_publish_layer_style_inference). Giving slope/aspect a colormap means
-    # scoping that passthrough down + reversing those tests -> flagged to NATE, NOT
-    # changed here. (Hillshade SHOULD stay grayscale -- shaded relief.)
+    # scoping that passthrough down + reversing those tests. DEFERRED (NATE
+    # 2026-06-24): the slope-angle (ylorrd 0,60) + cyclic aspect (hsv 0,360)
+    # colormaps + their legends ship TOGETHER with the styling UI -- NOT landed
+    # solo here. (Hillshade SHOULD stay grayscale -- shaded relief.)
     "impervious_surface_pct": ("0,100", "reds"),
     "population_density": ("0,250", "magma"),
 }
