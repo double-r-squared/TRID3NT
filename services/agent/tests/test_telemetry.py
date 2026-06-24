@@ -234,3 +234,100 @@ async def test_error_fields_populated() -> None:
         assert r["latency_ms"] == pytest.approx(1234.5, rel=1e-3)
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Tool-retrieval SHADOW telemetry (tool-retrieval kickoff, orchestrator half).
+# ---------------------------------------------------------------------------
+
+
+def test_build_shadow_selection_record_shape() -> None:
+    """The shadow record carries the would-be set + the turn join key + mode."""
+    from grace2_agent.telemetry import (
+        SHADOW_RECORD_TYPE,
+        build_shadow_selection_record,
+    )
+
+    rec = build_shadow_selection_record(
+        session_id="S1",
+        turn_id="T1",
+        user_text="show me the flood map" * 50,  # long -> truncated
+        visible_tools={"fetch_dem", "geocode_location"},
+        mode="shadow",
+        k=25,
+        full_registry_size=120,
+        model_id="us.anthropic.claude-sonnet-4-6",
+    )
+    assert rec["record_type"] == SHADOW_RECORD_TYPE
+    assert rec["session_id"] == "S1"
+    assert rec["turn_id"] == "T1"
+    assert rec["mode"] == "shadow"
+    assert rec["k"] == 25
+    # visible_tools is a SORTED list (deterministic).
+    assert rec["visible_tools"] == ["fetch_dem", "geocode_location"]
+    assert rec["visible_count"] == 2
+    assert rec["full_registry_size"] == 120
+    # user_text is truncated to keep the record bounded.
+    assert len(rec["user_text"]) <= 280
+
+
+@pytest.mark.asyncio
+async def test_emit_shadow_selection_writes_jsonl() -> None:
+    """emit_shadow_selection_event writes ONE shadow row to the JSONL sink."""
+    from grace2_agent.telemetry import emit_shadow_selection_event
+
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
+        path = tf.name
+    try:
+        with patch.dict(os.environ, {"GRACE2_TELEMETRY_PATH": path}):
+            # No Persistence bound in this test env -> file path.
+            emit_shadow_selection_event(
+                session_id="S1",
+                turn_id="T1",
+                user_text="flood",
+                visible_tools={"fetch_dem"},
+                mode="shadow",
+                k=25,
+                full_registry_size=120,
+            )
+            await asyncio.sleep(0.1)
+        records = _read_jsonl(path)
+        assert len(records) == 1
+        r = records[0]
+        assert r["record_type"] == "tool_retrieval_shadow"
+        assert r["turn_id"] == "T1"
+        assert r["visible_tools"] == ["fetch_dem"]
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_emit_shadow_selection_never_raises() -> None:
+    """A forced build failure inside emit_shadow_selection_event is swallowed."""
+    from grace2_agent import telemetry as tel
+
+    with patch.object(
+        tel, "build_shadow_selection_record", side_effect=RuntimeError("boom")
+    ):
+        # Must NOT raise -- telemetry must never break the dispatch loop.
+        tel.emit_shadow_selection_event(
+            session_id="S1",
+            turn_id="T1",
+            user_text="x",
+            visible_tools={"a"},
+            mode="shadow",
+            k=25,
+        )
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_event_carries_turn_id() -> None:
+    """The per-tool record carries turn_id (the recall@k join key) when given."""
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
+        path = tf.name
+    try:
+        await _emit(path, turn_id="T1")
+        records = _read_jsonl(path)
+        assert records[0]["turn_id"] == "T1"
+    finally:
+        os.unlink(path)

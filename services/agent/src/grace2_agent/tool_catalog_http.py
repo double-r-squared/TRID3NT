@@ -312,6 +312,22 @@ def _get_telemetry_path() -> Path:
     )
 
 
+# tool-retrieval SHADOW recall@k (tool-retrieval kickoff). The shadow-selection
+# rows share the tool_call_telemetry sink, tagged with this discriminator.
+_SHADOW_RECORD_TYPE = "tool_retrieval_shadow"
+
+#: Terminal North-Star solver tools -> the flow they identify. A turn is
+#: attributed to a flow when it dispatched one of these (the recall@k per-flow
+#: breakdown the kickoff asks for: SWMM / SFINCS / MODFLOW).
+_FLOW_BY_SOLVER_TOOL: dict[str, str] = {
+    "run_swmm_urban_flood": "SWMM",
+    "run_model_flood_scenario": "SFINCS",
+    "run_model_flood_habitat_scenario": "SFINCS",
+    "run_modflow_job": "MODFLOW",
+    "run_model_groundwater_contamination_scenario": "MODFLOW",
+}
+
+
 def _normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
     """Coerce a single telemetry record into the summary's canonical shape.
 
@@ -344,6 +360,10 @@ def _normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
     # In-chat model selector dimension (NATE 2026-06-17). None when the record
     # predates the feature; _aggregate_records buckets it as "unknown".
     out["model_id"] = rec.get("model_id")
+    # turn_id (the per-user-message dispatch / pipeline id) -- the recall@k join
+    # key against the turn's tool-retrieval shadow row. Absent on pre-feature
+    # records (None); recall only counts dispatches that carry one.
+    out["turn_id"] = rec.get("turn_id")
     return out
 
 
@@ -380,6 +400,8 @@ def _empty_summary() -> dict[str, Any]:
         "top_routing_chains": [],   # [{chain: [a, b], count}]
         "by_model": [],             # [{model_id, count, success_rate, ...}]
         "solve_telemetry": _empty_solve_telemetry(),
+        # tool-retrieval shadow recall@k (folded in by build_telemetry_summary).
+        "recall_at_k": _empty_recall_at_k(),
         "source": "empty",
     }
 
@@ -677,6 +699,9 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         # own JSONL/collection sink); seed the empty section so _aggregate_records
         # called standalone still emits the full contract shape.
         "solve_telemetry": _empty_solve_telemetry(),
+        # recall_at_k is likewise folded in by build_telemetry_summary (it joins
+        # the shadow rows against these dispatches); seed the empty section.
+        "recall_at_k": _empty_recall_at_k(),
         "source": "telemetry",
     }
 
@@ -805,8 +830,14 @@ def _load_recent_records_from_file(
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(rec, dict):
-                    out.append(_normalize_record(rec))
+                if not isinstance(rec, dict):
+                    continue
+                # tool-retrieval SHADOW rows share this JSONL sink but are NOT
+                # tool-call dispatches -- skip them here (the recall@k path reads
+                # them separately via _load_shadow_records_from_file).
+                if rec.get("record_type") == _SHADOW_RECORD_TYPE:
+                    continue
+                out.append(_normalize_record(rec))
     except OSError:
         return []
     if not out:
@@ -823,6 +854,282 @@ def _load_recent_records_from_file(
             seen_sessions.append(sid)
         keep.append(r)
     return keep
+
+
+def _load_shadow_records_from_file(path: Path) -> list[dict[str, Any]]:
+    """Read the tool-retrieval SHADOW rows from the JSONL sink.
+
+    Shadow rows carry ``record_type == _SHADOW_RECORD_TYPE`` and a
+    ``visible_tools`` array (the would-be-visible set for that turn). Keyed for
+    recall@k by ``(session_id, turn_id)``. Returns an empty list when the file is
+    missing / unreadable.
+    """
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("record_type") == _SHADOW_RECORD_TYPE:
+                    out.append(rec)
+    except OSError:
+        return []
+    return out
+
+
+def _normalize_shadow_record(rec: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a shadow row into the recall@k canonical shape.
+
+    Accepts either the file form (``visible_tools`` list) or a mongo form;
+    ``visible_tools`` is normalized to a set of strings.
+    """
+    vis = rec.get("visible_tools") or []
+    try:
+        visible = {str(t) for t in vis}
+    except Exception:  # noqa: BLE001 — a malformed row contributes an empty set
+        visible = set()
+    return {
+        "session_id": rec.get("session_id") or "",
+        "turn_id": rec.get("turn_id") or "",
+        "visible_tools": visible,
+        "k": rec.get("k"),
+    }
+
+
+def compute_recall_at_k(
+    tool_records: list[dict[str, Any]],
+    shadow_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compute recall@k of the tool-retrieval shadow selection (PURE).
+
+    For each turn that has a shadow row, recall counts the LLM-dispatched tools
+    (``source == "llm"``) for that turn that WERE present in the turn's
+    would-be-visible set, divided by the count of dispatched llm tools for that
+    turn. A dispatched tool the retrieval would have DROPPED is a MISS.
+
+    Returns the recall@k section of the summary::
+
+        {
+          "overall": float | None,         # 0..1; None when no measurable turns
+          "turns_measured": int,           # turns with a shadow row + >=1 llm dispatch
+          "dispatches_measured": int,      # total dispatched llm tools across those turns
+          "hits": int,
+          "misses": int,
+          "k": int | None,                 # the k the shadow rows were taken at (modal)
+          "by_flow": [ {flow, recall, turns, dispatches, hits, misses}, ... ],
+          "missed_tools": [ {name, count, flows: [..]}, ... ],  # tools retrieval dropped
+        }
+
+    Turns without a shadow row (e.g. mode==off when the dispatch happened, or a
+    pre-feature record) are EXCLUDED -- recall is only defined where we logged a
+    would-be set. The join key is ``(session_id, turn_id)``.
+    """
+    # Index shadow rows by (session_id, turn_id) -> visible set.
+    shadow_by_turn: dict[tuple[str, str], set[str]] = {}
+    k_values: list[int] = []
+    for s in shadow_records:
+        norm = _normalize_shadow_record(s)
+        sid = norm["session_id"]
+        tid = norm["turn_id"]
+        if not tid:
+            continue
+        # If the same turn logged multiple shadow rows (shouldn't happen), the
+        # union is the safe choice (over-inclusion never penalizes recall).
+        key = (sid, tid)
+        shadow_by_turn.setdefault(key, set()).update(norm["visible_tools"])
+        kv = norm.get("k")
+        if isinstance(kv, int):
+            k_values.append(kv)
+
+    if not shadow_by_turn:
+        return {
+            "overall": None,
+            "turns_measured": 0,
+            "dispatches_measured": 0,
+            "hits": 0,
+            "misses": 0,
+            "k": None,
+            "by_flow": [],
+            "missed_tools": [],
+        }
+
+    # Group dispatched llm tools by (session_id, turn_id).
+    dispatches_by_turn: dict[tuple[str, str], list[str]] = {}
+    for r in tool_records:
+        if (r.get("source") or "llm") != "llm":
+            continue
+        tid = r.get("turn_id")
+        if not tid:
+            continue
+        sid = r.get("session_id") or ""
+        tool = r.get("tool_name") or ""
+        if not tool:
+            continue
+        dispatches_by_turn.setdefault((sid, tid), []).append(tool)
+
+    # Determine each turn's North-Star flow from the terminal solver tool it
+    # dispatched (if any). A turn maps to at most one flow.
+    def _turn_flow(tools: list[str]) -> str | None:
+        for t in tools:
+            flow = _FLOW_BY_SOLVER_TOOL.get(t)
+            if flow:
+                return flow
+        return None
+
+    total_hits = 0
+    total_misses = 0
+    total_dispatches = 0
+    turns_measured = 0
+    # Per-flow accumulators.
+    flow_hits: dict[str, int] = {}
+    flow_misses: dict[str, int] = {}
+    flow_dispatches: dict[str, int] = {}
+    flow_turns: dict[str, int] = {}
+    # Missed-tool tally: tool -> count + the flows it was missed under.
+    missed_count: dict[str, int] = {}
+    missed_flows: dict[str, set[str]] = {}
+
+    for key, tools in dispatches_by_turn.items():
+        visible = shadow_by_turn.get(key)
+        if visible is None:
+            # No shadow row for this turn -> not measurable, exclude.
+            continue
+        if not tools:
+            continue
+        turns_measured += 1
+        flow = _turn_flow(tools)
+        if flow is not None:
+            flow_turns[flow] = flow_turns.get(flow, 0) + 1
+        for tool in tools:
+            total_dispatches += 1
+            if flow is not None:
+                flow_dispatches[flow] = flow_dispatches.get(flow, 0) + 1
+            if tool in visible:
+                total_hits += 1
+                if flow is not None:
+                    flow_hits[flow] = flow_hits.get(flow, 0) + 1
+            else:
+                total_misses += 1
+                missed_count[tool] = missed_count.get(tool, 0) + 1
+                missed_flows.setdefault(tool, set())
+                if flow is not None:
+                    missed_flows[tool].add(flow)
+                    flow_misses[flow] = flow_misses.get(flow, 0) + 1
+
+    overall = (
+        (total_hits / total_dispatches) if total_dispatches else None
+    )
+
+    by_flow: list[dict[str, Any]] = []
+    for flow in ("SWMM", "SFINCS", "MODFLOW"):
+        disp = flow_dispatches.get(flow, 0)
+        hits = flow_hits.get(flow, 0)
+        misses = flow_misses.get(flow, 0)
+        by_flow.append(
+            {
+                "flow": flow,
+                "recall": round(hits / disp, 4) if disp else None,
+                "turns": flow_turns.get(flow, 0),
+                "dispatches": disp,
+                "hits": hits,
+                "misses": misses,
+            }
+        )
+
+    missed_tools = [
+        {
+            "name": name,
+            "count": cnt,
+            "flows": sorted(missed_flows.get(name, set())),
+        }
+        for name, cnt in sorted(
+            missed_count.items(), key=lambda kv: (-kv[1], kv[0])
+        )
+    ]
+
+    # The k the shadow rows were taken at (modal value; informational only).
+    k_modal: int | None = None
+    if k_values:
+        from collections import Counter
+
+        k_modal = Counter(k_values).most_common(1)[0][0]
+
+    return {
+        "overall": round(overall, 4) if overall is not None else None,
+        "turns_measured": turns_measured,
+        "dispatches_measured": total_dispatches,
+        "hits": total_hits,
+        "misses": total_misses,
+        "k": k_modal,
+        "by_flow": by_flow,
+        "missed_tools": missed_tools,
+    }
+
+
+def _empty_recall_at_k() -> dict[str, Any]:
+    """Zero-state recall@k section (no shadow rows logged yet)."""
+    return {
+        "overall": None,
+        "turns_measured": 0,
+        "dispatches_measured": 0,
+        "hits": 0,
+        "misses": 0,
+        "k": None,
+        "by_flow": [],
+        "missed_tools": [],
+    }
+
+
+async def _load_shadow_records_from_mongo(
+    persistence: Any,
+) -> list[dict[str, Any]]:
+    """Query the ``tool_call_telemetry`` collection for SHADOW rows via MCP.
+
+    Best-effort: any failure returns an empty list (recall@k then degrades to
+    the empty section / the file-backed shadow rows).
+    """
+    try:
+        from grace2_contracts.mongo_collections import TELEMETRY_COLLECTION
+        from .persistence import DEFAULT_DATABASE
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        raw = await persistence._mcp.call_tool(
+            "find",
+            {
+                "database": DEFAULT_DATABASE,
+                "collection": TELEMETRY_COLLECTION,
+                "filter": {"record_type": _SHADOW_RECORD_TYPE},
+                "sort": {"called_at_utc": -1},
+                "limit": 2000,
+            },
+        )
+    except Exception:  # noqa: BLE001 — never break the dashboard on MCP error
+        logger.warning("recall@k: shadow mongo find failed", exc_info=True)
+        return []
+    docs: Any = raw
+    if isinstance(raw, dict):
+        if "documents" in raw:
+            docs = raw["documents"]
+        elif "content" in raw and isinstance(raw["content"], list) and raw["content"]:
+            first = raw["content"][0]
+            if isinstance(first, dict) and isinstance(first.get("text"), str):
+                try:
+                    docs = json.loads(first["text"])
+                except json.JSONDecodeError:
+                    docs = []
+    if isinstance(docs, dict):
+        docs = [docs]
+    if not isinstance(docs, list):
+        return []
+    return [d for d in docs if isinstance(d, dict)]
 
 
 async def _load_recent_records_from_mongo(
@@ -848,7 +1155,10 @@ async def _load_recent_records_from_mongo(
             {
                 "database": DEFAULT_DATABASE,
                 "collection": TELEMETRY_COLLECTION,
-                "filter": {},
+                # Exclude tool-retrieval SHADOW rows -- they share this
+                # collection but are not tool-call dispatches (recall@k reads
+                # them via _load_shadow_records_from_mongo).
+                "filter": {"record_type": {"$ne": _SHADOW_RECORD_TYPE}},
                 "sort": {"called_at_utc": -1},
                 "limit": 2000,
             },
@@ -872,7 +1182,13 @@ async def _load_recent_records_from_mongo(
         docs = [docs]
     if not isinstance(docs, list):
         return []
-    normalized = [_normalize_record(d) for d in docs if isinstance(d, dict)]
+    # Defensive: even if the $ne filter was a no-op on this MCP backend, never
+    # let a SHADOW row leak into the per-tool aggregation.
+    normalized = [
+        _normalize_record(d)
+        for d in docs
+        if isinstance(d, dict) and d.get("record_type") != _SHADOW_RECORD_TYPE
+    ]
     # Constrain to last N sessions.
     normalized.sort(key=lambda r: str(r.get("called_at_utc") or ""), reverse=True)
     seen_sessions: list[str] = []
@@ -928,6 +1244,22 @@ async def build_telemetry_summary(
 
     summary = _aggregate_records(records)
     summary["source"] = used_source
+
+    # Fold in the tool-retrieval SHADOW recall@k section (tool-retrieval kickoff).
+    # Load the would-be-visible shadow rows (mongo when bound, else the JSONL
+    # sink) and join them against the dispatched llm tools above by turn_id.
+    # Best-effort: a read/compute fault leaves the zero-state section seeded by
+    # _aggregate_records (never breaks the dashboard).
+    try:
+        shadow_records: list[dict[str, Any]] = []
+        if persistence is not None:
+            shadow_records = await _load_shadow_records_from_mongo(persistence)
+        if not shadow_records:
+            shadow_records = _load_shadow_records_from_file(_get_telemetry_path())
+        summary["recall_at_k"] = compute_recall_at_k(records, shadow_records)
+    except Exception:  # noqa: BLE001 — never break the dashboard on recall read
+        logger.warning("telemetry summary: recall@k read failed", exc_info=True)
+        summary["recall_at_k"] = _empty_recall_at_k()
 
     # Fold in the live big-sim solve_telemetry section (NATE 2026-06-17). Read
     # from the solve-telemetry JSONL the solve writer maintains; best-effort so
