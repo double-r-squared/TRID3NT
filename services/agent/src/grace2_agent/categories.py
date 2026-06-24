@@ -443,6 +443,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # chart tools (the conversational-analysis surface). See job-0233 report
     # OQ-CODE-EXEC-CATEGORY.
     "code_exec_request": "geographic_primitives",
+    # sandbox-staging: lists a completed run's ordered animation-frame COG URIs
+    # (from publish_manifest.json) so the agent can feed them to code_exec_request
+    # as a multi-frame layer_refs entry for a per-frame visualization. A read-only
+    # manifest lookup that pairs with the sandbox; filed alongside it here.
+    "list_run_frames": "geographic_primitives",
     # OPTIONAL polish/enhance pass for a true-color satellite RGB image
     # (de-haze / white-balance / sharpen / upscale -> closer to CIRA GeoColor).
     # A generic, COMPOSABLE raster-image primitive on ANY RGB COG (not fire- or

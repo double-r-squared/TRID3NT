@@ -272,6 +272,63 @@ def test_build_jailed_cmd_wraps_with_netns(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @_requires_bwrap
+def test_jail_ro_binds_staged_inputs_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """sandbox-staging: the pre-fetched staged-inputs dir is bound READ-ONLY into
+    the jail (so the network-denied executor can open the layer/frame COGs as
+    local files) WHILE --unshare-net stays in force."""
+    monkeypatch.setenv("GRACE2_SANDBOX_BWRAP", "1")
+    staged = "/tmp/wd/staged_inputs"
+    final, env, jailed = H.build_jailed_cmd(
+        ["python", "/x/executor.py", "--payload-file", "/tmp/wd/payload.json"],
+        {"AWS_EC2_METADATA_DISABLED": "true", "PATH": "/usr/bin"},
+        executor_path="/x/executor.py",
+        payload_path="/tmp/wd/payload.json",
+        workdir="/tmp/wd",
+        staged_inputs_dir=staged,
+    )
+    assert jailed is True
+    # The staged dir is ro-bound (the value appears as a --ro-bind-try src+dest).
+    assert staged in final
+    idx = final.index(staged)
+    assert final[idx - 1] in ("--ro-bind-try", "--ro-bind")
+    assert final[idx + 1] == staged  # src == dest (bound at the same path)
+    # Network isolation is PRESERVED (the bytes are already local; no egress).
+    assert "--unshare-net" in final
+
+
+@_requires_bwrap
+def test_jail_no_staged_bind_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When no staged dir is supplied (no s3 refs), NO extra ro-bind is added —
+    the jail args are unchanged from the no-staging baseline."""
+    monkeypatch.setenv("GRACE2_SANDBOX_BWRAP", "1")
+    final, _env, jailed = H.build_jailed_cmd(
+        ["python", "/x/executor.py", "--payload-file", "/tmp/wd/payload.json"],
+        {"AWS_EC2_METADATA_DISABLED": "true", "PATH": "/usr/bin"},
+        executor_path="/x/executor.py",
+        payload_path="/tmp/wd/payload.json",
+        workdir="/tmp/wd",
+        staged_inputs_dir=None,
+    )
+    assert jailed is True
+    assert "staged_inputs" not in " ".join(final)
+
+
+def test_build_jailed_cmd_accepts_staged_inputs_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``staged_inputs_dir`` kwarg is accepted on the disabled path too (no
+    bwrap needed): with the jail OFF, build_jailed_cmd returns the cmd unchanged
+    and never trips on the new kwarg (back-compat for the un-jailed dev path)."""
+    monkeypatch.setenv("GRACE2_SANDBOX_BWRAP", "0")
+    cmd = ["python", "x.py"]
+    final, _env, jailed = H.build_jailed_cmd(
+        cmd, {"AWS_EC2_METADATA_DISABLED": "true"},
+        executor_path="x.py", payload_path="p.json", workdir="/tmp/wd",
+        staged_inputs_dir="/tmp/wd/staged_inputs",
+    )
+    assert jailed is False
+    assert final == cmd
+
+
+@_requires_bwrap
 def test_jail_blocks_imds_via_subprocess_bypass(monkeypatch: pytest.MonkeyPatch) -> None:
     """THE Invariant-5 proof: user code that shells out to a fresh python
     subprocess — bypassing the in-process socket monkeypatch entirely (the recon's

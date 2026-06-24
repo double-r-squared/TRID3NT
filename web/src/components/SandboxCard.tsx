@@ -51,8 +51,12 @@ export interface CodeExecRequestPayload {
   envelope_type: "code-exec-request";
   code_exec_id: string;
   python_code: string;
-  /** {var_name: layer_uri} the sandbox will pre-open. */
-  layer_refs: Record<string, string>;
+  /**
+   * {var_name: layer_uri} the sandbox will pre-open. A value may be a single URI
+   * string (one handle) OR an ordered list of frame URIs (an animation sequence
+   * pre-opened as a list of handles) — the ADDITIVE multi-frame extension.
+   */
+  layer_refs: Record<string, string | string[]>;
   rationale?: string | null;
 }
 
@@ -133,9 +137,11 @@ function renderResultDescriptor(
   maxLines = 40,
 ): { text: string; capped: boolean } {
   const kind = result["kind"];
-  // Chart results are handled by the chart-emission envelope; just show a note.
+  // Chart results: the inline PNG is rendered by ResultDescriptorView (the
+  // <img> path). This text helper is only reached for the JSON/Save fallback, so
+  // keep an honest note here — the PNG path never relies on this string.
   if (kind === "chart") {
-    return { text: "(chart rendered separately via chart-emission)", capped: false };
+    return { text: "(figure rendered above)", capped: false };
   }
   // too_large → honest marker
   if (kind === "too_large") {
@@ -425,15 +431,23 @@ export function SandboxCard({
           <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>
             Layers
           </div>
-          {Object.entries(request.layer_refs).map(([varName, uri]) => (
-            <div key={varName} style={{ display: "flex", gap: 6, fontSize: 11 }}>
-              <span style={{ fontFamily: MONO_FONT, color: "#93c5fd" }}>{varName}</span>
-              <span style={{ color: "#4b5563", display: "inline-flex", alignItems: "center" }}>
-                <IconArrowRight size={11} />
-              </span>
-              <span style={{ color: "#6b7280", wordBreak: "break-all" }}>{uri}</span>
-            </div>
-          ))}
+          {Object.entries(request.layer_refs).map(([varName, ref]) => {
+            // A ref is either a single URI string or an ordered list of frame
+            // URIs (multi-frame extension). Show the count + first URI for a list.
+            const isList = Array.isArray(ref);
+            const display = isList
+              ? `${(ref as string[]).length} frames${(ref as string[])[0] ? ` — ${(ref as string[])[0]}` : ""}`
+              : (ref as string);
+            return (
+              <div key={varName} style={{ display: "flex", gap: 6, fontSize: 11 }}>
+                <span style={{ fontFamily: MONO_FONT, color: "#93c5fd" }}>{varName}</span>
+                <span style={{ color: "#4b5563", display: "inline-flex", alignItems: "center" }}>
+                  <IconArrowRight size={11} />
+                </span>
+                <span style={{ color: "#6b7280", wordBreak: "break-all" }}>{display}</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -593,12 +607,51 @@ function ResultDescriptorView({
   const kind = descriptor["kind"];
 
   if (kind === "chart") {
+    // The sandbox executor renders a matplotlib Figure to PNG and carries it
+    // inline as ``png_base64`` (capped at the executor's MAX_FIGURE_PNG_BYTES;
+    // ``png_truncated`` is true when the PNG was dropped for being over-cap).
+    // Render the figure directly in the card (capped to card width) when the
+    // PNG is present; fall back to the honest "dropped" note only when it isn't.
+    const pngBase64: string | undefined = descriptor["png_base64"] as
+      | string
+      | undefined;
+    const pngTruncated = Boolean(descriptor["png_truncated"]);
+    const title: string | undefined = descriptor["title"] as string | undefined;
+    if (pngBase64 && !pngTruncated) {
+      return (
+        <div
+          data-testid="sandbox-result-chart-image"
+          style={{ display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <img
+            src={`data:image/png;base64,${pngBase64}`}
+            alt={title || "Sandbox figure"}
+            style={{
+              maxWidth: "100%",
+              height: "auto",
+              borderRadius: 6,
+              border: "1px solid #1d2233",
+              background: "#fff",
+              display: "block",
+            }}
+          />
+          {title && (
+            <div style={{ color: "#9ca3af", fontSize: 11, textAlign: "center" }}>
+              {title}
+            </div>
+          )}
+        </div>
+      );
+    }
+    // PNG absent (too large to inline, or a render error) — honest note.
     return (
       <div
         data-testid="sandbox-result-chart-note"
         style={{ color: "#a5b4fc", fontSize: 11, fontStyle: "italic" }}
       >
-        Chart rendered separately in the chart gallery above.
+        {pngTruncated
+          ? "Figure too large to display inline (it exceeded the size cap)."
+          : "Figure was produced but could not be rendered."}
       </div>
     );
   }

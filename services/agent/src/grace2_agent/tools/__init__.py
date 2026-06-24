@@ -304,6 +304,7 @@ from . import run_modflow_tool  # noqa: E402,F401 — job-0227 (sprint-13 Stage 
 from . import run_swmm_tool  # noqa: E402,F401 — sprint-16 P4 (Path A): registers run_swmm_urban_flood (quasi-2D PySWMM urban-flood engine; pyswmm in-process LOCAL lane — buildings/walls/flap-gates + animated overland depth)
 from . import spatial_input_tool  # noqa: E402,F401 — FR-AS-10/FR-WC-16: registers request_spatial_input (pauses the turn, opens the terra-draw surface, returns the role-split drawn geometry — AOI bbox + engine-ready barriers FeatureCollection for run_swmm_urban_flood)
 from . import code_exec_tool  # noqa: E402,F401 — job-0233 (sprint-13 Stage 2): registers code_exec_request (user-confirmed Python sandbox; conversational data-analysis escape hatch)
+from . import list_run_frames  # noqa: E402,F401 — sandbox-staging: registers list_run_frames (ordered animation-frame COG URIs from a run's publish_manifest.json -> feeds code_exec_request multi-frame layer_refs for per-frame viz snippets)
 
 # sprint-17 NEW engines (parallel lanes) — bridge tools wired into the surface.
 from . import run_river_seepage_tool  # noqa: E402,F401 — sprint-17: registers run_river_seepage_job (MODFLOW RIV-coupled river<->aquifer seepage + along-river plume bridge)
