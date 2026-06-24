@@ -229,6 +229,7 @@ from . import clip_raster_to_polygon  # noqa: E402,F401 — job-0106: registers 
 from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries
 from . import compute_hillshade  # noqa: E402,F401 — job-0079: registers compute_hillshade
 from . import compute_blended_composite  # noqa: E402,F401 — job-0319: registers compute_blended_composite (server-side raster multiply-blend → one shaded COG; MapLibre can't multiply on the client)
+from . import enhance_satellite_image  # noqa: E402,F401 — NATE 2026-06-23: registers enhance_satellite_image (OPTIONAL polish pass on ANY RGB image COG — dark-object haze/Rayleigh de-haze + gray-world white-balance + unsharp-mask + Lanczos upscale -> closer to CIRA GeoColor; pure numpy+PIL, no scipy/skimage; multiband RGB publish passthrough, no new style)
 from . import compute_contours  # noqa: E402,F401 — F35: registers compute_contours (elevation contour LINES from a DEM via GDAL gdal_contour; vector LineStrings with an 'elev' attr → inline-GeoJSON line layer; pairs with fetch_dem + compute_hillshade)
 from . import fetch_wdpa_protected_areas  # noqa: E402,F401 — job-0089: registers fetch_wdpa_protected_areas
 from . import fetch_gbif_occurrences  # noqa: E402,F401 — job-0087: registers fetch_gbif_occurrences

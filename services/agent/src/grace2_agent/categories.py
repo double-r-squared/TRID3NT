@@ -429,6 +429,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # chart tools (the conversational-analysis surface). See job-0233 report
     # OQ-CODE-EXEC-CATEGORY.
     "code_exec_request": "geographic_primitives",
+    # OPTIONAL polish/enhance pass for a true-color satellite RGB image
+    # (de-haze / white-balance / sharpen / upscale -> closer to CIRA GeoColor).
+    # A generic, COMPOSABLE raster-image primitive on ANY RGB COG (not fire- or
+    # GOES-specific), so it is filed here alongside the other clip/blend/publish
+    # raster primitives. Cross-listed to weather_atmosphere (the GOES true-color
+    # imagery lane a user most often reaches it from) via SECONDARY_CATEGORIES.
+    "enhance_satellite_image": "geographic_primitives",
     "publish_layer": "geographic_primitives",
     "discover_dataset": "geographic_primitives",
     "catalog_search": "geographic_primitives",
@@ -483,6 +490,11 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # The HISTORICAL raw-S3-archive Fire Temperature animation fetcher: same
     # cross-list (it is a fire-branch demo path for any past date).
     "fetch_goes_archive_animation": ("fire",),
+    # The image polish/enhance tool is a generic geographic_primitives raster
+    # primitive (composable on ANY RGB COG) but materially belongs to the
+    # weather_atmosphere lane too -- it is the cosmetic finishing pass a user
+    # most often reaches for on a GOES/satellite true-color frame.
+    "enhance_satellite_image": ("weather_atmosphere",),
     # The satellite fire-animation composer spans hazard_modeling (it composes a
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).
