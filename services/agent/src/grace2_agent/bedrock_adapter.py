@@ -103,6 +103,16 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
         "provider": "Amazon",
         "supportsPromptCache": False,
     },
+    {
+        # Claude Opus 4.5 — enabled + verified invokable WITH toolConfig
+        # (stopReason=tool_use) in account 226996537797/us-west-2 on 2026-06-24.
+        # Default ``CODE_EXEC_MODEL_ID`` (auto-routed for data-analysis /
+        # code_exec turns) AND user-selectable. Anthropic -> cachePoint OK.
+        "id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+        "label": "Claude Opus 4.5",
+        "provider": "Anthropic",
+        "supportsPromptCache": True,
+    },
 ]
 
 #: Fast-lookup set of the ids the in-chat selector may legitimately send. The
@@ -110,6 +120,16 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
 #: ``resolve_selected_model``) so a stale / removed / unsupported id can never
 #: reach ConverseStream and throw a ValidationException.
 SELECTABLE_MODEL_IDS: frozenset[str] = frozenset(m["id"] for m in SELECTABLE_MODELS)
+
+#: The model the server AUTO-routes data-analysis / code_exec turns to (a
+#: reliability lever: the Sonnet default is nondeterministic at composing
+#: code_exec_request — leaving ``layer_refs`` empty / opening s3 directly). When
+#: the user has NOT explicitly chosen a model and the turn looks analytical, the
+#: server bumps to this. Anthropic Claude -> cachePoint stays valid. Override
+#: with ``GRACE2_CODE_EXEC_MODEL``; disable the routing with GRACE2_CODE_EXEC_OPUS=off.
+CODE_EXEC_MODEL_ID: str = os.environ.get(
+    "GRACE2_CODE_EXEC_MODEL", "us.anthropic.claude-opus-4-5-20251101-v1:0"
+)
 
 def model_supports_cache(model_id: str) -> bool:
     """Return True only when ``model_id`` is an Anthropic Claude model.

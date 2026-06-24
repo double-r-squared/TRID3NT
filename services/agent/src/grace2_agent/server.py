@@ -9997,6 +9997,43 @@ def _make_handler(settings: GeminiSettings):
                                 )
                             state.selected_model = _effective_model
                         _turn_bedrock_model = state.selected_model
+                        # Reliability lever 2 (2026-06-24): auto-route data-analysis
+                        # / custom-figure turns to a stronger model (Opus) when the
+                        # user has NOT explicitly chosen one. The Sonnet default is
+                        # nondeterministic at composing code_exec_request (leaves
+                        # layer_refs empty / opens s3 directly); analytical turns are
+                        # exactly the ones that reach for the sandbox. Gated by
+                        # GRACE2_CODE_EXEC_OPUS (default on). Keyword match (no regex).
+                        if (
+                            state.selected_model is None
+                            and os.environ.get("GRACE2_CODE_EXEC_OPUS", "on")
+                            .strip()
+                            .lower()
+                            not in ("0", "off", "false", "no")
+                            and um.text
+                        ):
+                            _ce_t = um.text.lower()
+                            _ce_intent = (
+                                "figure", "plot", "chart", "graph", "histogram",
+                                "distribution", "analyze", "analyse", "compute",
+                                "cross-tab", "crosstab", "percentile", "breakdown",
+                                "compare", "how much", "how many", "how deep",
+                                "deepest", "above ground", "above-ground",
+                                "what fraction", "what percentage", "scatter",
+                                "heatmap", "visualize", "visualise",
+                            )
+                            if any(_k in _ce_t for _k in _ce_intent):
+                                from .bedrock_adapter import (
+                                    CODE_EXEC_MODEL_ID as _ce_model,
+                                )
+
+                                _turn_bedrock_model = _ce_model
+                                logger.info(
+                                    "code-exec model routing: analytical turn -> "
+                                    "%s (session=%s)",
+                                    _ce_model,
+                                    state.session_id,
+                                )
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
