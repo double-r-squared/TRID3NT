@@ -822,7 +822,7 @@ def test_fetch_population_default_routes_to_worldpop_not_acs(monkeypatch):
 
     worldpop_calls: list[tuple[Any, str]] = []
 
-    def _capturing_worldpop(bbox, dataset):
+    def _capturing_worldpop(bbox, dataset, target_resolution_m=1000):
         worldpop_calls.append((bbox, dataset))
         return b"FAKE_WORLDPOP_COG_BYTES"
 
@@ -867,7 +867,7 @@ def test_fetch_population_worldpop_writes_tif_cog_to_cache(monkeypatch):
     monkeypatch.setattr(
         data_fetch,
         "_fetch_worldpop_population_bytes",
-        lambda bbox, dataset: b"FAKE_WORLDPOP_COG_BYTES",
+        lambda bbox, dataset, target_resolution_m=1000: b"FAKE_WORLDPOP_COG_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -896,6 +896,71 @@ def test_fetch_population_rejects_unknown_dataset():
     """A dataset that's neither WorldPop nor ACS is rejected as BboxInvalidError."""
     with pytest.raises(BboxInvalidError):
         fetch_population(FORT_MYERS_BBOX, dataset="landscan")
+
+
+# ---------------------------------------------------------------------------
+# Phase-2 WorldPop 100m opt-in (resolution lever).
+# ---------------------------------------------------------------------------
+
+
+def test_worldpop_url_for_100m_returns_unadj_native_url():
+    """resolution_m<=100 -> base Global_2000_2020 tree + _UNadj suffix (NO _1km)."""
+    url = data_fetch._worldpop_url_for("USA", 2020, resolution_m=100)
+    assert "Global_2000_2020/" in url
+    assert "Global_2000_2020_1km" not in url
+    assert url.endswith("usa_ppp_2020_UNadj.tif"), url
+    assert "_1km_Aggregated" not in url
+
+
+def test_worldpop_url_for_default_returns_1km_url():
+    """The 1km default URL is byte-identical to the prior fixed behavior."""
+    default_url = data_fetch._worldpop_url_for("USA", 2020)
+    explicit_1km = data_fetch._worldpop_url_for("USA", 2020, resolution_m=1000)
+    assert default_url == explicit_1km
+    assert default_url == (
+        "https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/2020/"
+        "USA/usa_ppp_2020_1km_Aggregated.tif"
+    )
+
+
+def _patch_population_cache(monkeypatch, fake_storage):
+    """Route fetch_population's read_through through a fake storage client."""
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+
+def test_fetch_population_cache_key_includes_target_resolution_m(monkeypatch):
+    """100m vs 1km fetches get DISTINCT cache keys (different upstream products)."""
+    captured: list[int] = []
+
+    def _capturing_worldpop(bbox, dataset, target_resolution_m=1000):
+        captured.append(target_resolution_m)
+        return f"FAKE_WORLDPOP_{target_resolution_m}".encode()
+
+    monkeypatch.setattr(
+        data_fetch, "_fetch_worldpop_population_bytes", _capturing_worldpop
+    )
+
+    fake_storage = FakeStorageClient()
+    _patch_population_cache(monkeypatch, fake_storage)
+
+    # Default 1km then opt-in 100m on the SAME bbox -> two distinct cache keys.
+    fetch_population(FORT_MYERS_BBOX, dataset="worldpop_2020")
+    fetch_population(
+        FORT_MYERS_BBOX, dataset="worldpop_2020", target_resolution_m=100
+    )
+
+    assert captured == [1000, 100], captured
+    keys = list(fake_storage.store.keys())
+    assert len(keys) == 2, keys  # distinct keys -> both fetches landed separately
+    assert keys[0] != keys[1], keys
 
 
 # ---------------------------------------------------------------------------
