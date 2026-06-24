@@ -2418,5 +2418,82 @@
     "description": "Agent (read-only): scope phase-2 fetch resolution lever -> change-list. Finding: the fixed 1024px bites only 3 Tier-2 raster entries (3DEP/NLCD-WCS/LANDFIRE-WCS) via generic catalog_fetch; fix = reuse _pc_stac.bbox_pixel_dims + optional target_resolution_m + native_resolution_m CatalogEntry field + WorldPop 100m opt-in; defer _pc_stac clamp.",
     "model": "opus",
     "subagent_tokens": 81979
+  },
+  {
+    "job_id": "session-20260623-inundation-case-scoping-w914oe0ff",
+    "sprint": 17,
+    "description": "Workflow (4 agents): scope a small verifiable SFINCS inundation case. Recommended Mexico Beach surge + connected-bathtub verify (runs now); analytic plane-beach Synolakis runup as the rigorous CI follow.",
+    "model": "opus",
+    "subagent_tokens": 380576
+  },
+  {
+    "job_id": "session-20260623-sandbox-viz-scoping-a8b97db3",
+    "sprint": 17,
+    "description": "Agent (read-only): scope raster-viz-in-chat. Sandbox renders matplotlib->PNG but web drops it (M1) + jail cannot read S3 frames (M2). Generic fix = input-staging.",
+    "model": "opus",
+    "subagent_tokens": 141792
+  },
+  {
+    "job_id": "session-20260623-tool-retrieval-scoping-w88vnp9lh",
+    "sprint": 17,
+    "description": "Workflow (4 agents): scope per-turn top-k tool-retrieval. All 121 tools sent every turn (~41-46k tok); cachePoint makes cloud cost neutral; win is selection accuracy; case-stable monotonic + shadow-first behind GRACE2_TOOL_RETRIEVAL.",
+    "model": "opus",
+    "subagent_tokens": 380526
+  },
+  {
+    "job_id": "session-20260623-agentcore-migration-scoping-w2w4yrat3",
+    "sprint": 17,
+    "description": "Workflow (4 agents): scope AgentCore migration. Conditional-go per segment: Code Interpreter + Runtime-spike GO; Memory/Gateway/Identity/Observability HOLD; per-user isolation already built as Fargate-per-session on main (0be63da).",
+    "model": "opus",
+    "subagent_tokens": 269021
+  },
+  {
+    "job_id": "session-20260623-mexicobeach-verify-build-ae28d9b1",
+    "sprint": 17,
+    "description": "Agent: build verify_mexico_beach_surge.py (connected-bathtub flood-fill, 24 tests) + headless run. Run SUCCEEDED on real CUDEM; area-match PASS; advance/runup FAIL on a 24h-vs-10h deck-window bug (re-run queued).",
+    "model": "opus",
+    "subagent_tokens": 158121
+  },
+  {
+    "job_id": "session-20260623-sandbox-staging-build-af657ef5",
+    "sprint": 17,
+    "description": "Agent: build generic python-sandbox input-staging (layer_refs accept frame lists; pre-fetch+jail-bind) + list_run_frames tool + M1 web PNG render. Lightning-glow dry-run proved 4 frames -> figure. Suite 7323 + web 1981 green.",
+    "model": "opus",
+    "subagent_tokens": 219677
+  },
+  {
+    "job_id": "session-20260623-gate-a-runtime-spike-a3caacd0",
+    "sprint": 17,
+    "description": "Agent (spike): AgentCore Runtime Gate-A ARM image measure. PASS ~280MB vs 2GB cap (86pct headroom); geo deps already lazy (2-file rasterio fix); 122 tools register geo-unreachable. Remaining Runtime work = WS->req/resp bridge.",
+    "model": "opus",
+    "subagent_tokens": 104564
+  },
+  {
+    "job_id": "session-20260623-in-account-investigation-a63eb202",
+    "sprint": 17,
+    "description": "Agent (read-only): is the worked SFINCS run in NATE account? NO - headless runs (case_id None) not bound to any of his 48 Cases. Surface path = upsert_case + register_manifest_layers (net-new glue).",
+    "model": "opus",
+    "subagent_tokens": 55008
+  },
+  {
+    "job_id": "session-20260623-ftw-affected-fields-build-a368f625",
+    "sprint": 17,
+    "description": "Agent: build analyze_affected_fields + model_contamination_affected_fields composer (MODFLOW plume -> which FTW ag field). 27 tests + dry-run (corn core 24.98 mg/L ranked first). Merged to main.",
+    "model": "opus",
+    "subagent_tokens": 187274
+  },
+  {
+    "job_id": "session-20260623-phase2-resolution-build-add89ba3",
+    "sprint": 17,
+    "description": "Agent: build phase-2 fetch resolution lever (catalog 1024->extent-aware target_resolution_m + WorldPop 100m + native_resolution_m). 7144 green. Merged to main.",
+    "model": "opus",
+    "subagent_tokens": 111716
+  },
+  {
+    "job_id": "session-20260623-agent-deploy-a640877",
+    "sprint": 17,
+    "description": "Agents (2): deploy main a640877 to the box. First stopped on dirty shared working tree (tools-session tool-retrieval WIP); re-run from a clean detached worktree shipped exactly committed main + verified deployed==HEAD (markers present, tool_retrieval.py absent), 138 tools live.",
+    "model": "opus",
+    "subagent_tokens": 75320
   }
 ]
