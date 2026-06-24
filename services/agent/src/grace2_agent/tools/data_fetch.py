@@ -1608,7 +1608,7 @@ def fetch_population(
             name=f"Population ({dataset})",
             layer_type="raster",
             uri=result.uri,
-            style_preset="continuous_dem",  # placeholder; population preset lands later
+            style_preset="population_density",  # tools-backlog #3: people/pixel magma density ramp
             role="input",
             units="people",
         )
@@ -1631,7 +1631,7 @@ def fetch_population(
             name=f"Population ({dataset})",
             layer_type="vector",
             uri=result.uri,
-            style_preset="continuous_dem",  # placeholder; population preset lands later
+            style_preset="population_density",  # tools-backlog #3: people/pixel magma density ramp
             role="input",
             units="people",
         )

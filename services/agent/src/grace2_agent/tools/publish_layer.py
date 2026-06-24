@@ -588,6 +588,20 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "continuous_ponded_volume": ("0,1000", "blues"),
     "diverging_conduit_flow": ("-10,10", "rdbu"),
     "continuous_conduit_velocity": ("0,5", "viridis"),
+    # tools-backlog #3 -- per-tool colormaps replacing the generic continuous_dem
+    # placeholder, for the data rasters NOT shadowed by the F51 terrain passthrough.
+    # ADDITIVE; entries above stay byte-identical. Impervious surface is a 0..100
+    # percent -> a reds "more paved = redder" ramp; population is people-per-pixel
+    # (WorldPop ~100 m / ACS) -> a magma density ramp.
+    # NOTE: compute_slope / compute_aspect / compute_hillshade are single-band
+    # terrain rasters whose source_class URLs (slope/aspect/hillshade) ALWAYS match
+    # the terrain-token passthrough above and render grayscale (a DELIBERATE,
+    # TESTED F51 decision -- test_publish_layer_titiler_style_resolver_f51 +
+    # test_publish_layer_style_inference). Giving slope/aspect a colormap means
+    # scoping that passthrough down + reversing those tests -> flagged to NATE, NOT
+    # changed here. (Hillshade SHOULD stay grayscale -- shaded relief.)
+    "impervious_surface_pct": ("0,100", "reds"),
+    "population_density": ("0,250", "magma"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an
@@ -1923,17 +1937,18 @@ def publish_layer(
             attribute carries a SCREAMING_SNAKE_CASE code for the pipeline
             strip.
 
-    FR-DC-6: This tool is uncacheable-by-construction (side-effect tool
-    that mutates GCS state). The cache shim is NOT invoked.
+    FR-DC-6: This tool is uncacheable-by-construction (a side-effect tool
+    that mutates the per-Case ``.qgs`` project state). The cache shim is NOT
+    invoked.
 
-    Invariant 4 (Rendering through QGIS Server): this tool IS the bridge.
-    The COG at ``gs://`` becomes accessible as WMS only after this call
-    mutates the ``.qgs``.
+    Invariant 4 (Rendering): this tool IS the publish bridge. The COG
+    (``s3://`` on the live AWS stack) becomes map-renderable only after this
+    call -- a TiTiler tile template on AWS, or QGIS-Server WMS on the
+    GCP-dormant interim seam.
 
-    Invariant 6 (Metadata-payload pattern): the worker writes the `.qgs`
-    payload to GCS; Pub/Sub notification is the metadata layer. This tool
-    does not write MongoDB directly (a follow-up job wires the
-    ``RunDocument`` update for the published layer).
+    Invariant 6 (Metadata-payload pattern): the published layer is surfaced
+    to the client via the layer-load envelope (``observe_published_layer``);
+    persistence is DynamoDB (MongoDB was torn down 2026-06-16).
 
     Cross-tool dependencies:
         Upstream (consumes):

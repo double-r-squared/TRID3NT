@@ -405,7 +405,7 @@ def compute_aspect(
         name=f"Aspect ({algorithm}, {'zero-flat' if zero_for_flat else 'nodata-flat'})",
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # placeholder; aspect-specific QML preset deferred
+        style_preset="continuous_dem",  # grayscale via the F51 terrain passthrough; a cyclic aspect colormap needs that tested passthrough scoped down (flagged to NATE, tools-backlog #3)
         role="context",
         units="degrees",
     )

@@ -32,9 +32,19 @@
 
 ---
 
+## TIER 1 #5 -- mongo_query stale-doc cleanup (LANDED, doc-only)
+- `tools/README.md`: removed the dead `mongo_query` "canonical pass-through example" (Mongo torn down for DynamoDB 2026-06-16); the live-no-cache example is now `qgis_process`.
+- `publish_layer.py`: de-Mongo'd the stale `MongoDB` / `RunDocument` doc drift (persistence is DynamoDB; `observe_published_layer` surfaces the published layer). Left the legitimate `gs://` dual-scheme refs (the GCP-dormant reversible seam).
+- No behavior change.
+
+## TIER 1 #3 -- QML preset batch (PARTIAL LANDED + slope/aspect FLAGGED to NATE)
+- **Landed (clean colormap wins):** added `impervious_surface_pct` (0-100% -> `reds`) + `population_density` (people/pixel -> `magma`) to `_TITILER_STYLE_REGISTRY`, replacing the generic `continuous_dem` placeholder on `compute_impervious_surface` + `data_fetch` population. Verified: `impervious_surface_pct` -> `&rescale=0,100&colormap_name=reds`, `population_density` -> `&rescale=0,250&colormap_name=magma`. Colormap names are from the already-proven registry set.
+- **FLAGGED to NATE (NOT changed -- a tested-design reversal, not cosmetic):** `compute_slope` / `compute_aspect` / `compute_hillshade` are single-band terrain rasters whose `source_class` cache URLs (`slope`/`aspect`/`hillshade`) ALWAYS match the **F51 terrain-token passthrough** in `_resolve_titiler_style_params`, so they render GRAYSCALE regardless of preset name -- a DELIBERATE decision pinned by `test_publish_layer_titiler_style_resolver_f51.py:485-488` + `test_publish_layer_style_inference.py:13-14`. Giving slope/aspect a colormap means scoping that passthrough down + reversing those tests. **Hillshade SHOULD stay grayscale (shaded relief).** Decision for NATE: do you want slope/aspect colormapped (e.g. slope-angle `ylorrd 0,60`, aspect cyclic `hsv 0,360`), reversing the F51 grayscale-terrain rule for those two? The kickoff under-scoped this as cosmetic; it is a render-chokepoint behavior change.
+- **NWS (`fetch_nws_event`, `nws_alerts`):** that is a VECTOR layer -- its color is the web's deterministic palette (`web/src/lib/vector_rendering.ts`), NOT a TiTiler colormap -> out of the tools seam (web concern), left as-is.
+- Full agent suite 7438 passed (3 pre-existing swmm-api failures unrelated).
+
 ## Remaining backlog (NATE's start-now list) -- queued next
-- TIER 1 #3 QML preset batch (slope/aspect/hillshade/impervious + population + NWS) -- cosmetic styling.
 - TIER 1 #4 `fetch_usace_dams` authoritative-NID upgrade + reserved filter knobs.
-- TIER 1 #5 `mongo_query` stale-doc cleanup (doc-only).
 - TIER 2 #7/#8 `compute_home_range_kde` + `compute_movement_trajectory` (glue over `fetch_movebank_tracks`).
 - TIER 3 CPU pull-forwards #17: `run_deepforest_tree_crown` (CPU clone of canopy) + NDWI-only `digitize_water_body` split.
+- (#3 slope/aspect colormap pending NATE's call on the F51 passthrough.)

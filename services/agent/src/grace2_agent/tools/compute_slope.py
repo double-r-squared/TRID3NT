@@ -403,7 +403,7 @@ def compute_slope(
         name=f"Slope ({output_unit}, {algorithm}) [{unit_label}]",
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # placeholder; slope-specific QML preset deferred
+        style_preset="continuous_dem",  # grayscale via the F51 terrain passthrough; a slope-angle colormap needs that tested passthrough scoped down (flagged to NATE, tools-backlog #3)
         role="context",
         units=output_unit,
     )
