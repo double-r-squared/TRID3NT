@@ -93,6 +93,15 @@ export interface AnimControllerOptions {
    * `prefers-reduced-motion` media query; tests inject a deterministic stub.
    */
   prefersReducedMotion?: () => boolean;
+  /**
+   * AUTOPLAY-OFF (NATE 2026-06-24) - opt-in auto-play. NATE reversed the ITEM 5
+   * default: a freshly-loaded multi-frame group now shows its FIRST frame
+   * statically and waits for the user to press play, instead of auto-sweeping on
+   * load. Default false (playback is opt-in). When true (and reduced-motion is
+   * not set) setGroups auto-starts playback as before. The scrubber's play button
+   * remains the user's control either way.
+   */
+  autoPlay?: boolean;
 }
 
 /** SSR/test-safe default reduced-motion probe (mirrors PipelineCard's). */
@@ -140,6 +149,10 @@ export class AnimationController {
   private timerId: number | null = null;
   // ITEM 5 - reduced-motion probe (auto-play suppressed when it returns true).
   private readonly prefersReducedMotion: () => boolean;
+  // AUTOPLAY-OFF (NATE 2026-06-24) - opt-in auto-play (default off). When false,
+  // a newly-seen group seeds + shows frame 0 statically but does NOT start
+  // playing; the user presses the scrubber play button to animate.
+  private readonly autoPlay: boolean;
   // ITEM 5 - groups we have already auto-played, so re-pushing the same group
   // set (LayerPanel re-detects on every session-state frame) does not restart
   // playback after the user paused it. Keyed by group key.
@@ -150,6 +163,8 @@ export class AnimationController {
     this.timers = opts.timers ?? defaultTimers;
     this.prefersReducedMotion =
       opts.prefersReducedMotion ?? defaultPrefersReducedMotion;
+    // AUTOPLAY-OFF: default OFF (opt-in). Playback is user-driven.
+    this.autoPlay = opts.autoPlay ?? false;
   }
 
   // --- emitter wiring --------------------------------------------------- //
@@ -208,12 +223,17 @@ export class AnimationController {
    * first group), prunes frame indices for vanished groups, and stops playback
    * when no groups remain.
    *
-   * ITEM 5 (NATE 2026-06-22): a newly-loaded animation group now defaults its
-   * frame to the FIRST frame (index 0, not the last) AND auto-starts playback,
-   * so the animation reads as an animation (a sweep from the start) instead of a
-   * static peak. Auto-play is suppressed under prefers-reduced-motion, and is
-   * done at most ONCE per group key (autoPlayedKeys) so a re-push of the same
-   * group set after the user paused does not restart playback.
+   * ITEM 5 (NATE 2026-06-22): a newly-loaded animation group defaults its frame
+   * to the FIRST frame (index 0, not the last) and emits it so the map shows the
+   * first frame immediately.
+   *
+   * AUTOPLAY-OFF (NATE 2026-06-24): auto-play is now OPT-IN (this.autoPlay,
+   * default false). By default the group seeds + shows frame 0 STATICALLY and
+   * waits for the user to press the scrubber play button - NATE reversed the
+   * ITEM 5 auto-sweep default. When autoPlay is true (and reduced-motion is not
+   * set) playback auto-starts as before, at most ONCE per group key
+   * (autoPlayedKeys) so a re-push of the same group set after a pause does not
+   * restart it.
    */
   setGroups(groups: AnimGroup[]): void {
     this.groups = groups;
@@ -254,11 +274,13 @@ export class AnimationController {
       this.activeGroupKey = first.key;
     }
 
-    // ITEM 5: auto-start playback on a freshly-loaded multi-frame group so it
-    // animates on load (not a static peak). Make the new group active first so
-    // the interval drives the right frames. Skip under reduced-motion and skip
-    // groups already auto-played this lifetime. Also emit frame 0 so the map
-    // shows the first frame immediately even before the first interval tick.
+    // AUTOPLAY-OFF (NATE 2026-06-24): on a freshly-loaded multi-frame group make
+    // it the active group and EMIT frame 0 so the map shows the first frame
+    // immediately, but do NOT auto-start playback unless auto-play is explicitly
+    // opted in (this.autoPlay) and reduced-motion is not set. By default the
+    // scrubber appears, shows frame 0, and sits PAUSED until the user presses
+    // play. Mark the group seen either way so a re-push of the same set does not
+    // re-attempt auto-play after a manual pause.
     if (newlySeen.length > 0) {
       const autoKey =
         this.activeGroupKey && newlySeen.includes(this.activeGroupKey)
@@ -266,15 +288,15 @@ export class AnimationController {
           : newlySeen[0]!;
       this.activeGroupKey = autoKey;
       const g = this.groups.find((gr) => gr.key === autoKey);
-      if (g) this.emitFrame(g, 0); // show the first frame now.
-      if (!this.prefersReducedMotion()) {
+      if (g) this.emitFrame(g, 0); // show the first frame now (static).
+      if (this.autoPlay && !this.prefersReducedMotion()) {
         this.autoPlayedKeys.add(autoKey);
         // setPlaying arms the interval (syncInterval) and notifies.
         this.setPlaying(true);
         return;
       }
-      // Reduced motion: still mark it seen so we don't re-attempt, but leave it
-      // paused on frame 0 (a static first frame, not the peak).
+      // Auto-play off (default) or reduced motion: mark it seen so we don't
+      // re-attempt, but leave it PAUSED on frame 0 (the first frame, static).
       this.autoPlayedKeys.add(autoKey);
     }
 

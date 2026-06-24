@@ -2934,11 +2934,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // missing parameter for tools that emit only the bare WMS endpoint
           // (e.g. fetch_nexrad_reflectivity). See OQ-0171-WMS-URL-CONTRACT.
           const tileUrl = buildWmsTileUrl(layer.uri, layer.style_preset ?? null);
-          m.addSource(layer.layer_id, {
-            type: "raster",
-            tiles: [tileUrl],
-            tileSize: 256,
-          });
+
+          // RASTER ADD HARDENING (Lane 3 finding #2): mirror the vector-tile
+          // branch's guards so ONE bad raster (a duplicate / half-torn-down id,
+          // an addLayer during a dark-theme style churn, a malformed uri) cannot
+          // throw and ABORT the whole add loop, leaving every later raster in the
+          // snapshot unpainted. (1) Reserve the slot BEFORE the add (like the
+          // vector branches) so a re-push during a deferral does not double-
+          // register. (2) Gate on mapStyleReady with an m.once('idle', ...)
+          // deferral. (3) Wrap addSource+addLayer in try/catch (log + continue).
+          addedSourceIds.current.add(layer.layer_id);
+
           // raster-resampling: nearest preserves discrete COG cell boundaries
           // (job-0078 diagnosis). Without this, MapLibre's default `linear`
           // bilinear interpolation smears flood-depth cells across screen pixels,
@@ -2947,17 +2953,57 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // shows the source-projection grid 1:1  -  the user can see that each
           // flood cell sits over the specific street/lot it covers, which is
           // the only visually-irrefutable proof of geographic alignment.
-          m.addLayer({
-            id: layer.layer_id,
-            type: "raster",
-            source: layer.layer_id,
-            paint: {
-              "raster-opacity": opacity,
-              "raster-resampling": "nearest",
-            },
-            layout: { visibility: visible ? "visible" : "none" },
-          });
-          addedSourceIds.current.add(layer.layer_id);
+          const addRaster = (): void => {
+            // The layer may have been removed/re-added during a deferral; only
+            // act if it is still the tracked source for this id.
+            if (!addedSourceIds.current.has(layer.layer_id)) return;
+            try {
+              if (m.getSource(layer.layer_id)) return; // already added (idle race)
+              m.addSource(layer.layer_id, {
+                type: "raster",
+                tiles: [tileUrl],
+                tileSize: 256,
+              });
+              m.addLayer({
+                id: layer.layer_id,
+                type: "raster",
+                source: layer.layer_id,
+                paint: {
+                  "raster-opacity": opacity,
+                  "raster-resampling": "nearest",
+                },
+                layout: { visibility: visible ? "visible" : "none" },
+              });
+            } catch (err) {
+              // One bad raster must not abort the loop / deferral. Drop the
+              // reservation so a later re-push can retry, and continue.
+              addedSourceIds.current.delete(layer.layer_id);
+              console.warn(
+                `[grace2] raster layer add failed (${layer.layer_id}); skipping`,
+                err,
+              );
+            }
+          };
+
+          let rasterStyleReady = false;
+          try {
+            rasterStyleReady = mapStyleReady(m);
+          } catch {
+            rasterStyleReady = false;
+          }
+          if (rasterStyleReady) {
+            addRaster();
+          } else {
+            // Defer until the style settles (mirrors the vector branch retry).
+            m.once("idle", () => {
+              try {
+                if (!m.isStyleLoaded()) return;
+              } catch {
+                return;
+              }
+              addRaster();
+            });
+          }
         }
       }
 

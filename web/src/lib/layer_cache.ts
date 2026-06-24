@@ -26,7 +26,7 @@
 // backward compatibility (callers that still read it), but new write-through
 // flows through here.
 
-import type { ProjectLayerSummary } from "../contracts";
+import type { ProjectLayerSummary, TemporalConfig } from "../contracts";
 
 /** A user-set view override for one layer. All fields optional / partial. */
 export interface LayerViewOverride {
@@ -197,10 +197,57 @@ interface CaseEntry {
   layers: Map<string, ProjectLayerSummary>;
   /** layerId -> the user's view override (opacity / visible / zIndex). */
   overrides: Map<string, LayerViewOverride>;
+  /**
+   * FLASH FIX (Lane 1a): the LAST array instance mergeSnapshot returned for this
+   * Case. When a fresh snapshot resolves to a structurally-identical set we hand
+   * back THIS same reference so App's `setLayers` is a no-op (React bails) and the
+   * panel/scrubber subtree does not re-render on every ~25s keepalive heartbeat.
+   * Invalidated (set null) whenever the tracked set actually changes.
+   */
+  lastReturned: ProjectLayerSummary[] | null;
 }
 
 function emptyEntry(): CaseEntry {
-  return { layers: new Map(), overrides: new Map() };
+  return { layers: new Map(), overrides: new Map(), lastReturned: null };
+}
+
+/**
+ * FLASH FIX (Lane 1a): structural equality of two ProjectLayerSummary objects by
+ * every field the renderer reads. When an incoming layer matches the stored one
+ * by value we KEEP the stored object ref (do not `set` a new one), so identical
+ * heartbeats never churn object identity downstream. Mirrors LayerPanel's
+ * layerSetsEqual field set, plus the remaining display fields.
+ */
+function layersStructurallyEqual(
+  a: ProjectLayerSummary,
+  b: ProjectLayerSummary,
+): boolean {
+  return (
+    a.layer_id === b.layer_id &&
+    a.name === b.name &&
+    a.layer_type === b.layer_type &&
+    a.uri === b.uri &&
+    (a.wms_url ?? null) === (b.wms_url ?? null) &&
+    (a.attribution ?? null) === (b.attribution ?? null) &&
+    a.visible === b.visible &&
+    a.opacity === b.opacity &&
+    a.z_index === b.z_index &&
+    (a.style_preset ?? null) === (b.style_preset ?? null) &&
+    temporalEqual(a.temporal ?? null, b.temporal ?? null)
+  );
+}
+
+function temporalEqual(
+  a: TemporalConfig | null,
+  b: TemporalConfig | null,
+): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  return (
+    a.start === b.start &&
+    a.end === b.end &&
+    a.step_seconds === b.step_seconds
+  );
 }
 
 // --- LayerCache --------------------------------------------------------- //
@@ -292,6 +339,13 @@ export class LayerCache {
     const entry = this.ensure(caseId, /*touch*/ true);
     const incomingIds = new Set(layers.map((l) => l.layer_id));
 
+    // FLASH FIX (Lane 1a): track whether the tracked SET actually changed (an
+    // add, a remove, or a per-layer field change). When nothing changed we hand
+    // back the SAME array reference we returned last time so App's setLayers is a
+    // no-op (React bails) and the panel/scrubber subtree never re-renders on an
+    // identical ~25s keepalive heartbeat.
+    let changed = false;
+
     // Full replace: drop tracked layers the authoritative set omits — BUT
     // guard the cold-open hazard: an EMPTY authoritative frame for a Case that
     // already has tracked layers is a NO-OP, never a blank. (Opening a case
@@ -306,14 +360,34 @@ export class LayerCache {
       (layers.length > 0 || entry.layers.size === 0)
     ) {
       for (const id of Array.from(entry.layers.keys())) {
-        if (!incomingIds.has(id)) entry.layers.delete(id);
+        if (!incomingIds.has(id)) {
+          entry.layers.delete(id);
+          changed = true;
+        }
       }
     }
-    // Additive in both modes: add / refresh every incoming layer.
+    // Additive in both modes: add / refresh every incoming layer. IDENTITY-STABLE
+    // (Lane 1a): when an incoming layer is structurally identical to the stored
+    // one KEEP the existing object ref so a byte-identical heartbeat does not
+    // create new object refs downstream; only replace the ref (and mark changed)
+    // when a field the renderer reads actually differs or the layer is new.
     for (const layer of layers) {
+      const existing = entry.layers.get(layer.layer_id);
+      if (existing && layersStructurallyEqual(existing, layer)) {
+        continue; // keep the stored ref - no churn.
+      }
       entry.layers.set(layer.layer_id, layer);
+      changed = true;
     }
-    return Array.from(entry.layers.values());
+
+    // When the set is UNCHANGED return the previously-returned array instance so
+    // the caller's ref-equality check (and React's setState bail) short-circuits.
+    if (!changed && entry.lastReturned !== null) {
+      return entry.lastReturned;
+    }
+    const out = Array.from(entry.layers.values());
+    entry.lastReturned = out;
+    return out;
   }
 
   /**
@@ -399,7 +473,12 @@ export class LayerCache {
     if (caseId == null) return;
     const entry = this.entries.get(caseId);
     if (!entry) return;
-    entry.layers.delete(layerId);
+    if (entry.layers.delete(layerId)) {
+      // FLASH FIX (Lane 1a): the tracked set changed - invalidate the cached
+      // return array so the next mergeSnapshot rebuilds (and a no-op-return
+      // can't hand back a stale array that still contains the deleted layer).
+      entry.lastReturned = null;
+    }
     if (entry.overrides.delete(layerId)) this.persistCase(caseId);
   }
 

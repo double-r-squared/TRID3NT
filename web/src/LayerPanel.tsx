@@ -33,7 +33,7 @@
 // because: (a) actively maintained, (b) full keyboard a11y out of the box
 // (the extra up/down buttons are belt+suspenders), (c) zero global state.
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -139,12 +139,29 @@ function layerSetsEqual(
   b: ProjectLayerSummary[],
 ): boolean {
   if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i];
-    const y = b[i];
-    if (!x || !y) return false;
+  // FLASH FIX (Lane 1a): ORDER-INSENSITIVE compare keyed by layer_id. The merged
+  // list arrives in Map-insertion order and a re-publish of an existing layer_id
+  // can shuffle EQUAL-z layers frame-to-frame; a positional compare returned
+  // false on such a reorder and forced a full re-render. Keying by layer_id makes
+  // an equal SET (same ids + {visible,opacity,z_index}) compare equal regardless
+  // of array order, so the reducer short-circuit holds across the reshuffle.
+  const byId = new Map<
+    string,
+    Pick<ProjectLayerSummary, "visible" | "opacity" | "z_index">
+  >();
+  for (const x of a) {
+    if (!x) return false;
+    byId.set(x.layer_id, {
+      visible: x.visible,
+      opacity: x.opacity,
+      z_index: x.z_index,
+    });
+  }
+  for (const y of b) {
+    if (!y) return false;
+    const x = byId.get(y.layer_id);
     if (
-      x.layer_id !== y.layer_id ||
+      !x ||
       x.visible !== y.visible ||
       x.opacity !== y.opacity ||
       x.z_index !== y.z_index
@@ -759,7 +776,7 @@ export interface LayerPanelProps {
   legendControl?: React.ReactNode;
 }
 
-export function LayerPanel({
+function LayerPanelImpl({
   initialLayers,
   subscribeSessionState,
   subscribeMapCommand,
@@ -1445,6 +1462,17 @@ export function LayerPanel({
     </aside>
   );
 }
+
+// FLASH FIX (Lane 1a): MEMOIZE the panel so it does NOT re-render whenever App
+// re-renders (e.g. an unrelated App state change, or a session-state heartbeat
+// that App already short-circuits). All props App passes are now stable: the
+// bus subscribe/push fns come from a useMemo'd bus, callbacks are useCallback'd
+// (onClose=collapseLeft, onDeleteLayer=handleDeleteLayer), the setters are
+// stable, and `initialLayers`/`layers` are ref-stable across identical
+// heartbeats (mergeSnapshot identity fix). The panel's OWN layer state is driven
+// by its bus subscription + reducer (with layerSetsEqual short-circuit), so
+// memoizing the parent-driven render path is safe and kills the heartbeat flash.
+export const LayerPanel = memo(LayerPanelImpl);
 
 // --- Sortable row ----------------------------------------------------- //
 

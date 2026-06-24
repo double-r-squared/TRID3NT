@@ -182,6 +182,88 @@ describe("LayerCache — layer-set durability (the seatbelt)", () => {
   });
 });
 
+describe("LayerCache - mergeSnapshot identity stability (flash fix, Lane 1a)", () => {
+  it("returns the SAME array instance for a byte-identical heartbeat", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    const first = cache.mergeSnapshot(caseId, [mkLayer("L1"), mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    // An identical heartbeat re-ships a FRESH array of FRESH object refs.
+    const second = cache.mergeSnapshot(
+      caseId,
+      [mkLayer("L1"), mkLayer("L2")],
+      { authoritativeReplace: true },
+    );
+    // The cache hands back the SAME array reference so React's setState bails
+    // (no panel/scrubber re-render on the ~25s keepalive).
+    expect(second).toBe(first);
+  });
+
+  it("KEEPS the existing object ref for a structurally-identical layer", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    const first = cache.mergeSnapshot(caseId, [mkLayer("L1")], {
+      authoritativeReplace: true,
+    });
+    const storedL1 = first[0];
+    // A non-authoritative top-up re-ships L1 with a NEW object ref but identical
+    // fields -> the cache keeps the stored ref (no identity churn).
+    cache.mergeSnapshot(caseId, [mkLayer("L1")], {
+      authoritativeReplace: false,
+    });
+    expect(cache.layersFor(caseId)[0]).toBe(storedL1);
+  });
+
+  it("returns a NEW array when a layer field actually changes", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    const first = cache.mergeSnapshot(caseId, [mkLayer("L1", { opacity: 1 })], {
+      authoritativeReplace: true,
+    });
+    const second = cache.mergeSnapshot(
+      caseId,
+      [mkLayer("L1", { opacity: 0.4 })],
+      { authoritativeReplace: true },
+    );
+    expect(second).not.toBe(first);
+    expect(second[0]?.opacity).toBe(0.4);
+  });
+
+  it("returns a NEW array when a layer is added or removed", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    const a = cache.mergeSnapshot(caseId, [mkLayer("L1")], {
+      authoritativeReplace: true,
+    });
+    const b = cache.mergeSnapshot(caseId, [mkLayer("L1"), mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    expect(b).not.toBe(a);
+    // Removing L2 (authoritative) also yields a fresh array.
+    const c = cache.mergeSnapshot(caseId, [mkLayer("L1")], {
+      authoritativeReplace: true,
+    });
+    expect(c).not.toBe(b);
+    expect(c.map((l) => l.layer_id)).toEqual(["L1"]);
+  });
+
+  it("a single-layer delete invalidates the cached array (no stale return)", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    cache.mergeSnapshot(caseId, [mkLayer("L1"), mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    cache.deleteLayer(caseId, "L1");
+    // A subsequent identical-to-remaining heartbeat must reflect the deletion,
+    // not hand back a cached array that still contains L1.
+    const after = cache.mergeSnapshot(caseId, [mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    expect(after.map((l) => l.layer_id)).toEqual(["L2"]);
+  });
+});
+
 describe("LayerCache — view-override durability", () => {
   it("setOverride remembers opacity / visibility / zIndex and re-supplies them", () => {
     const cache = new LayerCache({ backend: noopBackend });

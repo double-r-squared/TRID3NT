@@ -168,19 +168,37 @@ describe("AnimationController — subscription snapshot stability", () => {
   });
 });
 
-// --- ITEM 5 (NATE 2026-06-22): default-to-FIRST-frame + AUTO-PLAY on load ---- //
-describe("AnimationController — item 5 first-frame default + auto-play", () => {
+// --- ITEM 5 + AUTOPLAY-OFF (NATE 2026-06-24): default-to-FIRST-frame; auto-play
+// is now OPT-IN (autoPlay:true). By DEFAULT a newly-loaded group shows frame 0
+// statically and waits for the user to press play. The auto-play assertions
+// below construct with { autoPlay: true } to exercise the opt-in path. ------- //
+describe("AnimationController - first-frame default + opt-in auto-play", () => {
   it("defaults a newly-loaded group to frame 0 (not the last)", () => {
     const c = new AnimationController({ prefersReducedMotion: () => false });
     c.setGroups([GROUP]);
     expect(c.frameIndexFor("grp-1")).toBe(0);
   });
 
-  it("auto-starts playback on a freshly-loaded multi-frame group", () => {
+  it("does NOT auto-play by default (opt-in off) - shows frame 0 paused", () => {
+    // AUTOPLAY-OFF: NATE reversed the auto-sweep default; playback is user-driven.
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
       prefersReducedMotion: () => false,
+      // autoPlay omitted -> defaults to false.
+    });
+    c.setGroups([GROUP]);
+    expect(c.isPlaying()).toBe(false);
+    expect(c.frameIndexFor("grp-1")).toBe(0);
+    expect(c.getActiveGroup()?.key).toBe("grp-1");
+  });
+
+  it("auto-starts playback on a freshly-loaded multi-frame group when autoPlay:true", () => {
+    const { timers } = makeFakeTimers();
+    const c = new AnimationController({
+      timers,
+      prefersReducedMotion: () => false,
+      autoPlay: true,
     });
     c.setGroups([GROUP]);
     expect(c.isPlaying()).toBe(true);
@@ -188,6 +206,7 @@ describe("AnimationController — item 5 first-frame default + auto-play", () =>
   });
 
   it("emits frame 0 immediately on load (first frame painted before any tick)", () => {
+    // Frame 0 is emitted whether or not auto-play is on (default off here).
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
@@ -199,32 +218,35 @@ describe("AnimationController — item 5 first-frame default + auto-play", () =>
     expect(seen[0]).toBe(0); // the first frame is shown on load.
   });
 
-  it("does NOT auto-play under prefers-reduced-motion (stays on frame 0, paused)", () => {
+  it("does NOT auto-play under prefers-reduced-motion even with autoPlay:true (stays on frame 0, paused)", () => {
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
       prefersReducedMotion: () => true,
+      autoPlay: true,
     });
     c.setGroups([GROUP]);
     expect(c.isPlaying()).toBe(false);
     expect(c.frameIndexFor("grp-1")).toBe(0);
   });
 
-  it("does NOT auto-play a single-frame group", () => {
+  it("does NOT auto-play a single-frame group (even with autoPlay:true)", () => {
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
       prefersReducedMotion: () => false,
+      autoPlay: true,
     });
     c.setGroups([{ ...GROUP, layerIds: ["only"], frameLabels: ["F+01h"] }]);
     expect(c.isPlaying()).toBe(false);
   });
 
-  it("does NOT restart playback when the same group is re-pushed after a pause", () => {
+  it("does NOT restart playback when the same group is re-pushed after a pause (autoPlay:true)", () => {
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
       prefersReducedMotion: () => false,
+      autoPlay: true,
     });
     c.setGroups([GROUP]); // auto-plays
     expect(c.isPlaying()).toBe(true);
@@ -233,11 +255,12 @@ describe("AnimationController — item 5 first-frame default + auto-play", () =>
     expect(c.isPlaying()).toBe(false);
   });
 
-  it("re-auto-plays a group after reset() (a new Case)", () => {
+  it("re-auto-plays a group after reset() (a new Case) when autoPlay:true", () => {
     const { timers } = makeFakeTimers();
     const c = new AnimationController({
       timers,
       prefersReducedMotion: () => false,
+      autoPlay: true,
     });
     c.setGroups([GROUP]);
     c.setPlaying(false);

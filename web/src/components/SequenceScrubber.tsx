@@ -114,6 +114,17 @@ export interface SequenceScrubberProps {
    * When absent it falls back to viewport bottom-center.
    */
   aoiRect?: ScreenRect | null;
+  /**
+   * GUTTER CLAMP (NATE 2026-06-24) - desktop panel geometry so the scrubber's
+   * width/position is clamped to the OPEN map gutter (between the left layers
+   * rail when open and the right chat panel), never extending under/past the
+   * side panels. Reuses the values App already threads for the bbox snap.
+   */
+  leftPanelWidthPx?: number;
+  /** Right chat panel width in px (0 when collapsed). */
+  chatWidthPx?: number;
+  /** Whether the right chat panel is collapsed (then its width is 0). */
+  chatCollapsed?: boolean;
 }
 
 /** Clamp `i` into [0, n) with wraparound so the scrubber loops cleanly. */
@@ -133,6 +144,9 @@ export function SequenceScrubber({
   // is no longer used here — the AnimationController owns the advance interval.
   intervalMs: _intervalMs,
   aoiRect,
+  leftPanelWidthPx = 0,
+  chatWidthPx = 0,
+  chatCollapsed = false,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
   const isMobile = useIsMobile();
@@ -174,14 +188,61 @@ export function SequenceScrubber({
   // barWidth) instead of a fixed band that left padding on both sides. Clamped to
   // a tappable minimum so the buttons stay usable on a tiny zoomed-out box. With
   // no AOI rect, fall back to a fixed band (viewport-bottom fallback).
+  // window may be undefined under SSR; guard and skip the viewport clamps then.
+  const viewportH =
+    typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : null;
+  const viewportW =
+    typeof window !== "undefined" && Number.isFinite(window.innerWidth)
+      ? window.innerWidth
+      : null;
+
+  // GUTTER CLAMP (NATE 2026-06-24): on DESKTOP the scrubber must never extend
+  // under/past the side panels. The open map gutter spans from the left layers
+  // rail (when open) to the right chat panel (0 when collapsed), with a small
+  // margin. The scrubber width is capped to that gutter width; below the bbox
+  // path also clamps the center so neither edge crosses a panel. (Mobile panels
+  // are overlays, not a horizontal gutter, so the gutter clamp is desktop-only.)
+  const GUTTER_MARGIN_PX = 12;
+  const rightInsetPx = chatCollapsed ? 0 : Math.max(0, chatWidthPx);
+  const gutterLeft = isMobile ? 0 : Math.max(0, leftPanelWidthPx) + GUTTER_MARGIN_PX;
+  const gutterRight =
+    !isMobile && viewportW != null
+      ? viewportW - rightInsetPx - GUTTER_MARGIN_PX
+      : viewportW ?? null;
+  const gutterWidth =
+    !isMobile && viewportW != null
+      ? Math.max(SCRUBBER_MIN_WIDTH, gutterRight! - gutterLeft)
+      : null;
+
+  // MATCH BBOX WIDTH (NATE 2026-06-22): when aoiRect is present the scrubber's
+  // rendered width = the AOI bbox on-screen width (right - left), so it spans the
+  // bbox exactly like the legend's keys (LayerLegend.defaultWidth = clamped
+  // barWidth) instead of a fixed band that left padding on both sides. Clamped to
+  // a tappable minimum so the buttons stay usable on a tiny zoomed-out box. With
+  // no AOI rect, fall back to a fixed band (viewport-bottom fallback).
   const bboxWidth = aoiRect ? aoiRect.right - aoiRect.left : null;
-  const targetWidth =
+  let targetWidth =
     typeof bboxWidth === "number" && Number.isFinite(bboxWidth) && bboxWidth > 0
       ? Math.max(SCRUBBER_MIN_WIDTH, bboxWidth)
       : SCRUBBER_FALLBACK_WIDTH;
+  // GUTTER CLAMP: never wider than the open desktop gutter.
+  if (gutterWidth != null) targetWidth = Math.min(targetWidth, gutterWidth);
   const widthStyle: React.CSSProperties = {
-    // Explicit width tracks the bbox (no min/max band that adds side padding).
+    // Explicit width tracks the bbox (no min/max band that adds side padding),
+    // capped to the open desktop gutter so it never runs under the side panels.
     width: targetWidth,
+  };
+
+  // GUTTER CLAMP: keep the scrubber's CENTER so neither edge crosses a panel.
+  const clampCenter = (cx: number): number => {
+    if (gutterWidth == null || gutterRight == null) return cx;
+    const half = targetWidth / 2;
+    const minCx = gutterLeft + half;
+    const maxCx = gutterRight - half;
+    if (minCx > maxCx) return (gutterLeft + gutterRight) / 2; // gutter too narrow
+    return Math.max(minCx, Math.min(cx, maxCx));
   };
 
   // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
@@ -195,23 +256,28 @@ export function SequenceScrubber({
   // ITEM 6  -  on mobile, the highest screen-Y the scrubber's TOP may take so its
   // bottom edge still clears the collapsed chat sheet (composer). Portaled to
   // body with position:fixed, so the clamp is against the viewport height.
-  // window may be undefined under SSR; guard and skip the clamp then.
-  const viewportH =
-    typeof window !== "undefined" && Number.isFinite(window.innerHeight)
-      ? window.innerHeight
-      : null;
   const mobileMaxTop =
     isMobile && viewportH != null
       ? viewportH -
         SCRUBBER_MOBILE_SHEET_CLEARANCE_PX -
         SCRUBBER_APPROX_HEIGHT_PX
       : null;
+  // 3D-CLAMP (NATE 2026-06-24): on DESKTOP too, the AOI-bottom anchor can land
+  // OFF-SCREEN under the 67deg terrain pitch (the projected AOI bottom edge
+  // drops below the viewport), so the scrubber renders below the fold and looks
+  // "missing in 3D". Generalize the bottom-edge clamp to desktop: the highest
+  // screen-Y the scrubber TOP may take so its bottom edge stays on-screen. When
+  // the AOI-bottom anchor exceeds it, fall back to the viewport bottom anchor.
+  const desktopMaxTop =
+    !isMobile && viewportH != null
+      ? viewportH - SCRUBBER_APPROX_HEIGHT_PX - 24
+      : null;
 
   let posStyle: React.CSSProperties;
   if (aoiRect) {
-    const cx = (aoiRect.left + aoiRect.right) / 2;
+    const cx = clampCenter((aoiRect.left + aoiRect.right) / 2);
     // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile keep the scrubber
-    // ABOVE the chat sheet/composer. Desktop is unaffected (mobileMaxTop is null).
+    // ABOVE the chat sheet/composer.
     const top = aoiRect.bottom + 12;
     if (mobileMaxTop != null && top > mobileMaxTop) {
       // BUG 3  -  the natural anchor would drop the scrubber into the composer band.
@@ -224,6 +290,18 @@ export function SequenceScrubber({
         position: "fixed",
         left: cx,
         bottom: SCRUBBER_MOBILE_BOTTOM_CSS,
+        transform: "translateX(-50%)",
+        transformOrigin: "bottom center",
+      };
+    } else if (desktopMaxTop != null && top > desktopMaxTop) {
+      // 3D-CLAMP (desktop): the AOI bottom edge projected below the viewport
+      // (steep terrain pitch). Anchor from the viewport bottom so the scrubber
+      // stays visible instead of rendering below the fold. Still clamped into
+      // the open gutter horizontally so it never runs under the side panels.
+      posStyle = {
+        position: "fixed",
+        left: cx,
+        bottom: 24,
         transform: "translateX(-50%)",
         transformOrigin: "bottom center",
       };
@@ -240,12 +318,19 @@ export function SequenceScrubber({
     // No AOI on screen: anchor from the bottom. ITEM 6  -  on mobile lift the
     // anchor by the safe-area-inclusive sheet clearance so the fallback band sits
     // ABOVE the chat sheet/composer (BUG 3: the old fixed bottom:116 px omitted
-    // the device safe-area inset and overlapped on notched phones). Desktop keeps
-    // the original low bottom-center position.
+    // the device safe-area inset and overlapped on notched phones).
+    //
+    // GUTTER CLAMP (NATE 2026-06-24): on DESKTOP center in the OPEN gutter (so the
+    // fallback band sits between the panels, not under the chat panel) rather than
+    // at viewport 50%. Mobile keeps the simple viewport-centered fallback.
+    const desktopCx =
+      gutterRight != null && !isMobile
+        ? clampCenter((gutterLeft + gutterRight) / 2)
+        : null;
     posStyle = {
       position: "fixed",
       bottom: isMobile ? SCRUBBER_MOBILE_BOTTOM_CSS : 24,
-      left: "50%",
+      left: desktopCx != null ? desktopCx : "50%",
       transform: "translateX(-50%)",
       transformOrigin: "bottom center",
     };

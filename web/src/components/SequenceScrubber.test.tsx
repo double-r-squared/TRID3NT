@@ -136,10 +136,48 @@ describe("SequenceScrubber — render + controls", () => {
     expect(el).toHaveStyle({ left: "400px", top: "412px" });
   });
 
-  it("falls back to viewport bottom-center when aoiRect is absent (item 3)", () => {
+  it("falls back to the gutter bottom-center when aoiRect is absent (item 3 + gutter clamp)", () => {
+    // GUTTER CLAMP (NATE 2026-06-24): with no AOI the DESKTOP fallback now centers
+    // in the OPEN map gutter rather than at a bare viewport 50%, so it never runs
+    // under the side panels. With no panels open the gutter is the full viewport,
+    // so the center is viewport/2 (a px value, not "50%"). Anchored bottom: 24.
     renderScrubber();
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(el).toHaveStyle({ left: "50%", bottom: "24px" });
+    const expectedCx = Math.round(window.innerWidth / 2);
+    expect(el).toHaveStyle({ left: `${expectedCx}px`, bottom: "24px" });
+    expect(el.style.transform).toBe("translateX(-50%)");
+  });
+
+  it("clamps its width + center to the open gutter so it never runs under the side panels (NATE 2026-06-24)", () => {
+    // A LEFT rail (288) + a RIGHT chat panel (400) leave an open gutter; the
+    // scrubber must sit centered within it and never extend past either panel.
+    const leftPanelWidthPx = 288;
+    const chatWidthPx = 400;
+    renderScrubber({ leftPanelWidthPx, chatWidthPx, chatCollapsed: false });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    const margin = 12;
+    const gutterLeft = leftPanelWidthPx + margin;
+    const gutterRight = window.innerWidth - chatWidthPx - margin;
+    const width = Number.parseFloat(el.style.width);
+    const cx = Number.parseFloat(el.style.left);
+    // The pill stays fully inside the open gutter on both edges.
+    expect(cx - width / 2).toBeGreaterThanOrEqual(gutterLeft - 0.5);
+    expect(cx + width / 2).toBeLessThanOrEqual(gutterRight + 0.5);
+  });
+
+  it("clamps the AOI-pinned scrubber below the fold to the viewport bottom (3D pitch fix, NATE 2026-06-24)", () => {
+    // 3D-CLAMP: under a steep terrain pitch the projected AOI bottom edge lands
+    // BELOW the viewport, so the AOI-bottom anchor would render the pill off
+    // screen. When aoiRect.bottom+12 exceeds the desktop max-top the scrubber
+    // anchors from the viewport bottom instead (stays visible in 3D).
+    const belowFold = window.innerHeight + 500; // AOI bottom way past the viewport
+    renderScrubber({
+      aoiRect: { left: 100, top: 50, right: 700, bottom: belowFold },
+    });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // Anchored from the bottom (visible), NOT a top that pushes it off screen.
+    expect(el.style.bottom).toBe("24px");
+    expect(el.style.top).toBe("");
   });
 
   it("centers under the AOI box with NO uniform scale transform (NATE 2026-06-22)", () => {

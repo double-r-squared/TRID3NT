@@ -44,7 +44,10 @@ import type { ProjectLayerSummary } from "./contracts";
 // bottom installs it with reduced-motion OFF to verify the auto-play + first-
 // frame default.
 let fireTick: () => void = () => {};
-function installFakeTimerController(reducedMotion = true): AnimationController {
+function installFakeTimerController(
+  reducedMotion = true,
+  autoPlay = false,
+): AnimationController {
   let cb: (() => void) | null = null;
   const timers: AnimTimers = {
     setInterval: (fn) => {
@@ -59,6 +62,9 @@ function installFakeTimerController(reducedMotion = true): AnimationController {
   const c = new AnimationController({
     timers,
     prefersReducedMotion: () => reducedMotion,
+    // AUTOPLAY-OFF (NATE 2026-06-24): auto-play is opt-in; default off so the
+    // scrubber appears showing frame 0, paused, until the user presses play.
+    autoPlay,
   });
   setAnimationController(c);
   return c;
@@ -446,11 +452,13 @@ describe("Item c - Case exit clears the scrubber (controller reset)", () => {
   });
 });
 
-// --- ITEM 5 (NATE 2026-06-22): scrubber defaults to FIRST frame + AUTO-PLAYS - //
-describe("Item 5 - scrubber defaults to first frame + auto-plays on load", () => {
-  it("a freshly-loaded sequence starts on frame 1/N and is auto-playing", () => {
-    // Install the controller with reduced-motion OFF so auto-play fires.
-    installFakeTimerController(false);
+// --- ITEM 5 + AUTOPLAY-OFF (NATE 2026-06-24): scrubber defaults to the FIRST
+// frame; auto-play is now OPT-IN (off by default). The scrubber appears showing
+// frame 1/N, paused, until the user presses play. --------------------------- //
+describe("scrubber defaults to first frame; auto-play is opt-in", () => {
+  it("a freshly-loaded sequence starts on frame 1/N and is PAUSED by default", () => {
+    // Default install: reduced-motion ON and autoPlay OFF -> paused on load.
+    installFakeTimerController();
     render(<LayerPanel initialLayers={FRAMES} />);
     render(<AppScrubberHarness />);
     const ctrl = getAnimationController();
@@ -460,7 +468,22 @@ describe("Item 5 - scrubber defaults to first frame + auto-plays on load", () =>
     expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent(
       `1/${FRAMES.length}`,
     );
-    // AUTO-PLAYING: the controller plays + the scrubber's play button shows Pause.
+    // AUTOPLAY-OFF: the controller is PAUSED + the play button shows Play.
+    expect(ctrl.isPlaying()).toBe(false);
+    expect(screen.getByTestId("scrubber-play")).toHaveAttribute(
+      "aria-label",
+      "Play sequence",
+    );
+  });
+
+  it("auto-plays on load only when auto-play is explicitly opted in", () => {
+    // reduced-motion OFF, autoPlay ON -> auto-play fires (the opt-in path).
+    installFakeTimerController(false, true);
+    render(<LayerPanel initialLayers={FRAMES} />);
+    render(<AppScrubberHarness />);
+    const ctrl = getAnimationController();
+    const key = ctrl.getActiveGroup()!.key;
+    expect(ctrl.frameIndexFor(key)).toBe(0);
     expect(ctrl.isPlaying()).toBe(true);
     expect(screen.getByTestId("scrubber-play")).toHaveAttribute(
       "aria-label",
@@ -468,8 +491,8 @@ describe("Item 5 - scrubber defaults to first frame + auto-plays on load", () =>
     );
   });
 
-  it("does NOT auto-play under prefers-reduced-motion (stays paused on frame 1)", () => {
-    installFakeTimerController(true); // reduced-motion ON
+  it("does NOT auto-play under prefers-reduced-motion even when opted in (stays paused on frame 1)", () => {
+    installFakeTimerController(true, true); // reduced-motion ON, autoPlay ON
     render(<LayerPanel initialLayers={FRAMES} />);
     render(<AppScrubberHarness />);
     const ctrl = getAnimationController();

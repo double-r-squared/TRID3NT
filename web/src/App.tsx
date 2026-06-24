@@ -255,6 +255,38 @@ function ensureAppSpinKeyframes(): void {
 }
 ensureAppSpinKeyframes();
 
+/**
+ * FLASH FIX (Lane 1a): structural equality of two layer lists by the fields the
+ * renderer reads, ORDER-INSENSITIVE (keyed by layer_id) so an equal-set reorder
+ * (the cache returns layers in Map-insertion order; a re-publish can shuffle
+ * equal-z layers) can never defeat the skip-setState guard. Used by App to bail
+ * out of a `setLayers` when an identical session-state heartbeat arrives.
+ */
+function layerListsEqual(
+  a: ProjectLayerSummary[],
+  b: ProjectLayerSummary[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  const byId = new Map<string, ProjectLayerSummary>();
+  for (const l of a) byId.set(l.layer_id, l);
+  for (const y of b) {
+    const x = byId.get(y.layer_id);
+    if (!x) return false;
+    if (
+      x.visible !== y.visible ||
+      x.opacity !== y.opacity ||
+      x.z_index !== y.z_index ||
+      x.name !== y.name ||
+      x.uri !== y.uri ||
+      (x.style_preset ?? null) !== (y.style_preset ?? null)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
 
@@ -816,10 +848,13 @@ export function App(): JSX.Element {
     });
   }
 
-  function collapseLeft(): void {
+  // FLASH FIX (Lane 1a): stable identity so React.memo(LayerPanel) is not
+  // defeated by a fresh onClose closure every App render (the panel receives
+  // collapseLeft as `onClose`). setLeftCollapsed is stable, so no deps.
+  const collapseLeft = useCallback((): void => {
     setLeftCollapsed(true);
     try { localStorage.setItem(LS_LEFT_COLLAPSED, "true"); } catch { /* non-fatal */ }
-  }
+  }, []);
 
   function expandLeft(): void {
     setLeftCollapsed(false);
@@ -1069,10 +1104,29 @@ export function App(): JSX.Element {
     // reaches here, so the seatbelt holds.
     if (prevCaseId !== null && prevCaseId !== activeCaseId) {
       layerCache.evictCase(prevCaseId);
+      // CROSS-CASE STALE-LAYER FLASH FIX (Lane 1b): clear the panel SYNCHRONOUSLY
+      // on a case->case SWITCH, not just on exit-to-root. Without this, App's
+      // lifted `layers` and the LayerPanel reducer keep showing the PREVIOUS
+      // case's layers until the new case's session-state arrives async (a WS
+      // round-trip / cold-load later), so the old layers flash before the new
+      // ones land. Mirror the exit-to-root clear: drop App `layers` now AND push
+      // an authoritative empty replace_layers:true session-state so the panel
+      // reducer drops the old layers instantly. The new case's own session-state
+      // (activeSession rehydration effect) then replaces this empty frame. Net:
+      // a brief empty/loading state on switch, never the prior case's layers.
+      setLayers((prev) => (prev.length === 0 ? prev : []));
+      bus.pushSessionState({
+        loaded_layers: [],
+        chat_history: [],
+        pipeline_history: [],
+        current_pipeline: null,
+        map_view: null,
+        replace_layers: true,
+      });
       // Item c (NATE 2026-06-20)  -  clear the SCRUBBER + the (mobile) legend on
       // Case EXIT / SWITCH. The scrubber is driven by the module-level
       // AnimationController; on exit the LayerPanel unmounts (the rail shows the
-      // Cases list, not CaseView) so it never pushes setGroups([]) to clear it  - 
+      // Cases list, not CaseView) so it never pushes setGroups([]) to clear it  -
       // the left Case's groups would linger and the App-level scrubber would
       // keep showing. reset() drops all groups + stops playback so the scrubber
       // vanishes. The legend clears with the layers (Map.tsx), but the MOBILE
@@ -1099,7 +1153,7 @@ export function App(): JSX.Element {
       setLayers([]);
     }
     layerCache.activeCaseId = activeCaseId;
-  }, [activeCaseId, layerCache]);
+  }, [activeCaseId, layerCache, bus]);
 
   // job-0322 F31  -  resume-repaint (iOS zombie-socket fix). Mobile browsers
   // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
@@ -1445,15 +1499,19 @@ export function App(): JSX.Element {
       // snapshot so the bbox overlay can paint the PURPLE scan border. Derived
       // here (vs a separate subscription) because this is the one place App sees
       // every session-state frame. Tolerant of the loosely-typed field.
-      setSimRunning(
-        isPipelineRunning(
-          (p as { current_pipeline?: unknown }).current_pipeline ?? null,
-        ),
+      //
+      // FLASH FIX (Lane 1b): GUARD the setState so an UNCHANGED pipeline/sim
+      // state does not force an App re-render on every ~25s keepalive frame. The
+      // functional updater returns the SAME boolean when it is unchanged, so
+      // React bails (no re-render of App -> the panel/scrubber subtree).
+      const nextSim = isPipelineRunning(
+        (p as { current_pipeline?: unknown }).current_pipeline ?? null,
       );
+      setSimRunning((prev) => (prev === nextSim ? prev : nextSim));
 
       const caseId = layerCache.activeCaseId;
       if (caseId === null) {
-        setLayers([]);
+        setLayers((prev) => (prev.length === 0 ? prev : []));
         return;
       }
       const incoming = p.loaded_layers ?? [];
@@ -1462,7 +1520,14 @@ export function App(): JSX.Element {
       const merged = layerCache.mergeSnapshot(caseId, incoming, {
         authoritativeReplace,
       });
-      setLayers(merged);
+      // FLASH FIX (Lane 1a): mergeSnapshot now returns the SAME array instance
+      // for an identical heartbeat, so this setState is already a no-op then.
+      // The content-equality guard is belt-and-suspenders: skip the state change
+      // when `merged` is ref-equal OR structurally equal to the prior layers, so
+      // even a distinct-but-identical array can never re-render the subtree.
+      setLayers((prev) =>
+        prev === merged || layerListsEqual(prev, merged) ? prev : merged,
+      );
     });
     return unsub;
   }, [bus, layerCache]);
@@ -1720,7 +1785,14 @@ export function App(): JSX.Element {
            expanded Layers section. DESKTOP: it lives in BottomRowButtons next to
            Settings (LANE D). Either way the floating bottom-center pill is
            suppressed (suppressLegendShowPill always true). */
-        legendHidden={isMobile ? legendHiddenMobile : legendHiddenDesktop}
+        /* NATE 2026-06-24: while the Settings panel is open, HIDE the docked
+           desktop legend (a bottom overlay) so it does not overlap Settings.
+           This is a transient VISUAL hide that does not touch the persisted
+           legendHiddenDesktop toggle; closing Settings restores it. Mobile is
+           unaffected (the legend lives inside the Layers section there). */
+        legendHidden={
+          isMobile ? legendHiddenMobile : legendHiddenDesktop || settingsOpen
+        }
         onLegendHiddenChange={isMobile ? setLegendHiddenMobile : setLegendHiddenDesktop}
         suppressLegendShowPill={true}
         /* CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  NATE: "no case layers
@@ -2605,8 +2677,16 @@ export function App(): JSX.Element {
            full-screen mobile Layers drawer is open it would float OVER the layer
            rows (reported: a scrubber pill mid-list). Hide it whenever the mobile
            drawer is open - it belongs to the map view, not over the list. Desktop
-           is unaffected (the drawer is mobile-only). */
-        hidden={isMobile && mobileDrawerOpen}
+           is unaffected (the drawer is mobile-only).
+           NATE 2026-06-24: also hide while the Settings panel is open so the
+           bottom overlays do not overlap Settings. */
+        hidden={(isMobile && mobileDrawerOpen) || settingsOpen}
+        /* GUTTER CLAMP (NATE 2026-06-24) - thread the desktop panel geometry so
+           the scrubber's width/position never extends under the side panels.
+           Mirrors the values fed to MapView for the bbox snap. */
+        leftPanelWidthPx={!isMobile && !leftCollapsed ? 288 : 0}
+        chatWidthPx={chatWidth}
+        chatCollapsed={rightCollapsed}
       />
     </div>
     </AuthGuard>
@@ -2624,14 +2704,24 @@ export function App(): JSX.Element {
 function AppSequenceScrubber({
   aoiRect,
   hidden = false,
+  leftPanelWidthPx = 0,
+  chatWidthPx = 0,
+  chatCollapsed = false,
 }: {
   aoiRect: ScreenRect | null;
   /**
-   * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open). The
-   * scrubber is a map overlay; when the full-screen drawer covers the map it
-   * must not float over the layer rows. Hooks still run above this guard.
+   * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open, or the
+   * Settings panel open). The scrubber is a map overlay; when the full-screen
+   * drawer / Settings covers the map it must not float over the rows / settings.
+   * Hooks still run above this guard.
    */
   hidden?: boolean;
+  /** Desktop left rail width (288 when open, else 0) - gutter clamp. */
+  leftPanelWidthPx?: number;
+  /** Right chat panel width (px) - gutter clamp. */
+  chatWidthPx?: number;
+  /** Whether the chat panel is collapsed (its width counts as 0). */
+  chatCollapsed?: boolean;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -2657,6 +2747,9 @@ function AppSequenceScrubber({
         controller.togglePlaying();
       }}
       aoiRect={aoiRect}
+      leftPanelWidthPx={leftPanelWidthPx}
+      chatWidthPx={chatWidthPx}
+      chatCollapsed={chatCollapsed}
     />
   );
 }
