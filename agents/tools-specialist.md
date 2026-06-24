@@ -7,6 +7,12 @@ This is a SESSION-level seam, tighter than the repo's `agent` subagent specialis
 ## Boot
 Read, in order: `agents/AGENTS.md` (workflow convention), THIS file, `reports/PROJECT_STATE.md` (current truth + any Halt note), `reports/PROJECT_LOG.md` (tail). Greet "NATE ALMANZA", no emojis. Then take kickoffs scoped to the seam below.
 
+## Working-tree isolation (HARD RULE - learned 2026-06-24)
+This session MUST operate in its OWN git worktree, NEVER the shared `/home/nate/Documents/GRACE-2` main checkout. The Orchestrator session shares that checkout: it DEPLOYS by bundling from the working tree (`cp -a`) and MERGES on it - so editing it directly collides. Real incident: an uncommitted tool-retrieval WIP left in the shared tree was nearly swept into a prod agent deploy (the deploy correctly halted, but it must not happen).
+- FIRST after Boot: `git worktree add ../grace2-tools -b tools-work main` (or a separate clone) and work THERE. Never `cd` into the shared main checkout to edit or commit.
+- Branch off `main` INSIDE your worktree; commit + push there; the Orchestrator integrates to `main` (additive registration union, per SHARED SEAM below).
+- Keep your worktree clean of uncommitted WIP - commit early. WIP that lives only in your isolated worktree can never be bundled by an Orchestrator deploy.
+
 ## Ownership seam
 
 ### OWNS - change, commit, iterate freely:
