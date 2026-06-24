@@ -2,7 +2,7 @@
 set -e
 exec > /var/log/grace2-bootstrap.log 2>&1
 echo "=== grace2 bootstrap $(date) ==="
-dnf install -y git python3.11 python3.11-pip python3.11-devel gcc gcc-c++ tar gzip >/dev/null 2>&1 || dnf install -y git python3 python3-pip gcc tar gzip
+dnf install -y git python3.11 python3.11-pip python3.11-devel gcc gcc-c++ tar gzip bubblewrap >/dev/null 2>&1 || dnf install -y git python3 python3-pip gcc tar gzip bubblewrap
 command -v git || dnf install -y git
 mkdir -p /opt/grace2 /opt/grace2/data
 cd /opt/grace2
