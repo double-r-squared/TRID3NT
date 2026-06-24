@@ -538,6 +538,168 @@ def test_ogc_adapter_arcgis_rest_query_request_shape(monkeypatch):
     assert p["geometryType"] == "esriGeometryEnvelope"
 
 
+# ---------------------------------------------------------------------------
+# Phase-2 fetch-side resolution lever (extent-aware raster grid).
+# ---------------------------------------------------------------------------
+
+
+def _wcs_grid_capture(monkeypatch):
+    """Patch requests.get to capture WCS GetCoverage params; return the dict."""
+    captured: dict = {}
+
+    def _fake_get(url, params=None, headers=None, timeout=None, **_kw):
+        captured["url"] = url
+        captured["params"] = params
+        return _FakeOGCResponse(
+            content=b"\x49\x49\x2a\x00" + b"\x00" * 256,
+            content_type="image/tiff",
+        )
+
+    monkeypatch.setattr(ogc_mod.requests, "get", _fake_get)
+    return captured
+
+
+def test_ogc_adapter_auto_grid_scales_with_bbox_and_clamps(monkeypatch):
+    """No width/height -> extent-aware grid: bigger bbox -> more pixels, clamped at 4096.
+
+    Phase-2 resolution lever: when both width_px/height_px are None, the
+    adapter derives WIDTH/HEIGHT from the bbox at the default 30 m cell,
+    clamped to _OGC_PX_MAX (4096) per axis.
+    """
+    captured = _wcs_grid_capture(monkeypatch)
+
+    # Small bbox (Fort Myers ~0.12 x 0.13 deg) at 30 m -> a modest grid well
+    # under the 4096 clamp.
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=FORT_MYERS_BBOX,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+    )
+    small_w = int(captured["params"]["WIDTH"])
+    small_h = int(captured["params"]["HEIGHT"])
+    assert 16 <= small_w < 4096, small_w
+    assert 16 <= small_h < 4096, small_h
+
+    # A 10x-wider bbox produces a wider grid (scales with extent).
+    wide_bbox = (-82.0, 26.55, -80.8, 26.68)  # ~1.2 deg wide vs ~0.12
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=wide_bbox,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+    )
+    wide_w = int(captured["params"]["WIDTH"])
+    assert wide_w > small_w, (wide_w, small_w)
+
+    # A continental bbox at 30 m would blow past 4096 -> clamped exactly.
+    huge_bbox = (-125.0, 25.0, -66.0, 49.0)  # CONUS
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=huge_bbox,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+    )
+    assert int(captured["params"]["WIDTH"]) == 4096
+    assert int(captured["params"]["HEIGHT"]) == 4096
+
+
+def test_ogc_adapter_target_resolution_changes_grid(monkeypatch):
+    """A finer target_resolution_m yields a denser grid than the 30 m default."""
+    captured = _wcs_grid_capture(monkeypatch)
+
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=FORT_MYERS_BBOX,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+    )
+    default_w = int(captured["params"]["WIDTH"])
+
+    # 10 m target -> ~3x the pixels of the 30 m default on the same bbox.
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=FORT_MYERS_BBOX,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+        target_resolution_m=10.0,
+    )
+    fine_w = int(captured["params"]["WIDTH"])
+    assert fine_w > default_w, (fine_w, default_w)
+
+
+def test_ogc_adapter_explicit_width_height_honored_byte_identical(monkeypatch):
+    """Explicit width_px/height_px pass through untouched (byte-identical to prior behavior).
+
+    target_resolution_m is ignored when explicit dimensions are given.
+    """
+    captured = _wcs_grid_capture(monkeypatch)
+
+    fetch_ogc_layer(
+        url="https://example.test/geoserver/wcs",
+        layer_name="cov",
+        bbox=FORT_MYERS_BBOX,
+        crs="EPSG:4326",
+        service_type="WCS",
+        image_format="GeoTIFF",
+        version="1.0.0",
+        width_px=512,
+        height_px=256,
+        target_resolution_m=10.0,  # ignored — explicit dims win
+    )
+    assert captured["params"]["WIDTH"] == "512"
+    assert captured["params"]["HEIGHT"] == "256"
+
+
+def test_catalog_fetch_imageserver_uses_entry_native_resolution(
+    fake_storage_patched, monkeypatch
+):
+    """3DEP ImageServer Tier-2 dispatch auto-targets the entry's 10 m native_resolution_m.
+
+    With no caller-supplied width/height or target_resolution_m, the dispatch
+    forwards the entry's native_resolution_m so the exportImage ``size`` is an
+    extent-aware grid at 10 m (vs the old fixed 1024).
+    """
+    captured: dict = {}
+
+    def _fake_get(url, params=None, headers=None, timeout=None, **_kw):
+        captured["url"] = url
+        captured["params"] = params
+        return _FakeOGCResponse(
+            content=b"II*\x00" + b"\x00" * 256, content_type="image/tiff"
+        )
+
+    monkeypatch.setattr(ogc_mod.requests, "get", _fake_get)
+
+    result = catalog_fetch(
+        entry_id="usgs-3dep-elevation-image-service",
+        params={"bbox": list(FORT_MYERS_BBOX)},
+    )
+    assert result["access_tier"] == 2
+    # size is "<w>,<h>"; with native 10 m on the Fort Myers bbox it is NOT the
+    # old fixed 1024,1024 and both axes are extent-aware (> 0, <= 4096).
+    size = captured["params"]["size"]
+    w_str, h_str = size.split(",")
+    w, h = int(w_str), int(h_str)
+    assert size != "1024,1024", size
+    assert 0 < w <= 4096 and 0 < h <= 4096, size
+
+
 def test_ogc_adapter_surfaces_exception_xml(monkeypatch):
     """An OGC ExceptionReport XML body raises OGCAdapterError, not silently cached."""
 

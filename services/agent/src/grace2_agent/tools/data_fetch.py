@@ -1204,20 +1204,32 @@ def _iso3_for_lonlat(lon: float, lat: float) -> str | None:
     return None
 
 
-def _worldpop_url_for(iso3: str, year: int) -> str:
-    """Compose the WorldPop 1km aggregated GeoTIFF URL for a country/year.
+def _worldpop_url_for(iso3: str, year: int, resolution_m: int = 1000) -> str:
+    """Compose the WorldPop GeoTIFF URL for a country/year at a given resolution.
 
-    Uses the ``Global_2000_2020_1km/<YEAR>/<ISO3>/<iso3_lower>_ppp_<YEAR>_1km_Aggregated.tif``
+    Default (``resolution_m=1000``) uses the
+    ``Global_2000_2020_1km/<YEAR>/<ISO3>/<iso3_lower>_ppp_<YEAR>_1km_Aggregated.tif``
     convention from the WorldPop GIS Data hub — the 1km-aggregated product
     is ~50MB per country (USA), vs the 100m UN-adjusted product at ~4GB.
-    The substrate uses 1km because the WorldPop server does not support HTTP
-    range requests, so a 4GB whole-country download per cache miss is
-    impractical even with the 30-day cache window (see
-    OQ-37-WORLDPOP-RESOLUTION-VS-RANGE for the resolution-vs-tractability
-    trade-off; the 1km product is sufficient for exposure analysis at the
-    bbox scales typical of M5/Fort-Myers-class demos).
+    The 1km default is used because the WorldPop server does not support HTTP
+    range requests, so a 4GB whole-country download per cache miss is costly
+    even with the 30-day cache window (see OQ-37-WORLDPOP-RESOLUTION-VS-RANGE
+    for the resolution-vs-tractability trade-off; the 1km product is
+    sufficient for exposure analysis at the bbox scales typical of
+    M5/Fort-Myers-class demos).
+
+    Phase-2 resolution lever: pass ``resolution_m <= 100`` to opt into the
+    native 100m UN-adjusted product from the base ``Global_2000_2020`` tree
+    (``<iso3_lower>_ppp_<YEAR>_UNadj.tif`` — note: NO ``_1km`` segment, the
+    ``_UNadj`` suffix). That file is a ~4GB upstream whole-country download
+    per cache miss, so it is opt-in only.
     """
     iso3_l = iso3.lower()
+    if resolution_m <= 100:
+        return (
+            f"https://data.worldpop.org/GIS/Population/Global_2000_2020/{year}/"
+            f"{iso3}/{iso3_l}_ppp_{year}_UNadj.tif"
+        )
     return (
         f"https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/{year}/"
         f"{iso3}/{iso3_l}_ppp_{year}_1km_Aggregated.tif"
@@ -1225,19 +1237,24 @@ def _worldpop_url_for(iso3: str, year: int) -> str:
 
 
 def _fetch_worldpop_population_bytes(
-    bbox: tuple[float, float, float, float], dataset: str
+    bbox: tuple[float, float, float, float],
+    dataset: str,
+    target_resolution_m: int = 1000,
 ) -> bytes:
-    """Fetch a windowed COG of WorldPop 1km-aggregated population for ``bbox``.
+    """Fetch a windowed COG of WorldPop population for ``bbox``.
 
-    The WorldPop product is published as a single GeoTIFF per (year, country)
-    at ~50MB (1km aggregated). Because the WorldPop server does not support
-    HTTP range requests, we download the full country file once to a tmp
-    file, then use rasterio to read the windowed sub-region and rewrite it
-    as a small Cloud-Optimized GeoTIFF for the cache. Subsequent calls hit
-    the GCS cache (30-day TTL) and skip the full download.
+    The WorldPop product is published as a single GeoTIFF per (year, country):
+    ~50MB at the 1km-aggregated default, or ~4GB at the 100m UN-adjusted
+    native product (``target_resolution_m <= 100``). Because the WorldPop
+    server does not support HTTP range requests, we download the full country
+    file once to a tmp file, then use rasterio to read the windowed sub-region
+    and rewrite it as a small Cloud-Optimized GeoTIFF for the cache.
+    Subsequent calls hit the cache (30-day TTL) and skip the full download.
 
     ``dataset`` shape: ``worldpop_<YEAR>`` (e.g. ``worldpop_2020``). The year
     is parsed off the suffix and routed to the corresponding WorldPop URL.
+    ``target_resolution_m`` selects the 1km (default) vs 100m product; the
+    100m path is a ~4GB upstream country download per cache miss (opt-in cost).
     """
     _validate_bbox(bbox)
     if not dataset.startswith("worldpop_"):
@@ -1260,7 +1277,7 @@ def _fetch_worldpop_population_bytes(
             "WorldPop branch needs an envelope match for the country file URL"
         )
 
-    url = _worldpop_url_for(iso3, year)
+    url = _worldpop_url_for(iso3, year, target_resolution_m)
 
     # rasterio is pulled in transitively by rioxarray; import lazily so test
     # environments without it can still load the registry.
@@ -1504,6 +1521,7 @@ def _state_fips_for_lonlat(lon: float, lat: float) -> str | None:
 def fetch_population(
     bbox: tuple[float, float, float, float],
     dataset: str = "worldpop_2020",
+    target_resolution_m: int = 1000,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -1541,6 +1559,14 @@ def fetch_population(
             once the v2024B file URLs stabilize (currently the Global_2000_2020
             tree is the canonical analytical product; tracked as
             OQ-37-WORLDPOP-VINTAGE-YEAR).
+        target_resolution_m: ground cell size for the WorldPop branch.
+            Default ``1000`` (the 1km-aggregated product, ~50MB per country —
+            unchanged). Pass ``100`` (or any value ``<= 100``) to opt into the
+            native 100m UN-adjusted product. WARNING: the 100m path is a ~4 GB
+            upstream whole-country download per cache miss (WorldPop does not
+            support HTTP range requests), so 100m is opt-in for its cost.
+            Distinct cache keys per resolution (100m vs 1km do not collide).
+            Ignored by the ACS branch.
 
     Returns:
         A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF (WorldPop branch)
@@ -1561,12 +1587,20 @@ def fetch_population(
         # FR-DC-4 dedup, and the ACS branch (when opted into) is happy with
         # the same grid since tracts are coarser than 100m anyway.
         quantized = round_bbox_to_resolution(bbox, 100)
-        params = {"bbox": list(quantized), "dataset": dataset}
+        # target_resolution_m enters the cache params so 100m vs 1km fetches
+        # get distinct cache keys (they are different upstream products).
+        params = {
+            "bbox": list(quantized),
+            "dataset": dataset,
+            "target_resolution_m": target_resolution_m,
+        }
         result = read_through(
             metadata=_FETCH_POPULATION_METADATA,
             params=params,
             ext="tif",
-            fetch_fn=lambda: _fetch_worldpop_population_bytes(quantized, dataset),
+            fetch_fn=lambda: _fetch_worldpop_population_bytes(
+                quantized, dataset, target_resolution_m
+            ),
         )
         assert result.uri is not None
         return LayerURI(
