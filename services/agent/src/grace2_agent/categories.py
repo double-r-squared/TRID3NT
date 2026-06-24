@@ -307,6 +307,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # noaa-goes18 S3 ABI-L2-MCMIPC archive (any past date) -- filed alongside
     # fetch_goes_animation, cross-listed to 'fire' via SECONDARY_CATEGORIES.
     "fetch_goes_archive_animation": "weather_atmosphere",
+    # GOES GLM optical-lightning group-energy-density (filed in weather next to
+    # the GOES ABI fetchers; cross-listed to 'fire' via SECONDARY_CATEGORIES since
+    # lightning is the dominant wildfire-ignition source).
+    "fetch_glm_lightning": "weather_atmosphere",
     "fetch_era5_reanalysis": "weather_atmosphere",
     "fetch_asos_metar": "weather_atmosphere",
     "fetch_raws_weather": "weather_atmosphere",
@@ -520,6 +524,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # materially belongs to the weather_atmosphere lane too (it reads raw GOES ABI
     # like its fetch_goes_satellite / fetch_goes_archive_animation siblings).
     "fetch_goes_active_fire": ("weather_atmosphere",),
+    # GLM lightning density is primary weather_atmosphere but cross-lists to fire:
+    # lightning is the dominant natural wildfire-ignition source, so "what could
+    # have started this fire" / fire-weather routing should surface it.
+    "fetch_glm_lightning": ("fire",),
     # The image polish/enhance tool is a generic geographic_primitives raster
     # primitive (composable on ANY RGB COG) but materially belongs to the
     # weather_atmosphere lane too -- it is the cosmetic finishing pass a user
