@@ -1,25 +1,28 @@
-// GRACE-2 web - BboxProgressOverlay (NATE map/loading-UX polish, item 1).
+// GRACE-2 web - BboxProgressOverlay (NATE map/loading-UX SIMPLIFICATION).
 //
-// A loading animation anchored to the projected AOI bbox screen rectangle (the
-// SAME `aoiScreenRect` the LayerLegend + SequenceScrubber pin against, lifted
-// from Map.tsx via onAoiScreenRectChange). It communicates "the map is working"
-// without a separate spinner chrome, and degrades honestly:
+// A single loading animation anchored to the projected AOI bbox screen rectangle
+// (the SAME `aoiScreenRect` the LayerLegend + SequenceScrubber pin against,
+// lifted from Map.tsx via onAoiScreenRectChange). It communicates "the map is
+// working, fetching the first layers" without a separate spinner chrome.
 //
-//   - mode "fill"  -> a FILL-GRID SHIMMER inside the bbox (futuristic waving
-//     fill). Used on the FIRST layer fetch when nothing is on the map yet, so
-//     covering the box is fine.
-//   - mode "scan"  -> a SCAN-BORDER: a bright segment sweeping AROUND the bbox
-//     edge. Used for subsequent loads / connecting / a running sim, so it never
-//     covers existing layers. `tone` picks blue (loading / connecting) or purple
-//     (a long-running sim - matches the sim pipeline-card color).
+// NATE 2026-06-24: there used to be TWO visuals - a sweeping SCAN-BORDER and a
+// FILL-GRID. NATE asked to drop the scan entirely and keep ONLY the polished
+// grid, shown only when there are truly no layers yet. So the only mode this
+// component renders is "fill" (the grid). The "scan" mode is no longer produced
+// by resolveBboxProgress and is no longer rendered here (a defensive no-op keeps
+// the component from drawing anything if a stale "scan" ever arrives).
+//
+//   - mode "fill"  -> a polished FILL-GRID SHIMMER inside the bbox: a faint grid
+//     lattice with a soft vertical sheen that drifts down through the box. Used
+//     while the FIRST layers fetch (zero layers on the map yet), so covering the
+//     box is fine; it clears the instant the first layer paints.
 //
 // The state DECISION lives in lib/bbox_progress.resolveBboxProgress (pure +
-// unit-tested); this component is the render half: given a rect + mode + tone it
-// paints the right animation. It is purely presentational - no signals logic.
+// unit-tested); this component is the render half: given a rect + mode it paints
+// the grid. It is purely presentational - no signals logic.
 //
-// prefers-reduced-motion: the sweeping/shimmering motion is replaced by a
-// SUBTLE STATIC state (a faint static fill tint for "fill", a faint static
-// border for "scan"), so the cue still reads without motion.
+// prefers-reduced-motion: the drifting sheen is replaced by a SUBTLE STATIC
+// grid + tint, so the "loading" cue still reads without motion.
 //
 // pointer-events:none throughout - the overlay never intercepts map gestures.
 
@@ -42,13 +45,6 @@ export interface BboxProgressOverlayProps {
   reducedMotionOverride?: boolean;
 }
 
-// Tone -> CSS color. Blue mirrors the bbox-pick accent (#3b82f6 family); purple
-// mirrors the sim-in-progress pipeline-card color (#a855f7 family).
-const TONE_COLOR: Record<BboxProgressTone, string> = {
-  blue: "#4aa3ff",
-  purple: "#a855f7",
-};
-
 // Keyframes are injected once at module-eval (idempotent, id-guarded), mirroring
 // App.tsx's ensureAppSpinKeyframes pattern. SSR/test-safe (no-op without document).
 const KEYFRAMES_ID = "grace2-bbox-progress-keyframes";
@@ -57,26 +53,17 @@ function ensureKeyframes(): void {
   if (document.getElementById(KEYFRAMES_ID)) return;
   const style = document.createElement("style");
   style.id = KEYFRAMES_ID;
+  // ONE keyframe: the polished grid shimmer. NATE 2026-06-24 dropped the scan,
+  // so the scan-sweep + border-pulse keyframes are gone. The grid's soft sheen
+  // band drifts smoothly down through the box (background-position) while a
+  // gentle opacity breathe keeps it from reading as a hard scan line. The grid
+  // lattice (the other two background layers) is held STILL - only the sheen
+  // moves - so the box outline never appears to grow / shrink / jitter.
   style.textContent = `
 @keyframes grace2-bbox-fill-shimmer {
-  0%   { background-position: 0% 0%, 0 0, 0 0; opacity: 0.35; }
-  50%  { opacity: 0.6; }
-  100% { background-position: 0% 200%, 0 0, 0 0; opacity: 0.35; }
-}
-@keyframes grace2-bbox-scan-sweep {
-  /* NATE 2026-06-22 (item 3): the sweep must cross the FULL bbox extent. The
-     sweep bar is 40% of the frame width, anchored at left:0. To travel from
-     fully off the LEFT edge (its right edge at frame-left) to fully off the
-     RIGHT edge (its left edge at frame-right) it shifts from -100% of its own
-     width to +250% (0.40 * 2.5 = 1.0 frame width past the left edge). The old
-     +100% stopped the bar at 80% across, never reaching the right edge. */
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
-}
-@keyframes grace2-bbox-border-pulse {
-  0%   { opacity: 0.45; }
-  50%  { opacity: 0.9; }
-  100% { opacity: 0.45; }
+  0%   { background-position: 0% -100%, 0 0, 0 0; opacity: 0.40; }
+  50%  { opacity: 0.62; }
+  100% { background-position: 0% 200%, 0 0, 0 0; opacity: 0.40; }
 }
 `;
   document.head.appendChild(style);
@@ -94,7 +81,10 @@ export function BboxProgressOverlay({
     ensureKeyframes();
   }, []);
 
-  if (mode === "none" || !rect) return null;
+  // NATE 2026-06-24: ONLY the grid ("fill") renders now. The resolver never
+  // returns "scan", but be defensive - any non-"fill" mode (none / a stale scan)
+  // draws nothing.
+  if (mode !== "fill" || !rect) return null;
 
   const width = rect.right - rect.left;
   const height = rect.bottom - rect.top;
@@ -104,7 +94,8 @@ export function BboxProgressOverlay({
     reducedMotionOverride !== undefined
       ? reducedMotionOverride
       : prefersReducedMotion();
-  const color = TONE_COLOR[tone];
+  // `tone` is retained on the props for back-compat; the grid is always blue.
+  void tone;
 
   // The anchored frame: absolutely positioned over the bbox extent. position is
   // relative to the map container (which fills the viewport), matching the
@@ -123,101 +114,51 @@ export function BboxProgressOverlay({
     borderRadius: 4,
   };
 
-  if (mode === "fill") {
-    // FILL-GRID SHIMMER: a faint grid lattice + a vertical sheen that waves
-    // through the box. Reduced-motion -> a static faint tint + grid (no wave).
-    const gridColor = "rgba(74,163,255,0.18)";
-    const fillStyle: React.CSSProperties = reduced
-      ? {
-          ...frameStyle,
-          // Static: a faint tint + grid so the "filling" cue still reads.
-          background: `
-            linear-gradient(${gridColor} 1px, transparent 1px) 0 0 / 100% 22px,
-            linear-gradient(90deg, ${gridColor} 1px, transparent 1px) 0 0 / 22px 100%,
-            rgba(74,163,255,0.06)`,
-          opacity: 0.5,
-          border: `1px solid rgba(74,163,255,0.30)`,
-        }
-      : {
-          ...frameStyle,
-          background: `
-            linear-gradient(180deg, rgba(74,163,255,0.0) 0%, rgba(74,163,255,0.22) 50%, rgba(74,163,255,0.0) 100%) 0 0 / 100% 200%,
-            linear-gradient(${gridColor} 1px, transparent 1px) 0 0 / 100% 22px,
-            linear-gradient(90deg, ${gridColor} 1px, transparent 1px) 0 0 / 22px 100%`,
-          border: `1px solid rgba(74,163,255,0.30)`,
-          animation: "grace2-bbox-fill-shimmer 2.2s ease-in-out infinite",
-        };
-    return (
-      <div
-        data-testid="grace2-bbox-progress-overlay"
-        data-mode="fill"
-        data-reduced={reduced ? "true" : "false"}
-        aria-hidden
-        style={fillStyle}
-      />
-    );
-  }
-
-  // mode === "scan": a single sweeping highlight bar that travels across the
-  // FULL bbox extent (never covers the interior persistently, so existing
-  // layers stay visible). The cue is the sweep ON the existing AOI box.
-  //
-  // SINGLE BOX (NATE 2026-06-23, item 5): the on-map analysis-extent rectangle
-  // (Map.drawAnalysisExtent) is the ONE AOI box, and this overlay arms ONLY when
-  // that box is projected (aoiScreenRect). So the overlay must NOT draw its OWN
-  // outline - a solid/pulsing border read as a SECOND box stacked on the AOI
-  // rectangle (the reported "doubled box"). We drop the overlay border for BOTH
-  // tones and apply the effect (the sweep + a soft glow, no outline) directly
-  // over the single on-map box:
-  //   - SIM (purple): the on-map box ALSO recolors purple
-  //     (Map.setAnalysisExtentSimColor); the overlay adds only the sweep.
-  //   - LOADING / CONNECTING (blue): the on-map box keeps its normal blue; the
-  //     overlay adds the sweep + a faint glow on the SAME box.
-  // Either way there is exactly ONE rectangle, and the scan sweeps its full
-  // extent (the keyframe travels -100% -> 250% so the bar clears the right edge).
-  const scanBorderStyle: React.CSSProperties = reduced
+  // FILL-GRID SHIMMER (the ONE polished loading visual). A faint blue grid
+  // lattice with a soft vertical sheen band that drifts down through the box.
+  // Polish (NATE 2026-06-24):
+  //   - a slightly finer 20px cell + a touch lighter grid line so it reads as a
+  //     crisp lattice, not heavy bars;
+  //   - the sheen band is taller (a smooth 200% travel) and uses ease-in-out so
+  //     it glides rather than snaps;
+  //   - a single thin border + a soft inset glow so the box edge reads cleanly
+  //     over terrain / basemap without a second pulsing outline.
+  // The grid lattice background layers are held STILL (only the sheen animates),
+  // so the box NEVER appears to grow / shrink - it just shimmers in place.
+  // Reduced-motion -> a static faint tint + grid (no drift).
+  const gridLine = "rgba(74,163,255,0.16)";
+  const gridCell = "20px"; // finer than the old 22px -> crisper lattice.
+  const tint = "rgba(74,163,255,0.05)";
+  const fillStyle: React.CSSProperties = reduced
     ? {
-        // Reduced-motion: a faint static glow on the single box (no outline,
-        // no sweep) so the "working" cue still reads without motion.
         ...frameStyle,
-        boxShadow: `0 0 10px ${color}40`,
-        opacity: 0.7,
+        // Static: a faint tint + grid so the "filling" cue still reads.
+        background: `
+          linear-gradient(${gridLine} 1px, transparent 1px) 0 0 / 100% ${gridCell},
+          linear-gradient(90deg, ${gridLine} 1px, transparent 1px) 0 0 / ${gridCell} 100%,
+          ${tint}`,
+        opacity: 0.5,
+        border: `1px solid rgba(74,163,255,0.28)`,
+        boxShadow: "inset 0 0 12px rgba(74,163,255,0.10)",
       }
     : {
-        // No border (single box); a soft pulsing GLOW conveys "working" on the
-        // existing AOI rectangle without drawing a second outline.
         ...frameStyle,
-        boxShadow: `0 0 8px ${color}55`,
-        animation: "grace2-bbox-border-pulse 1.6s ease-in-out infinite",
+        background: `
+          linear-gradient(180deg, rgba(74,163,255,0.0) 0%, rgba(74,163,255,0.24) 50%, rgba(74,163,255,0.0) 100%) 0 0 / 100% 200%,
+          linear-gradient(${gridLine} 1px, transparent 1px) 0 0 / 100% ${gridCell},
+          linear-gradient(90deg, ${gridLine} 1px, transparent 1px) 0 0 / ${gridCell} 100%,
+          ${tint}`,
+        border: `1px solid rgba(74,163,255,0.28)`,
+        boxShadow: "inset 0 0 12px rgba(74,163,255,0.10)",
+        animation: "grace2-bbox-fill-shimmer 2.4s ease-in-out infinite",
       };
-
   return (
     <div
       data-testid="grace2-bbox-progress-overlay"
-      data-mode="scan"
-      data-tone={tone}
+      data-mode="fill"
       data-reduced={reduced ? "true" : "false"}
       aria-hidden
-      style={scanBorderStyle}
-    >
-      {!reduced ? (
-        // The sweeping highlight bar travels left->right across the box, clipped
-        // to the frame so it reads as a scan line along the top edge band.
-        <div
-          data-testid="grace2-bbox-progress-sweep"
-          aria-hidden
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            height: "100%",
-            width: "40%",
-            background: `linear-gradient(90deg, transparent 0%, ${color}33 50%, transparent 100%)`,
-            animation: "grace2-bbox-scan-sweep 1.8s linear infinite",
-            pointerEvents: "none",
-          }}
-        />
-      ) : null}
-    </div>
+      style={fillStyle}
+    />
   );
 }

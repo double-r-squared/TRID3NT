@@ -306,10 +306,10 @@ export function SettingsPopup({
     writeChatOpacity(tier);
   }
 
-  // NATE item 1 - the bbox loading-animation enable flag (DEFAULT ON). Persisted
-  // here; App re-reads via onBboxAnimationsChange. The connecting scan border is
-  // exempt from this (handled in the resolver), so disabling only silences the
-  // decorative loading animations, not the transport-health cue.
+  // The loading-grid enable flag (DEFAULT ON). Persisted here; App re-reads via
+  // onBboxAnimationsChange. NATE 2026-06-24 simplification: there is now a SINGLE
+  // loading visual - the polished GRID that shows only when there are truly zero
+  // layers loaded (the sweeping scan was removed). This toggle governs that grid.
   const [bboxAnimEnabled, setBboxAnimEnabled] = useState<boolean>(() =>
     readBboxAnimationsEnabled(),
   );
@@ -515,9 +515,9 @@ export function SettingsPopup({
               })}
             </div>
           </div>
-          {/* NATE item 1 - bbox loading-animation toggle (DEFAULT ON). Disabling
-              silences the decorative AOI loading animations; the connecting
-              scan border (transport health) stays on regardless. */}
+          {/* Map loading-grid toggle (DEFAULT ON). Governs the single polished
+              GRID that paints over the AOI only when there are truly zero layers
+              loaded yet (the sweeping scan was removed, NATE 2026-06-24). */}
           <div style={{ ...valueStyle, marginTop: 10 }}>
             <span>Map loading animations</span>
             <button

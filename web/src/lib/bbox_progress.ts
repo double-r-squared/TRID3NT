@@ -1,28 +1,41 @@
 // GRACE-2 web - bbox progress-animation STATE MACHINE + settings persistence.
 //
-// NATE map/loading-UX polish (2026-06-22), item 1. A loading animation anchored
-// to the projected AOI bbox screen rectangle communicates "the map is working":
+// NATE map/loading-UX SIMPLIFICATION (2026-06-24). Originally there were TWO
+// loading visuals over the AOI bbox: a sweeping SCAN-BORDER and a FILL-GRID
+// shimmer, selected per state (first-fetch / subsequent / connecting / sim).
+// NATE: "just stop the scan animations for loading layers and just use the grid
+// one and make sure it is polished, and only appears when there are truly no
+// layers loaded."
 //
-//   - FIRST layer fetch (geolocated, bbox present, NO layers yet)  -> a FILL-GRID
-//     SHIMMER inside the bbox. OK to cover the box (nothing is there yet).
-//   - SUBSEQUENT layer loads (>=1 layer already on the map) -> a SCAN-BORDER (a
-//     line sweeping the bbox EDGE) so it never covers the existing layers.
-//   - CASE LOADING (bbox known, layers incoming) -> the loading animation (scan
-//     when layers exist, fill when empty), same as the two rules above.
-//   - CONNECTING (WS connecting / reconnecting) -> a SCAN-BORDER, ALWAYS ON,
-//     exempt from the user toggle (it is a transport-health cue, not chrome).
-//   - LONG-RUNNING SIM -> a PURPLE scan-border (purple = the sim pipeline-card
-//     color) so a multi-minute solve reads as in-progress on the map.
+// So the state machine is now DEAD SIMPLE - exactly ONE loading visual, the
+// polished GRID (mode "fill"), shown ONLY when there are TRULY zero layers
+// loaded for the active Case and a fetch is in progress:
+//
+//   - hasBbox AND layersLoading AND layerCount === 0  -> FILL (grid).
+//   - everything else (>=1 layer, connecting, a running sim, idle, 3D, replay)
+//     -> NONE.
+//
+// The moment the first layer paints (layerCount >= 1) the grid disappears. The
+// "scan" cases (connecting / sim / subsequent-load) are GONE: connecting is a
+// transport cue carried elsewhere (the wake/connecting chrome), and a running
+// sim no longer paints a box animation. The grid never appears merely because
+// the WS is connecting or a Case was just selected if layers are already loaded.
 //
 // This module is PURE (no React / MapLibre / DOM beyond the localStorage seam):
 // `resolveBboxProgress` maps the live signals -> a render descriptor, and the
 // settings helpers read/write the persisted enable flag. Everything is trivially
 // unit-testable.
 
-/** The visual mode the overlay paints, or "none" when nothing animates. */
+/**
+ * The visual mode the overlay paints, or "none" when nothing animates. Only
+ * "fill" (the polished grid) is ever produced now; "scan" is retained in the
+ * union purely so the BboxProgressOverlay's exhaustive switch + older callers /
+ * fixtures still type-check (the scan render branch is removed). The resolver
+ * never returns "scan".
+ */
 export type BboxProgressMode = "none" | "fill" | "scan";
 
-/** A scan-border color family. "blue" = normal loading, "purple" = a sim. */
+/** A color family kept for the descriptor shape. The grid is always "blue". */
 export type BboxProgressTone = "blue" | "purple";
 
 /** The live signals the overlay state machine reads (all owned by App). */
@@ -75,65 +88,57 @@ export interface BboxProgressState {
 const NONE: BboxProgressState = { mode: "none", tone: "blue", toggleExempt: false };
 
 /**
- * Resolve the live signals into a single render descriptor. Priority order
- * (highest first), matching NATE's spec:
+ * Resolve the live signals into a single render descriptor. NATE's 2026-06-24
+ * simplification: there is exactly ONE loading visual, the polished GRID
+ * ("fill"), and it appears ONLY when there are TRULY zero layers loaded.
  *
  *   1. No bbox anchor                -> nothing to anchor to -> none.
- *   2. CONNECTING (WS not healthy)   -> SCAN, blue, ALWAYS ON (toggle-exempt).
- *   3. animations disabled by user   -> none (only the connecting cue survives,
- *                                       and it was already handled above).
- *   4. LONG-RUNNING SIM              -> SCAN, PURPLE (sim-in-progress color).
- *   5. LOADING + layers already exist-> SCAN, blue (must not cover layers).
- *   6. LOADING + no layers yet       -> FILL shimmer (first fetch; ok to cover).
- *   7. otherwise                     -> none.
+ *   2. 3D terrain mode               -> none (the 2D axis-aligned grid cannot
+ *                                       trace a tilted box; the AOI line stays
+ *                                       statically visible in 3D instead).
+ *   3. animations disabled by user   -> none (the grid is decorative chrome).
+ *   4. At least one layer is loaded  -> none. The grid is for the "truly no
+ *                                       layers yet" state; the moment >=1 layer
+ *                                       is present it disappears - regardless of
+ *                                       connecting / sim / a re-fetch.
+ *   5. Actively loading + zero layers-> FILL grid (the one polished visual).
+ *   6. otherwise                     -> none.
  *
- * The connecting cue is checked BEFORE the enable toggle so it is never
- * suppressed (it is a transport-health signal, not decorative chrome). Every
- * other state is gated on `animationsEnabled`.
+ * Note the previous SCAN cases (connecting / running-sim / subsequent-load) are
+ * intentionally GONE: connecting is a transport cue carried by the wake chrome,
+ * and a running sim no longer animates the box. `connecting` and `simRunning`
+ * are still accepted in the signal shape (back-compat) but they no longer
+ * produce any box animation on their own - only "truly zero layers + loading"
+ * does. This also means the grid is NOT shown merely because the socket is
+ * connecting or a Case was just selected when layers are already present.
  */
 export function resolveBboxProgress(s: BboxProgressSignals): BboxProgressState {
   // 1. Nothing to anchor against.
   if (!s.hasBbox) return NONE;
 
-  // LANE E (3D): in 3D terrain mode the 2D DOM overlay can only be axis-aligned
-  //    so it floats off the tilted/pitched AOI box. Suppress the 2D overlay for
-  //    the CONNECTING / SIM / LOADING states; the in-map line-layer pulse-glow
-  //    (terrain_3d.ts) carries the "working" cue instead. Checked first so 3D
-  //    never paints a misaligned scan, including the toggle-exempt connecting
-  //    one. (When 3D is off this branch is a no-op and 2D behaves as before.)
+  // 2. 3D terrain: the 2D DOM grid is axis-aligned and cannot trace a pitched /
+  //    rotated AOI box, so it floats off and "looks weird". Suppress it; in 3D
+  //    the real on-map AOI line layer stays statically visible (terrain_3d.ts no
+  //    longer pulse-scales it), which is the cue. (No-op when 3D is off.)
   if (s.terrain3d) return NONE;
 
-  // 2. Connecting / reconnecting: a blue scan border, ALWAYS ON. Highest
-  //    priority after the anchor gate so a transport drop is always visible.
-  if (s.connecting) {
-    return { mode: "scan", tone: "blue", toggleExempt: true };
-  }
-
-  // 3. The user turned the loading animations off: every remaining state below
-  //    is decorative loading chrome, so suppress them. (The connecting border
-  //    above already returned, so it stays on regardless.)
+  // 3. The user turned the loading animation off (the grid is decorative).
   if (!s.animationsEnabled) return NONE;
 
-  // 4. A long-running sim takes the PURPLE scan border (matches the
-  //    sim-in-progress pipeline-card color) so a multi-minute solve reads as
-  //    in-progress on the map, even when no new layers are loading.
-  if (s.simRunning) {
-    return { mode: "scan", tone: "purple", toggleExempt: false };
-  }
+  // 4. STRICT ZERO-LAYERS GATE (NATE 2026-06-24): the grid is ONLY for the
+  //    "truly no layers loaded yet" state. The instant the active Case has >=1
+  //    layer painted, the grid must disappear - even if a re-fetch / reconnect /
+  //    sim is in flight. This single guard subsumes the old suppressLoadingReplay
+  //    special-case: any layers-present context is a no-show.
+  if (s.layerCount > 0) return NONE;
 
-  // 5. Loading a Case / a layer. LANE C: NATE wants the GRID-FILL shimmer as the
-  //    desktop loading visual (not the sweeping scan line), so emit FILL for the
-  //    loading state regardless of layerCount. The fill grid lattice is faint /
-  //    translucent so it does not hide existing layers. LANE B #4: but when the
-  //    active Case + bbox are unchanged and layers are already present (a
-  //    re-enter / same-bbox switch, no genuine new fetch), suppress the replay so
-  //    the shimmer does NOT re-arm over already-rendered layers.
+  // 5. Actively loading AND zero layers -> the polished FILL grid (the one and
+  //    only loading visual). It is faint / translucent and sits inside the box.
   if (s.layersLoading) {
-    if (s.suppressLoadingReplay && s.layerCount > 0) return NONE;
     return { mode: "fill", tone: "blue", toggleExempt: false };
   }
 
-  // 6. Idle.
+  // 6. Idle (bbox present, nothing loading, no layers) -> none.
   return NONE;
 }
 

@@ -8,7 +8,7 @@
 //     adds the DEM source + hillshade + sky + setTerrain + unlocks pitch on
 //     enable; tears it all down + re-locks 2D on remove; idempotent + defensive.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   LS_TERRAIN_3D,
   LS_CONTOURS,
@@ -19,6 +19,7 @@ import {
   buildTerrainDemSource,
   applyTerrain3d,
   removeTerrain3d,
+  startAoiPulseGlow,
   AWS_TERRAIN_TERRARIUM_TEMPLATE,
   TERRAIN_DEM_SOURCE_ID,
   TERRAIN_HILLSHADE_LAYER_ID,
@@ -32,6 +33,7 @@ import {
   buildFlat2dCameraPose,
   type TerrainMapLike,
   type TerrainDemSourceSpec,
+  type PulseGlowMapLike,
 } from "./terrain_3d";
 
 describe("terrain_3d - persistence", () => {
@@ -221,5 +223,112 @@ describe("terrain_3d - removeTerrain3d", () => {
     const { m, raw } = makeMapStub();
     expect(() => removeTerrain3d(m)).not.toThrow();
     expect(raw.setTerrain).toHaveBeenCalledWith(null);
+  });
+});
+
+// --- ISSUE 1 (NATE 2026-06-24): the 3D AOI pulse-glow must NOT scale the box -//
+//
+// The glow used to sine-animate `line-width` (1.5 <-> 3.5), which under a pitched
+// 3D camera reads as the dashed AOI box GROWING and SHRINKING ("gets large and
+// small ... hard to see"). The fix keeps geometry size CONSTANT: only
+// line-opacity + line-blur animate. These tests drive the rAF loop by capturing
+// the tick callback and invoking it at several timestamps, then assert NO
+// line-width change off the constant ever happens.
+
+describe("startAoiPulseGlow - GEOMETRY-STABLE (no line-width animation)", () => {
+  const LAYER_ID = "grace2-analysis-extent-line";
+
+  // A stub map that records every setPaintProperty(name -> values[]) call.
+  function makeGlowMap() {
+    const calls: Record<string, unknown[]> = {};
+    const m: PulseGlowMapLike = {
+      getLayer: () => ({}), // layer always present.
+      setPaintProperty: (_layerId: string, name: string, value: unknown) => {
+        (calls[name] ??= []).push(value);
+      },
+    };
+    return { m, calls };
+  }
+
+  // Capture rAF callbacks so the test can step the loop deterministically.
+  let rafCb: FrameRequestCallback | null;
+  beforeEach(() => {
+    rafCb = null;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafCb = cb;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {
+      rafCb = null;
+    });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function step(now: number): void {
+    const cb = rafCb;
+    rafCb = null; // the loop re-registers via rAF, capturing the next cb.
+    cb?.(now);
+  }
+
+  it("NEVER sets line-width to anything but the constant 1.5 across the cycle", () => {
+    const { m, calls } = makeGlowMap();
+    const handle = startAoiPulseGlow(m, LAYER_ID);
+    // Drive a full sine cycle (trough -> peak -> trough) at several phases.
+    [0, 200, 400, 800, 1200, 1600].forEach(step);
+    handle.stop();
+
+    // Every line-width value ever set is exactly the static constant 1.5 - the
+    // box size never changes (this is the whole Issue-1 fix).
+    const widths = calls["line-width"] ?? [];
+    expect(widths.length).toBeGreaterThan(0); // it does assert the constant.
+    for (const w of widths) {
+      expect(w).toBe(1.5);
+    }
+  });
+
+  it("DOES animate line-opacity + line-blur (the glow still reads)", () => {
+    const { m, calls } = makeGlowMap();
+    const handle = startAoiPulseGlow(m, LAYER_ID);
+    [0, 400, 800].forEach(step);
+    handle.stop();
+
+    const opacities = (calls["line-opacity"] ?? []) as number[];
+    const blurs = (calls["line-blur"] ?? []) as number[];
+    // Opacity + blur both got animated values during the loop.
+    expect(opacities.length).toBeGreaterThanOrEqual(2);
+    expect(blurs.length).toBeGreaterThanOrEqual(2);
+    // The opacity actually varies (not a single constant) -> a real pulse.
+    const distinctOpacities = new Set(opacities.map((v) => v.toFixed(3)));
+    expect(distinctOpacities.size).toBeGreaterThan(1);
+    // Opacity stays within the [0.55, 1.0] glow band.
+    for (const o of opacities) {
+      expect(o).toBeGreaterThanOrEqual(0.55 - 1e-9);
+      expect(o).toBeLessThanOrEqual(1.0 + 1e-9);
+    }
+  });
+
+  it("stop() restores the static line paint (width 1.5, opacity 0.9, blur 0)", () => {
+    const { m, calls } = makeGlowMap();
+    const handle = startAoiPulseGlow(m, LAYER_ID);
+    [0, 400].forEach(step);
+    handle.stop();
+    // The last write of each property after stop() is the static restore.
+    const widths = (calls["line-width"] ?? []) as number[];
+    const opacities = (calls["line-opacity"] ?? []) as number[];
+    const blurs = (calls["line-blur"] ?? []) as number[];
+    expect(widths.at(-1)).toBe(1.5);
+    expect(opacities.at(-1)).toBe(0.9);
+    expect(blurs.at(-1)).toBe(0);
+  });
+
+  it("stop() is idempotent and start is a safe no-op without rAF", () => {
+    const { m } = makeGlowMap();
+    const handle = startAoiPulseGlow(m, LAYER_ID);
+    expect(() => {
+      handle.stop();
+      handle.stop();
+    }).not.toThrow();
   });
 });

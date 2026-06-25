@@ -1,4 +1,9 @@
-// GRACE-2 web - BboxProgressOverlay render tests (NATE item 1).
+// GRACE-2 web - BboxProgressOverlay render tests.
+//
+// NATE 2026-06-24 simplification: ONLY the polished GRID ("fill") renders now;
+// the SCAN mode is gone (resolveBboxProgress never returns it, and the component
+// no longer draws anything for it). These tests assert the grid renders + is
+// polished, and that any stray "scan" mode draws NOTHING.
 
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -7,7 +12,7 @@ import type { ScreenRect } from "../lib/legend_snap";
 
 const RECT: ScreenRect = { left: 100, top: 100, right: 300, bottom: 260 };
 
-describe("BboxProgressOverlay", () => {
+describe("BboxProgressOverlay - grid only (scan removed)", () => {
   it("renders nothing when mode is none", () => {
     render(<BboxProgressOverlay rect={RECT} mode="none" tone="blue" />);
     expect(screen.queryByTestId("grace2-bbox-progress-overlay")).toBeNull();
@@ -18,7 +23,7 @@ describe("BboxProgressOverlay", () => {
     expect(screen.queryByTestId("grace2-bbox-progress-overlay")).toBeNull();
   });
 
-  it("renders a FILL overlay anchored to the rect", () => {
+  it("renders a FILL grid overlay anchored to the rect", () => {
     render(<BboxProgressOverlay rect={RECT} mode="fill" tone="blue" />);
     const el = screen.getByTestId("grace2-bbox-progress-overlay");
     expect(el.getAttribute("data-mode")).toBe("fill");
@@ -28,7 +33,31 @@ describe("BboxProgressOverlay", () => {
     expect(el.style.height).toBe("160px");
   });
 
-  it("renders a blue SCAN border with a sweep when motion is allowed", () => {
+  it("the FILL grid animates (motion allowed) and never intercepts pointers", () => {
+    render(
+      <BboxProgressOverlay
+        rect={RECT}
+        mode="fill"
+        tone="blue"
+        reducedMotionOverride={false}
+      />,
+    );
+    const el = screen.getByTestId("grace2-bbox-progress-overlay");
+    // The polished grid shimmer animation is applied (the ONE drifting cue).
+    expect(el.style.animation).toContain("grace2-bbox-fill-shimmer");
+    // A clean single frame: a thin border + a soft inset glow (the polish), and
+    // it never intercepts pointers. (The multi-layer linear-gradient grid
+    // BACKGROUND is set in code but happy-dom's CSS parser drops the unparsable
+    // multi-layer `background` shorthand, so we assert the serializable polish
+    // props instead - the keyframe test below proves the grid shimmer exists.)
+    expect(el.style.border).toContain("solid");
+    expect(el.style.boxShadow).toContain("inset");
+    expect(el.style.pointerEvents).toBe("none");
+  });
+
+  // SCAN IS GONE: passing the (now never-produced) "scan" mode renders nothing,
+  // so there is no second box / sweep / pulsing border anywhere.
+  it("mode 'scan' renders NOTHING (the scan path was removed)", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -37,14 +66,12 @@ describe("BboxProgressOverlay", () => {
         reducedMotionOverride={false}
       />,
     );
-    const el = screen.getByTestId("grace2-bbox-progress-overlay");
-    expect(el.getAttribute("data-mode")).toBe("scan");
-    expect(el.getAttribute("data-tone")).toBe("blue");
-    // The sweeping highlight bar is present when not reduced-motion.
-    expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
+    expect(screen.queryByTestId("grace2-bbox-progress-overlay")).toBeNull();
+    // The sweeping scan bar no longer exists at all.
+    expect(screen.queryByTestId("grace2-bbox-progress-sweep")).toBeNull();
   });
 
-  it("renders a PURPLE scan for a sim with NO static border box (item 4 + item 5)", () => {
+  it("mode 'scan' renders nothing for the purple (sim) tone either", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -53,66 +80,23 @@ describe("BboxProgressOverlay", () => {
         reducedMotionOverride={false}
       />,
     );
-    const el = screen.getByTestId("grace2-bbox-progress-overlay");
-    expect(el.getAttribute("data-tone")).toBe("purple");
-    // NATE item 4: the on-map AOI rectangle ITSELF recolors purple, so the
-    // overlay must NOT draw its own solid border (that read as a SECOND box).
-    // The sim frame carries no border; only the moving sweep runs on the box.
-    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
-    expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
+    expect(screen.queryByTestId("grace2-bbox-progress-overlay")).toBeNull();
+    expect(screen.queryByTestId("grace2-bbox-progress-sweep")).toBeNull();
   });
 
-  it("the BLUE (loading) scan draws NO border either - single box (item 5)", () => {
-    render(
-      <BboxProgressOverlay
-        rect={RECT}
-        mode="scan"
-        tone="blue"
-        reducedMotionOverride={false}
-      />,
-    );
-    const el = screen.getByTestId("grace2-bbox-progress-overlay");
-    // NATE item 5 (2026-06-23): the overlay arms only when the on-map AOI
-    // rectangle is projected, so it must NOT draw its own outline for the blue
-    // tone either - that read as a SECOND box stacked on the AOI rectangle. The
-    // cue is the sweep + a soft GLOW (box-shadow) on the SAME box, no border.
-    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
-    expect(el.style.boxShadow).not.toBe("");
-    expect(screen.getByTestId("grace2-bbox-progress-sweep")).toBeInTheDocument();
-  });
-
-  it("the scan sweep keyframe travels the FULL extent (translateX 250%) - item 3", () => {
-    render(<BboxProgressOverlay rect={RECT} mode="scan" tone="blue" />);
-    // NATE item 3: the sweep must cross edge-to-edge. The injected keyframe ends
-    // at translateX(250%) (0.40 bar * 2.5 = 1.0 frame past the left edge), not
-    // the old +100% which stopped the bar at 80% across.
+  it("the scan-sweep + border-pulse keyframes are GONE (grid keyframe only)", () => {
+    render(<BboxProgressOverlay rect={RECT} mode="fill" tone="blue" />);
     const style = document.getElementById("grace2-bbox-progress-keyframes");
     expect(style).not.toBeNull();
-    expect(style?.textContent ?? "").toContain("translateX(250%)");
-    expect(style?.textContent ?? "").not.toContain("translateX(100%)");
+    const css = style?.textContent ?? "";
+    // The one remaining keyframe is the grid shimmer.
+    expect(css).toContain("grace2-bbox-fill-shimmer");
+    // The removed scan keyframes are absent.
+    expect(css).not.toContain("grace2-bbox-scan-sweep");
+    expect(css).not.toContain("grace2-bbox-border-pulse");
   });
 
-  it("reduced-motion: scan degrades to a static glow (no sweep bar, no border) - item 5", () => {
-    render(
-      <BboxProgressOverlay
-        rect={RECT}
-        mode="scan"
-        tone="blue"
-        reducedMotionOverride={true}
-      />,
-    );
-    const el = screen.getByTestId("grace2-bbox-progress-overlay");
-    expect(el.getAttribute("data-reduced")).toBe("true");
-    // No animated sweep bar under reduced motion.
-    expect(screen.queryByTestId("grace2-bbox-progress-sweep")).toBeNull();
-    // No CSS animation, and (item 5) no second-box outline - a faint static
-    // glow on the single on-map box is the only cue.
-    expect(el.style.animation === "" || el.style.animation === undefined).toBe(true);
-    expect(el.style.border === "" || el.style.border === undefined).toBe(true);
-    expect(el.style.boxShadow).not.toBe("");
-  });
-
-  it("reduced-motion: fill degrades to a static tint (no animation)", () => {
+  it("reduced-motion: fill degrades to a static grid tint (no animation)", () => {
     render(
       <BboxProgressOverlay
         rect={RECT}
@@ -124,10 +108,13 @@ describe("BboxProgressOverlay", () => {
     const el = screen.getByTestId("grace2-bbox-progress-overlay");
     expect(el.getAttribute("data-reduced")).toBe("true");
     expect(el.style.animation === "" || el.style.animation === undefined).toBe(true);
+    // The static grid frame still reads (border + inset glow); the lattice
+    // BACKGROUND is set in code but happy-dom drops the multi-layer shorthand.
+    expect(el.style.border).toContain("solid");
   });
 
-  it("never intercepts pointer events", () => {
-    render(<BboxProgressOverlay rect={RECT} mode="scan" tone="blue" />);
+  it("never intercepts pointer events (fill)", () => {
+    render(<BboxProgressOverlay rect={RECT} mode="fill" tone="blue" />);
     const el = screen.getByTestId("grace2-bbox-progress-overlay");
     expect(el.style.pointerEvents).toBe("none");
   });

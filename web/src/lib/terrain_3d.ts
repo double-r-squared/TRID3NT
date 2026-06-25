@@ -257,17 +257,21 @@ export function buildTerrainDemSource(
 
 // --- LANE E: 3D AOI line-layer pulse-glow -------------------------------- //
 //
-// In 3D the camera is pitched/rotated, so the 2D axis-aligned scan overlay
-// (BboxProgressOverlay) no longer traces the tilted AOI box and "looks weird"
-// (NATE). resolveBboxProgress returns mode "none" in 3D; this helper carries the
-// "working" cue INSTEAD by pulsing the REAL on-map AOI line layer
-// (ANALYSIS_EXTENT_LINE_LAYER_ID) bright -> normal -> bright. Because the line
-// layer is geographic geometry it drapes over terrain and follows the camera
-// automatically, so the glow always hugs the box.
+// In 3D the camera is pitched/rotated, so the 2D axis-aligned grid overlay
+// (BboxProgressOverlay) no longer traces the tilted AOI box. This helper carries
+// a subtle "working" cue INSTEAD by glowing the REAL on-map AOI line layer
+// (ANALYSIS_EXTENT_LINE_LAYER_ID). Because the line layer is geographic geometry
+// it drapes over terrain and follows the camera automatically, so the glow
+// always hugs the box.
 //
-// A single requestAnimationFrame loop drives a sine wave over line-width,
-// line-opacity, and line-blur (the blur ramps up at the bright peak to read as a
-// true glow halo). The caller owns start/stop; stop() restores the static paint.
+// SCALING FIX (NATE 2026-06-24): the glow used to sine-animate `line-width`
+// (1.5 <-> 3.5). Under a pitched/rotated 3D camera a changing line WIDTH reads as
+// the whole dashed AOI box GROWING and SHRINKING ("gets large and small in the
+// 3D view ... hard to see"). The fix: the geometry size is now CONSTANT - we
+// NEVER touch line-width. Only line-OPACITY and line-BLUR animate (a soft glow
+// halo breathing in place), so the box stays a stable, clearly-visible size
+// while still reading as "active". The caller owns start/stop; stop() restores
+// the static paint.
 
 /** Structural subset of maplibre-gl Map the pulse-glow needs (paint mutation). */
 export interface PulseGlowMapLike {
@@ -282,17 +286,17 @@ export interface AoiPulseGlowHandle {
 }
 
 /** The static (non-glowing) AOI line paint, restored on stop. Matches the
- *  drawAnalysisExtent defaults (line-width 1.5, line-opacity 0.9, no blur). */
+ *  drawAnalysisExtent defaults (line-width 1.5, line-opacity 0.9, no blur). The
+ *  width is the CONSTANT the glow never moves off of. */
 const AOI_STATIC_WIDTH = 1.5;
 const AOI_STATIC_OPACITY = 0.9;
 const AOI_STATIC_BLUR = 0;
 
-/** Glow peak/trough metrics. ~1.6s period matches the existing
- *  grace2-bbox-border-pulse cadence; width 1.5<->3.5, opacity 0.55<->1.0,
- *  blur 0<->2 reads as a bright<->normal pulse with a halo at the peak. */
+/** Glow period (ms). ~1.6s reads as a calm breathe. The glow animates ONLY
+ *  opacity (0.55<->1.0) and blur (0<->2 -> a soft halo at the bright peak). The
+ *  line WIDTH is deliberately NOT animated (see SCALING FIX above) so the box
+ *  never appears to scale in 3D. */
 const GLOW_PERIOD_MS = 1600;
-const GLOW_WIDTH_MIN = 1.5;
-const GLOW_WIDTH_MAX = 3.5;
 const GLOW_OPACITY_MIN = 0.55;
 const GLOW_OPACITY_MAX = 1.0;
 const GLOW_BLUR_MAX = 2;
@@ -302,6 +306,10 @@ const GLOW_BLUR_MAX = 2;
  * `stop()` cancels the loop and restores the static paint. Defensive: a missing
  * layer / torn-down map / absent rAF (SSR / test env) makes start a safe no-op
  * (stop is still callable). The loop self-cancels if the layer disappears.
+ *
+ * IMPORTANT: this NEVER mutates `line-width` - the AOI box keeps a constant size
+ * in 3D. Only `line-opacity` + `line-blur` breathe, so the glow does not read as
+ * the box growing / shrinking under the pitched camera.
  *
  * @param m       the live map (needs getLayer + setPaintProperty)
  * @param layerId the AOI line layer id (ANALYSIS_EXTENT_LINE_LAYER_ID)
@@ -316,9 +324,23 @@ export function startAoiPulseGlow(
     typeof requestAnimationFrame === "function" &&
     typeof cancelAnimationFrame === "function";
 
+  // Assert the constant line width ONCE up front so the glow runs at the stable
+  // static width regardless of any prior paint - then we never touch width again.
+  const setConstantWidth = (): void => {
+    try {
+      if (m.getLayer(layerId)) {
+        m.setPaintProperty(layerId, "line-width", AOI_STATIC_WIDTH);
+      }
+    } catch {
+      /* non-fatal */
+    }
+  };
+
   const setStatic = (): void => {
     try {
       if (!m.getLayer(layerId)) return;
+      // Restore width too (defensive) even though the glow never changed it, so
+      // a stop() always lands on a known-good static paint.
       m.setPaintProperty(layerId, "line-width", AOI_STATIC_WIDTH);
       m.setPaintProperty(layerId, "line-opacity", AOI_STATIC_OPACITY);
       m.setPaintProperty(layerId, "line-blur", AOI_STATIC_BLUR);
@@ -338,11 +360,8 @@ export function startAoiPulseGlow(
       // Sine in [0,1]: 0 at trough, 1 at the bright peak.
       const phase = (now % GLOW_PERIOD_MS) / GLOW_PERIOD_MS;
       const wave = (1 - Math.cos(phase * 2 * Math.PI)) / 2;
-      m.setPaintProperty(
-        layerId,
-        "line-width",
-        GLOW_WIDTH_MIN + (GLOW_WIDTH_MAX - GLOW_WIDTH_MIN) * wave,
-      );
+      // GEOMETRY SIZE IS CONSTANT: only opacity + blur animate (no line-width),
+      // so the box does not appear to grow / shrink in the 3D view.
       m.setPaintProperty(
         layerId,
         "line-opacity",
@@ -366,6 +385,7 @@ export function startAoiPulseGlow(
   }
 
   if (hasRaf) {
+    setConstantWidth();
     rafId = requestAnimationFrame(tick);
   }
   return { stop };

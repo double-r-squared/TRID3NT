@@ -20,61 +20,70 @@ const BASE: BboxProgressSignals = {
   animationsEnabled: true,
 };
 
-describe("resolveBboxProgress - overlay state machine (item 1)", () => {
+describe("resolveBboxProgress - GRID-ONLY, zero-layers-gated (NATE 2026-06-24)", () => {
   it("renders nothing when there is no bbox anchor", () => {
     const s = resolveBboxProgress({ ...BASE, hasBbox: false, layersLoading: true });
     expect(s.mode).toBe("none");
   });
 
-  it("FIRST fetch (loading, no layers yet) -> FILL shimmer", () => {
+  it("FIRST fetch (loading, ZERO layers yet) -> FILL grid (the ONLY visual)", () => {
     const s = resolveBboxProgress({ ...BASE, layersLoading: true, layerCount: 0 });
     expect(s.mode).toBe("fill");
+    expect(s.tone).toBe("blue");
     expect(s.toggleExempt).toBe(false);
   });
 
-  it("SUBSEQUENT load (loading, layers already exist) -> FILL grid (LANE C desktop visual)", () => {
-    // LANE C: the grid-fill shimmer is now the loading visual regardless of
-    // layerCount (the faint translucent grid does not hide existing layers).
-    const s = resolveBboxProgress({ ...BASE, layersLoading: true, layerCount: 3 });
-    expect(s.mode).toBe("fill");
-    expect(s.tone).toBe("blue");
+  // CORE NATE ASK: the grid appears ONLY when there are TRULY zero layers. The
+  // instant a layer is present, NOTHING animates - even while still loading.
+  it("loading but >=1 layer already present -> NONE (zero-layers gate)", () => {
+    expect(
+      resolveBboxProgress({ ...BASE, layersLoading: true, layerCount: 1 }).mode,
+    ).toBe("none");
+    expect(
+      resolveBboxProgress({ ...BASE, layersLoading: true, layerCount: 5 }).mode,
+    ).toBe("none");
   });
 
-  it("CONNECTING -> SCAN border, ALWAYS ON (toggle-exempt) even with layers", () => {
-    const s = resolveBboxProgress({ ...BASE, connecting: true, layerCount: 2 });
-    expect(s.mode).toBe("scan");
-    expect(s.tone).toBe("blue");
-    expect(s.toggleExempt).toBe(true);
+  // The SCAN is GONE: connecting no longer paints a box animation on its own.
+  it("CONNECTING no longer produces any box animation (scan removed)", () => {
+    expect(
+      resolveBboxProgress({ ...BASE, connecting: true, layerCount: 0 }).mode,
+    ).toBe("none");
+    expect(
+      resolveBboxProgress({ ...BASE, connecting: true, layerCount: 2 }).mode,
+    ).toBe("none");
   });
 
-  it("CONNECTING survives the user disabling animations (still scans)", () => {
-    const s = resolveBboxProgress({
-      ...BASE,
-      connecting: true,
-      animationsEnabled: false,
-    });
-    expect(s.mode).toBe("scan");
-    expect(s.toggleExempt).toBe(true);
+  // A running sim no longer animates the box either (scan removed).
+  it("a running SIM no longer produces any box animation (scan removed)", () => {
+    expect(
+      resolveBboxProgress({ ...BASE, simRunning: true, layerCount: 4 }).mode,
+    ).toBe("none");
+    // Even with zero layers + loading, the sim flag does not turn it purple/scan;
+    // it is the plain loading grid (zero layers + loading) at most.
+    expect(
+      resolveBboxProgress({ ...BASE, simRunning: true, layerCount: 4, layersLoading: true })
+        .mode,
+    ).toBe("none");
   });
 
-  it("LONG-RUNNING SIM -> PURPLE scan border", () => {
-    const s = resolveBboxProgress({ ...BASE, simRunning: true, layerCount: 4 });
-    expect(s.mode).toBe("scan");
-    expect(s.tone).toBe("purple");
+  // The resolver NEVER returns "scan" anymore (proves the scan path is dead).
+  it("NEVER returns mode 'scan' for any signal combination", () => {
+    const combos: Array<Partial<BboxProgressSignals>> = [
+      { connecting: true },
+      { simRunning: true },
+      { connecting: true, simRunning: true },
+      { layersLoading: true, layerCount: 0 },
+      { layersLoading: true, layerCount: 3 },
+      { connecting: true, layerCount: 0 },
+      { connecting: true, animationsEnabled: false },
+    ];
+    for (const c of combos) {
+      expect(resolveBboxProgress({ ...BASE, ...c }).mode).not.toBe("scan");
+    }
   });
 
-  it("connecting takes priority over a running sim (transport health first)", () => {
-    const s = resolveBboxProgress({
-      ...BASE,
-      connecting: true,
-      simRunning: true,
-    });
-    expect(s.mode).toBe("scan");
-    expect(s.tone).toBe("blue"); // connecting (blue), not the purple sim tone
-    expect(s.toggleExempt).toBe(true);
-  });
-
-  it("DISABLED toggle suppresses fill / scan / sim (but not connecting)", () => {
+  it("DISABLED toggle suppresses the grid (no connecting/sim exception now)", () => {
     expect(
       resolveBboxProgress({
         ...BASE,
@@ -83,45 +92,33 @@ describe("resolveBboxProgress - overlay state machine (item 1)", () => {
         animationsEnabled: false,
       }).mode,
     ).toBe("none");
+    // Connecting used to be toggle-exempt; the scan is gone, so disabling is total.
     expect(
       resolveBboxProgress({
         ...BASE,
-        simRunning: true,
+        connecting: true,
+        layerCount: 0,
         animationsEnabled: false,
       }).mode,
     ).toBe("none");
   });
 
-  it("idle (bbox present, nothing loading) -> none", () => {
+  it("idle (bbox present, nothing loading, no layers) -> none", () => {
     expect(resolveBboxProgress({ ...BASE }).mode).toBe("none");
   });
 
-  // LANE E (3D): the 2D overlay is suppressed entirely in 3D terrain mode (the
-  // in-map line-layer pulse-glow takes over), for every loading state.
-  it("3D terrain suppresses the 2D overlay for loading (-> none)", () => {
+  // 3D terrain: the 2D grid is suppressed (the in-map AOI line stays statically
+  // visible instead). The grid never paints misaligned over a pitched box.
+  it("3D terrain suppresses the 2D grid for the loading state (-> none)", () => {
     expect(
       resolveBboxProgress({ ...BASE, terrain3d: true, layersLoading: true, layerCount: 0 })
         .mode,
     ).toBe("none");
-    expect(
-      resolveBboxProgress({ ...BASE, terrain3d: true, layersLoading: true, layerCount: 3 })
-        .mode,
-    ).toBe("none");
   });
 
-  it("3D terrain suppresses even the connecting + sim scan (in-map glow carries it)", () => {
-    expect(
-      resolveBboxProgress({ ...BASE, terrain3d: true, connecting: true }).mode,
-    ).toBe("none");
-    expect(
-      resolveBboxProgress({ ...BASE, terrain3d: true, simRunning: true, layerCount: 2 })
-        .mode,
-    ).toBe("none");
-  });
-
-  // LANE B #4 (no-replay): a re-enter / same-bbox switch with layers already
-  // present must NOT re-arm the loading shimmer.
-  it("suppresses the loading replay when case+bbox unchanged and layers exist", () => {
+  // suppressLoadingReplay is now subsumed by the zero-layers gate: any
+  // layers-present context is a no-show regardless of the replay flag.
+  it("layers-present is a no-show whether or not replay-suppress is set", () => {
     expect(
       resolveBboxProgress({
         ...BASE,
@@ -130,10 +127,18 @@ describe("resolveBboxProgress - overlay state machine (item 1)", () => {
         suppressLoadingReplay: true,
       }).mode,
     ).toBe("none");
+    expect(
+      resolveBboxProgress({
+        ...BASE,
+        layersLoading: true,
+        layerCount: 3,
+        suppressLoadingReplay: false,
+      }).mode,
+    ).toBe("none");
   });
 
-  it("still shows fill on a genuine first fetch even when replay-suppress is set", () => {
-    // No layers yet => not a replay; the first-fetch fill must still show.
+  it("still shows the grid on a genuine first fetch even when replay-suppress is set", () => {
+    // No layers yet => the first-fetch grid must still show.
     expect(
       resolveBboxProgress({
         ...BASE,
@@ -142,25 +147,6 @@ describe("resolveBboxProgress - overlay state machine (item 1)", () => {
         suppressLoadingReplay: true,
       }).mode,
     ).toBe("fill");
-  });
-
-  it("replay-suppress does NOT hide the connecting cue or a running sim", () => {
-    expect(
-      resolveBboxProgress({
-        ...BASE,
-        connecting: true,
-        layerCount: 3,
-        suppressLoadingReplay: true,
-      }).mode,
-    ).toBe("scan");
-    expect(
-      resolveBboxProgress({
-        ...BASE,
-        simRunning: true,
-        layerCount: 3,
-        suppressLoadingReplay: true,
-      }).mode,
-    ).toBe("scan");
   });
 });
 
