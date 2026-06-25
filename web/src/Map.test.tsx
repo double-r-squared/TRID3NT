@@ -75,8 +75,13 @@ interface MapMock {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
+  // BUG 3 (cold map): triggerRepaint nudges a quiescent map to emit `idle`.
+  triggerRepaint: ReturnType<typeof vi.fn>;
   _onceHandlers: Map<string, Array<() => void>>;
   fireMoveend: () => void;
+  // BUG 3 (cold map): fire any pending one-shot `load`/`idle` handlers so a test
+  // can simulate the map becoming style-ready AFTER cold state arrived.
+  fireOnce: (evt: string) => void;
   // job-0321 (F43)  -  legend-anchor projection.
   project: ReturnType<typeof vi.fn>;
   getCanvas: ReturnType<typeof vi.fn>;
@@ -154,6 +159,17 @@ vi.mock("maplibre-gl", () => {
       this._onceHandlers.set("moveend", []);
       handlers.forEach((h) => h());
     }
+    // BUG 3 (cold map): fire all pending one-shot handlers for an event (e.g.
+    // `load` to simulate the map becoming style-ready, or `idle` to settle a
+    // deferral). Drains the queue like a real one-shot.
+    fireOnce(evt: string): void {
+      const handlers = this._onceHandlers.get(evt) ?? [];
+      this._onceHandlers.set(evt, []);
+      handlers.forEach((h) => h());
+    }
+    // BUG 3 (cold map): a no-op repaint nudge; presence lets the cold-path test
+    // assert the convergence call happened.
+    triggerRepaint = vi.fn();
     // isStyleLoaded must return true for the session-state handler to apply.
     isStyleLoaded = vi.fn().mockReturnValue(true);
     // NATE item 2 - the raster frame-swap hold path probes source-tile load
@@ -1339,6 +1355,87 @@ describe("MapView  -  session-state idle-retry (job-0076 root-cause fix)", () =>
     });
     expect(m.addSource).toHaveBeenCalledOnce();
     expect((m.addSource.mock.calls[0] as MockCallArgs)[0]).toBe("flood-demo");
+  });
+});
+
+// BUG 3 (cold rasters don't paint until WS connect): a session-state push + a
+// zoom-to that arrive BEFORE the map's style is ready must NOT be dropped. The
+// deferred raster apply nudges a triggerRepaint so a quiescent cold map
+// converges, and the map's first `load` consumes the retained session-state
+// (addSource) + REPLAYS the retained zoom-to (fitBounds) so the cold camera snaps
+// to the AOI and tiles fetch - WITHOUT waiting for a later WS push.
+describe("MapView  -  cold render-path replay (bug 3, client gates only)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("nudges triggerRepaint when a deferred apply is armed on a quiescent cold map", () => {
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+    const m = lastMapMock!;
+    m.isStyleLoaded.mockReturnValue(false); // cold: style not loaded, latch unset
+
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+
+    // Deferred (no addSource yet) AND a repaint was triggered so the quiescent
+    // map converges + fires `idle` instead of stalling until the next WS push.
+    expect(m.addSource).not.toHaveBeenCalled();
+    expect(m.triggerRepaint).toHaveBeenCalled();
+  });
+
+  it("applies retained session-state + replays the zoom-to on the map's first load (cold camera + cold raster)", () => {
+    const sessionBus = makeSessionBus();
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+    // COLD: the map style is NOT ready (latch never set because `load` has not
+    // fired yet). isStyleLoaded() false => mapStyleReady() false.
+    m.isStyleLoaded.mockReturnValue(false);
+
+    // Session-state + zoom-to arrive BEFORE the map's style became ready.
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    // The raster source is DEFERRED while the style is not ready (no addSource).
+    expect(m.addSource).not.toHaveBeenCalled();
+
+    // Forget any pre-load calls so we assert the REPLAY (the retained state being
+    // re-applied on load) specifically.
+    m.addSource.mockClear();
+    m.fitBounds.mockClear();
+
+    // The map finishes loading -> our `load` handler latches readiness AND
+    // (1) applies the RETAINED session-state (cold raster) and (2) REPLAYS the
+    // RETAINED zoom-to (cold camera) - without waiting for a later WS push.
+    m.isStyleLoaded.mockReturnValue(true);
+    act(() => {
+      m.fireOnce("load");
+    });
+
+    // Cold raster now painted (source + layer added on the load replay)...
+    expect(m.addSource).toHaveBeenCalled();
+    const addedSourceIds = m.addSource.mock.calls.map((c) => (c as MockCallArgs)[0]);
+    expect(addedSourceIds).toContain("flood-demo");
+    // ...and the cold camera snapped to the AOI (fitBounds replayed exactly once).
+    expect(m.fitBounds).toHaveBeenCalledTimes(1);
+    const [bounds] = m.fitBounds.mock.calls[0] as MockCallArgs;
+    expect(bounds).toEqual([[-81.91, 26.55], [-81.75, 26.69]]);
   });
 });
 

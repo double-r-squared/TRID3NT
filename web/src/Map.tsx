@@ -35,6 +35,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, RegionCandidate } from "./contracts";
+import { compareLayersTopFirst } from "./contracts";
 import type { FeatureCollection, Feature, Polygon, Geometry } from "geojson";
 import { publicTileBase } from "./lib/public_base";
 import { regionChoiceBus, type RegionChoiceBusState } from "./lib/region_choice_bus";
@@ -75,7 +76,11 @@ import { getLayerCache } from "./lib/layer_cache";
 import { getAnimationController } from "./lib/animation_controller";
 // NATE map/loading-UX polish item 2 - preload + hold-until-loaded raster frame
 // swap so stepping/playing an animation never shows a black-then-fill gap.
-import { swapFrameWithHold, type FrameMapAdapter } from "./lib/frame_preload";
+import {
+  releaseWarmedFrames,
+  swapFrameWithHold,
+  type FrameMapAdapter,
+} from "./lib/frame_preload";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 // "3D terrain viz" project track (first cut) - MapLibre setTerrain over a
@@ -1446,6 +1451,30 @@ export function applyLayerVisibility(
  * in their internal bottom-to-top order so sublayers keep their relative
  * stacking (e.g. cluster counts above cluster circles).
  */
+/**
+ * BUG 1 (secondary): ORDER-SENSITIVE structural equality for the legend list -
+ * compares two ordered ProjectLayerSummary arrays by (layer_id + z_index) at each
+ * position. Used to short-circuit setLegendLayers on an unchanged ~12-25s
+ * heartbeat so the MapView subtree stops re-rendering forever. ORDER-SENSITIVE by
+ * design (per bug 2: the order is now a deterministic function of the set, so any
+ * real reorder is a genuine change worth committing). Exported for unit testing.
+ */
+export function legendOrderEqual(
+  a: ProjectLayerSummary[],
+  b: ProjectLayerSummary[],
+): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (!x || !y) return false;
+    if (x.layer_id !== y.layer_id) return false;
+    if ((x.z_index ?? 0) !== (y.z_index ?? 0)) return false;
+  }
+  return true;
+}
+
 export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): void {
   const bottomFirst = [...layerIdsTopFirst].reverse();
   for (const layerId of bottomFirst) {
@@ -2402,6 +2431,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // command. Null until the first zoom-to. Kept inside this track's
   // ownership (no LayerPanel bus replay buffer  -  see crossTrackChanges).
   const lastZoomToCorners = useRef<[number, number, number, number] | null>(null);
+  // BUG 3 (cold rasters don't paint until WS connect): the LAST zoom-to bbox that
+  // arrived, RETAINED so it can be replayed on the map's first `load`. A zoom-to
+  // dispatched BEFORE the map existed / before the style loaded used to be DROPPED
+  // (the subscriber bailed at `if (!m) return`), leaving the camera at CONUS zoom
+  // so no viewport tiles ever fetched. Written at the TOP of the map-command
+  // subscriber (before the !m guard) and consumed by the map "load" handler.
+  const pendingZoomToRef = useRef<[number, number, number, number] | null>(null);
+  // BUG 3: the map-command effect stores its zoom-to applier here so the map
+  // "load" handler can REPLAY a retained cold zoom-to through the exact same path
+  // (fitBounds + AOI bbox stash + extent draw) without duplicating that logic.
+  const applyZoomToRef = useRef<
+    ((corners: [number, number, number, number]) => void) | null
+  >(null);
   // NATE 2026-06-22 (item 4): mirror the sim-running flag into a ref so the
   // (stable-closure) redraw paths paint the AOI rectangle in the right color
   // when they re-assert it, and a dedicated effect recolors the live box the
@@ -2448,6 +2490,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   //   5. legendBarWidth  -  the box's on-screen EAST-WEST extent (right-left),
   //      also from the same rect. Used only to SIZE the default colorbar width.
   const [legendLayers, setLegendLayers] = useState<ProjectLayerSummary[]>([]);
+  // BUG 1 (secondary - heartbeat re-render storm): the last ORDERED legend list
+  // we committed. The server re-emits a full session-state on every ~12-25s
+  // heartbeat; each one rebuilt a fresh reversed/sorted array and called
+  // setLegendLayers unconditionally, re-rendering the whole MapView subtree
+  // forever. We guard with an ORDER-SENSITIVE structural compare (id + effective
+  // z) against this ref so an unchanged heartbeat is a no-op (React bails).
+  const lastLegendOrderedRef = useRef<ProjectLayerSummary[]>([]);
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
   // The TRUE projected AOI rectangle the legend snaps against (all four corners).
   const [legendRect, setLegendRect] = useState<LegendScreenRect | null>(null);
@@ -2494,6 +2543,15 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       style: STYLE,
       center: CONUS_VIEW.center,
       zoom: CONUS_VIEW.zoom,
+      // BUG 1 (memory crash): cap per-source tile retention. The frame-preload
+      // warm path keeps temporal-raster frames renderable so their tiles fetch;
+      // MapLibre's default tile cache grows unbounded across a 144/288-frame
+      // SFINCS/HRRR sweep until the tab OOMs. This is a hard backstop CAP on how
+      // many tiles MapLibre retains per source (releaseWarmedFrames below is the
+      // primary fix - it frees whole SourceCaches by flipping warmed frames to
+      // visibility:none; this cap bounds the rest). 64 is a sane viewport-ish
+      // working set; lower trades a touch of re-fetch for a smaller ceiling.
+      maxTileCacheSize: 64,
       maxPitch: 0,
       dragRotate: false,
       pitchWithRotate: false,
@@ -2519,6 +2577,27 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     // re-block layer adds/removals. See mapStyleReady().
     m.once("load", () => {
       (m as ReadyMap).__grace2StyleReady = true;
+      // BUG 3 (cold rasters don't paint until WS connect): a session-state push or
+      // a zoom-to that arrived BEFORE this `load` was never applied - the map sat
+      // quiescent (no idle re-emit on a cold map) so the deferral stalled until a
+      // later WS session-state push, and the dropped zoom-to left the camera at
+      // CONUS so no viewport tiles fetched. On first load we now (1) apply any
+      // RETAINED session-state via applyLatest (adds the raster sources) and
+      // (2) REPLAY any retained zoom-to (snaps the camera to the AOI so tiles
+      // load). Both are idempotent, so a normal warm start is unaffected.
+      try {
+        applyLatestRef.current?.();
+      } catch {
+        /* best-effort cold apply */
+      }
+      const pending = pendingZoomToRef.current;
+      if (pending && applyZoomToRef.current) {
+        try {
+          applyZoomToRef.current(pending);
+        } catch {
+          /* best-effort cold camera replay */
+        }
+      }
     });
 
     // Dev-only seam: expose the live MapLibre instance so the Playwright
@@ -2679,6 +2758,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // tiles; addSource/addLayer/removeLayer are all safe.
       if (!mapStyleReady(m)) {
         m.once("idle", applyLatest);
+        // BUG 3 (cold rasters don't paint until WS connect): a QUIESCENT cold map
+        // never re-emits `idle` on its own (no in-flight requests to settle), so
+        // this deferral would stall until the next WS session-state push. Nudge a
+        // repaint so the map converges and fires `idle`, running the deferred
+        // apply now instead of waiting for the socket.
+        try {
+          m.triggerRepaint();
+        } catch {
+          /* triggerRepaint absent (older map / test mock) - harmless */
+        }
         return;
       }
 
@@ -2707,7 +2796,21 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       for (const l of rawLayers) {
         dedupById.set(l.layer_id, l);
       }
-      const currentLayers = Array.from(dedupById.values());
+      // BUG 2 (random-reorder): order the add/stack loop by the SHARED comparator
+      // (z_index desc, layer_id tiebreak) instead of raw Map-insertion order, so
+      // the overlay stack matches the LayerPanel rows + App `layers` BY
+      // CONSTRUCTION. The add loop registers bottom-to-top; addLayer with no
+      // beforeId appends on TOP, so iterating top-first then bottom-up (reverse)
+      // would leave the topmost on top - but to keep stacking identical to the
+      // panel's top-first contract we add in top-first order and let the explicit
+      // applyLayerOrder below (when a z-override exists) finalize. The key
+      // invariant this enforces is a DETERMINISTIC total order on a null z_index.
+      const currentLayers = Array.from(dedupById.values()).sort(
+        compareLayersTopFirst as (
+          a: (typeof rawLayers)[number],
+          b: (typeof rawLayers)[number],
+        ) => number,
+      );
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
 
       // job-0357 (per-Case layer DURABILITY)  -  REMOVE only on an AUTHORITATIVE
@@ -3003,40 +3106,47 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               }
               addRaster();
             });
+            // BUG 3: nudge a repaint so a QUIESCENT cold map actually emits the
+            // `idle` this deferral waits on (otherwise the raster source add stalls
+            // until the next WS session-state push - the cold-raster symptom).
+            try {
+              m.triggerRepaint();
+            } catch {
+              /* triggerRepaint absent - harmless */
+            }
           }
         }
       }
 
-      // job-0179 (per-Case client cache  -  "the seatbelt"): re-apply the user's
-      // persisted Z-ORDER override after a (re-)add so a reconnect / re-render
-      // never resets a drag-reorder. We ONLY act when the cache actually holds a
-      // zIndex override for the active Case  -  otherwise this is a no-op and the
-      // historical insertion-order stacking is preserved byte-identically. The
-      // effective per-layer z-index is the cached override when present, else the
-      // wire `z_index`; we sort DESCENDING (higher z renders on top) into the
-      // top-first order applyLayerOrder expects.
+      // job-0179 (per-Case client cache  -  "the seatbelt") + BUG 2 (random
+      // reorder): re-assert the deterministic stack order after every (re-)add so
+      // a reconnect / re-render never leaves the overlay stack in raw add order.
+      // The effective per-layer z is the user's cached zIndex override when
+      // present, else the wire `z_index` (null/undefined -> 0). We sort with the
+      // SHARED total-order comparator (z desc, layer_id tiebreak) so the map stack
+      // matches the LayerPanel rows + App `layers` BY CONSTRUCTION, even when the
+      // agent emits null z_index for every layer. (Previously this only ran when a
+      // zIndex override existed, leaving the no-override path on add-order - which,
+      // with null z, differed from the panel order = the visible "random reorder".)
       const caseOverrides = layerCache.overridesFor(layerCache.activeCaseId);
-      const hasZOverride = Object.values(caseOverrides).some(
-        (ov) => ov.zIndex !== undefined,
-      );
-      if (hasZOverride) {
-        const ordered = currentLayers
-          .filter((l) => addedSourceIds.current.has(l.layer_id))
-          .map((l) => {
-            const ov = caseOverrides[l.layer_id];
-            const wireZ = (l as { z_index?: unknown }).z_index;
-            const z =
-              ov?.zIndex !== undefined
-                ? ov.zIndex
-                : typeof wireZ === "number"
-                  ? wireZ
-                  : 0;
-            return { id: l.layer_id, z };
-          })
-          .sort((a, b) => b.z - a.z)
-          .map((e) => e.id);
-        if (ordered.length > 0) applyLayerOrder(m, ordered);
-      }
+      const ordered = currentLayers
+        .filter((l) => addedSourceIds.current.has(l.layer_id))
+        .map((l) => {
+          const ov = caseOverrides[l.layer_id];
+          const wireZ = (l as { z_index?: number | null }).z_index;
+          const z =
+            ov?.zIndex !== undefined
+              ? ov.zIndex
+              : typeof wireZ === "number"
+                ? wireZ
+                : 0;
+          return { id: l.layer_id, z };
+        })
+        // Same comparator shape as compareLayersTopFirst (z desc, id tiebreak),
+        // applied over the EFFECTIVE z (override-or-wire) the map stacks against.
+        .sort((a, b) => b.z - a.z || a.id.localeCompare(b.id))
+        .map((e) => e.id);
+      if (ordered.length > 0) applyLayerOrder(m, ordered);
     };
 
     // Expose applyLatest so the caseActive sync effect can re-run the reconcile
@@ -3061,23 +3171,44 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const raw = caseActiveRef.current
         ? ((payload.loaded_layers ?? []) as ProjectLayerSummary[])
         : [];
-      const anyZ = raw.some(
-        (l) => typeof (l as { z_index?: unknown }).z_index === "number",
-      );
-      const ordered = anyZ
-        ? [...raw].sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))
-        : [...raw].reverse();
-      setLegendLayers(ordered);
+      // BUG 2 (random-reorder): order the legend with the SHARED deterministic
+      // comparator (z desc, layer_id tiebreak) so it matches the panel + map +
+      // App order by construction - including when the agent emits null z_index on
+      // every layer (the old `anyZ ? sort : reverse` branch gave a NON-total order
+      // there, which let the legend disagree with the other surfaces).
+      const ordered = [...raw].sort(compareLayersTopFirst);
+      // BUG 1 (secondary - heartbeat re-render storm): the server re-emits a full
+      // session-state every ~12-25s. Without a guard, setLegendLayers(ordered)
+      // built + committed a fresh array on EVERY heartbeat, re-rendering the whole
+      // MapView subtree forever. Commit ONLY when the ordered list actually
+      // changed (order-sensitive id+z compare against the last committed one), so
+      // an unchanged heartbeat is a no-op and React bails.
+      if (!legendOrderEqual(lastLegendOrderedRef.current, ordered)) {
+        lastLegendOrderedRef.current = ordered;
+        setLegendLayers(ordered);
+      }
 
       const m = map.current;
       if (!m) return;
-      if (m.isStyleLoaded()) {
+      const ready = m.isStyleLoaded();
+      if (ready) {
         applyLatest();
       }
       // Whether or not we applied synchronously, attach an idle handler so
       // any subsequent style-load completes the reconciliation. `idle` fires
       // once per loop-tick when all in-flight requests settle.
       m.once("idle", applyLatest);
+      // BUG 3 (cold rasters don't paint until WS connect): when the style was NOT
+      // ready we just deferred to `idle`, but a QUIESCENT cold map never re-emits
+      // `idle` on its own, so the apply would stall until the next WS push. Nudge
+      // a repaint so the map converges + fires the idle this deferral waits on.
+      if (!ready) {
+        try {
+          m.triggerRepaint();
+        } catch {
+          /* triggerRepaint absent (older map / test mock) - harmless */
+        }
+      }
     });
     return unsub;
   }, [subscribeSessionState]);
@@ -3092,7 +3223,14 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // so re-running it here never double-adds.
   useEffect(() => {
     caseActiveRef.current = caseActive;
-    if (!caseActive) setLegendLayers([]);
+    if (!caseActive) {
+      // BUG 1 (secondary): keep the heartbeat-guard ref in lockstep with the
+      // direct clear so re-entering a Case re-commits the legend (an empty ref
+      // would otherwise let an identical first frame fail the equality guard - or
+      // worse, a stale non-empty ref could suppress the real re-populate).
+      lastLegendOrderedRef.current = [];
+      setLegendLayers([]);
+    }
     applyLatestRef.current?.();
   }, [caseActive]);
 
@@ -3262,12 +3400,34 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   useEffect(() => {
     if (!subscribeMapCommand) return undefined;
     return subscribeMapCommand((payload: WireMapCommand) => {
+      // BUG 3 (cold camera): RETAIN the latest zoom-to bbox BEFORE the `!m` guard,
+      // so a zoom-to that arrives while the map does not yet exist / its style has
+      // not loaded is replayed on the map's first `load` (the camera then snaps to
+      // the AOI and tiles fetch). A clear/reset forgets it. Done at the very top so
+      // even a payload dropped by the guard below is still captured here.
+      if (payload.command === "zoom-to") {
+        const zb = (payload as ZoomToCommand).args?.bbox;
+        if (zb && zb.length === 4) {
+          pendingZoomToRef.current = zb as [number, number, number, number];
+        }
+      } else if (
+        payload.command === "clear-analysis-extent" ||
+        payload.command === "reset-view"
+      ) {
+        pendingZoomToRef.current = null;
+      }
       const m = map.current;
       if (!m) return;
       if (payload.command === "zoom-to") {
         const { bbox } = (payload as ZoomToCommand).args;
         if (bbox && bbox.length === 4) {
-          const corners = bbox as [number, number, number, number];
+          // BUG 3: the zoom-to apply body is a named closure stored in
+          // applyZoomToRef so the map "load" handler can REPLAY a retained cold
+          // zoom-to through THIS exact path (fitBounds + AOI stash + extent draw)
+          // - a cold camera left at CONUS zoom fetched no tiles.
+          const runZoomTo = (corners: [number, number, number, number]): void => {
+          const m = map.current;
+          if (!m) return;
           const [minLon, minLat, maxLon, maxLat] = corners;
           // Respect prefers-reduced-motion: a 1200ms camera flight is motion.
           // When the user has asked for reduced motion, jump (duration 0) so
@@ -3379,6 +3539,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // Idempotent: drawAnalysisExtent setData-replaces + heals missing
           // layers, so this never double-adds.
           m.once("moveend", drawExtent);
+          }; // end runZoomTo
+          // Expose for the cold-load replay (bug 3), then run it now.
+          applyZoomToRef.current = runZoomTo;
+          runZoomTo(bbox as [number, number, number, number]);
         }
       } else if (payload.command === "clear-analysis-extent") {
         // ux-batch-1 (F14): Case exit (or opening a Case with no AOI) must not
@@ -3506,6 +3670,46 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   );
   useEffect(() => {
     const controller = getAnimationController();
+    // Shared FrameMapAdapter builder so the per-frame swap AND the release seam
+    // (bug 1) drive MapLibre through the same guarded surface.
+    const makeFrameAdapter = (m: MapLibreMap): FrameMapAdapter => ({
+      hasLayer: (id) => {
+        try {
+          return Boolean(m.getLayer(id));
+        } catch {
+          return false;
+        }
+      },
+      setVisibility: (id, visible) => {
+        try {
+          m.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+        } catch {
+          /* mid-add race - the reconcile restores it */
+        }
+      },
+      setOpacity: (id, opacity) => {
+        try {
+          m.setPaintProperty(id, "raster-opacity", opacity);
+        } catch {
+          /* mid-add race */
+        }
+      },
+      isSourceLoaded: (id) => {
+        try {
+          return m.isSourceLoaded(id) === true;
+        } catch {
+          return false;
+        }
+      },
+      onceSourceSettled: (cb) => {
+        try {
+          m.once("idle", cb);
+        } catch {
+          cb();
+        }
+      },
+    });
+
     const unregister = controller.setEmitter((layerIds, visibleIndex) => {
       const m = map.current;
       if (!m) return;
@@ -3524,43 +3728,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       );
 
       if (allRaster && layerIds.length > 1) {
-        const adapter: FrameMapAdapter = {
-          hasLayer: (id) => {
-            try {
-              return Boolean(m.getLayer(id));
-            } catch {
-              return false;
-            }
-          },
-          setVisibility: (id, visible) => {
-            try {
-              m.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
-            } catch {
-              /* mid-add race - the reconcile restores it */
-            }
-          },
-          setOpacity: (id, opacity) => {
-            try {
-              m.setPaintProperty(id, "raster-opacity", opacity);
-            } catch {
-              /* mid-add race */
-            }
-          },
-          isSourceLoaded: (id) => {
-            try {
-              return m.isSourceLoaded(id) === true;
-            } catch {
-              return false;
-            }
-          },
-          onceSourceSettled: (cb) => {
-            try {
-              m.once("idle", cb);
-            } catch {
-              cb();
-            }
-          },
-        };
+        const adapter = makeFrameAdapter(m);
         // Thread the previous target so the swap holds the right frame. A new
         // group (different member set) starts with no held frame.
         const groupKey = layerIds.join("|");
@@ -3593,7 +3761,28 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         layerCache.setOverride(layerCache.activeCaseId, id, { visible });
       });
     });
-    return unregister;
+
+    // BUG 1 (memory crash): the RELEASE seam. The controller fires it on
+    // group-change / scrubber-stop / reset() with the group's full member list +
+    // the frame to keep visible; we flip the out-of-window frames to
+    // visibility:none so MapLibre frees their SourceCache + GPU textures (the
+    // warm path left them all visible, which OOMed the tab on a 144/288-frame
+    // sweep). The held-target ref is reset so a re-played group re-warms cleanly.
+    const unregisterRelease = controller.setReleaseEmitter(
+      (layerIds, keepVisibleIndex) => {
+        const m = map.current;
+        if (!m) return;
+        releaseWarmedFrames(makeFrameAdapter(m), layerIds, keepVisibleIndex);
+        if (prevFrameTargetRef.current.groupKey === layerIds.join("|")) {
+          prevFrameTargetRef.current = { groupKey: "", target: null };
+        }
+      },
+    );
+
+    return () => {
+      unregister();
+      unregisterRelease();
+    };
     // layerCache is a stable singleton; map.current is read live. Intentionally
     // empty deps so the emitter registers once for the map's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps

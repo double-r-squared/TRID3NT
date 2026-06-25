@@ -26,7 +26,11 @@
 // backward compatibility (callers that still read it), but new write-through
 // flows through here.
 
-import type { ProjectLayerSummary, TemporalConfig } from "../contracts";
+import {
+  compareLayersTopFirst,
+  type ProjectLayerSummary,
+  type TemporalConfig,
+} from "../contracts";
 
 /** A user-set view override for one layer. All fields optional / partial. */
 export interface LayerViewOverride {
@@ -307,13 +311,17 @@ export class LayerCache {
     }
   }
 
-  /** Ordered layer list for a Case (z-order honored elsewhere). [] if unknown. */
+  /** Ordered layer list for a Case (top-of-stack first). [] if unknown. */
   layersFor(caseId: string | null): ProjectLayerSummary[] {
     if (caseId == null) return [];
     const entry = this.entries.get(caseId);
     if (!entry) return [];
     this.touch(caseId);
-    return Array.from(entry.layers.values());
+    // BUG 2 (random-reorder): emit pre-sorted by the SHARED comparator so the
+    // cache, App's `layers`, and the map agree on order BY CONSTRUCTION (rather
+    // than handing back raw Map-insertion order, which differed from the panel /
+    // map sort and let the same set render in three different orders).
+    return Array.from(entry.layers.values()).sort(compareLayersTopFirst);
   }
 
   /**
@@ -385,7 +393,12 @@ export class LayerCache {
     if (!changed && entry.lastReturned !== null) {
       return entry.lastReturned;
     }
-    const out = Array.from(entry.layers.values());
+    // BUG 2 (random-reorder): RETURN the values pre-sorted by the SHARED
+    // comparator (z_index desc, layer_id tiebreak) so App's `layers` and the map
+    // overlay stack agree on order by construction. Map-insertion order differed
+    // from the panel / map sort, which - combined with the agent's null z_index -
+    // let the same set render in three different orders.
+    const out = Array.from(entry.layers.values()).sort(compareLayersTopFirst);
     entry.lastReturned = out;
     return out;
   }

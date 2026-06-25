@@ -290,11 +290,37 @@ export interface ProjectLayerSummary {
   attribution?: string | null;  // displayed in the LayerPanel row
   visible: boolean;        // initial visibility from the project state
   opacity: number;         // 0..1, clamped on render
-  z_index: number;         // integer; lower draws first (bottom of stack)
+  // BUG 2 (random-reorder): the agent emits z_index=null for layers it does not
+  // explicitly stack, so the wire type is HONESTLY nullable. The prior
+  // `z_index: number` lied: a raw `b.z_index - a.z_index` over a null became
+  // `undefined - undefined = NaN`, which gives sort() NO total order, so the
+  // three surfaces (LayerPanel / Map overlay stack / App layers) each rendered
+  // the SAME set in a DIFFERENT order. Always sort via `compareLayersTopFirst`
+  // below (never a bare subtraction) so a null/undefined z_index coerces to 0
+  // and the layer_id tiebreak guarantees a deterministic TOTAL order everywhere.
+  z_index?: number | null; // integer; lower draws first (bottom of stack); null = unstacked
   temporal?: TemporalConfig | null; // null for non-temporal layers
   // style_preset formally defined in D.2 via job-0072 (closes OQ-W-65-STYLE-PRESET).
   // Optional here because older documents may omit it; UI hides legend affordance gracefully.
   style_preset?: string | null;
+}
+
+/**
+ * BUG 2 (random-reorder): the ONE shared, deterministic, TOTAL-ORDER comparator
+ * for layer stacking. Top-of-stack FIRST (higher z_index first). A null/undefined
+ * z_index coerces to 0 (NOT NaN, which would defeat the sort), and the layer_id
+ * tiebreak makes the order a pure function of the SET - identical across all three
+ * render surfaces (LayerPanel rows, the Map overlay stack, App's `layers`)
+ * regardless of the input array order. Every layer sort in the app routes through
+ * this so the panel order == the map order == the App order, ALWAYS.
+ */
+export function compareLayersTopFirst(
+  a: Pick<ProjectLayerSummary, "z_index" | "layer_id">,
+  b: Pick<ProjectLayerSummary, "z_index" | "layer_id">,
+): number {
+  return (
+    (b.z_index ?? 0) - (a.z_index ?? 0) || a.layer_id.localeCompare(b.layer_id)
+  );
 }
 
 // Appendix D.6 temporal block (subset web reads). Driven by WMS TIME param.

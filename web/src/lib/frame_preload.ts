@@ -131,3 +131,58 @@ export function swapFrameWithHold(
 
   return { warmed, target };
 }
+
+/**
+ * BUG 1 (memory crash): release the warmed frames of a temporal raster group so
+ * MapLibre frees their SourceCache + GPU textures.
+ *
+ * swapFrameWithHold WARMS every frame by keeping it `visibility:visible` (the
+ * only way MapLibre fetches a raster source's tiles) and merely DIMS the hidden
+ * frames to opacity 0 - it never flips them back to `visibility:none`. A VISIBLE
+ * raster source keeps a live SourceCache and re-fetches its tiles on every
+ * pan/zoom, so a 144/288-frame SFINCS/HRRR sweep leaves hundreds of permanently
+ * live raster sources that grow until the tab OOMs.
+ *
+ * This sets `visibility:none` (map.setVisibility(id, false)) on every warmed
+ * frame OUTSIDE a small window around the currently-shown frame, so MapLibre
+ * tears down their SourceCache/textures and stops re-fetching. The window
+ * (target +/- `window`, default 1) stays warmed-but-hidden (visible at opacity 0)
+ * so the smooth gap-free swap to an adjacent frame is preserved - the whole
+ * reason warming exists. Call this when the ACTIVE GROUP CHANGES, on CASE-SWITCH,
+ * and on scrubber-stop / AnimationController.reset().
+ *
+ * Pure + race-tolerant: missing layers are skipped; an out-of-range keepIndex
+ * just releases everything except (nothing), which is the correct "release all"
+ * behavior for a stop/teardown.
+ */
+export function releaseWarmedFrames(
+  map: FrameMapAdapter,
+  layerIds: string[],
+  keepVisibleIndex: number,
+  window = 1,
+): void {
+  // A keepVisibleIndex OUTSIDE [0, length) means "release everything" (the
+  // stop/teardown / group-change case); the window only applies around a VALID
+  // kept frame, so an out-of-range keep never accidentally retains frame 0.
+  const keepValid =
+    Number.isInteger(keepVisibleIndex) &&
+    keepVisibleIndex >= 0 &&
+    keepVisibleIndex < layerIds.length;
+  const lo = keepValid ? keepVisibleIndex - window : Number.POSITIVE_INFINITY;
+  const hi = keepValid ? keepVisibleIndex + window : Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < layerIds.length; i++) {
+    const id = layerIds[i];
+    if (!id || !map.hasLayer(id)) continue;
+    const inWindow = i >= lo && i <= hi;
+    if (inWindow) {
+      // Keep the small warm window renderable (visible at opacity 0 unless it is
+      // the shown frame) so an adjacent step is still gap-free.
+      map.setVisibility(id, true);
+      if (i !== keepVisibleIndex) map.setOpacity(id, 0);
+    } else {
+      // Outside the window: flip to visibility:none so MapLibre releases the
+      // SourceCache + textures and stops re-fetching this frame's tiles.
+      map.setVisibility(id, false);
+    }
+  }
+}

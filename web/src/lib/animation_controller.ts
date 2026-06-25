@@ -64,6 +64,19 @@ export type FrameVisibilityEmitter = (
   visibleIndex: number,
 ) => void;
 
+/**
+ * BUG 1 (memory crash): a seam Map.tsx registers to RELEASE a group's warmed
+ * raster frames (flip the out-of-window frames to visibility:none so MapLibre
+ * frees their SourceCache/textures). The controller fires it for the group's full
+ * member list + the frame to keep visible: on scrubber-stop / reset() (keepIndex
+ * = the current frame) and when the active group changes (the OLD group, so its
+ * warmed frames don't leak while a new group plays). Mirrors the emitter seam.
+ */
+export type FrameReleaseEmitter = (
+  layerIds: string[],
+  keepVisibleIndex: number,
+) => void;
+
 /** Injectable timer seam so tests can drive the interval deterministically. */
 export interface AnimTimers {
   setInterval(cb: () => void, ms: number): number;
@@ -139,6 +152,9 @@ export class AnimationController {
 
   private readonly subs = new Set<(s: AnimState) => void>();
   private emitter: FrameVisibilityEmitter | null = null;
+  // BUG 1: release seam (Map.tsx wires it to releaseWarmedFrames). Fired on
+  // group-change + scrubber-stop/reset to free a group's warmed raster tiles.
+  private releaseEmitter: FrameReleaseEmitter | null = null;
   // Cached snapshot — kept STABLE (same reference) between mutations so
   // useSyncExternalStore's Object.is comparison does not loop. Invalidated to
   // null on every state change; rebuilt lazily on the next snapshot() read.
@@ -157,6 +173,15 @@ export class AnimationController {
   // set (LayerPanel re-detects on every session-state frame) does not restart
   // playback after the user paused it. Keyed by group key.
   private autoPlayedKeys = new Set<string>();
+  // BUG 2(B) - frame-index GRACE buffer. When a group key transiently LEAVES the
+  // live set (a 1-heartbeat detection dropout, e.g. mid-re-run), we stash its
+  // frame index here with a small countdown instead of forgetting it outright. If
+  // the SAME key reappears within the grace window, setGroups restores the user's
+  // frame instead of re-seeding frame 0 (the spurious "scrubber jumps to frame 0
+  // / autoplay" symptom). { groupKey -> { frame, ttl } }.
+  private frameGrace: Record<string, { frame: number; ttl: number }> = {};
+  // How many setGroups cycles a pruned frame index survives before it is dropped.
+  private static readonly FRAME_GRACE_TTL = 3;
 
   constructor(opts: AnimControllerOptions = {}) {
     this.intervalMs = Math.max(50, opts.intervalMs ?? 1100);
@@ -179,6 +204,24 @@ export class AnimationController {
     return () => {
       if (this.emitter === emitter) this.emitter = null;
     };
+  }
+
+  /**
+   * BUG 1 (memory crash): register the frame-RELEASE emitter (Map.tsx wires it to
+   * releaseWarmedFrames). Returns an unregister fn; a re-register replaces the
+   * prior one. Optional - when unset the controller simply skips the release
+   * (tests that don't exercise the seam are unaffected).
+   */
+  setReleaseEmitter(emitter: FrameReleaseEmitter | null): () => void {
+    this.releaseEmitter = emitter;
+    return () => {
+      if (this.releaseEmitter === emitter) this.releaseEmitter = null;
+    };
+  }
+
+  /** BUG 1: fire the release seam for a group's members, keeping `keepIndex`. */
+  private emitRelease(g: AnimGroup, keepIndex: number): void {
+    if (this.releaseEmitter) this.releaseEmitter(g.layerIds, keepIndex);
   }
 
   // --- subscription ----------------------------------------------------- //
@@ -236,16 +279,53 @@ export class AnimationController {
    * restart it.
    */
   setGroups(groups: AnimGroup[]): void {
+    // BUG 1 (memory crash): snapshot the OLD active group (key + members) before
+    // we swap in the new set, so if the active group CHANGES below (its key
+    // vanished, or a newly-seen group takes over) we can release the OLD group's
+    // warmed raster frames instead of leaking their SourceCaches.
+    const prevActiveKey = this.activeGroupKey;
+    const prevActiveGroup = prevActiveKey
+      ? this.groups.find((g) => g.key === prevActiveKey) ?? null
+      : null;
+    const releaseIfActiveChanged = (): void => {
+      if (
+        prevActiveGroup &&
+        prevActiveGroup.key !== this.activeGroupKey
+      ) {
+        this.emitRelease(prevActiveGroup, -1); // -1 => release ALL its frames.
+      }
+    };
+
     this.groups = groups;
 
     // Prune frame state for groups that no longer exist. Also forget their
     // auto-play marker so a genuinely NEW group of the same key later re-plays.
     const live = new Set(groups.map((g) => g.key));
     for (const k of Object.keys(this.frameByGroup)) {
-      if (!live.has(k)) delete this.frameByGroup[k];
+      if (!live.has(k)) {
+        // BUG 2(B): a group key that LEFT the live set may be a transient 1-
+        // heartbeat detection dropout (e.g. mid-re-run). Stash its frame index in
+        // the grace buffer so a reappearance within the window RESTORES the user's
+        // frame instead of re-seeding frame 0 (the spurious-autoplay symptom),
+        // then drop the live record.
+        this.frameGrace[k] = {
+          frame: this.frameByGroup[k]!,
+          ttl: AnimationController.FRAME_GRACE_TTL,
+        };
+        delete this.frameByGroup[k];
+      }
     }
     for (const k of [...this.autoPlayedKeys]) {
       if (!live.has(k)) this.autoPlayedKeys.delete(k);
+    }
+    // BUG 2(B): age the grace buffer one cycle; drop entries whose window expired
+    // (and re-stash live keys' graces are not needed - a live key holds its own
+    // frameByGroup). A key that came BACK is consumed below (deleted from grace).
+    for (const k of Object.keys(this.frameGrace)) {
+      if (live.has(k)) continue; // consumed in the seed loop below.
+      const g = this.frameGrace[k]!;
+      g.ttl -= 1;
+      if (g.ttl <= 0) delete this.frameGrace[k];
     }
 
     // Seed a default frame index (FIRST frame) for any newly-seen group, and
@@ -253,13 +333,24 @@ export class AnimationController {
     const newlySeen: string[] = [];
     for (const g of groups) {
       if (this.frameByGroup[g.key] === undefined) {
-        this.frameByGroup[g.key] = 0; // ITEM 5: default to the FIRST frame.
-        if (g.layerIds.length > 1) newlySeen.push(g.key);
+        // BUG 2(B): if this key is in the grace buffer it is a REAPPEARANCE after
+        // a transient dropout, NOT a genuinely-new group - RESTORE the user's
+        // frame (and do NOT treat it as newlySeen, so it does not re-emit frame 0
+        // or re-trigger auto-play). Otherwise it is genuinely new: seed frame 0.
+        const grace = this.frameGrace[g.key];
+        if (grace !== undefined) {
+          this.frameByGroup[g.key] = clampIndex(grace.frame, g.layerIds.length);
+          delete this.frameGrace[g.key];
+        } else {
+          this.frameByGroup[g.key] = 0; // ITEM 5: default to the FIRST frame.
+          if (g.layerIds.length > 1) newlySeen.push(g.key);
+        }
       }
     }
 
     if (groups.length === 0) {
       if (this.activeGroupKey !== null) this.activeGroupKey = null;
+      releaseIfActiveChanged(); // BUG 1: free the vanished group's warmed frames.
       if (this.playing) this.setPlaying(false); // also clears the interval
       this.notify();
       return;
@@ -291,6 +382,7 @@ export class AnimationController {
       if (g) this.emitFrame(g, 0); // show the first frame now (static).
       if (this.autoPlay && !this.prefersReducedMotion()) {
         this.autoPlayedKeys.add(autoKey);
+        releaseIfActiveChanged(); // BUG 1: release the prior active group.
         // setPlaying arms the interval (syncInterval) and notifies.
         this.setPlaying(true);
         return;
@@ -300,6 +392,11 @@ export class AnimationController {
       this.autoPlayedKeys.add(autoKey);
     }
 
+    // BUG 1 (memory crash): if the active group changed (vanished key defaulted to
+    // a different group, or a newly-seen group took over) release the OLD group's
+    // warmed raster frames. A re-push of the SAME active key is a no-op (the
+    // BUG 2 fix keeps the key stable across re-runs, so this rarely fires).
+    releaseIfActiveChanged();
     this.notify();
   }
 
@@ -334,6 +431,11 @@ export class AnimationController {
   /** Make a group the scrubber/playback target. */
   setActiveGroup(key: string | null): void {
     if (this.activeGroupKey === key) return;
+    // BUG 1 (memory crash): the active group is CHANGING - release the OLD
+    // group's warmed raster frames so its SourceCaches don't leak while the new
+    // group plays. keepIndex = -1 (nothing in window) releases ALL of its frames.
+    const prev = this.getActiveGroup();
+    if (prev && prev.key !== key) this.emitRelease(prev, -1);
     this.activeGroupKey = key;
     this.notify();
   }
@@ -413,9 +515,17 @@ export class AnimationController {
    * Case's LayerPanel re-pushes its own groups on mount.
    */
   reset(): void {
+    // BUG 1 (memory crash): release the active group's warmed raster frames
+    // BEFORE we drop the group state, so a case-switch / scrubber-stop frees the
+    // SourceCaches that swapFrameWithHold left visible (warmed) instead of leaking
+    // them. Keep the current frame visible (it is about to be torn down by the
+    // session-state reconcile anyway, but releasing the OTHERS is the win).
+    const active = this.getActiveGroup();
+    if (active) this.emitRelease(active, this.frameIndexFor(active.key));
     this.groups = [];
     this.activeGroupKey = null;
     this.frameByGroup = {};
+    this.frameGrace = {}; // BUG 2(B): a new Case starts with no carried-over frames.
     this.playing = false;
     this.autoPlayedKeys.clear(); // ITEM 5: a new Case may re-auto-play its groups.
     this.dispose(); // stop the advance interval

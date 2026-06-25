@@ -1043,13 +1043,39 @@ describe("detectSequentialGroups — conservative grouping", () => {
     expect(detectSequentialGroups([makeFrame(1)])).toHaveLength(0);
   });
 
-  it("does NOT group frames from different runs / AOIs together", () => {
-    const groups = detectSequentialGroups([
-      makeFrame(1, "run-a"),
-      makeFrame(3, "run-b"), // different run dir => different AOI/source signature
-    ]);
-    // Each run has only one frame → no group forms.
+  it("does NOT group frames from different SOURCES / AOIs together", () => {
+    // BUG 2(B): the series signature is now RUN-INDEPENDENT, so two frames from
+    // different RUNS of the SAME source DO group (that is the re-run fix). To prove
+    // genuinely distinct sources still stay apart we use different STEMS (the name
+    // token that identifies the series), so they never share a group key.
+    const a = {
+      ...makeFrame(1),
+      layer_id: "src-a-f01",
+      name: "SFINCS surge F+01h",
+      uri: "gs://grace-2/runs/RUN1/sfincs/surge_f01.cog.tif",
+    };
+    const b = {
+      ...makeFrame(3),
+      layer_id: "src-b-f03",
+      name: "HRRR precip F+03h",
+      uri: "gs://grace-2/runs/RUN1/hrrr/precip_f03.cog.tif",
+    };
+    const groups = detectSequentialGroups([a, b]);
+    // Different stems ("SFINCS surge" vs "HRRR precip") => no group forms.
     expect(groups).toHaveLength(0);
+  });
+
+  it("BUG 2(B): groups frames from DIFFERENT RUNS of the same source (run-independent key)", () => {
+    // The whole point of the run-independent signature: a re-run (different run-id
+    // dir) of the same scenario maps to the SAME group key, so the two distinct
+    // hours form one monotonic series instead of looking like two new groups.
+    const groups = detectSequentialGroups([
+      makeFrame(1, "run-a"), // run-a/precip_f01
+      makeFrame(3, "run-b"), // run-b/precip_f03 - different RUN, same source
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.layers).toHaveLength(2);
+    expect(groups[0]?.frameLabels).toEqual(["F+01h", "F+03h"]);
   });
 
   it("does NOT group ordinary distinct layers without tokens", () => {

@@ -73,12 +73,34 @@ describe("AnimationController — group registration + default frame", () => {
     expect(c.isPlaying()).toBe(false);
   });
 
-  it("prunes frame state for groups that disappear", () => {
+  it("BUG 2(B): a TRANSIENT 1-heartbeat dropout RESTORES the user's frame (grace)", () => {
     const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);
     c.stepGroupTo("grp-1", 2);
-    c.setGroups([]); // grp-1 gone
-    c.setGroups([GROUP]); // re-formed -> default frame again (FIRST, item 5)
+    c.setGroups([]); // grp-1 transiently gone (1-heartbeat detection dropout)
+    c.setGroups([GROUP]); // reappears within the grace window -> frame PRESERVED
+    // BUG 2(B): NOT re-seeded to frame 0 (which caused the spurious-autoplay /
+    // scrubber-jumps-to-0 symptom on a re-run). The grace buffer restores frame 2.
+    expect(c.frameIndexFor("grp-1")).toBe(2);
+  });
+
+  it("BUG 2(B): grace EXPIRES after the TTL window so a long-gone group re-seeds frame 0", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.stepGroupTo("grp-1", 2);
+    // Stay gone for MORE than the grace TTL (3 cycles), so the frame is forgotten.
+    for (let i = 0; i < 4; i++) c.setGroups([]);
+    c.setGroups([GROUP]); // genuinely new again -> default FIRST frame.
+    expect(c.frameIndexFor("grp-1")).toBe(0);
+  });
+
+  it("BUG 2(B): reset() clears the grace buffer (a new Case never carries a frame)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.stepGroupTo("grp-1", 2);
+    c.setGroups([]); // would stash frame 2 in grace...
+    c.reset(); // ...but an explicit reset (case-switch) drops it.
+    c.setGroups([GROUP]);
     expect(c.frameIndexFor("grp-1")).toBe(0);
   });
 });
@@ -105,6 +127,63 @@ describe("AnimationController — stepping drives the emitter", () => {
     c.advanceActive(1); // wrap -> 0
     expect(c.frameIndexFor("grp-1")).toBe(0);
     expect(seen[seen.length - 1]).toBe(0);
+  });
+});
+
+describe("AnimationController — BUG 2(B): frame preserved on known-key reappear", () => {
+  it("does NOT re-emit frame 0 when a KNOWN key reappears (preserves user's frame)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.stepGroupTo("grp-1", 2); // user is on frame 2
+    const emitted: number[] = [];
+    c.setEmitter((_ids, idx) => emitted.push(idx));
+    // A re-push of the SAME group set (the LayerPanel re-detects on every
+    // session-state heartbeat). With the run-independent key + grace this is a
+    // no-op: NO emitFrame(g, 0) fires, so the scrubber does not jump to frame 0.
+    c.setGroups([GROUP]);
+    expect(emitted).not.toContain(0); // no spurious frame-0 re-emit
+    expect(c.frameIndexFor("grp-1")).toBe(2); // user's frame intact
+  });
+
+  it("preserves the frame across a transient dropout (grace), no frame-0 re-emit", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.stepGroupTo("grp-1", 2);
+    const emitted: number[] = [];
+    c.setEmitter((_ids, idx) => emitted.push(idx));
+    c.setGroups([]); // 1-heartbeat detection dropout
+    c.setGroups([GROUP]); // reappears within grace -> restore, NOT re-seed 0
+    expect(emitted).not.toContain(0);
+    expect(c.frameIndexFor("grp-1")).toBe(2);
+  });
+});
+
+describe("AnimationController — BUG 1: release seam frees warmed frames", () => {
+  it("fires the release emitter on reset() for the active group (keep current frame)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.stepGroupTo("grp-1", 1);
+    const released: Array<{ ids: string[]; keep: number }> = [];
+    c.setReleaseEmitter((ids, keep) => released.push({ ids: [...ids], keep }));
+    c.reset();
+    expect(released).toEqual([{ ids: ["f01", "f03", "f06"], keep: 1 }]);
+  });
+
+  it("fires the release emitter for the OLD group when the active group changes", () => {
+    const GROUP_B: AnimGroup = {
+      key: "grp-2",
+      label: "B",
+      layerIds: ["g0", "g1"],
+      frameLabels: ["b0", "b1"],
+    };
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]); // grp-1 becomes active
+    const released: Array<{ ids: string[]; keep: number }> = [];
+    c.setReleaseEmitter((ids, keep) => released.push({ ids: [...ids], keep }));
+    c.setActiveGroup("grp-2-not-yet"); // switch active away from grp-1
+    // grp-1's frames are released (keep -1 => release ALL).
+    expect(released[0]).toEqual({ ids: ["f01", "f03", "f06"], keep: -1 });
+    expect(GROUP_B).toBeDefined();
   });
 });
 

@@ -53,6 +53,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   CaseOpenEnvelopePayload,
+  compareLayersTopFirst,
   MapCommandPayload,
   ProjectLayerSummary,
   SessionStatePayload,
@@ -103,9 +104,13 @@ type LayerPanelAction =
   | { type: "local-visibility"; layer_id: string; visible: boolean }
   | { type: "local-opacity"; layer_id: string; opacity: number };
 
-function sortTopFirst(layers: ProjectLayerSummary[]): ProjectLayerSummary[] {
-  // Sort by z_index descending — top-of-stack first.
-  return [...layers].sort((a, b) => b.z_index - a.z_index);
+// Exported for the BUG 2 cross-surface determinism test (panel path).
+export function sortTopFirst(layers: ProjectLayerSummary[]): ProjectLayerSummary[] {
+  // BUG 2 (random-reorder): sort via the SHARED deterministic comparator (z_index
+  // descending, layer_id tiebreak) - NOT a bare `b.z_index - a.z_index`, which
+  // gave `NaN` (no total order) on the agent's null z_index and let this panel
+  // render the SAME set in a DIFFERENT order than the map / App surfaces.
+  return [...layers].sort(compareLayersTopFirst);
 }
 
 /**
@@ -407,15 +412,37 @@ export interface SequentialGroup {
   frameLabels: string[];
 }
 
-/** Round a bbox-ish signature so near-identical AOIs group together. */
-function bboxSignature(layer: ProjectLayerSummary): string {
-  // ProjectLayerSummary has no bbox field; the URI prefix (run/source dir) is
-  // the best available AOI/source proxy — same run dir => same AOI + tool. We
-  // strip the final path segment (the per-frame filename) so sibling frames in
-  // one run share a signature.
+/**
+ * BUG 2(B) - a RUN-INDEPENDENT series signature so a RE-RUN of the same scenario
+ * maps to the SAME group key (it used to mint a NEW key per run, which made the
+ * re-run look like a brand-new group: setGroups then re-seeded frame 0 = the
+ * "spurious autoplay / scrubber jumps to frame 0" symptom).
+ *
+ * The URI prefix is the only AOI/source proxy on ProjectLayerSummary, but it
+ * embeds a per-run id segment (`.../runs/<run_id>/<tool>/frameNN.tif`), so we
+ * canonicalize: drop the per-frame filename, then drop any path segment that
+ * looks like a per-run id (a ULID / UUID / long hex / pure-digit run token). What
+ * remains is the run-INDEPENDENT structure (bucket + tool dirs), so sibling
+ * frames in a run AND the frames of a later re-run share one signature. Falls
+ * back to the whole URI when there is nothing run-like to strip.
+ */
+function seriesSignature(layer: ProjectLayerSummary): string {
   const uri = layer.uri ?? "";
   const lastSlash = uri.lastIndexOf("/");
-  return lastSlash >= 0 ? uri.slice(0, lastSlash) : uri;
+  const dir = lastSlash >= 0 ? uri.slice(0, lastSlash) : uri;
+  // A segment is "run-like" if it is a ULID (26 Crockford base32), a UUID, a long
+  // hex blob, or a pure-digit/epoch token - all of which change every run.
+  const isRunLike = (seg: string): boolean =>
+    /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(seg) || // ULID
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg) || // UUID
+    /^[0-9a-f]{16,}$/i.test(seg) || // long hex run id
+    /^\d{6,}$/.test(seg) || // epoch / numeric run id
+    /(^|[-_])(run|job)[-_]?[0-9a-z]+$/i.test(seg); // run-<id> / job_<id>
+  const stable = dir
+    .split("/")
+    .filter((seg) => seg.length > 0 && !isRunLike(seg))
+    .join("/");
+  return stable.length > 0 ? stable : dir;
 }
 
 /** Titleize a lowercased stem for display ("hrrr forecast" → "Hrrr Forecast"). */
@@ -468,11 +495,14 @@ export function detectSequentialGroups(
     if (isPeakLayer(layer)) continue;
     const token = parseFrameToken(layer.name);
     if (!token) continue;
-    // Group key: stem + source/AOI signature + preset. All three must match so
-    // we never fuse two unrelated series that happen to share a token shape.
+    // Group key: stem + RUN-INDEPENDENT series signature + preset. All three must
+    // match so we never fuse two unrelated series that share a token shape, while
+    // the run-independent signature (BUG 2(B)) makes a RE-RUN of the same scenario
+    // map to the SAME key (so the controller preserves the user's frame instead of
+    // re-seeding frame 0 = the spurious-autoplay symptom).
     const key = [
       token.stem,
-      bboxSignature(layer),
+      seriesSignature(layer),
       (layer.style_preset ?? layer.layer_type ?? "").toLowerCase(),
     ].join("§");
     const arr = buckets.get(key) ?? [];
@@ -523,9 +553,13 @@ export function detectSequentialGroups(
     });
   }
   // Stable order: by the group's first member's z_index (top-of-stack first),
-  // matching the rest of the panel's ordering.
+  // matching the rest of the panel's ordering. BUG 2: null-coerce the z (??0, not
+  // a bare subtraction that yields NaN) and add a key tiebreak so the group order
+  // is deterministic even when every group's lead z is null.
   groups.sort(
-    (a, b) => (b.layers[0]?.z_index ?? 0) - (a.layers[0]?.z_index ?? 0),
+    (a, b) =>
+      (b.layers[0]?.z_index ?? 0) - (a.layers[0]?.z_index ?? 0) ||
+      a.key.localeCompare(b.key),
   );
   return groups;
 }
@@ -1066,8 +1100,10 @@ function LayerPanelImpl({
       if (groupedIds.has(l.layer_id)) continue;
       items.push({ kind: "layer", id: l.layer_id, z: l.z_index ?? 0, layer: l });
     }
-    // Top-of-stack first (z descending), matching sortTopFirst.
-    items.sort((a, b) => b.z - a.z);
+    // Top-of-stack first (z descending), matching sortTopFirst. BUG 2: tiebreak
+    // on the synthetic id so the interleaved group/layer order is deterministic
+    // when z values tie (e.g. all-null z_index), mirroring compareLayersTopFirst.
+    items.sort((a, b) => b.z - a.z || a.id.localeCompare(b.id));
     return items;
   }, [groups, state.layers, groupedIds]);
 

@@ -3,6 +3,7 @@
 import { describe, it, expect } from "vitest";
 import {
   framesToWarm,
+  releaseWarmedFrames,
   swapFrameWithHold,
   type FrameMapAdapter,
 } from "./frame_preload";
@@ -114,5 +115,59 @@ describe("swapFrameWithHold - preload + hold swap", () => {
     };
     const r = swapFrameWithHold(adapter, FRAMES, 1, null);
     expect(r.target).toBeNull(); // target missing -> no crash, no target
+  });
+});
+
+// BUG 1 (memory crash): releaseWarmedFrames flips out-of-window warmed frames to
+// visibility:none so MapLibre frees their SourceCache/textures (the warm path
+// only ever DIMS them to opacity 0 and leaves them visible -> OOM on a 144/288-
+// frame sweep). The window around the kept frame stays warmed-but-hidden so an
+// adjacent step is still gap-free.
+const MANY = ["f0", "f1", "f2", "f3", "f4", "f5"];
+
+describe("releaseWarmedFrames - free out-of-window warmed frames (bug 1)", () => {
+  it("sets visibility:none on every frame OUTSIDE the keep window", () => {
+    const { adapter, visibility } = makeAdapter();
+    // Keep index 3, window 1 -> {2,3,4} stay visible; {0,1,5} -> visibility:none.
+    releaseWarmedFrames(adapter, MANY, 3, 1);
+    expect(visibility.get("f0")).toBe(false);
+    expect(visibility.get("f1")).toBe(false);
+    expect(visibility.get("f5")).toBe(false);
+    // In-window frames are kept renderable (visible) so an adjacent step is gap-free.
+    expect(visibility.get("f2")).toBe(true);
+    expect(visibility.get("f3")).toBe(true);
+    expect(visibility.get("f4")).toBe(true);
+  });
+
+  it("keeps the shown frame at opacity 1 and the rest of the window at opacity 0", () => {
+    const { adapter, opacity } = makeAdapter();
+    releaseWarmedFrames(adapter, MANY, 3, 1);
+    // The kept (shown) frame is NOT dimmed (left as-is); its window neighbors are
+    // explicitly dimmed to opacity 0 (warmed-but-hidden).
+    expect(opacity.get("f2")).toBe(0);
+    expect(opacity.get("f4")).toBe(0);
+    expect(opacity.get("f3")).toBeUndefined(); // shown frame untouched here
+  });
+
+  it("releases ALL frames when keepIndex is out of range (stop/teardown)", () => {
+    const { adapter, visibility } = makeAdapter();
+    // keepIndex -1 (used on group-change/reset) => nothing is in-window => every
+    // frame is flipped to visibility:none (full release).
+    releaseWarmedFrames(adapter, MANY, -1);
+    for (const id of MANY) expect(visibility.get(id)).toBe(false);
+  });
+
+  it("skips frames whose layer is missing (race-tolerant)", () => {
+    const visibility = new Map<string, boolean>();
+    const adapter: FrameMapAdapter = {
+      hasLayer: (id) => id !== "f0", // f0 not on the style
+      setVisibility: (id, v) => visibility.set(id, v),
+      setOpacity: () => {},
+      isSourceLoaded: () => true,
+      onceSourceSettled: () => {},
+    };
+    releaseWarmedFrames(adapter, MANY, -1);
+    expect(visibility.has("f0")).toBe(false); // never touched (missing layer)
+    expect(visibility.get("f5")).toBe(false); // others released
   });
 });
