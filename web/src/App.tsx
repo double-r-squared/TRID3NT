@@ -34,7 +34,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
-import { Chat, readChatWidth } from "./Chat";
+import { Chat, readChatWidth, clampSheetHeight } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import { getLayerCache } from "./lib/layer_cache";
 // JOB WEB-ANIM (#157.2-.3)  -  the floating sequence scrubber now lives at the App
@@ -138,6 +138,20 @@ const LS_LEFT_COLLAPSED = "grace2.leftPanelCollapsed";
 const LS_RIGHT_COLLAPSED = "grace2.rightPanelCollapsed";
 // localStorage key for map theme (job-0076).
 const LS_THEME = "grace2.theme";
+
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the COLLAPSED mobile chat sheet
+// (drag handle + composer card) has an "auto" CSS height, so we estimate its
+// on-screen height with one shared constant when computing where the sheet's
+// TOP edge sits for the overlay dock. This replaces the two divergent
+// fixed-clearance guesses the SequenceScrubber (116) and the LayerLegend pill
+// (96) each carried; ~100px covers the collapsed handle + single-line composer
+// card. The device safe-area inset is reserved by the overlays' own CSS calc
+// fallback, so this is a pure layout-px estimate. The sheet's EXPANDED height
+// is the user-dragged vh (clampSheetHeight), so no estimate is needed there.
+const COLLAPSED_SHEET_PX = 100;
+// Fallback expanded sheet height (vh) before Chat reports its real geometry -
+// matches Chat's SHEET_HEIGHT_DEFAULT_VH so the first sheetTopPx is sane.
+const SHEET_HEIGHT_FALLBACK_VH = 70;
 
 function readTheme(): MapTheme {
   try {
@@ -345,6 +359,57 @@ export function App(): JSX.Element {
   // is no AOI / it leaves the viewport). Mirrors the layers/chatWidth lift
   // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
   const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
+
+  // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the mobile chat bottom-sheet's
+  // geometry (expanded? + dragged height in vh) is lifted out of Chat (via its
+  // onSheetGeometryChange callback) so the App-root overlays (SequenceScrubber +
+  // LayerLegend keys) can dock to the sheet's TOP edge - one clean band at the
+  // chat-panel top - instead of floating over the map with a fixed-pixel
+  // clearance guess. We derive a single `sheetTopPx` (the on-screen Y of the
+  // sheet's top edge) and thread it to both overlays. Mobile-only; null on
+  // desktop (the overlays keep their viewport-bottom placement there).
+  const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
+  const [sheetHeightVh, setSheetHeightVh] = useState<number>(SHEET_HEIGHT_FALLBACK_VH);
+  // Track viewport height so sheetTopPx recomputes on resize / orientation flip
+  // (the sheet height is a vh fraction, and the collapsed estimate is measured
+  // from the bottom). Seeded from the live window; updated on resize.
+  const [viewportH, setViewportH] = useState<number>(() =>
+    typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : 0,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onResize = (): void => setViewportH(window.innerHeight);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, []);
+  const handleSheetGeometryChange = useCallback(
+    (g: { expanded: boolean; heightVh: number }): void => {
+      setSheetExpanded(g.expanded);
+      setSheetHeightVh(g.heightVh);
+    },
+    [],
+  );
+  // The on-screen Y of the mobile chat sheet's TOP edge. When EXPANDED the sheet
+  // height = clampSheetHeight(heightVh)vh measured up from the bottom; when
+  // COLLAPSED it is the handle + composer card (COLLAPSED_SHEET_PX, the shared
+  // clearance estimate). Both overlays dock their BOTTOM edge just above this Y.
+  // Mobile-only; null on desktop. (The safe-area inset is left to the overlays'
+  // CSS calc fallback when sheetTopPx is unavailable; here the collapsed
+  // estimate already folds in the historical ~clearance band, so we anchor the
+  // overlay bottom relative to this px line.)
+  const sheetTopPx =
+    isMobile && viewportH > 0
+      ? viewportH -
+        (sheetExpanded
+          ? Math.round((clampSheetHeight(sheetHeightVh) / 100) * viewportH)
+          : COLLAPSED_SHEET_PX)
+      : null;
 
   // NATE map/loading-UX polish item 1 - the bbox loading-animation overlay.
   //   - `bboxAnimEnabled` is the user's persisted enable flag (DEFAULT ON; the
@@ -1815,6 +1880,11 @@ export function App(): JSX.Element {
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
         mobile={isMobile}
+        /* MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the chat
+           sheet's top edge, threaded through to the mobile LayerLegend so its
+           colorbar keys + collapsed pill dock to the chat-panel top (a clean
+           band) instead of floating over the map. Null on desktop. */
+        legendSheetTopPx={sheetTopPx}
         /* LANE B #3 - the desktop left rail (CasesPanel / CaseView) is a fixed
            288px when open; 0 on mobile or when collapsed. Threaded so fitBounds
            pads the occluded left side and the AOI box centers in the visible
@@ -2163,6 +2233,11 @@ export function App(): JSX.Element {
              routeCaseOpen. Chat does NOT see App's useCases state, so without
              this the cold view leaves the conversation blank. Idempotent. */
           subscribeCaseOpen={bus.subscribeCaseOpen}
+          /* MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - lift the sheet's
+             expanded/height geometry so App can dock the SequenceScrubber +
+             LayerLegend to the sheet's TOP edge (a clean band) instead of
+             floating over the map. Mobile-only; Chat no-ops it on desktop. */
+          onSheetGeometryChange={handleSheetGeometryChange}
         />
       </div>
 
@@ -2687,6 +2762,11 @@ export function App(): JSX.Element {
         leftPanelWidthPx={!isMobile && !leftCollapsed ? 288 : 0}
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
+        /* MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the chat
+           sheet's top edge; the scrubber docks its bottom edge just above it so
+           it sits in a clean band at the chat-panel top, not over the map. Null
+           on desktop (keeps the viewport-bottom placement). */
+        sheetTopPx={sheetTopPx}
       />
     </div>
     </AuthGuard>
@@ -2707,6 +2787,7 @@ function AppSequenceScrubber({
   leftPanelWidthPx = 0,
   chatWidthPx = 0,
   chatCollapsed = false,
+  sheetTopPx = null,
 }: {
   aoiRect: ScreenRect | null;
   /**
@@ -2722,6 +2803,13 @@ function AppSequenceScrubber({
   chatWidthPx?: number;
   /** Whether the chat panel is collapsed (its width counts as 0). */
   chatCollapsed?: boolean;
+  /**
+   * MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the mobile chat
+   * sheet's top edge. When set the scrubber docks its BOTTOM edge just above it
+   * (a clean band at the chat-panel top) instead of clamping to a fixed mobile
+   * clearance over the composer. Null on desktop.
+   */
+  sheetTopPx?: number | null;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -2750,6 +2838,7 @@ function AppSequenceScrubber({
       leftPanelWidthPx={leftPanelWidthPx}
       chatWidthPx={chatWidthPx}
       chatCollapsed={chatCollapsed}
+      sheetTopPx={sheetTopPx}
     />
   );
 }

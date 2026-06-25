@@ -519,3 +519,77 @@ describe("SequenceScrubber - mobile vertical clamp above the chat sheet (ITEM 6)
     expect(el.style.bottom).not.toBe("24px");
   });
 });
+
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
+// top-edge Y (sheetTopPx), the scrubber must dock its BOTTOM just above the
+// sheet top (viewportH - sheetTopPx + gap), tracking the sheet as it expands /
+// collapses, instead of clamping to the fixed env()+clearance composer offset.
+describe("SequenceScrubber - mobile docks to the chat sheet top (sheetTopPx)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubMobile(innerHeight: number): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+    vi.stubGlobal("innerHeight", innerHeight);
+  }
+
+  it("docks the scrubber bottom just above the sheet top (AOI present) - not the AOI bottom", () => {
+    stubMobile(800);
+    // sheetTopPx=500 -> bottom = 800 - 500 + 8 = 308. The AOI bottom (200) would
+    // normally drive a top anchor; the sheet-top dock takes priority on mobile.
+    renderScrubber({
+      aoiRect: { left: 100, top: 60, right: 300, bottom: 200 },
+      sheetTopPx: 500,
+    });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.bottom).toBe("308px");
+    // No top anchor (it docked from the bottom), still centered on the AOI box.
+    expect(el.style.top).toBe("");
+    expect(el.style.left).toBe("200px");
+  });
+
+  it("tracks the sheet: a HIGHER sheet top (expanded) lifts the scrubber further up", () => {
+    stubMobile(800);
+    // Collapsed sheet: top edge at 700 -> bottom = 800 - 700 + 8 = 108.
+    const { rerender } = renderScrubber({
+      aoiRect: { left: 100, top: 60, right: 300, bottom: 200 },
+      sheetTopPx: 700,
+    });
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.bottom).toBe(
+      "108px",
+    );
+    // Expanded sheet: top edge rises to 300 -> bottom = 800 - 300 + 8 = 508.
+    rerender(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={FRAMES}
+        activeIndex={0}
+        onStep={vi.fn()}
+        playing={false}
+        onPlayToggle={vi.fn()}
+        aoiRect={{ left: 100, top: 60, right: 300, bottom: 200 }}
+        sheetTopPx={300}
+      />,
+    );
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.bottom).toBe(
+      "508px",
+    );
+  });
+
+  it("docks the AOI-less fallback to the sheet top too", () => {
+    stubMobile(800);
+    renderScrubber({ sheetTopPx: 500 }); // no aoiRect
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.bottom).toBe("308px");
+  });
+});

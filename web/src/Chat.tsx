@@ -2944,6 +2944,17 @@ export interface ChatProps {
    * no-op (no double render). Optional; when omitted Chat behaves as before.
    */
   subscribeCaseOpen?: (cb: (p: CaseOpenEnvelopePayload) => void) => () => void;
+  /**
+   * MOBILE SHEET GEOMETRY (NATE 2026-06-24) - the mobile bottom-sheet's expanded
+   * state + dragged height (vh) lived ONLY inside Chat, so the App-root overlays
+   * (SequenceScrubber, LayerLegend keys) had no idea where the sheet's TOP edge
+   * is and could only float over the map with a fixed-pixel clearance guess.
+   * Fired whenever `sheetExpanded` or `sheetHeightVh` changes (and once on
+   * mount) so App can compute one shared "sheet top" Y and dock both overlays to
+   * it (a clean band at the chat-panel top, like the desktop dock). Mobile-only;
+   * never fires on desktop. Optional - when omitted Chat behaves as before.
+   */
+  onSheetGeometryChange?: (g: { expanded: boolean; heightVh: number }) => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -2975,6 +2986,7 @@ export function Chat({
   agentAsleep = false,
   onWakeTap,
   subscribeCaseOpen,
+  onSheetGeometryChange,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
@@ -2999,6 +3011,18 @@ export function Chat({
     setSheetHeightVh(vh);
     writeSheetHeight(vh);
   }, []);
+  // MOBILE SHEET GEOMETRY LIFT (NATE 2026-06-24) - publish the sheet's expanded
+  // state + dragged height up to App so the App-root overlays (SequenceScrubber,
+  // LayerLegend keys) can dock to the sheet's TOP edge instead of floating over
+  // the map with a fixed-pixel clearance guess. Fires on mount and on every
+  // expand/collapse or drag-resize. Mobile-only (desktop has no bottom sheet, so
+  // the overlays keep their viewport-bottom placement). The drag handlers above
+  // call setSheetHeightVh on every pointermove, so this re-fires live during a
+  // drag and the overlays track the sheet as it grows/shrinks.
+  useEffect(() => {
+    if (!mobile) return;
+    onSheetGeometryChange?.({ expanded: sheetExpanded, heightVh: sheetHeightVh });
+  }, [mobile, sheetExpanded, sheetHeightVh, onSheetGeometryChange]);
   // F56 (job-0322; reactive fix) — per-user chat-opacity tier. Read lazily from
   // localStorage (the shared key Chat.tsx owns; SettingsPopup writes it).
   // Default MEDIUM. SAME-TAB REACTIVITY: SettingsPopup's writeChatOpacity

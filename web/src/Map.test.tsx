@@ -2994,6 +2994,71 @@ describe("MapView  -  onAoiScreenRectChange lift (scrubber AOI snap)", () => {
     // lon [-80,-70] -> x [200,220]; lat [20,25] -> y [130,140].
     expect(last).toEqual({ left: 200, top: 130, right: 220, bottom: 140 });
   });
+
+  // MOBILE BBOX-ON-EXIT (NATE 2026-06-24): backing out of a Case on MOBILE left
+  // the dashed AOI rectangle on the map because the teardown lived ONLY on the
+  // laggy `clear-analysis-extent` bus map-command (style-ready/idle-gated +
+  // re-projection-dependent - App.tsx:1144 flags it as one that "can lag / not
+  // re-fire"). The fix routes the teardown through the DETERMINISTIC
+  // caseActive=false prop flip: a true->false flip must clear the dashed extent
+  // AND push onAoiScreenRectChange(null) up, with NO bus command and NO
+  // idle/moveend needed. (The App.coldViewRender harness can't catch this - it
+  // reproduces the App effect verbatim without mounting the real MapView, so the
+  // aoiBbox->legendRect projection re-push is never exercised.)
+  it("clears the dashed extent + reports null AOI rect on a caseActive true->false flip (no bus command)", async () => {
+    const mapCmdBus = makeMapCmdBus();
+    const onRect = vi.fn();
+    const { rerender } = render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        onAoiScreenRectChange={onRect}
+        caseActive
+      />,
+    );
+    const m = lastMapMock!;
+
+    // Enter-a-Case state: a zoom-to draws the AOI bbox + dashed extent; the
+    // projection effect reports a non-null screen rect up (after a frame flush).
+    act(() => {
+      mapCmdBus.push({ command: "zoom-to", args: { bbox: [-100, 30, -90, 40] } });
+    });
+    await flushRaf();
+    expect(
+      m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id),
+    ).toContain("grace2-analysis-extent-line");
+    // A non-null rect was reported (so the null-on-exit transition is real).
+    expect(
+      onRect.mock.calls.some((c) => c[0] !== null),
+    ).toBe(true);
+
+    onRect.mockClear();
+    m.removeLayer.mockClear();
+    m.removeSource.mockClear();
+
+    // Back out to the Cases list: caseActive flips true -> false. NO bus command
+    // is pushed - the deterministic prop flip alone must tear the AOI down.
+    await act(async () => {
+      rerender(
+        <MapView
+          subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+          onAoiScreenRectChange={onRect}
+          caseActive={false}
+        />,
+      );
+    });
+
+    // The dashed extent line + its source are removed synchronously (no idle).
+    expect(m.removeLayer.mock.calls.map((c) => c[0])).toContain(
+      "grace2-analysis-extent-line",
+    );
+    expect(m.removeSource.mock.calls.map((c) => c[0])).toContain(
+      "grace2-analysis-extent",
+    );
+    // setAoiBbox(null) drives the projection effect (dep [aoiBbox]) to clear the
+    // legend rect and push null up, clearing App's aoiScreenRect + the
+    // BboxProgressOverlay durably - independent of any map re-projection / idle.
+    expect(onRect).toHaveBeenCalledWith(null);
+  });
 });
 
 describe("MapView  -  map-command layer controls (job-0258)", () => {

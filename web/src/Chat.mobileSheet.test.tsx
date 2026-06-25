@@ -1670,3 +1670,39 @@ describe("Chat.tsx wake-composer redesign (NATE 2026-06-19)", () => {
     expect(expandedBranch).not.toContain('data-testid="connection-status"');
   });
 });
+
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - Chat lifts its sheet geometry
+// (expanded? + dragged height vh) up to App via onSheetGeometryChange so the
+// App-root overlays (SequenceScrubber + LayerLegend) can dock to the sheet's
+// TOP edge. Chat can't mount in happy-dom (it opens a WebSocket), so we assert
+// the wiring at the source level (the established CHAT_SRC pattern).
+describe("Chat.tsx mobile sheet-geometry lift (sheetTopPx dock)", () => {
+  it("declares the onSheetGeometryChange prop in ChatProps", () => {
+    expect(CHAT_SRC).toMatch(
+      /onSheetGeometryChange\?\s*:\s*\(g:\s*\{\s*expanded:\s*boolean;\s*heightVh:\s*number\s*\}\s*\)\s*=>\s*void/,
+    );
+  });
+
+  it("destructures onSheetGeometryChange in the Chat component args", () => {
+    const ctorStart = CHAT_SRC.indexOf("export function Chat({");
+    const ctorEnd = CHAT_SRC.indexOf("}: ChatProps): JSX.Element {", ctorStart);
+    const ctorArgs = CHAT_SRC.slice(ctorStart, ctorEnd);
+    expect(ctorArgs).toContain("onSheetGeometryChange");
+  });
+
+  it("fires onSheetGeometryChange from a mobile-gated effect on sheet state/height changes", () => {
+    // The effect publishes { expanded, heightVh } and is gated to mobile + keyed
+    // on sheetExpanded + sheetHeightVh so it re-fires on expand/collapse/drag.
+    expect(CHAT_SRC).toContain(
+      "onSheetGeometryChange?.({ expanded: sheetExpanded, heightVh: sheetHeightVh })",
+    );
+    // The effect bails on desktop (no bottom sheet there).
+    expect(CHAT_SRC).toMatch(
+      /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(!mobile\)\s*return;\s*onSheetGeometryChange/,
+    );
+    // Keyed on the sheet geometry deps so it tracks expand/collapse/drag.
+    expect(CHAT_SRC).toMatch(
+      /\[mobile,\s*sheetExpanded,\s*sheetHeightVh,\s*onSheetGeometryChange\]/,
+    );
+  });
+});

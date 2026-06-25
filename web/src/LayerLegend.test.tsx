@@ -21,6 +21,8 @@ import {
   MOBILE_LEGEND_PILL_BOTTOM_CSS,
   MOBILE_LEGEND_PILL_CLEARANCE_PX,
   DESKTOP_LEGEND_PILL_BOTTOM_PX,
+  MOBILE_SHEET_DOCK_GAP_PX,
+  sheetTopDockBottomPx,
   MobileLegendToggle,
   legendHasContent,
 } from "./components/LayerLegend";
@@ -708,6 +710,70 @@ describe("LayerLegend  -  Show-legend pill position vs mobile composer (#157)", 
     } finally {
       restore();
     }
+  });
+});
+
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
+// top-edge Y (sheetTopPx), the mobile legend (colorbar keys + collapsed pill)
+// must dock just ABOVE the sheet top - a clean band at the chat-panel top -
+// instead of railing the AOI edges / floating over the map. beforeEach already
+// stubs mobile=true; jsdom's window.innerHeight defaults to 768.
+describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", () => {
+  it("sheetTopDockBottomPx computes viewportH - sheetTopPx + gap", () => {
+    // window.innerHeight is 768 under jsdom.
+    expect(sheetTopDockBottomPx(500)).toBe(768 - 500 + MOBILE_SHEET_DOCK_GAP_PX);
+    expect(MOBILE_SHEET_DOCK_GAP_PX).toBeGreaterThan(0);
+  });
+
+  it("docks the colorbar KEYS to the sheet top (suppressing the AOI snap)", () => {
+    // An AOI rect is present, but the sheet-top dock takes priority on mobile:
+    // the key sits in a bottom-center band just above the sheet, NOT railed to
+    // an AOI edge (which would set an absolute top with no `bottom`).
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={500}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // Docked from the BOTTOM at viewportH - sheetTopPx + gap = 768-500+8 = 276.
+    expect(key.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
+    // Centered via left:50% + translate (the band convention), not an AOI-edge
+    // absolute position.
+    expect(key.style.left).toBe("50%");
+  });
+
+  it("docks the collapsed 'Show legend' PILL to the sheet top", () => {
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
+    fireEvent.click(screen.getByTestId("layer-legend-hide"));
+    const pill = screen.getByTestId("grace2-layer-legend-show");
+    expect(pill.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
+  });
+
+  it("a HIGHER sheet top (expanded sheet) docks the keys further up the screen", () => {
+    const { rerender } = render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={700}
+      />,
+    );
+    // Collapsed: top edge 700 -> bottom = 768-700+8 = 76.
+    expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
+      `${768 - 700 + MOBILE_SHEET_DOCK_GAP_PX}px`,
+    );
+    // Expanded: top edge rises to 300 -> bottom = 768-300+8 = 476 (higher up).
+    rerender(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={300}
+      />,
+    );
+    expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
+      `${768 - 300 + MOBILE_SHEET_DOCK_GAP_PX}px`,
+    );
   });
 });
 

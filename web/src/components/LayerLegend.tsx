@@ -83,6 +83,25 @@ export const MOBILE_LEGEND_PILL_CLEARANCE_PX = 96;
 export const MOBILE_LEGEND_PILL_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`;
 export const DESKTOP_LEGEND_PILL_BOTTOM_PX = 24;
 
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  gap (px) between the docked legend's
+// bottom edge and the chat sheet's TOP edge, so the band sits just above the
+// sheet without touching it. Mirrors the SequenceScrubber's dock gap.
+export const MOBILE_SHEET_DOCK_GAP_PX = 8;
+
+/**
+ * MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  the CSS `bottom` offset that docks a
+ * portaled (position:fixed) overlay just ABOVE the chat sheet's top edge, given
+ * the sheet-top screen Y. bottom = viewportH - sheetTopPx + gap. Returns null
+ * when the viewport / sheetTopPx is unavailable (SSR / no window) so the caller
+ * falls back to its legacy placement. Exported for unit tests.
+ */
+export function sheetTopDockBottomPx(sheetTopPx: number): number | null {
+  if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) {
+    return null;
+  }
+  return Math.max(0, window.innerHeight - sheetTopPx + MOBILE_SHEET_DOCK_GAP_PX);
+}
+
 // Item a (Z-HIERARCHY, NATE 2026-06-20)  -  the legend must render BEHIND the chat
 // (z=32) and the Layers/Cases panels (z=20) and the desktop hamburgers (z=30),
 // but ABOVE the map. A single low z keeps the legend in the map's chrome layer
@@ -157,6 +176,19 @@ export interface LayerLegendProps {
    */
   desktopLeftInsetPx?: number;
   desktopRightInsetPx?: number;
+  /**
+   * MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  the on-screen Y of the mobile chat
+   * sheet's TOP edge (App lifts the sheet geometry out of Chat). On MOBILE, when
+   * provided, the bottom-center fallback colorbar keys AND the collapsed "Show
+   * legend" pill dock their BOTTOM edge just ABOVE this Y (a clean band at the
+   * chat-panel top, mirroring the desktop single-band dock) instead of floating
+   * over the map with a fixed env()+clearance offset. We also suppress the
+   * AOI-side snap on mobile in favor of this band when sheetTopPx is present,
+   * since NATE wants the keys docked to the chat-panel top, not the AOI edges.
+   * Null/undefined => the legacy mobile placement (AOI snap / bottom:24 +
+   * env() pill). Ignored on desktop (the desktop dock is fixed-position).
+   */
+  sheetTopPx?: number | null;
 }
 
 /**
@@ -403,6 +435,7 @@ export function LayerLegend({
   suppressShowPill,
   desktopLeftInsetPx = 0,
   desktopRightInsetPx = 0,
+  sheetTopPx = null,
 }: LayerLegendProps): JSX.Element | null {
   const dockLeftInsetPx = Math.max(0, desktopLeftInsetPx);
   const dockRightInsetPx = Math.max(0, desktopRightInsetPx);
@@ -595,6 +628,22 @@ export function LayerLegend({
       return { left: -s.width / 2, top, side: "bottom" as AoiSide };
     });
   }, [aoiRect, sizes, bottomReserve, resolvedSides]);
+
+  // MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  a bottom-center-RELATIVE stack
+  // (left/top offsets from a bottom-center origin, same convention as the
+  // AOI-less fallback above) used ONLY by the mobile sheet-top band dock. Unlike
+  // `snapped` (which returns ABSOLUTE coords when an AOI rect is present), this is
+  // ALWAYS bottom-center-relative so the band can be realized with left:50% + a
+  // translate even while an AOI box is on screen (the band dock SUPPRESSES the
+  // AOI snap on mobile). Keys stack upward so they never overlap.
+  const mobileBandStack = useMemo(() => {
+    let consumed = 0;
+    return sizes.map((s) => {
+      const top = -(FALLBACK_STACK_GAP + consumed + s.height);
+      consumed += s.height + FALLBACK_STACK_GAP;
+      return { left: -s.width / 2, top };
+    });
+  }, [sizes]);
 
   // --- drag wiring --------------------------------------------------------- //
 
@@ -792,6 +841,15 @@ export function LayerLegend({
       ? dropZoneSignals(aoiRect, { activeSide: activeDropSide })
       : [];
 
+  // MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  when the chat sheet's top edge Y is
+  // known, dock the mobile bottom-center fallback keys AND the collapsed pill
+  // just ABOVE the sheet (a clean band at the chat-panel top) instead of the
+  // legacy env()+clearance bottom. Null on desktop / SSR -> the legacy placement
+  // is used. Recomputed each render (App threads a fresh sheetTopPx on resize /
+  // expand / collapse / drag).
+  const mobileDockBottomPx =
+    isMobile && sheetTopPx != null ? sheetTopDockBottomPx(sheetTopPx) : null;
+
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
   // Portal to document.body so it appears above the mobile chat panel.
   //
@@ -808,12 +866,17 @@ export function LayerLegend({
         onClick={() => setHidden(false)}
         style={{
           position: "fixed",
-          // JOB WEB-AOI-LEGEND (#157)  -  on mobile, sit ABOVE the chat composer
-          // (safe-area inset + clearance for the collapsed sheet); on desktop
-          // keep the original low bottom-center position (no bottom sheet).
-          bottom: isMobile
-            ? MOBILE_LEGEND_PILL_BOTTOM_CSS
-            : DESKTOP_LEGEND_PILL_BOTTOM_PX,
+          // MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  dock the pill just ABOVE the
+          // chat sheet's top edge (a clean band) when its Y is known. Else fall
+          // back to JOB WEB-AOI-LEGEND (#157): on mobile sit ABOVE the composer
+          // (safe-area inset + collapsed-sheet clearance); on desktop keep the
+          // original low bottom-center position (no bottom sheet).
+          bottom:
+            mobileDockBottomPx != null
+              ? mobileDockBottomPx
+              : isMobile
+                ? MOBILE_LEGEND_PILL_BOTTOM_CSS
+                : DESKTOP_LEGEND_PILL_BOTTOM_PX,
           left: "50%",
           transform: "translateX(-50%)",
           padding: "5px 12px",
@@ -911,12 +974,31 @@ export function LayerLegend({
         // the fallback satisfies noUncheckedIndexedAccess.
         const snapPos = snapped[idx] ?? { left: 0, top: 0, side: "bottom" as AoiSide };
 
-        // Position: free (dragging) > snapped (AOI) > fallback bottom-center.
+        // Position priority:
+        //   free (user-dragged) > MOBILE sheet-top band dock > AOI snap >
+        //   fallback bottom-center.
         // Keys use position:fixed (portaled to document.body) so coords map
         // 1:1 to viewport space (map container is inset:0 -> same origin).
+        //
+        // MOBILE SHEET-TOP DOCK (NATE 2026-06-24): when the chat sheet's top edge
+        // Y is known we SUPPRESS the AOI-side snap on mobile and dock the keys in
+        // a clean horizontal band just ABOVE the sheet top (NATE wants them at the
+        // chat-panel top, NOT railing the AOI edges) - mirroring the desktop
+        // single-band dock. snapPos.left/top are bottom-center-relative offsets
+        // (same as the fallback below), realized with left:50% + translate.
         let posStyle: React.CSSProperties;
         if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
+        } else if (mobileDockBottomPx != null) {
+          // Band dock: use the bottom-center-RELATIVE stack (not `snapPos`, which
+          // is absolute when an AOI rect is present) so left:50% + translate puts
+          // the keys in a clean horizontal band just above the chat sheet top.
+          const band = mobileBandStack[idx] ?? { left: -width / 2, top: 0 };
+          posStyle = {
+            left: "50%",
+            bottom: mobileDockBottomPx,
+            transform: `translate(calc(-50% + ${band.left + width / 2}px), ${band.top}px)`,
+          };
         } else if (aoiRect) {
           posStyle = { left: snapPos.left, top: snapPos.top };
         } else {

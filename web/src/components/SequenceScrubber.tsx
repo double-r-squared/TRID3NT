@@ -125,6 +125,16 @@ export interface SequenceScrubberProps {
   chatWidthPx?: number;
   /** Whether the right chat panel is collapsed (then its width is 0). */
   chatCollapsed?: boolean;
+  /**
+   * MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the mobile chat
+   * sheet's TOP edge (App lifts the sheet geometry out of Chat). When set (mobile
+   * only) the scrubber docks its BOTTOM edge just ABOVE this Y - a clean band at
+   * the chat-panel top - instead of clamping to a fixed env()+clearance offset
+   * over the composer, and it tracks the sheet as it expands/collapses/drags.
+   * Null/undefined => the legacy mobile clamp (env() + collapsed-sheet clearance).
+   * Ignored on desktop.
+   */
+  sheetTopPx?: number | null;
 }
 
 /** Clamp `i` into [0, n) with wraparound so the scrubber loops cleanly. */
@@ -147,6 +157,7 @@ export function SequenceScrubber({
   leftPanelWidthPx = 0,
   chatWidthPx = 0,
   chatCollapsed = false,
+  sheetTopPx = null,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
   const isMobile = useIsMobile();
@@ -262,6 +273,16 @@ export function SequenceScrubber({
         SCRUBBER_MOBILE_SHEET_CLEARANCE_PX -
         SCRUBBER_APPROX_HEIGHT_PX
       : null;
+  // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
+  // top-edge Y, dock the scrubber's BOTTOM just ABOVE it (a clean band at the
+  // chat-panel top) instead of the fixed env()+clearance clamp over the
+  // composer. bottom = viewportH - sheetTopPx + gap. This tracks the sheet as it
+  // expands/collapses/drags (App recomputes sheetTopPx). Null on desktop / SSR
+  // -> the legacy clamp holds.
+  const mobileSheetDockBottomPx =
+    isMobile && sheetTopPx != null && viewportH != null
+      ? Math.max(0, viewportH - sheetTopPx + 8)
+      : null;
   // 3D-CLAMP (NATE 2026-06-24): on DESKTOP too, the AOI-bottom anchor can land
   // OFF-SCREEN under the 67deg terrain pitch (the projected AOI bottom edge
   // drops below the viewport), so the scrubber renders below the fold and looks
@@ -279,13 +300,27 @@ export function SequenceScrubber({
     // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile keep the scrubber
     // ABOVE the chat sheet/composer.
     const top = aoiRect.bottom + 12;
-    if (mobileMaxTop != null && top > mobileMaxTop) {
+    if (mobileSheetDockBottomPx != null) {
+      // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - dock the scrubber's BOTTOM just
+      // above the chat sheet's top edge (a clean band at the chat-panel top),
+      // tracking the sheet as it expands/collapses. NATE wants it docked to the
+      // chat-panel top, NOT railing the AOI bottom edge, so this takes priority
+      // over the AOI-bottom anchor on mobile (still horizontally centered on the
+      // AOI box). Replaces the env()+clearance composer clamp below.
+      posStyle = {
+        position: "fixed",
+        left: cx,
+        bottom: mobileSheetDockBottomPx,
+        transform: "translateX(-50%)",
+        transformOrigin: "bottom center",
+      };
+    } else if (mobileMaxTop != null && top > mobileMaxTop) {
       // BUG 3  -  the natural anchor would drop the scrubber into the composer band.
       // Anchor from the BOTTOM with the safe-area-inclusive clearance (CSS calc),
       // exactly like the legend pill, so the inset is reserved on-device (the old
       // `top = innerHeight - CLEARANCE` clamp silently omitted the safe-area inset
       // and overlapped the composer on notched phones). Still horizontally
-      // centered on the AOI box.
+      // centered on the AOI box. (Fallback when sheetTopPx is unavailable.)
       posStyle = {
         position: "fixed",
         left: cx,
@@ -327,9 +362,17 @@ export function SequenceScrubber({
       gutterRight != null && !isMobile
         ? clampCenter((gutterLeft + gutterRight) / 2)
         : null;
+    // MOBILE SHEET-TOP DOCK (NATE 2026-06-24): when the chat sheet's top edge Y
+    // is known, dock the AOI-less fallback band just ABOVE it (a clean band at
+    // the chat-panel top) instead of the env()+clearance composer offset. Else
+    // fall back to that offset (mobile) / bottom:24 (desktop).
+    const mobileFallbackBottom =
+      mobileSheetDockBottomPx != null
+        ? mobileSheetDockBottomPx
+        : SCRUBBER_MOBILE_BOTTOM_CSS;
     posStyle = {
       position: "fixed",
-      bottom: isMobile ? SCRUBBER_MOBILE_BOTTOM_CSS : 24,
+      bottom: isMobile ? mobileFallbackBottom : 24,
       left: desktopCx != null ? desktopCx : "50%",
       transform: "translateX(-50%)",
       transformOrigin: "bottom center",

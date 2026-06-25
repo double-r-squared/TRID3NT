@@ -370,6 +370,15 @@ export interface MapViewProps {
    */
   suppressLegendShowPill?: boolean;
   /**
+   * MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  the on-screen Y of the mobile chat
+   * sheet's TOP edge, threaded straight to LayerLegend. On mobile, when set, the
+   * legend's bottom-center fallback keys + the collapsed "Show legend" pill dock
+   * just ABOVE this Y (a clean band at the chat-panel top) instead of floating
+   * over the map with a fixed-pixel composer clearance. Null/undefined on desktop
+   * (the desktop dock is unaffected).
+   */
+  legendSheetTopPx?: number | null;
+  /**
    * CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22) - whether a Case is currently
    * ENTERED. NATE: "no case layers should be loaded when we are in the cases
    * section; they should only be rendered when we have entered a Case." When
@@ -2387,7 +2396,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3230,6 +3239,39 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // worse, a stale non-empty ref could suppress the real re-populate).
       lastLegendOrderedRef.current = [];
       setLegendLayers([]);
+      // MOBILE BBOX-ON-EXIT (NATE 2026-06-24): tear down the on-map AOI here, on
+      // the DETERMINISTIC caseActive=false flip, instead of relying ONLY on the
+      // laggy `clear-analysis-extent` / `reset-view` bus map-commands. Those
+      // commands clear the AOI bbox / stashed map AOI / dashed analysis-extent
+      // but are mapStyleReady/`idle`-GATED and depend on a map re-projection to
+      // re-push the cleared screen rect up (App.tsx:1144 flags this path as one
+      // that "can lag / not re-fire" when the box is busy/asleep). On MOBILE the
+      // open Cases drawer occludes the map so the user never pans -> the
+      // aoiBbox->legendRect projection effect never re-fires, and a sleeping box
+      // starves `idle`, so the dashed AOI rectangle LINGERS after backing out of
+      // a Case. This flip runs synchronously on EVERY case exit for BOTH layouts:
+      //   - lastZoomToCorners=null so a late style (re)load can't re-assert the
+      //     rectangle via the moveend/idle redraw path;
+      //   - setAoiBbox(null) drives the projection effect (dep [aoiBbox]) to
+      //     setLegendRect(null) immediately, which pushes null up via
+      //     onAoiScreenRectChange -> App clears aoiScreenRect + the
+      //     BboxProgressOverlay durably, no map re-projection required;
+      //   - clearAnalysisExtent removes the dashed rectangle WITHOUT waiting on
+      //     `idle`, and setMapAoiBbox(null) drops the stashed clip bbox so a new
+      //     Case's vectors are not clipped to the prior AOI.
+      // The existing bus clear-analysis-extent/reset-view commands stay as
+      // belt-and-suspenders (camera reset + redundant clear).
+      lastZoomToCorners.current = null;
+      setAoiBbox(null);
+      const m = map.current;
+      if (m) {
+        try {
+          setMapAoiBbox(m, null);
+          clearAnalysisExtent(m);
+        } catch {
+          /* best-effort; a missing/half-built extent self-heals on next draw */
+        }
+      }
     }
     applyLatestRef.current?.();
   }, [caseActive]);
@@ -4421,6 +4463,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         hidden={legendHidden}
         onHiddenChange={onLegendHiddenChange}
         suppressShowPill={suppressLegendShowPill}
+        /* MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - dock the mobile colorbar keys
+           + collapsed pill to the chat sheet's TOP edge (a clean band) instead
+           of floating over the map. Null on desktop (the desktop dock ignores
+           it). */
+        sheetTopPx={legendSheetTopPx}
         /* LANE D (desktop dock) - center the static bottom-center legend strip
            in the VISIBLE gutter between the left rail + right chat panel. */
         desktopLeftInsetPx={leftPanelWidthPx}
