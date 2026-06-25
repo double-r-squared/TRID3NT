@@ -337,6 +337,14 @@ from ..workflows import model_satellite_fire_animation as _model_satellite_fire_
 # parking (the sibling of model_satellite_fire_animation that does NOT review-gate).
 from ..workflows import model_goes_fire_animation as _model_goes_fire_animation  # noqa: E402,F401 - fire-demo Track A: registers run_model_goes_fire_animation (auto-snap window -> GOES GeoColor+Fire Temperature per-frame imagery -> FIRMS overlay -> publish; NO confirm gate)
 
+# GLM lightning demo: the DIRECT GOES-19 GLM Group-Energy-Density animation composer
+# carries its OWN @register_tool (run_model_glm_lightning_animation); import it so the
+# no-news lightning loop is in TOOL_REGISTRY at startup. It takes an AOI bbox + UTC
+# window DIRECTLY (NO news/geocode/snap front-half), bins GLM GED onto the ABI 2 km
+# grid per 1-min frame, bakes the purple overlay over the grayscale C02 visible base,
+# and publishes a scrubbable baked loop + a separable transparent GED overlay.
+from ..workflows import model_glm_lightning_animation as _model_glm_lightning_animation  # noqa: E402,F401 - GLM lightning demo: registers run_model_glm_lightning_animation (DIRECT AOI+window -> GLM GED purple overlay baked over GOES-19 C02 visible base, 1-min frames; NO news step)
+
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest
 # of the tool surface. Importing the module fires its two ``@register_tool``

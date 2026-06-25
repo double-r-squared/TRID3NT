@@ -1067,6 +1067,15 @@ run_model_goes_fire_animation:
   - "run the unattended GOES fire timelapse over this window, snap to whatever frames exist"
   - "show the wildfire evolving over this region from geostationary imagery, hourly frames"
   - "loop the GOES-19 East fire-temperature scene over this AOI with active-fire detections"
+run_model_glm_lightning_animation:
+  - "animate the GOES-19 GLM lightning over this storm for this time window"
+  - "recreate the CIRA visible plus group energy density lightning loop for this Gulf hurricane"
+  - "show the lightning flickering over this convective cluster as a scrubbable purple overlay on the visible imagery"
+  - "make a one-minute GLM group energy density animation over this bbox and daytime window"
+  - "bake the purple lightning density over the grayscale GOES-19 visible base and animate it here"
+  - "where is the most electrically active part of this Gulf storm over this hour, animated"
+  - "run the direct GLM lightning animation for this AOI and UTC window, no news lookup"
+  - "scrubbable lightning loop over the storm: GOES-East GLM energy density with a visible base"
 run_model_groundwater_contamination_scenario:
   - "here is a news article about a tce spill in twin falls, model the contaminant plume in the groundwater"
   - "a tanker leaked solvent near this town, how far will it spread through the aquifer"

@@ -255,6 +255,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # the window to available SLIDER frames + proceeds without a confirm gate).
     # Cross-listed to fire below.
     "run_model_goes_fire_animation": "hazard_modeling",
+    # GLM lightning demo: the DIRECT GOES-19 GLM Group-Energy-Density animation
+    # composer (AOI + UTC window -> purple GED baked over the C02 visible base;
+    # NO news step). Cross-listed to weather_atmosphere below.
+    "run_model_glm_lightning_animation": "hazard_modeling",
     "run_model_groundwater_contamination_scenario": "hazard_modeling",
     # ftw-affected-fields demo: the which-farm-fields-does-the-plume-reach
     # composer (MODFLOW plume -> FTW field boundaries -> analyze_affected_fields).
@@ -548,6 +552,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # rather than ingesting fire news (that front half is the review-gated
     # run_model_satellite_fire_animation's lane).
     "run_model_goes_fire_animation": ("fire",),
+    # GLM lightning composer cross-lists to weather_atmosphere (it is the GOES
+    # lightning/convection animation demo). No news_events cross-list -- it takes
+    # an AOI bbox + UTC window DIRECTLY, with no news/geocode front-half.
+    "run_model_glm_lightning_animation": ("weather_atmosphere",),
 }
 
 
