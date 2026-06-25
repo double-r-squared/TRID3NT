@@ -3761,6 +3761,37 @@ async def _emit_case_open(
     # and cannot reintroduce the job-0245 in-memory cross-case leak.
     _rehydrate_case_history(state, session_state, case_id)
 
+    # cold-raster fix: a pure case-OPEN today writes NO cold snapshot - only the
+    # 4 mutation triggers (create/rename/layer-publish/turn-close) do - so a
+    # freshly-opened or never-recently-mutated Case has a stale-or-missing
+    # ``case-views/{case_id}.json`` until the user takes a mutating action, and
+    # the box-asleep cold view (which fetches that presigned snapshot) cannot
+    # paint its rasters until the agent wakes. Materialize the snapshot (+ thin
+    # manifest) HERE on open so the cold face is warm immediately.
+    #
+    # FIRE-AND-FORGET (mirror the turn-close site): create_task so the Dynamo+S3
+    # round-trips NEVER sit on the open -> rehydrate path (no added latency), and
+    # both persisters swallow their own errors + return without raising (best
+    # effort - see ``_persist_case_view_snapshot`` / ``_persist_case_manifest``),
+    # so the detached task can never break the open. The snapshot sources inline
+    # vectors from the emitter only when ``target_case == open_case`` (guarded
+    # inline at ~8543), and this Case is the one we just opened, so sourcing the
+    # open Case is correct. A reconnect-rebind that re-runs this open just lands
+    # a second identical last-write-wins snapshot, which is harmless.
+    _open_snap = asyncio.create_task(
+        _persist_case_view_snapshot(state, case_id=case_id)
+    )
+    _BG_SNAPSHOT_TASKS.add(_open_snap)
+    _open_snap.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+    # #165 dual-write: refresh the thin manifest ALONGSIDE the snapshot so the
+    # data-island cold index lists this Case + its layers on open too. Same
+    # fire-and-forget; swallows its own errors.
+    _open_manifest = asyncio.create_task(
+        _persist_case_manifest(state, case_id=case_id)
+    )
+    _BG_SNAPSHOT_TASKS.add(_open_manifest)
+    _open_manifest.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+
     logger.info(
         "case-open session=%s case=%s chat=%d layers=%d rehydrated=%d",
         state.session_id,
