@@ -619,6 +619,52 @@ class Persistence:
             cases.append(case)
         return cases
 
+    async def list_all_active_case_ids(self) -> list[str]:
+        """List EVERY live Case's id, across all owners (cold-snapshot backfill).
+
+        COLDVIEW FRESHNESS BACKFILL (box-wake): the case-view snapshot +
+        thin manifest are only ever (re)written while the agent box is UP
+        (the 4 mutation triggers + case-open). A Case that gained layers and
+        was then left as the box auto-stopped keeps a stale/empty cold face
+        until it is warm-reopened. The box-wake startup sweep
+        (``_run_coldview_backfill``) re-materializes a fresh snapshot+manifest
+        for every live Case so a box-off owned Case serves a CURRENT cold
+        face without a live agent connection. That sweep needs the FULL live
+        Case set, NOT one user's — hence this owner-agnostic enumerator.
+
+        Returns only the ``_id`` (case_id) strings — the snapshot/manifest
+        writers re-source the full doc per Case, so the sweep needs nothing
+        more. Tombstones (``deleted`` / ``archived``) are excluded in the
+        query AND the Python guard (same belt-and-suspenders as
+        ``list_cases_for_user``). Best-effort: a malformed doc is skipped.
+        """
+        raw = await self._mcp.call_tool(
+            "find",
+            {
+                "database": self._db,
+                "collection": CASES_COLLECTION,
+                "filter": {"status": {"$nin": ["deleted", "archived"]}},
+            },
+        )
+        docs = _unwrap_mcp_result(raw)
+        if not docs:
+            return []
+        if isinstance(docs, dict):
+            docs = [docs]
+        ids: list[str] = []
+        for d in docs:
+            if not isinstance(d, dict):
+                continue
+            # The Case id is the document _id (CASES are _id<->case_id 1:1).
+            cid = d.get("_id") or d.get("case_id")
+            if not isinstance(cid, str) or not cid:
+                continue
+            # Python guard: backend ignored/mangled the $nin filter.
+            if d.get("status") in ("deleted", "archived"):
+                continue
+            ids.append(cid)
+        return ids
+
     async def archive_case(self, case_id: str) -> None:
         """Soft-archive a Case (sets ``status="archived"``).
 

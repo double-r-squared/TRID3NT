@@ -596,6 +596,38 @@ def _coerce_bbox4(value: Any) -> tuple[float, float, float, float] | None:
     return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
 
 
+def _aoi_zoom_to_bbox(
+    result: Any, current_turn_map_commands: list[dict]
+) -> tuple[float, float, float, float] | None:
+    """SNAP-TO-AOI INDEPENDENT OF GEOLOCATE (NATE 2026-06-24).
+
+    Return the bbox the camera should snap to for a tool ``result`` that SET an
+    AOI/bbox - so the snap fires whenever an AOI is established, not only on a
+    ``geocode_location`` result. The user giving coordinates DIRECTLY skips
+    geocode, so without this the map never moved to "where we are" until a
+    downstream layer with a bbox landed.
+
+    Prefers a top-level ``bbox``, falling back to ``aoi_bbox`` (the
+    request_spatial_input / draw result shape). Returns ``None`` when:
+      - ``result`` is not a dict, or carries no finite 4-number extent, OR
+      - the extent equals the turn's LAST zoom-to bbox (dedupe: a chain of
+        bbox-bearing tools over the SAME AOI must not re-snap repeatedly).
+    Pure + side-effect-free so the caller owns the emit + accumulator append.
+    """
+    if not isinstance(result, dict):
+        return None
+    raw = result.get("bbox")
+    if not _is_finite_bbox4(raw):
+        raw = result.get("aoi_bbox")
+    aoi = _coerce_bbox4(raw)
+    if aoi is None:
+        return None
+    last = _last_zoom_to_bbox(current_turn_map_commands)
+    if last is not None and list(aoi) == list(last):
+        return None  # already snapped to this exact AOI this turn.
+    return aoi
+
+
 def _last_zoom_to_bbox(commands: list[dict]) -> list | None:
     """Return the bbox of the most-recent ``zoom-to`` entry, else None.
 
@@ -914,6 +946,97 @@ async def _run_preauth_case_migration() -> None:
         logger.info("pre-Auth case migration complete: %s case(s) stamped", n)
     except Exception:  # noqa: BLE001 — startup must not abort on migration
         logger.warning("pre-Auth case migration failed (continuing)", exc_info=True)
+
+
+#: COLDVIEW FRESHNESS BACKFILL: env toggle (default ON) for the box-wake sweep
+#: that re-materializes every live Case's cold snapshot+manifest. Set
+#: GRACE2_COLDVIEW_BACKFILL=0 to disable (ops escape hatch). Bounded per-Case
+#: concurrency keeps the sweep from saturating the S3/Dynamo round-trips.
+_COLDVIEW_BACKFILL_ENABLED: bool = (
+    os.environ.get("GRACE2_COLDVIEW_BACKFILL", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+_COLDVIEW_BACKFILL_CONCURRENCY: int = max(
+    1, int(os.environ.get("GRACE2_COLDVIEW_BACKFILL_CONCURRENCY", "4"))
+)
+
+
+async def _run_coldview_backfill() -> None:
+    """Box-wake sweep: re-materialize the cold snapshot+manifest for EVERY Case.
+
+    CLOSES THE SNAPSHOT-FRESHNESS GAP. The case-view snapshot
+    (``case-views/{id}.json``) and thin manifest (``case-manifests/{id}.json``)
+    are only ever (re)written while the agent box is UP — the 4 mutation
+    triggers (create / rename / layer-publish / turn-close) plus case-open. There
+    is NO box-off/wake-time materialization path, so a Case that gained layers
+    and was then left as the box auto-stopped (or whose newest snapshot predates
+    its current layers) shows a STALE / empty cold face indefinitely: the exact
+    "can't see it until I connect" symptom. The box-off cold view fetches that
+    presigned snapshot and cannot paint until the agent wakes and the Case is
+    re-opened once.
+
+    This sweep runs ONCE at server startup (box-wake) and re-materializes the
+    snapshot AND manifest for every live Case — straight off the persisted
+    ``projects`` doc, no live session / emitter needed (the writers re-source
+    the full doc per Case; inline-vector side-tables only exist on the live
+    emitter and are absent here, which is correct — a cold sweep carries the
+    URI-only layers, and the next warm open/turn re-inlines vectors). After one
+    wake every existing Case has a CURRENT cold face; the live symptom is gone
+    for all 118 stale snapshots without a warm re-open.
+
+    Best-effort by contract (same posture as ``_run_preauth_case_migration``):
+    no Persistence binding short-circuits; the per-Case writers each swallow
+    their own S3/Dynamo errors and return ``False`` (never raise), so one bad
+    Case can never abort the sweep or server startup. Bounded per-Case
+    concurrency via a semaphore so the sweep does not burst the S3/Dynamo
+    round-trips. Toggle off via ``GRACE2_COLDVIEW_BACKFILL=0``.
+    """
+    if not _COLDVIEW_BACKFILL_ENABLED:
+        logger.info("coldview backfill disabled (GRACE2_COLDVIEW_BACKFILL=0)")
+        return
+    p = get_persistence()
+    if p is None:
+        logger.info("coldview backfill skipped: no Persistence singleton bound")
+        return
+    try:
+        case_ids = await p.list_all_active_case_ids()
+    except Exception:  # noqa: BLE001 — startup must not abort on enumeration
+        logger.warning("coldview backfill: case enumeration failed", exc_info=True)
+        return
+    if not case_ids:
+        logger.info("coldview backfill: no live Cases to refresh")
+        return
+
+    sem = asyncio.Semaphore(_COLDVIEW_BACKFILL_CONCURRENCY)
+    refreshed = 0
+
+    async def _refresh_one(cid: str) -> bool:
+        nonlocal refreshed
+        async with sem:
+            # Each writer swallows its own errors + returns a bool; gate the
+            # snapshot+manifest INDIVIDUALLY so a manifest hiccup never voids a
+            # good snapshot (and vice versa). No emitter -> URI-only snapshot.
+            ok_snap = False
+            try:
+                ok_snap = await p.write_case_view_snapshot(cid)
+            except Exception:  # noqa: BLE001 — defensive: writer is best-effort
+                logger.warning("coldview backfill: snapshot failed case=%s", cid)
+            try:
+                await p.write_case_manifest(cid)
+            except Exception:  # noqa: BLE001 — defensive: writer is best-effort
+                logger.warning("coldview backfill: manifest failed case=%s", cid)
+            if ok_snap:
+                refreshed += 1
+            return ok_snap
+
+    await asyncio.gather(
+        *(_refresh_one(cid) for cid in case_ids), return_exceptions=True
+    )
+    logger.info(
+        "coldview backfill complete: %d/%d live Case(s) re-materialized",
+        refreshed,
+        len(case_ids),
+    )
 
 
 # job-0259: session-scoped active-Case registry. The web client mounts TWO
@@ -2477,6 +2600,33 @@ async def _stream_gemini_reply(
                             )
                         except Exception:  # noqa: BLE001 — UX nicety only
                             logger.debug("geocode zoom-to emit failed", exc_info=True)
+                    # SNAP-TO-AOI INDEPENDENT OF GEOLOCATE (NATE 2026-06-24): the
+                    # camera must snap whenever an AOI/bbox is SET, not only on a
+                    # geocode_location result. When the user gives coordinates
+                    # DIRECTLY the model (correctly) skips geocode_location, so the
+                    # geocode branch above never fires and the map never moved to
+                    # "where we are" until/unless a downstream layer with a bbox
+                    # landed. Here we generalize: ANY tool result that carries a
+                    # usable ``bbox`` / ``aoi_bbox`` snaps the camera (deduped
+                    # against the turn's last zoom-to so a chain of bbox-bearing
+                    # tools does not re-snap to the SAME extent). geocode_location
+                    # already emitted above (skip it here to avoid a double-emit).
+                    if call.name != "geocode_location" and state.emitter is not None:
+                        aoi = _aoi_zoom_to_bbox(
+                            result, state.current_turn_map_commands
+                        )
+                        if aoi is not None:
+                            try:
+                                await state.emitter.emit_map_command(
+                                    "zoom-to", {"bbox": list(aoi)}
+                                )
+                                state.current_turn_map_commands.append(
+                                    {"command": "zoom-to", "args": {"bbox": list(aoi)}}
+                                )
+                            except Exception:  # noqa: BLE001 — UX nicety only
+                                logger.debug(
+                                    "aoi-set zoom-to emit failed", exc_info=True
+                                )
                     # job-0230 (sprint-13 Stage 2): emit a ``chart-emission`` WS
                     # envelope whenever a chart-generation tool returns a
                     # ChartEmissionPayload-shaped dict (key signal:
@@ -10552,6 +10702,17 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     # run matches nothing. Best-effort: a migration hiccup must not abort
     # server startup (the same posture as the Persistence init above).
     await _run_preauth_case_migration()
+    # COLDVIEW FRESHNESS BACKFILL (box-wake): re-materialize every live Case's
+    # cold snapshot+manifest so a box-off owned Case serves a CURRENT cold face
+    # without a warm re-open (closes the snapshot-freshness gap). Fire-and-forget
+    # so the sweep NEVER delays accepting the connection that woke the box; it is
+    # tracked in _BG_SNAPSHOT_TASKS so the graceful-shutdown drain awaits it and
+    # an unreferenced task is not GC'd mid-flight (same discipline as the
+    # per-turn snapshot writes). _run_coldview_backfill is self-guarding
+    # (no-Persistence / disabled / per-Case best-effort) and never raises.
+    _coldview_task = asyncio.create_task(_run_coldview_backfill())
+    _BG_SNAPSHOT_TASKS.add(_coldview_task)
+    _coldview_task.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
     handler = _make_handler(settings)
 
     # Wave 4.10 C1: best-effort mount of the catalog HTTP listener.
