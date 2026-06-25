@@ -856,6 +856,18 @@ class PipelineEmitter:
         #: Accumulated layers — appended each time a tool returns a ``LayerURI``.
         self._loaded_layers: list[ProjectLayerSummary] = []
 
+        #: Monotonic stacking-order counter (z-index-fix). Every NEW layer
+        #: appended in ``add_loaded_layer`` is stamped with ``self._next_z``,
+        #: which then increments — so layers carry a STABLE, deterministic
+        #: top-of-stack-is-highest order on the wire (the client no longer has
+        #: to invent an order from an all-``None`` ``z_index`` column). An
+        #: in-place REPLACE (re-publish / dedup-merge) REUSES the superseded
+        #: layer's existing ``z_index`` so a re-publish keeps its slot instead
+        #: of jumping to the top. ``reset_loaded_layers`` (Case reopen) advances
+        #: this past any seeded layer's ``z_index`` so a post-reseed append
+        #: never collides with a persisted slot.
+        self._next_z: int = 0
+
         #: Inline GeoJSON side-table for vector layers (job-0175).
         #: Keyed by ``layer_id``; merged into ``loaded_layers`` wire payload
         #: in ``emit_session_state`` as additive ``inline_geojson`` field.
@@ -1088,6 +1100,8 @@ class PipelineEmitter:
         """
         if not layers:
             self._loaded_layers = []
+            # z-index-fix: a flush (new Case) restarts the stacking counter.
+            self._next_z = 0
             # job-0175: flush inline side-table alongside loaded_layers.
             self._inline_geojson_by_layer_id.clear()
             # F94: flush the dense-vector density tags too.
@@ -1105,6 +1119,11 @@ class PipelineEmitter:
                 )
                 continue
         self._loaded_layers = seeded
+        # z-index-fix: resume the monotonic counter PAST any seeded slot so the
+        # next append (post Case-reopen) never collides with a persisted layer's
+        # z_index. Pre-fix snapshots seeded all-``None`` -> counter restarts at 0.
+        _seeded_z = [s.z_index for s in seeded if s.z_index is not None]
+        self._next_z = (max(_seeded_z) + 1) if _seeded_z else 0
         # job-0175: keep only inline entries that match a still-loaded layer.
         active_ids = {layer.layer_id for layer in seeded}
         self._inline_geojson_by_layer_id = {
@@ -1512,6 +1531,17 @@ class PipelineEmitter:
     # session-state — current_pipeline + loaded_layers
     # ------------------------------------------------------------------ #
 
+    def _alloc_z(self) -> int:
+        """Return the next monotonic ``z_index`` and advance the counter.
+
+        z-index-fix: the single source of new stacking slots. Pairs with
+        ``reset_loaded_layers``, which seeds ``_next_z`` past any persisted
+        layer's ``z_index`` so a Case reopen never reissues an in-use slot.
+        """
+        z = self._next_z
+        self._next_z += 1
+        return z
+
     async def add_loaded_layer(self, layer: LayerURI) -> None:
         """Translate a ``LayerURI`` (tool return) into a ``ProjectLayerSummary``
         and append to the session's ``loaded_layers``, then emit a fresh
@@ -1563,9 +1593,22 @@ class PipelineEmitter:
                 if existing.layer_id != summary.layer_id:
                     self._inline_geojson_by_layer_id.pop(existing.layer_id, None)
                     self._density_meta_by_layer_id.pop(existing.layer_id, None)
+                # z-index-fix: REUSE the superseded layer's slot so a re-publish
+                # (styled supersedes styleless, a re-run's frame N, etc.) keeps
+                # its stacking position instead of jumping to the top. Falls
+                # back to a fresh slot only if the old row never carried one
+                # (pre-fix persisted layers seeded without a z_index).
+                summary.z_index = (
+                    existing.z_index
+                    if existing.z_index is not None
+                    else self._alloc_z()
+                )
                 self._loaded_layers[i] = summary
                 break
         else:
+            # z-index-fix: a brand-new layer takes the next monotonic slot —
+            # top of the stack (highest z_index) is the most-recently-added.
+            summary.z_index = self._alloc_z()
             self._loaded_layers.append(summary)
         # Vector inline-GeoJSON (job-0175). Best-effort; failure is non-fatal.
         # Logs loudly so the audit can grep for "inlined GeoJSON layer_id=...".

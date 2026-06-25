@@ -298,3 +298,118 @@ class TestDedupByIdentity:
         assert len(layers) == 2, [(l.layer_id, l.uri) for l in layers]
         ids = {l.layer_id for l in layers}
         assert ids == {first.layer_id, second.layer_id}
+
+
+# --------------------------------------------------------------------------- #
+# z-index-fix — every appended layer carries a STABLE, MONOTONIC z_index, and
+# an in-place re-publish REUSES the superseded layer's slot (no renumbering).
+# --------------------------------------------------------------------------- #
+
+
+class TestStableMonotonicZIndex:
+    def _distinct_layer(self, n: int) -> LayerURI:
+        """A genuinely-distinct layer (own COG -> own identity key) so the
+        dedup-by-identity rule appends rather than merges."""
+        return LayerURI(
+            layer_id=f"layer-{n}",
+            name=f"Layer {n}",
+            layer_type="raster",
+            uri=(
+                "https://titiler.example/cog/tiles/{z}/{x}/{y}.png"
+                f"?url=s3://runs/RUN/dem_{n}.tif"
+            ),
+            style_preset="continuous_dem",
+        )
+
+    @pytest.mark.asyncio
+    async def test_three_appends_get_increasing_distinct_z_index(self) -> None:
+        emitter = PipelineEmitter(session_id=new_ulid(), sink=_Sink())
+        for n in (1, 2, 3):
+            await emitter.add_loaded_layer(self._distinct_layer(n))
+
+        layers = emitter.loaded_layers
+        assert len(layers) == 3, [(l.layer_id, l.z_index) for l in layers]
+        zs = [l.z_index for l in layers]
+        # Every layer carries a real z_index (no more all-``None`` column).
+        assert all(z is not None for z in zs), zs
+        # Strictly increasing -> distinct AND monotonic (top = highest).
+        assert zs == sorted(zs)
+        assert len(set(zs)) == 3, zs
+        # First-added is the lowest slot; last-added is the top of the stack.
+        by_id = {l.layer_id: l.z_index for l in layers}
+        assert by_id["layer-1"] < by_id["layer-2"] < by_id["layer-3"]
+
+    @pytest.mark.asyncio
+    async def test_in_place_replace_reuses_z_index(self) -> None:
+        emitter = PipelineEmitter(session_id=new_ulid(), sink=_Sink())
+        for n in (1, 2, 3):
+            await emitter.add_loaded_layer(self._distinct_layer(n))
+
+        before = {l.layer_id: l.z_index for l in emitter.loaded_layers}
+        z2_before = before["layer-2"]
+
+        # Re-publish layer 2 (SAME underlying COG -> same identity key) under a
+        # DIFFERENT display URL + a different layer_id. This collides on the COG
+        # identity and REPLACES the existing row in place.
+        republish = LayerURI(
+            layer_id="layer-2-restyled",
+            name="Layer 2 (restyled)",
+            layer_type="raster",
+            uri=(
+                "https://titiler.example/cog/tiles/{z}/{x}/{y}.png"
+                "?url=s3://runs/RUN/dem_2.tif&colormap_name=viridis"
+            ),
+            style_preset="continuous_dem",
+        )
+        await emitter.add_loaded_layer(republish)
+
+        layers = emitter.loaded_layers
+        # Still three rows — the re-publish merged into layer 2's slot.
+        assert len(layers) == 3, [(l.layer_id, l.z_index) for l in layers]
+        by_id = {l.layer_id: l.z_index for l in layers}
+        assert "layer-2" not in by_id  # superseded id is gone
+        # The re-publish REUSES the superseded slot — it does NOT jump to the top
+        # and does NOT renumber any sibling.
+        assert by_id["layer-2-restyled"] == z2_before
+        assert by_id["layer-1"] == before["layer-1"]
+        assert by_id["layer-3"] == before["layer-3"]
+
+    @pytest.mark.asyncio
+    async def test_reset_resumes_counter_past_seeded_z(self) -> None:
+        """A Case reopen seeds from persisted layers carrying z_index; the next
+        append must take a FRESH slot above every seeded one (no collision)."""
+        emitter = PipelineEmitter(session_id=new_ulid(), sink=_Sink())
+        emitter.reset_loaded_layers(
+            [
+                {
+                    "layer_id": "seed-a",
+                    "name": "Seed A",
+                    "layer_type": "raster",
+                    "uri": "https://qgis.example/ogc/wms?LAYERS=a",
+                    "style_preset": "continuous_dem",
+                    "visible": True,
+                    "role": "context",
+                    "temporal": False,
+                    "z_index": 5,
+                },
+                {
+                    "layer_id": "seed-b",
+                    "name": "Seed B",
+                    "layer_type": "raster",
+                    "uri": "https://qgis.example/ogc/wms?LAYERS=b",
+                    "style_preset": "continuous_dem",
+                    "visible": True,
+                    "role": "context",
+                    "temporal": False,
+                    "z_index": 9,
+                },
+            ]
+        )
+        await emitter.add_loaded_layer(self._distinct_layer(1))
+
+        by_id = {l.layer_id: l.z_index for l in emitter.loaded_layers}
+        # The new layer's z_index is strictly above the max seeded slot (9).
+        assert by_id["layer-1"] == 10, by_id
+        # Seeded slots are preserved untouched.
+        assert by_id["seed-a"] == 5
+        assert by_id["seed-b"] == 9
