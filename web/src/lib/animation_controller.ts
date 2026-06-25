@@ -182,6 +182,13 @@ export class AnimationController {
   private frameGrace: Record<string, { frame: number; ttl: number }> = {};
   // How many setGroups cycles a pruned frame index survives before it is dropped.
   private static readonly FRAME_GRACE_TTL = 3;
+  // ITEM 2 (NATE 2026-06-24) - group keys whose layer(s) the user HID via the
+  // LayerPanel visibility toggle. A hidden group MUST NOT auto-advance (its
+  // frames are off the map, so advancing them is invisible churn) and MUST NOT
+  // be the active playback target. Showing the group again resumes from the
+  // CURRENT frame (we never reset the frame index on hide/show). Kept as a set
+  // so multiple groups can be independently hidden.
+  private hiddenGroups = new Set<string>();
 
   constructor(opts: AnimControllerOptions = {}) {
     this.intervalMs = Math.max(50, opts.intervalMs ?? 1100);
@@ -318,6 +325,13 @@ export class AnimationController {
     for (const k of [...this.autoPlayedKeys]) {
       if (!live.has(k)) this.autoPlayedKeys.delete(k);
     }
+    // ITEM 2 - drop the hidden marker for a group key that no longer exists, so
+    // a genuinely-new group of the same key later starts VISIBLE (the session-
+    // state re-emits the layer with the server `visible`, and a fresh group is
+    // not the same user-hidden one). A key still present keeps its hidden state.
+    for (const k of [...this.hiddenGroups]) {
+      if (!live.has(k)) this.hiddenGroups.delete(k);
+    }
     // BUG 2(B): age the grace buffer one cycle; drop entries whose window expired
     // (and re-stash live keys' graces are not needed - a live key holds its own
     // frameByGroup). A key that came BACK is consumed below (deleted from grace).
@@ -357,12 +371,19 @@ export class AnimationController {
     }
 
     // Keep activeGroupKey valid; default to the first group.
-    const first = groups[0];
+    // ITEM 2 - default the active group to the first VISIBLE group (skip ones
+    // the user hid), so re-detection while a group is hidden never re-points the
+    // scrubber back at the hidden sequence. Falls back to the first group only
+    // when every group is hidden (then there is nothing visible to drive).
+    const firstVisible =
+      groups.find((g) => !this.hiddenGroups.has(g.key)) ?? groups[0];
     if (
-      first &&
-      (!this.activeGroupKey || !groups.some((g) => g.key === this.activeGroupKey))
+      firstVisible &&
+      (!this.activeGroupKey ||
+        !groups.some((g) => g.key === this.activeGroupKey) ||
+        this.hiddenGroups.has(this.activeGroupKey))
     ) {
-      this.activeGroupKey = first.key;
+      this.activeGroupKey = firstVisible.key;
     }
 
     // AUTOPLAY-OFF (NATE 2026-06-24): on a freshly-loaded multi-frame group make
@@ -372,11 +393,16 @@ export class AnimationController {
     // scrubber appears, shows frame 0, and sits PAUSED until the user presses
     // play. Mark the group seen either way so a re-push of the same set does not
     // re-attempt auto-play after a manual pause.
-    if (newlySeen.length > 0) {
+    // ITEM 2 - only consider VISIBLE newly-seen groups for activation/auto-play;
+    // a hidden group must never grab the active pointer or auto-start.
+    const newlySeenVisible = newlySeen.filter(
+      (k) => !this.hiddenGroups.has(k),
+    );
+    if (newlySeenVisible.length > 0) {
       const autoKey =
-        this.activeGroupKey && newlySeen.includes(this.activeGroupKey)
+        this.activeGroupKey && newlySeenVisible.includes(this.activeGroupKey)
           ? this.activeGroupKey
-          : newlySeen[0]!;
+          : newlySeenVisible[0]!;
       this.activeGroupKey = autoKey;
       const g = this.groups.find((gr) => gr.key === autoKey);
       if (g) this.emitFrame(g, 0); // show the first frame now (static).
@@ -459,6 +485,12 @@ export class AnimationController {
   advanceActive(delta: number): void {
     const g = this.getActiveGroup();
     if (!g) return;
+    // ITEM 2 (NATE 2026-06-24) - a HIDDEN active group must not advance: its
+    // frames are off the map, so cycling them is invisible churn (and would
+    // also keep the scrubber index moving). The heartbeat / auto paths funnel
+    // through here too, so this single guard halts all advance for a hidden
+    // group regardless of caller.
+    if (this.hiddenGroups.has(g.key)) return;
     const cur = this.frameIndexFor(g.key);
     const next = wrap(cur + delta, g.layerIds.length);
     this.frameByGroup[g.key] = next;
@@ -483,17 +515,72 @@ export class AnimationController {
     this.setPlaying(!this.playing);
   }
 
+  /**
+   * ITEM 2 (NATE 2026-06-24) - mark a group HIDDEN (or shown) because the user
+   * toggled its layer visibility off (or on) in the LayerPanel. A HIDDEN group:
+   *   - STOPS auto-advancing: syncInterval will not arm while the active group
+   *     is hidden, and advanceActive is a no-op for a hidden active group, so
+   *     its frames do not keep cycling off-screen (and the heartbeat / auto
+   *     paths can't drive it either - they go through advanceActive).
+   *   - is not a valid ACTIVE / playback target: hiding the active group halts
+   *     the scrubber (stops play + tears the interval down) and moves the active
+   *     pointer to the first still-VISIBLE group (or null when none remain), so
+   *     the App-level scrubber switches to a visible sequence or disappears.
+   * Showing the group again does NOT force-restart playback or reset the frame:
+   * the frame index is preserved, so it resumes from the CURRENT frame; the user
+   * presses play (or it becomes active again) to continue. Idempotent.
+   */
+  setGroupHidden(key: string, hidden: boolean): void {
+    const was = this.hiddenGroups.has(key);
+    if (was === hidden) return; // no change.
+    if (hidden) {
+      this.hiddenGroups.add(key);
+      // If the hidden group is the active playback target, halt + re-point the
+      // active group at the first still-visible group (or null).
+      if (this.activeGroupKey === key) {
+        if (this.playing) {
+          this.playing = false; // stop auto-advance for the hidden group.
+        }
+        const nextVisible =
+          this.groups.find((g) => !this.hiddenGroups.has(g.key)) ?? null;
+        this.activeGroupKey = nextVisible ? nextVisible.key : null;
+      }
+    } else {
+      this.hiddenGroups.delete(key);
+      // Showing a group when nothing is active makes it the active target again
+      // (so the scrubber reappears for it), but does NOT auto-start playback -
+      // it resumes PAUSED at the current frame (NATE: "resumes from the current
+      // frame, no force-restart").
+      if (this.activeGroupKey === null && this.groups.some((g) => g.key === key)) {
+        this.activeGroupKey = key;
+      }
+    }
+    // Re-sync the interval against the (possibly changed) active group + playing
+    // flag, then notify subscribers (scrubber + panel re-read).
+    this.syncInterval();
+    this.notify();
+  }
+
+  /** ITEM 2 - true when a group is currently hidden (user toggled it off). */
+  isGroupHidden(key: string): boolean {
+    return this.hiddenGroups.has(key);
+  }
+
   // --- internals -------------------------------------------------------- //
 
   private emitFrame(g: AnimGroup, visibleIndex: number): void {
     if (this.emitter) this.emitter(g.layerIds, visibleIndex);
   }
 
-  /** Arm the advance interval when playing + a multi-frame group is active. */
+  /** Arm the advance interval when playing + a multi-frame VISIBLE group is active. */
   private syncInterval(): void {
     const active = this.getActiveGroup();
     const shouldRun =
-      this.playing && active !== null && active.layerIds.length > 1;
+      this.playing &&
+      active !== null &&
+      active.layerIds.length > 1 &&
+      // ITEM 2 - never advance a hidden group's frames off-screen.
+      !this.hiddenGroups.has(active.key);
     if (shouldRun && this.timerId === null) {
       this.timerId = this.timers.setInterval(() => {
         this.advanceActive(1);
@@ -527,6 +614,7 @@ export class AnimationController {
     this.frameByGroup = {};
     this.frameGrace = {}; // BUG 2(B): a new Case starts with no carried-over frames.
     this.playing = false;
+    this.hiddenGroups.clear(); // ITEM 2: a new Case's groups start visible.
     this.autoPlayedKeys.clear(); // ITEM 5: a new Case may re-auto-play its groups.
     this.dispose(); // stop the advance interval
     this.notify();

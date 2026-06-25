@@ -1571,3 +1571,90 @@ describe("LayerPanel — pushes groups to the controller (scrubber is App-owned)
     expect(getAnimationController().isPlaying()).toBe(false);
   });
 });
+
+// ITEM 3 (NATE 2026-06-24) - frames must not "escape" into the layer list on the
+// mobile background/foreground / refocus reconnect path. ROOT CAUSE: the
+// LayerPanel reducer's `session-state` seed used to WHOLESALE-replace state.layers
+// with the raw `loaded_layers`, with NO durability seatbelt. A partial / transient
+// reconnect frame (rebound live turn emitting its mid-re-run accumulator) can
+// carry FEWER frames of a series than the panel shows; below the >=2-member
+// grouping threshold the series un-groups and each surviving frame renders as an
+// ordinary row (the "frames in the layer list" symptom). FIX: route the reducer's
+// session-state seed through the SAME durability cache + `replace_layers` honor
+// App.tsx uses, so a partial reconnect frame keeps the full series present and
+// detectSequentialGroups re-forms the group. These tests pin that.
+describe("LayerPanel - session-state seatbelt keeps a frame group grouped on a partial reconnect frame (item 3)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+    // Restore the module default cache so later suites are unaffected.
+    setLayerCache(new LayerCache({ backend: moduleNoopBackend }));
+  });
+
+  function cacheForCase(caseId: string): LayerCache {
+    const cache = new LayerCache({ backend: moduleNoopBackend });
+    cache.activeCaseId = caseId;
+    setLayerCache(cache);
+    return cache;
+  }
+
+  it("a partial reconnect session-state (replace_layers:false) does NOT un-group the series into individual rows", () => {
+    cacheForCase("case-anim");
+    const bus = createLayerPanelBus();
+    render(<LayerPanel subscribeSessionState={bus.subscribeSessionState} />);
+
+    // Full N-frame series arrives first (a healthy authoritative frame).
+    act(() => {
+      bus.pushSessionState({
+        loaded_layers: [makeFrame(1), makeFrame(3), makeFrame(6)],
+        replace_layers: true,
+      } as SessionStatePayload);
+    });
+    // Grouped: ONE group row, NO individual frame rows.
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    expect(screen.queryAllByTestId("layer-row")).toHaveLength(0);
+
+    // The mobile background/foreground reconnect delivers a PARTIAL frame that
+    // carries only frame 1 with replace_layers:false (the rebound live turn's
+    // mid-re-run accumulator). WITHOUT the seatbelt this would shrink the series
+    // to 1 member, no group forms, and the surviving frame escapes to an
+    // ordinary row. WITH the seatbelt (mergeSnapshot, additive on a non-
+    // authoritative frame) the full series is kept and the group re-forms.
+    act(() => {
+      bus.pushSessionState({
+        loaded_layers: [makeFrame(1)],
+        replace_layers: false,
+      } as SessionStatePayload);
+    });
+
+    // The group row is STILL present and the frames did NOT escape into the list.
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    expect(screen.queryAllByTestId("layer-row")).toHaveLength(0);
+    expect(screen.getByTestId("layer-group-row")).toHaveAttribute(
+      "data-frame-count",
+      "3",
+    );
+  });
+
+  it("an AUTHORITATIVE shrink (replace_layers:true) still applies (the seatbelt only protects partial frames)", () => {
+    cacheForCase("case-anim2");
+    const bus = createLayerPanelBus();
+    render(<LayerPanel subscribeSessionState={bus.subscribeSessionState} />);
+    act(() => {
+      bus.pushSessionState({
+        loaded_layers: [makeFrame(1), makeFrame(3), makeFrame(6)],
+        replace_layers: true,
+      } as SessionStatePayload);
+    });
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    // A genuine authoritative replace to a single ordinary layer DOES shrink the
+    // set (no group survives) - the seatbelt must not freeze the panel forever.
+    act(() => {
+      bus.pushSessionState({
+        loaded_layers: [makeLayer("flood")],
+        replace_layers: true,
+      } as SessionStatePayload);
+    });
+    expect(screen.queryAllByTestId("layer-group-row")).toHaveLength(0);
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(1);
+  });
+});

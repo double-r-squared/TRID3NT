@@ -180,7 +180,27 @@ function layerSetsEqual(
 function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelState {
   switch (action.type) {
     case "session-state": {
-      const incoming = action.payload.loaded_layers ?? [];
+      // ITEM 3 (NATE 2026-06-24) - SEATBELT the panel reducer's session-state
+      // seed through the SAME durability cache + `replace_layers` honor that
+      // App.tsx's `layers` already uses, so a PARTIAL / transient reconnect /
+      // keepalive frame can never shrink a frame series below the >=2-member
+      // grouping threshold (which would un-group the series and let its frames
+      // "escape" into the layer list as individual rows on the mobile
+      // background/foreground / refocus path). App's `layers` was already
+      // protected by this merge (App.tsx); the panel's OWN reducer was not, so
+      // the rows un-grouped while the map/legend stayed grouped. Routing through
+      // mergeSnapshot makes the panel rows byte-identical to App's merged set, so
+      // detectSequentialGroups re-forms the group every time. At the root (no
+      // active Case) there is nothing to cache against -> use the raw list.
+      const cache = getLayerCache();
+      const caseId = cache.activeCaseId;
+      const raw = action.payload.loaded_layers ?? [];
+      const authoritativeReplace =
+        (action.payload as { replace_layers?: boolean }).replace_layers !== false;
+      const incoming =
+        caseId == null
+          ? raw
+          : cache.mergeSnapshot(caseId, raw, { authoritativeReplace });
       // F22: dedupe by layer_id BEFORE sorting so a duplicate-id republish
       // can never render two rows with the same React key (the connected-
       // sliders bug).
@@ -1129,6 +1149,23 @@ function LayerPanelImpl({
     );
   }, [groups, animController]);
 
+  // ITEM 2 (NATE 2026-06-24) - keep the controller's hidden-group set in lockstep
+  // with the actual layer visibility, so frame advancing STOPS whenever a group's
+  // layers are all hidden - regardless of HOW they were hidden (the group eye, an
+  // individual-frame toggle that empties the group, or a persisted-override
+  // re-seed on a panel remount). A group is "hidden" iff NONE of its members are
+  // visible; "shown" iff at least one is. This single derived sync also covers
+  // the case where the group eye path and the controller momentarily disagree.
+  useEffect(() => {
+    for (const g of groups) {
+      const anyVisible = g.layers.some((l) => l.visible);
+      const shouldHide = !anyVisible;
+      if (animController.isGroupHidden(g.key) !== shouldHide) {
+        animController.setGroupHidden(g.key, shouldHide);
+      }
+    }
+  }, [groups, animState, animController]);
+
   // Which groups are expanded (collapsible) — purely a panel-local concern, so
   // it stays in component state. Collapsed by default (shrink N rows to one).
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
@@ -1198,6 +1235,13 @@ function LayerPanelImpl({
    */
   const onGroupVisibilityToggle = useCallback(
     (g: SequentialGroup, visible: boolean): void => {
+      // ITEM 2 (NATE 2026-06-24) - tell the AnimationController the group is
+      // hidden/shown so it STOPS advancing the hidden group's frames (and the
+      // App-level scrubber halts / re-points to a visible group). Showing it
+      // resumes from the CURRENT frame (no force-restart). Done first so the
+      // controller's interval is torn down before the per-layer visibility
+      // writes ripple through.
+      animController.setGroupHidden(g.key, !visible);
       if (!visible) {
         // Hide all members (the active frame included).
         g.layers.forEach((layer) => {

@@ -520,11 +520,15 @@ describe("SequenceScrubber - mobile vertical clamp above the chat sheet (ITEM 6)
   });
 });
 
-// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
-// top-edge Y (sheetTopPx), the scrubber must dock its BOTTOM just above the
-// sheet top (viewportH - sheetTopPx + gap), tracking the sheet as it expands /
-// collapses, instead of clamping to the fixed env()+clearance composer offset.
-describe("SequenceScrubber - mobile docks to the chat sheet top (sheetTopPx)", () => {
+// SCRUBBER DOCK RULE (NATE 2026-06-24, REVISES 18cc0da's always-dock) - on
+// MOBILE the scrubber DEFAULTS to snapping the AOI bbox (width = the AOI
+// on-screen width, centered, clamped so it can't pass the chat composer). It
+// DOCKS to the chat-sheet top at FULL window width ONLY when the projected AOI
+// is too small to be usable (zoomed out) OR there is no AOI on screen. The
+// docked state is STABLE (anchored to sheetTopPx, not the live aoiRect) so it
+// does not jitter; it tracks the sheet as it expands/collapses; and a hysteresis
+// band keeps it from flip-flopping at the threshold.
+describe("SequenceScrubber - mobile DOCKS when the AOI is too small (sheetTopPx)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -543,26 +547,58 @@ describe("SequenceScrubber - mobile docks to the chat sheet top (sheetTopPx)", (
     vi.stubGlobal("innerHeight", innerHeight);
   }
 
-  it("docks the scrubber bottom just above the sheet top (AOI present) - not the AOI bottom", () => {
+  it("DOCKS a SMALL (zoomed-out) AOI to the sheet top at full width - not centered on the AOI", () => {
     stubMobile(800);
-    // sheetTopPx=500 -> bottom = 800 - 500 + 8 = 308. The AOI bottom (200) would
-    // normally drive a top anchor; the sheet-top dock takes priority on mobile.
+    // A 120px-wide AOI is below the dock-enter threshold -> dock full width.
+    // sheetTopPx=500 -> bottom = 800 - 500 + 8 = 308 (stable, off the sheet top).
     renderScrubber({
-      aoiRect: { left: 100, top: 60, right: 300, bottom: 200 },
+      aoiRect: { left: 100, top: 60, right: 220, bottom: 200 },
       sheetTopPx: 500,
     });
     const el = screen.getByTestId("grace2-sequence-scrubber");
     expect(el.style.bottom).toBe("308px");
-    // No top anchor (it docked from the bottom), still centered on the AOI box.
+    // No top anchor (docked from the bottom). Full-window docked mode is surfaced
+    // via data-dock-mode (jsdom drops the calc(100vw - env(...)) width to "").
     expect(el.style.top).toBe("");
-    expect(el.style.left).toBe("200px");
+    expect(el.getAttribute("data-dock-mode")).toBe("docked");
+    // NOT centered on the AOI box (left is a window-center calc, not 160px).
+    expect(el.style.left).not.toBe("160px");
   });
 
-  it("tracks the sheet: a HIGHER sheet top (expanded) lifts the scrubber further up", () => {
+  it("the docked anchor is STABLE: it does NOT move as the AOI reprojects (sheetTopPx only)", () => {
     stubMobile(800);
-    // Collapsed sheet: top edge at 700 -> bottom = 800 - 700 + 8 = 108.
+    // First a small AOI -> docks at bottom 308.
     const { rerender } = renderScrubber({
-      aoiRect: { left: 100, top: 60, right: 300, bottom: 200 },
+      aoiRect: { left: 100, top: 60, right: 180, bottom: 200 }, // 80px wide -> docked
+      sheetTopPx: 500,
+    });
+    const bottom1 = screen.getByTestId("grace2-sequence-scrubber").style.bottom;
+    expect(bottom1).toBe("308px");
+    // A heartbeat reprojects the SAME small AOI a little differently. Because the
+    // docked anchor is keyed to sheetTopPx (not the aoiRect), the bottom is
+    // unchanged - no per-frame jitter.
+    rerender(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={FRAMES}
+        activeIndex={0}
+        onStep={vi.fn()}
+        playing={false}
+        onPlayToggle={vi.fn()}
+        aoiRect={{ left: 130, top: 90, right: 205, bottom: 240 }} // jittered, still ~75px
+        sheetTopPx={500}
+      />,
+    );
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.bottom).toBe(
+      "308px",
+    );
+  });
+
+  it("tracks the sheet: a HIGHER sheet top (expanded) lifts the docked scrubber further up", () => {
+    stubMobile(800);
+    // Collapsed sheet: top edge at 700, small AOI -> docked -> bottom = 108.
+    const { rerender } = renderScrubber({
+      aoiRect: { left: 100, top: 60, right: 200, bottom: 200 }, // 100px wide -> docked
       sheetTopPx: 700,
     });
     expect(screen.getByTestId("grace2-sequence-scrubber").style.bottom).toBe(
@@ -577,7 +613,7 @@ describe("SequenceScrubber - mobile docks to the chat sheet top (sheetTopPx)", (
         onStep={vi.fn()}
         playing={false}
         onPlayToggle={vi.fn()}
-        aoiRect={{ left: 100, top: 60, right: 300, bottom: 200 }}
+        aoiRect={{ left: 100, top: 60, right: 200, bottom: 200 }}
         sheetTopPx={300}
       />,
     );
@@ -586,10 +622,101 @@ describe("SequenceScrubber - mobile docks to the chat sheet top (sheetTopPx)", (
     );
   });
 
-  it("docks the AOI-less fallback to the sheet top too", () => {
+  it("DOCKS the AOI-less case to the sheet top at full width", () => {
     stubMobile(800);
-    renderScrubber({ sheetTopPx: 500 }); // no aoiRect
+    renderScrubber({ sheetTopPx: 500 }); // no aoiRect -> always docked
     const el = screen.getByTestId("grace2-sequence-scrubber");
     expect(el.style.bottom).toBe("308px");
+    expect(el.getAttribute("data-dock-mode")).toBe("docked");
+  });
+});
+
+// SCRUBBER DOCK RULE - the SNAP half (NATE 2026-06-24): a WIDE-enough AOI snaps
+// the scrubber to the bbox (width = on-screen width, centered) instead of
+// docking, with the "can't pass the text box" clamp keeping it above the chat
+// sheet top. Hysteresis: once snapped, it stays snapped until the bbox shrinks
+// below the enter threshold; once docked, it stays docked until it grows past
+// the (wider) exit threshold.
+describe("SequenceScrubber - mobile SNAPS to a wide-enough AOI bbox (dock rule)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubMobile(innerHeight: number): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+    vi.stubGlobal("innerHeight", innerHeight);
+  }
+
+  it("SNAPS (centered on the AOI, bbox width) when the AOI is wide enough, with a high sheet top clearing the composer", () => {
+    stubMobile(800);
+    // A 400px-wide AOI (>= exit threshold) high on screen (bottom 200) with the
+    // sheet collapsed low (top 760) -> snaps to the AOI: centered, width = 400.
+    renderScrubber({
+      aoiRect: { left: 100, top: 60, right: 500, bottom: 200 },
+      sheetTopPx: 760,
+    });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // Centered on the AOI box (center 300), top-anchored just below the box.
+    expect(el.style.left).toBe("300px");
+    expect(el.style.width).toBe("400px");
+    expect(parseFloat(el.style.top)).toBe(212); // bottom(200) + 12
+  });
+
+  it("'can't pass the text box': a wide AOI low on screen clamps its BOTTOM above the sheet top (still snapped/centered)", () => {
+    stubMobile(800);
+    // A 400px-wide AOI whose bottom (700) would push the pill into the composer;
+    // sheet top at 500. The snapped pill clamps its bottom to 800-500+8=308 while
+    // staying centered on the AOI (left 300) and at the bbox width (400).
+    renderScrubber({
+      aoiRect: { left: 100, top: 400, right: 500, bottom: 700 },
+      sheetTopPx: 500,
+    });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.left).toBe("300px");
+    expect(el.style.width).toBe("400px");
+    expect(el.style.bottom).toBe("308px");
+    expect(el.style.top).toBe(""); // bottom-anchored (clamped), not a low top
+  });
+
+  it("HYSTERESIS: once snapped it stays snapped through the dead band (240 -> 210), and docks only below 200", () => {
+    stubMobile(800);
+    // Start wide (400) -> snapped.
+    const { rerender } = renderScrubber({
+      aoiRect: { left: 100, top: 60, right: 500, bottom: 200 }, // 400 wide
+      sheetTopPx: 760,
+    });
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.width).toBe("400px");
+    const wide = (w: number) => (
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={FRAMES}
+        activeIndex={0}
+        onStep={vi.fn()}
+        playing={false}
+        onPlayToggle={vi.fn()}
+        aoiRect={{ left: 100, top: 60, right: 100 + w, bottom: 200 }}
+        sheetTopPx={760}
+      />
+    );
+    // Shrink into the dead band (210px, between enter=200 and exit=240): the
+    // latch keeps it SNAPPED (width clamps to the 200px tappable minimum, but it
+    // is NOT docked - still a numeric px width, not a 100vw calc).
+    rerender(wide(210));
+    const mid = screen.getByTestId("grace2-sequence-scrubber");
+    expect(mid.style.width).toBe("210px");
+    expect(mid.getAttribute("data-dock-mode")).toBe("snapped");
+    // Shrink below the enter threshold (180px) -> now it docks (full-width).
+    rerender(wide(180));
+    const docked = screen.getByTestId("grace2-sequence-scrubber");
+    expect(docked.getAttribute("data-dock-mode")).toBe("docked");
   });
 });

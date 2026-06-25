@@ -396,3 +396,98 @@ describe("AnimationController — reset() clears all state on case-exit (item c)
     expect(cb.mock.calls.at(-1)![0].activeGroupKey).toBeNull();
   });
 });
+
+// ITEM 2 (NATE 2026-06-24) - hiding an animation group's layer(s) via the
+// LayerPanel visibility toggle must STOP the controller advancing that group's
+// frames (and halt the scrubber if it is the active group). Showing it resumes
+// from the CURRENT frame (no force-restart). Hidden groups are never driven by
+// the advance interval / auto paths either.
+describe("AnimationController - hide a group stops its frame advance (item 2)", () => {
+  const G2: AnimGroup = {
+    key: "grp-2",
+    label: "Other",
+    layerIds: ["g0", "g1", "g2"],
+    frameLabels: ["a", "b", "c"],
+  };
+
+  it("hiding the ACTIVE playing group halts playback + tears the interval down", () => {
+    const { timers, tick, cleared } = makeFakeTimers();
+    const c = new AnimationController({ timers });
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.setPlaying(true);
+    tick();
+    expect(c.frameIndexFor("grp-1")).toBe(1); // advanced once
+    // Hide the active group -> playback stops + interval cleared + no advance.
+    c.setGroupHidden("grp-1", true);
+    expect(c.isPlaying()).toBe(false);
+    expect(cleared()).toBe(true);
+    const at = c.frameIndexFor("grp-1");
+    tick(); // a stale tick must not move it
+    expect(c.frameIndexFor("grp-1")).toBe(at);
+  });
+
+  it("a hidden group is not advanced even by an explicit advanceActive (heartbeat/auto path)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.stepGroupTo("grp-1", 1);
+    c.setGroupHidden("grp-1", true);
+    c.advanceActive(1); // the auto/heartbeat path funnels through here
+    expect(c.frameIndexFor("grp-1")).toBe(1); // unchanged (hidden)
+  });
+
+  it("showing the group again resumes from the CURRENT frame (no reset to 0, no auto-restart)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.stepGroupTo("grp-1", 2); // user parked on frame 2
+    c.setGroupHidden("grp-1", true);
+    c.setGroupHidden("grp-1", false);
+    expect(c.frameIndexFor("grp-1")).toBe(2); // preserved
+    expect(c.isPlaying()).toBe(false); // not force-restarted
+  });
+
+  it("hiding the active group re-points the scrubber to the first still-VISIBLE group", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP, G2]);
+    c.setActiveGroup("grp-1");
+    c.setGroupHidden("grp-1", true);
+    expect(c.getActiveGroup()?.key).toBe("grp-2"); // switched to the visible one
+  });
+
+  it("hiding the ONLY group leaves no active group (scrubber disappears)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.setGroupHidden("grp-1", true);
+    expect(c.getActiveGroup()).toBeNull();
+  });
+
+  it("setGroups re-detection does NOT re-point the active group back to a hidden group", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP, G2]);
+    c.setActiveGroup("grp-1");
+    c.setGroupHidden("grp-1", true); // active moves to grp-2
+    // A re-detection (session-state re-emit) pushes the SAME groups again.
+    c.setGroups([GROUP, G2]);
+    expect(c.getActiveGroup()?.key).toBe("grp-2"); // still NOT the hidden grp-1
+  });
+
+  it("isGroupHidden reflects the toggle; reset clears all hidden state", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setGroupHidden("grp-1", true);
+    expect(c.isGroupHidden("grp-1")).toBe(true);
+    c.reset();
+    expect(c.isGroupHidden("grp-1")).toBe(false);
+  });
+
+  it("a vanished hidden group drops its hidden marker (a fresh group of the same key starts visible)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setGroupHidden("grp-1", true);
+    c.setGroups([]); // the group left the live set
+    expect(c.isGroupHidden("grp-1")).toBe(false);
+  });
+});

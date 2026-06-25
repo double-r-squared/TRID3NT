@@ -28,7 +28,7 @@
 // Layers panel is open. Pure presentation: all frame state + callbacks come in
 // as props.
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   IconArrowLeft,
@@ -55,6 +55,23 @@ import { useIsMobile } from "../hooks/useIsMobile";
 const SCRUBBER_MIN_WIDTH = 200;
 // AOI-less fallback width band (no bbox to track -> a sensible fixed band).
 const SCRUBBER_FALLBACK_WIDTH = 360;
+
+// SCRUBBER DOCK RULE (NATE 2026-06-24, REVISES the always-dock from 18cc0da):
+// on MOBILE the scrubber DEFAULTS to snapping to the AOI bbox (width = the AOI
+// on-screen width, centered, clamped so it can never pass the chat composer) -
+// the "can't pass the text box" behavior NATE likes. It DOCKS to the top of the
+// chat sheet (sheetTopPx) at full window width ONLY when the bbox-snapped width
+// would be too small to be usable (the user zoomed out far enough that the
+// projected AOI is small) OR there is no AOI on screen at all.
+//
+// HYSTERESIS: a single threshold would flip-flop (dock/undock) every frame when
+// the projected width hovers at the boundary while the heartbeat reprojects the
+// AOI. We use a two-sided band: enter the docked state below DOCK_ENTER_WIDTH,
+// only leave it once the bbox width climbs back above the wider
+// DOCK_EXIT_WIDTH. The docked state is also STABLE - anchored to sheetTopPx
+// (NOT the live-reprojected aoiRect) so it does not jitter every frame/heartbeat.
+export const SCRUBBER_DOCK_ENTER_WIDTH = 200; // <= this -> dock (too small to use)
+export const SCRUBBER_DOCK_EXIT_WIDTH = 240; // >= this -> undock back to bbox-snap
 
 // MOBILE Z-ORDER (NATE 2026-06-22): on mobile the chat is a bottom sheet at
 // zIndex 32 (Chat.tsx mobileSheetContainerStyle). The scrubber must sit
@@ -175,6 +192,16 @@ export function SequenceScrubber({
     [n],
   );
 
+  // SCRUBBER DOCK RULE (NATE 2026-06-24) - the docked latch + a re-render bump.
+  // The latch survives re-renders (a ref) so it provides HYSTERESIS: it flips to
+  // docked only once the bbox width drops below DOCK_ENTER_WIDTH, and back to
+  // bbox-snap only once it climbs above DOCK_EXIT_WIDTH - so a width hovering at
+  // the boundary (heartbeat reprojection) does not flip-flop the dock every
+  // frame. The bump state forces a re-render when the latch crosses, so the new
+  // layout actually paints. Hooks run unconditionally (before the n===0 guard).
+  const dockedRef = useRef(false);
+  const [, bumpDock] = useState(0);
+
   if (n === 0) return null;
 
   // PERSIST ON ZOOM-OUT (NATE 2026-06-22): the scrubber no longer hides below a
@@ -234,22 +261,81 @@ export function SequenceScrubber({
   // a tappable minimum so the buttons stay usable on a tiny zoomed-out box. With
   // no AOI rect, fall back to a fixed band (viewport-bottom fallback).
   const bboxWidth = aoiRect ? aoiRect.right - aoiRect.left : null;
-  let targetWidth =
-    typeof bboxWidth === "number" && Number.isFinite(bboxWidth) && bboxWidth > 0
-      ? Math.max(SCRUBBER_MIN_WIDTH, bboxWidth)
+  const hasUsableBbox =
+    typeof bboxWidth === "number" && Number.isFinite(bboxWidth) && bboxWidth > 0;
+
+  // SCRUBBER DOCK RULE (NATE 2026-06-24, REVISES 18cc0da's always-dock): on
+  // MOBILE the scrubber DEFAULTS to snapping the AOI bbox (the branch below);
+  // it DOCKS to the chat-sheet top ONLY when the projected AOI is too small to
+  // be usable - no AOI on screen, or the bbox width has shrunk past the
+  // usability floor (the user zoomed out far). HYSTERESIS via dockedRef: enter
+  // the docked state below DOCK_ENTER_WIDTH, leave it only above the wider
+  // DOCK_EXIT_WIDTH, so a width hovering at the boundary does not flip-flop the
+  // dock every heartbeat. Docking requires a known sheet top (sheetTopPx) to
+  // anchor against; without it the legacy env()+clearance clamp still applies.
+  const canDock = isMobile && sheetTopPx != null;
+  if (canDock) {
+    if (!hasUsableBbox) {
+      // No AOI on screen at all -> always docked (nothing to snap to).
+      dockedRef.current = true;
+    } else if (dockedRef.current) {
+      // Currently docked: only undock once the bbox width clears the wider exit
+      // threshold (hysteresis upper edge).
+      if (bboxWidth! >= SCRUBBER_DOCK_EXIT_WIDTH) dockedRef.current = false;
+    } else {
+      // Currently snapped: dock once the bbox width drops to/below the enter
+      // threshold (hysteresis lower edge).
+      if (bboxWidth! <= SCRUBBER_DOCK_ENTER_WIDTH) dockedRef.current = true;
+    }
+  } else {
+    dockedRef.current = false;
+  }
+  const mobileDocked = canDock && dockedRef.current;
+  // Re-render when the latch crosses so the new layout paints (the ref mutation
+  // alone would not trigger React). bumpDock is a no-op when unchanged.
+  const lastDockBumpRef = useRef(mobileDocked);
+  if (lastDockBumpRef.current !== mobileDocked) {
+    lastDockBumpRef.current = mobileDocked;
+    // Defer the state bump out of render to avoid setState-in-render warnings;
+    // queueMicrotask keeps it within the same task so the next paint reflects it.
+    queueMicrotask(() => bumpDock((x) => x + 1));
+  }
+
+  // DOCKED width = full window minus the device safe-area gutters; SNAPPED width
+  // = the AOI bbox on-screen width (clamped to the tappable minimum). Desktop is
+  // unchanged (never docks).
+  let targetWidth: number | string;
+  if (mobileDocked && viewportW != null) {
+    // Full window width minus the safe-area insets (env() reserved via CSS calc
+    // below for the left offset; the width subtracts both insets).
+    targetWidth = "calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right))";
+  } else {
+    let w = hasUsableBbox
+      ? Math.max(SCRUBBER_MIN_WIDTH, bboxWidth!)
       : SCRUBBER_FALLBACK_WIDTH;
-  // GUTTER CLAMP: never wider than the open desktop gutter.
-  if (gutterWidth != null) targetWidth = Math.min(targetWidth, gutterWidth);
+    // GUTTER CLAMP: never wider than the open desktop gutter.
+    if (gutterWidth != null) w = Math.min(w, gutterWidth);
+    targetWidth = w;
+  }
+  // Numeric width used by the center-clamp math (the docked full-width case
+  // needs no center clamp - it spans the window). Fall back to bbox width.
+  const targetWidthPx =
+    typeof targetWidth === "number"
+      ? targetWidth
+      : hasUsableBbox
+        ? Math.max(SCRUBBER_MIN_WIDTH, bboxWidth!)
+        : SCRUBBER_FALLBACK_WIDTH;
   const widthStyle: React.CSSProperties = {
     // Explicit width tracks the bbox (no min/max band that adds side padding),
-    // capped to the open desktop gutter so it never runs under the side panels.
+    // capped to the open desktop gutter so it never runs under the side panels;
+    // or the full window (minus safe-area) when docked at the chat-sheet top.
     width: targetWidth,
   };
 
   // GUTTER CLAMP: keep the scrubber's CENTER so neither edge crosses a panel.
   const clampCenter = (cx: number): number => {
     if (gutterWidth == null || gutterRight == null) return cx;
-    const half = targetWidth / 2;
+    const half = targetWidthPx / 2;
     const minCx = gutterLeft + half;
     const maxCx = gutterRight - half;
     if (minCx > maxCx) return (gutterLeft + gutterRight) / 2; // gutter too narrow
@@ -295,18 +381,43 @@ export function SequenceScrubber({
       : null;
 
   let posStyle: React.CSSProperties;
-  if (aoiRect) {
+  if (mobileDocked && mobileSheetDockBottomPx != null) {
+    // SCRUBBER DOCK RULE (NATE 2026-06-24): the AOI is too small / off-screen to
+    // snap to, so DOCK at the TOP of the chat sheet at FULL window width (minus
+    // safe-area, applied to `width` above). STABLE: anchored to sheetTopPx (NOT
+    // the live-reprojected aoiRect), so it does NOT jitter/move as the heartbeat
+    // reprojects the AOI; it tracks the sheet as it expands/collapses (App
+    // recomputes sheetTopPx). Centered in the window (left 50%), with the safe-
+    // area left inset reserved so a notched device does not crop it.
+    posStyle = {
+      position: "fixed",
+      left: "calc(50% + (env(safe-area-inset-left) - env(safe-area-inset-right)) / 2)",
+      bottom: mobileSheetDockBottomPx,
+      transform: "translateX(-50%)",
+      transformOrigin: "bottom center",
+    };
+  } else if (aoiRect) {
     const cx = clampCenter((aoiRect.left + aoiRect.right) / 2);
     // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile keep the scrubber
     // ABOVE the chat sheet/composer.
     const top = aoiRect.bottom + 12;
-    if (mobileSheetDockBottomPx != null) {
-      // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - dock the scrubber's BOTTOM just
-      // above the chat sheet's top edge (a clean band at the chat-panel top),
-      // tracking the sheet as it expands/collapses. NATE wants it docked to the
-      // chat-panel top, NOT railing the AOI bottom edge, so this takes priority
-      // over the AOI-bottom anchor on mobile (still horizontally centered on the
-      // AOI box). Replaces the env()+clearance composer clamp below.
+    // SNAP-TO-BBOX with the "can't pass the text box" clamp (NATE 2026-06-24):
+    // on mobile, when the scrubber snaps to the AOI bbox its bottom edge must
+    // never cross the chat sheet top. The highest TOP it may take is the sheet
+    // top minus the pill height; past that we anchor its BOTTOM just above the
+    // sheet top (mobileSheetDockBottomPx) so it sits flush above the composer
+    // while STILL centered on the AOI box (snapped, not full-width docked).
+    const sheetTopClampTop =
+      isMobile && sheetTopPx != null
+        ? sheetTopPx - SCRUBBER_APPROX_HEIGHT_PX - 8
+        : null;
+    if (
+      sheetTopClampTop != null &&
+      mobileSheetDockBottomPx != null &&
+      top > sheetTopClampTop
+    ) {
+      // The bbox-snapped pill would overlap the composer: clamp its bottom to
+      // just above the sheet top (still centered on the AOI horizontally).
       posStyle = {
         position: "fixed",
         left: cx,
@@ -314,7 +425,7 @@ export function SequenceScrubber({
         transform: "translateX(-50%)",
         transformOrigin: "bottom center",
       };
-    } else if (mobileMaxTop != null && top > mobileMaxTop) {
+    } else if (sheetTopClampTop == null && mobileMaxTop != null && top > mobileMaxTop) {
       // BUG 3  -  the natural anchor would drop the scrubber into the composer band.
       // Anchor from the BOTTOM with the safe-area-inclusive clearance (CSS calc),
       // exactly like the legend pill, so the inset is reserved on-device (the old
@@ -399,6 +510,11 @@ export function SequenceScrubber({
       data-testid="grace2-sequence-scrubber"
       role="group"
       aria-label={`${label} sequence scrubber`}
+      // SCRUBBER DOCK RULE (NATE 2026-06-24): "docked" = full-width band at the
+      // chat-sheet top (AOI too small / off-screen); "snapped" = centered on the
+      // AOI bbox. Surfaced as an attribute so the mode is observable in tests +
+      // live debugging without parsing the calc()/px width string.
+      data-dock-mode={mobileDocked ? "docked" : "snapped"}
       style={{
         ...posStyle,
         display: "flex",
