@@ -845,6 +845,100 @@ describe("MapView  -  map-command zoom-to handler (job-0068 change 5 client side
     expect((opts as { duration: number }).duration).toBe(1200);
   });
 
+  // MOBILE SNAP-BELOW-SHEET (NATE 2026-06-24 live-mobile feedback: "the snap to
+  // bbox on mobile just snaps to the center of the screen.") On mobile the chat
+  // BOTTOM-SHEET occludes the lower map; the snap fitBounds must pad the BOTTOM by
+  // the area below the sheet top (legendSheetTopPx) so the AOI frames in the
+  // VISIBLE band ABOVE the sheet, not centered behind it.
+  it("on mobile, snap fitBounds pads the bottom by the area below the chat-sheet top (legendSheetTopPx)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        mobile
+        // The mock canvas reports clientHeight 768 (the viewport height). A sheet
+        // top at y=480 means the sheet covers 768-480 = 288px below it.
+        legendSheetTopPx={480}
+      />,
+    );
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    const m = lastMapMock!;
+    expect(m.fitBounds).toHaveBeenCalledOnce();
+    const [, opts] = m.fitBounds.mock.calls[0] as MockCallArgs;
+    const padding = (opts as {
+      padding: { top: number; bottom: number; left: number; right: number };
+    }).padding;
+    // base 40 (top/left/right) is unchanged; the BOTTOM reserves the covered band
+    // below the sheet top plus a small margin: 40 + (768-480) + 24 = 352.
+    expect(padding.top).toBe(40);
+    expect(padding.left).toBe(40);
+    expect(padding.right).toBe(40);
+    expect(padding.bottom).toBe(40 + (768 - 480) + 24);
+    // The mobile bottom pad is strictly larger than the symmetric top pad, so the
+    // AOI is pushed UP into the visible band above the sheet (not screen-centered).
+    expect(padding.bottom).toBeGreaterThan(padding.top);
+  });
+
+  it("on mobile with NO sheet-top, snap fitBounds falls back to a fraction of the viewport height for the bottom pad", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        mobile
+        // legendSheetTopPx omitted -> null at snap time.
+      />,
+    );
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    const m = lastMapMock!;
+    const [, opts] = m.fitBounds.mock.calls[0] as MockCallArgs;
+    const padding = (opts as {
+      padding: { top: number; bottom: number; left: number; right: number };
+    }).padding;
+    // Fallback: base 40 + 40% of the 768px viewport height = 40 + 307.2 = 347.2.
+    expect(padding.bottom).toBeCloseTo(40 + 768 * 0.4, 1);
+    expect(padding.bottom).toBeGreaterThan(padding.top);
+  });
+
+  it("DESKTOP snap fitBounds is unchanged (symmetric base pad, no bottom-sheet reserve)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        // mobile omitted (desktop); legendSheetTopPx null on desktop.
+      />,
+    );
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    const m = lastMapMock!;
+    const [, opts] = m.fitBounds.mock.calls[0] as MockCallArgs;
+    expect((opts as { padding: unknown }).padding).toEqual({
+      top: 40,
+      bottom: 40,
+      left: 40,
+      right: 40,
+    });
+  });
+
   it("ALSO draws the analysis-extent rectangle from the same zoom-to bbox (job-0294)", () => {
     const mapCmdBus = makeMapCmdBus();
     render(

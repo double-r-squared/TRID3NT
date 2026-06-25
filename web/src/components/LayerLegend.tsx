@@ -88,6 +88,52 @@ export const DESKTOP_LEGEND_PILL_BOTTOM_PX = 24;
 // sheet without touching it. Mirrors the SequenceScrubber's dock gap.
 export const MOBILE_SHEET_DOCK_GAP_PX = 8;
 
+// MOBILE VIEWPORT CLAMP (NATE 2026-06-24 live-mobile feedback: "when we get the
+// legend back it should stay the size of the window and not span past the window
+// on mobile.") The docked legend band must NEVER bleed past the window edges. We
+// clamp the key card to the viewport width minus a small side margin (and the
+// notch safe-area insets), and to the band height available between the top
+// safe-area and the docked sheet top. A card whose intrinsic content is wider
+// than the clamp scrolls/shrinks WITHIN the clamp instead of overflowing the
+// screen. These are pure CSS expressions so notched devices stay clear via env().
+//
+// Side margin (px) kept on EACH edge so the card never kisses the window border.
+export const MOBILE_LEGEND_VIEWPORT_MARGIN_PX = 8;
+/**
+ * The mobile legend card's max-width: the full dynamic viewport width minus the
+ * left+right safe-area insets and a side margin on each edge. `100dvw` tracks the
+ * VISUAL viewport (so it shrinks with the mobile URL bar) and falls back to the
+ * layout width via the CSS cascade on engines without dvw. Capping max-width (not
+ * width) lets the existing fixed `cardWidth` shrink to fit a narrow phone while
+ * never exceeding the window.
+ */
+export const MOBILE_LEGEND_MAX_WIDTH_CSS = `calc(100dvw - env(safe-area-inset-left) - env(safe-area-inset-right) - ${
+  MOBILE_LEGEND_VIEWPORT_MARGIN_PX * 2
+}px)`;
+/**
+ * MOBILE VIEWPORT CLAMP  -  the docked legend card's max-height: the screen height
+ * from just below the top safe-area down to the docked sheet top (the band the
+ * keys live in), minus a small margin. A tall stack of keys (or one very tall
+ * card) scrolls WITHIN this rather than running off the top of the window. Given
+ * the dock `bottom` offset (already viewportH - sheetTopPx + gap), the available
+ * band height is sheetTopPx - gap - topInset - margin; we express it from the top
+ * via env() so the notch is respected. Returns a CSS string. `sheetBottomPx` is
+ * the resolved dock bottom (from sheetTopDockBottomPx); when it is null/unknown we
+ * fall back to a generous viewport-height cap so we still never exceed the window.
+ */
+export function mobileLegendMaxHeightCss(sheetBottomPx: number | null): string {
+  if (sheetBottomPx == null) {
+    // No known sheet top -> just keep it inside the window (minus the insets).
+    return `calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - ${
+      MOBILE_LEGEND_VIEWPORT_MARGIN_PX * 2
+    }px)`;
+  }
+  // The card bottom sits `sheetBottomPx` up from the window bottom; the band
+  // available above it is the rest of the window height minus the top safe-area
+  // and a margin. 100dvh - sheetBottomPx - topInset - margin.
+  return `calc(100dvh - ${sheetBottomPx}px - env(safe-area-inset-top) - ${MOBILE_LEGEND_VIEWPORT_MARGIN_PX}px)`;
+}
+
 /**
  * MOBILE SHEET-TOP DOCK (NATE 2026-06-24)  -  the CSS `bottom` offset that docks a
  * portaled (position:fixed) overlay just ABOVE the chat sheet's top edge, given
@@ -879,6 +925,12 @@ export function LayerLegend({
                 : DESKTOP_LEGEND_PILL_BOTTOM_PX,
           left: "50%",
           transform: "translateX(-50%)",
+          // MOBILE VIEWPORT CLAMP (NATE 2026-06-24)  -  keep the docked pill inside
+          // the window too (it is short text so rarely at risk, but the band must
+          // never span past the edges). Desktop keeps its natural width.
+          ...(isMobile
+            ? { maxWidth: MOBILE_LEGEND_MAX_WIDTH_CSS, boxSizing: "border-box" as const }
+            : {}),
           padding: "5px 12px",
           background: "rgba(17,18,23,0.78)",
           backdropFilter: "blur(6px)",
@@ -987,6 +1039,16 @@ export function LayerLegend({
         // single-band dock. snapPos.left/top are bottom-center-relative offsets
         // (same as the fallback below), realized with left:50% + translate.
         let posStyle: React.CSSProperties;
+        // MOBILE VIEWPORT CLAMP (NATE 2026-06-24)  -  extra style applied ONLY on the
+        // mobile sheet-top band dock so the keys can never bleed past the window
+        // edges (the live-mobile bug: the legend band "spans past the window"). We
+        // cap max-width to the viewport (minus safe-area insets + a side margin) and
+        // max-height to the band between the top safe-area and the docked sheet, and
+        // let a card whose intrinsic content is wider/taller scroll WITHIN the clamp
+        // instead of overflowing. left:50% + translateX(-50%) keeps it CENTERED, so
+        // a clamped width never runs off either edge. Empty on every other path
+        // (desktop early-returns above; AOI snap / free-drag are unchanged).
+        let clampStyle: React.CSSProperties = {};
         if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
         } else if (mobileDockBottomPx != null) {
@@ -998,6 +1060,18 @@ export function LayerLegend({
             left: "50%",
             bottom: mobileDockBottomPx,
             transform: `translate(calc(-50% + ${band.left + width / 2}px), ${band.top}px)`,
+          };
+          // VIEWPORT CLAMP: max-width to the window (overrides the fixed `width` so
+          // it SHRINKS on a narrow phone) + max-height to the docked band, both
+          // scrollable so nothing spills off-screen. Each colorbar key inside the
+          // card is already flex (bar:flex:1,minWidth:0 + nowrap labels), so the
+          // content reflows within the clamp; overflow is the safety net.
+          clampStyle = {
+            maxWidth: MOBILE_LEGEND_MAX_WIDTH_CSS,
+            maxHeight: mobileLegendMaxHeightCss(mobileDockBottomPx),
+            overflowX: "auto",
+            overflowY: "auto",
+            boxSizing: "border-box",
           };
         } else if (aoiRect) {
           posStyle = { left: snapPos.left, top: snapPos.top };
@@ -1077,6 +1151,10 @@ export function LayerLegend({
               position: "fixed",
               ...posStyle,
               width: cardWidth,
+              // MOBILE VIEWPORT CLAMP  -  applied AFTER width so max-width/height cap
+              // the fixed card to the window on the mobile band dock (empty {} on
+              // every other path). Nothing here bleeds past the window edges.
+              ...clampStyle,
               padding: "7px 10px 8px",
               background: "rgba(17,18,23,0.78)",
               backdropFilter: "blur(6px)",

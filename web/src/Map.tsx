@@ -596,14 +596,36 @@ const ANALYSIS_EXTENT_COLOR_IDLE = "#4D96FF"; // blue (default).
 const ANALYSIS_EXTENT_COLOR_SIM = "#a855f7"; // purple (sim in progress).
 
 /**
+ * MOBILE SNAP-BELOW-SHEET (NATE 2026-06-24 live-mobile feedback: "the snap to
+ * bbox on mobile just snaps to the center of the screen.") When the mobile chat
+ * sheet covers the bottom of the map, a fit with uniform padding centers the AOI
+ * in the FULL viewport - i.e. partly BEHIND the sheet. The fix is to pad the
+ * BOTTOM of the fit by the area the sheet covers (viewportH - sheetTopPx) plus a
+ * small margin, so the AOI frames in the VISIBLE band ABOVE the sheet. When the
+ * sheet-top Y is unknown at snap time we fall back to a sensible fraction of the
+ * viewport height (the sheet's collapsed footprint is well under this).
+ */
+export const MOBILE_SNAP_SHEET_MARGIN_PX = 24;
+export const MOBILE_SNAP_BOTTOM_FALLBACK_FRACTION = 0.4;
+
+/**
  * LANE B #3 (panel-aware fitBounds) - build an asymmetric PaddingOptions that
  * adds the occluded desktop panel widths so a fit centers the bbox in the
  * VISIBLE map gutter, not behind the panels. The left rail (CasesPanel /
  * CaseView, `leftPanelPx`) occludes the left; the chat panel (`chatPx`, only
- * when not collapsed) occludes the right. On mobile both are 0 -> a uniform
- * scalar `base` pad. The padding is clamped to keep each axis' total below the
- * canvas dimension (MapLibre throws when left+right >= width or top+bottom >=
- * height), with a 24px safety floor so the box never fills edge-to-edge.
+ * when not collapsed) occludes the right.
+ *
+ * MOBILE SNAP-BELOW-SHEET (NATE 2026-06-24): on mobile the left/right panel
+ * extras are 0 (no side rails), but the chat BOTTOM-SHEET occludes the lower part
+ * of the map. We add a BOTTOM pad equal to the covered area below the sheet top
+ * (viewportH - `sheetTopPx`, + a small margin) so the AOI frames in the VISIBLE
+ * band ABOVE the sheet instead of centering behind it. When `sheetTopPx` is
+ * null/unknown at snap time we fall back to a fraction of the viewport height.
+ * Desktop is unchanged (sheetTopPx is null there -> bottom stays the scalar base).
+ *
+ * The padding is clamped to keep each axis' total below the canvas dimension
+ * (MapLibre throws when left+right >= width or top+bottom >= height), with a 24px
+ * safety floor so the box never fills edge-to-edge.
  */
 function panelAwareFitPadding(
   m: MapLibreMap,
@@ -612,13 +634,43 @@ function panelAwareFitPadding(
   chatPx: number,
   chatCollapsed: boolean,
   mobile: boolean,
+  sheetTopPx: number | null = null,
 ): maplibregl.PaddingOptions {
   const leftExtra = mobile ? 0 : Math.max(0, leftPanelPx);
   const rightExtra = mobile || chatCollapsed ? 0 : Math.max(0, chatPx);
   let left = base + leftExtra;
   let right = base + rightExtra;
   const top = base;
-  const bottom = base;
+  let bottom = base;
+  // MOBILE SNAP-BELOW-SHEET: pad the bottom by the chat-sheet's covered area so
+  // the AOI frames ABOVE the sheet, not behind it. Only on mobile (the bottom
+  // sheet only exists there); desktop keeps the scalar base.
+  if (mobile) {
+    let viewportH = 0;
+    try {
+      const canvas = m.getCanvas();
+      viewportH = canvas.clientHeight || canvas.height || 0;
+    } catch {
+      viewportH = 0;
+    }
+    if (viewportH <= 0 && typeof window !== "undefined") {
+      viewportH = window.innerHeight || 0;
+    }
+    if (
+      typeof sheetTopPx === "number" &&
+      Number.isFinite(sheetTopPx) &&
+      viewportH > 0 &&
+      sheetTopPx < viewportH
+    ) {
+      // The sheet covers everything below its top edge; reserve that band plus a
+      // small margin so the AOI does not kiss the sheet's top.
+      bottom = base + (viewportH - sheetTopPx) + MOBILE_SNAP_SHEET_MARGIN_PX;
+    } else if (viewportH > 0) {
+      // Sheet-top Y unknown at snap time -> reserve a sensible fraction of the
+      // viewport height so the AOI still frames in the upper map band.
+      bottom = base + viewportH * MOBILE_SNAP_BOTTOM_FALLBACK_FRACTION;
+    }
+  }
   try {
     const canvas = m.getCanvas();
     const w = canvas.clientWidth || canvas.width || 0;
@@ -630,6 +682,17 @@ function panelAwareFitPadding(
         const scale = maxSide / (left + right);
         left = Math.floor(left * scale);
         right = Math.floor(right * scale);
+      }
+    }
+    const h = canvas.clientHeight || canvas.height || 0;
+    if (h > 0) {
+      // Same guard for the vertical axis - a large mobile bottom pad must not
+      // push top + bottom past the canvas height (MapLibre throws otherwise).
+      const maxVert = Math.max(0, h - 24);
+      if (top + bottom > maxVert) {
+        // Keep the small top pad; absorb the overflow into the bottom (the side
+        // we are intentionally reserving for the sheet). Floor at 0.
+        bottom = Math.max(0, Math.floor(maxVert - top));
       }
     }
   } catch {
@@ -3483,7 +3546,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             [[minLon, minLat], [maxLon, maxLat]],
             {
               // LANE B #3 - panel-aware padding so the bbox centers in the
-              // VISIBLE gutter, not behind the open chat / left rail.
+              // VISIBLE gutter, not behind the open chat / left rail. On mobile
+              // the chat BOTTOM-SHEET occludes the lower map, so we also reserve
+              // a bottom pad below the sheet top (legendSheetTopPx) - otherwise
+              // the AOI "snaps to the center of the screen" partly behind the
+              // sheet (NATE 2026-06-24 live-mobile feedback).
               padding: panelAwareFitPadding(
                 m,
                 40,
@@ -3491,6 +3558,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
                 chatWidthPx ?? 0,
                 chatCollapsed ?? false,
                 mobile ?? false,
+                legendSheetTopPx,
               ),
               duration: prefersReducedMotion ? 0 : 1200,
             },
@@ -4284,7 +4352,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               [maxLon, maxLat],
             ],
             {
-              // LANE B #3 - panel-aware padding (see the zoom-to fit above).
+              // LANE B #3 - panel-aware padding (see the zoom-to fit above),
+              // incl. the mobile bottom-sheet bottom-pad so the framed candidate
+              // counties land ABOVE the chat sheet, not behind it.
               padding: panelAwareFitPadding(
                 m,
                 48,
@@ -4292,6 +4362,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
                 chatWidthPx ?? 0,
                 chatCollapsed ?? false,
                 mobile ?? false,
+                legendSheetTopPx,
               ),
               duration: 600,
               maxZoom: 8,

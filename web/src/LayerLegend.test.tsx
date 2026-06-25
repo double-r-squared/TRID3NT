@@ -22,6 +22,9 @@ import {
   MOBILE_LEGEND_PILL_CLEARANCE_PX,
   DESKTOP_LEGEND_PILL_BOTTOM_PX,
   MOBILE_SHEET_DOCK_GAP_PX,
+  MOBILE_LEGEND_MAX_WIDTH_CSS,
+  MOBILE_LEGEND_VIEWPORT_MARGIN_PX,
+  mobileLegendMaxHeightCss,
   sheetTopDockBottomPx,
   MobileLegendToggle,
   legendHasContent,
@@ -774,6 +777,102 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
     expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
       `${768 - 300 + MOBILE_SHEET_DOCK_GAP_PX}px`,
     );
+  });
+});
+
+// MOBILE VIEWPORT CLAMP (NATE 2026-06-24 live-mobile feedback): "when we get the
+// legend back it should stay the size of the window and not span past the window
+// on mobile." The docked legend band must be CLAMPED to the viewport - a
+// viewport-bounded max-width (so a fixed cardWidth wider than a narrow phone
+// SHRINKS instead of overflowing), a capped max-height for the band, and
+// scroll-within so nothing bleeds past the window edges. Notch insets respected
+// via env(). beforeEach already stubs mobile=true; jsdom innerHeight is 768.
+describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past the window)", () => {
+  it("MOBILE_LEGEND_MAX_WIDTH_CSS is a viewport-bounded calc() over 100dvw minus insets + margin", () => {
+    expect(MOBILE_LEGEND_VIEWPORT_MARGIN_PX).toBeGreaterThan(0);
+    // The max-width tracks the visual viewport (100dvw), subtracts the left/right
+    // safe-area insets (notch) and a side margin on each edge. This guarantees it
+    // is NEVER wider than the window.
+    expect(MOBILE_LEGEND_MAX_WIDTH_CSS).toContain("100dvw");
+    expect(MOBILE_LEGEND_MAX_WIDTH_CSS).toContain("env(safe-area-inset-left)");
+    expect(MOBILE_LEGEND_MAX_WIDTH_CSS).toContain("env(safe-area-inset-right)");
+    expect(MOBILE_LEGEND_MAX_WIDTH_CSS).toContain(
+      `${MOBILE_LEGEND_VIEWPORT_MARGIN_PX * 2}px`,
+    );
+  });
+
+  it("mobileLegendMaxHeightCss caps the band height below the docked sheet top (respecting the notch)", () => {
+    const bottom = sheetTopDockBottomPx(500)!; // 768-500+8 = 276
+    const css = mobileLegendMaxHeightCss(bottom);
+    // Height = viewport height minus the docked-bottom offset minus the top inset
+    // minus a margin, so the card cannot run off the TOP of the window.
+    expect(css).toContain("100dvh");
+    expect(css).toContain(`${bottom}px`);
+    expect(css).toContain("env(safe-area-inset-top)");
+    // Null (sheet top unknown) still returns a window-bounded cap (never unbounded).
+    const fallback = mobileLegendMaxHeightCss(null);
+    expect(fallback).toContain("100dvh");
+    expect(fallback).toContain("env(safe-area-inset-top)");
+  });
+
+  it("the docked mobile key carries a viewport-bounded max-width (not a fixed width wider than the viewport)", () => {
+    // A wide barWidth would otherwise fix the card at 520px - wider than a phone.
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 0, top: 0, right: 1000, bottom: 800 }}
+        barWidth={520}
+        sheetTopPx={500}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // The card carries the viewport-bounded max-width clamp so it can never exceed
+    // the window, regardless of the fixed cardWidth.
+    expect(key.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
+    // And it scrolls within the clamp rather than spilling off either edge.
+    expect(key.style.overflowX).toBe("auto");
+    expect(key.style.overflowY).toBe("auto");
+    expect(key.style.boxSizing).toBe("border-box");
+    // Still centered (left:50% + translateX(-50%)) so the clamped card never runs
+    // off the left/right edge.
+    expect(key.style.left).toBe("50%");
+    expect(key.style.transform).toContain("translate");
+  });
+
+  it("the docked mobile key carries a viewport-bounded max-height (cannot run off the top)", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 0, top: 0, right: 1000, bottom: 800 }}
+        sheetTopPx={500}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    const bottom = sheetTopDockBottomPx(500)!;
+    expect(key.style.maxHeight).toBe(mobileLegendMaxHeightCss(bottom));
+  });
+
+  it("does NOT apply the viewport clamp when NOT docked to the sheet top (AOI-snap path unchanged)", () => {
+    // No sheetTopPx -> the legacy AOI-snap mobile path. It must keep its absolute
+    // sizing (no band clamp injected), so the AOI-edge rail behavior is untouched.
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 100, right: 500, bottom: 200 }}
+        barWidth={200}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.style.maxWidth).toBe("");
+    expect(key.style.maxHeight).toBe("");
+    expect(key.style.overflowX).toBe("");
+  });
+
+  it("the docked 'Show legend' pill is also viewport-clamped on mobile", () => {
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
+    fireEvent.click(screen.getByTestId("layer-legend-hide"));
+    const pill = screen.getByTestId("grace2-layer-legend-show");
+    expect(pill.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
   });
 });
 
