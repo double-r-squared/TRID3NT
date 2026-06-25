@@ -61,9 +61,9 @@ function ensureKeyframes(): void {
   // moves - so the box outline never appears to grow / shrink / jitter.
   style.textContent = `
 @keyframes grace2-bbox-fill-shimmer {
-  0%   { background-position: 0% -100%, 0 0, 0 0; opacity: 0.40; }
-  50%  { opacity: 0.62; }
-  100% { background-position: 0% 200%, 0 0, 0 0; opacity: 0.40; }
+  0%   { background-position: 0% 0%, 0 0, 0 0; opacity: 0.42; }
+  50%  { opacity: 0.60; }
+  100% { background-position: 0% 100%, 0 0, 0 0; opacity: 0.42; }
 }
 `;
   document.head.appendChild(style);
@@ -150,7 +150,12 @@ export function BboxProgressOverlay({
           ${tint}`,
         border: `1px solid rgba(74,163,255,0.28)`,
         boxShadow: "inset 0 0 12px rgba(74,163,255,0.10)",
-        animation: "grace2-bbox-fill-shimmer 2.4s ease-in-out infinite",
+        // NATE 2026-06-24: PING-PONG the sheen (alternate) so it never hard-cuts
+        // from the end back to the start (the visible "repeat"). It sweeps down
+        // (1 -> n) then reverses up (n -> n-1 -> ... -> 1); ease-in-out softens the
+        // turnaround, and the 200%-tall band stays covering the box across 0%<->100%
+        // so there is no empty flash at either end.
+        animation: "grace2-bbox-fill-shimmer 2.4s ease-in-out infinite alternate",
       };
   return (
     <div
