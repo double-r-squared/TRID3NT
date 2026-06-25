@@ -40,10 +40,29 @@ _SRC = pathlib.Path(server.__file__).resolve().parent
 _WORKFLOWS = _SRC / "workflows"
 _FLOOD = _WORKFLOWS / "model_flood_scenario.py"
 _GEOCLAW = _WORKFLOWS / "model_dambreak_geoclaw_scenario.py"
+_GLM_ANIM = _WORKFLOWS / "model_glm_lightning_animation.py"
 
 
 def test_fetch_topobathy_in_always_set() -> None:
     assert "fetch_topobathy" in server._ALWAYS_OFFLOAD_SYNC_TOOLS
+
+
+def test_goes_archive_animation_in_always_set() -> None:
+    """LIVE 2026-06-25: fetch_goes_archive_animation looped over 78+ frames (each a
+    ~54 MB netCDF download + reproject + COG write) ON the asyncio loop when the
+    LLM called it directly (the historical fire-animation path), starving the WS
+    heartbeat -> health-endpoint timeout + client connecting-loop. It must
+    off-load like its sibling fetch_goes_animation."""
+    assert "fetch_goes_archive_animation" in server._ALWAYS_OFFLOAD_SYNC_TOOLS
+    assert server._should_offload_sync_tool("fetch_goes_archive_animation") is True
+
+
+def test_goes_active_fire_in_always_set() -> None:
+    """fetch_goes_active_fire reuses the SAME per-frame archive download +
+    reproject + COG-write core (_fetch_archive_frame_cog_bytes) in a multi-frame
+    sync loop, so it has the identical loop-block hazard and must off-load too."""
+    assert "fetch_goes_active_fire" in server._ALWAYS_OFFLOAD_SYNC_TOOLS
+    assert server._should_offload_sync_tool("fetch_goes_active_fire") is True
 
 
 def test_always_set_offloads_even_in_off_mode(
@@ -151,4 +170,27 @@ def test_geoclaw_topobathy_runs_off_loop() -> None:
     assert _calls_to_thread_with(src, "_fetch_topo_for_geoclaw"), (
         "model_dambreak_geoclaw_scenario must run its topo helper (which calls "
         "fetch_topobathy) via asyncio.to_thread"
+    )
+
+
+def test_glm_lightning_per_frame_bake_runs_off_loop() -> None:
+    """The GLM lightning composer's heavy per-frame work -- the ~54 MB GLM-granule
+    + visible-base netCDF download + GED bin + raster bake + COG write inside the
+    sync ``_emit_baked_frame`` helper -- must be dispatched via
+    ``asyncio.to_thread(_emit_baked_frame, ...)`` so the per-frame loop yields to
+    the asyncio loop between frames and the WS heartbeat can fire (the fire/lightning
+    connecting-loop blocker, LIVE 2026-06-25)."""
+    src = _GLM_ANIM.read_text()
+    # The sync per-frame bake helper exists + does the heavy work...
+    assert "def _emit_baked_frame(" in src
+    # ...and the composer dispatches it off the loop, once per frame.
+    assert _calls_to_thread_with(src, "_emit_baked_frame"), (
+        "model_glm_lightning_animation must run each frame's _emit_baked_frame "
+        "(the ~54 MB download + reproject + COG bake) via asyncio.to_thread so "
+        "the loop yields between frames and the WS heartbeat stays live"
+    )
+    # The standalone GED overlay fetch is also off-loop (the fetcher is sync).
+    assert _calls_to_thread_with(src, "fetcher"), (
+        "model_glm_lightning_animation must dispatch fetch_glm_lightning "
+        "(standalone GED overlay) via asyncio.to_thread"
     )

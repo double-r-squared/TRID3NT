@@ -7333,6 +7333,23 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "fetch_goes_animation",
         "fetch_goes_blend_animation",
         "fetch_viirs_day_fire",
+        # satellite-animation loop-block (LIVE 2026-06-25): both of these read the
+        # RAW noaa-goesNN MCMIPC S3 archive and loop over UP TO 144 frames in ONE
+        # sync call, each frame = a ~54 MB netCDF download + rasterio reproject +
+        # COG write (logged as "fetch_goes_satellite: downloaded ~54MB" +
+        # "fetch_goes_archive_animation" cache writes every ~2-3 s, sequentially,
+        # for 78+ frames). When the LLM calls either DIRECTLY (the "historical
+        # fire animation" / "active fire over the past hours" path -- no composer
+        # in between to to_thread it), the whole multi-frame loop ran ON the
+        # asyncio loop and starved the 12 s WS data-heartbeat past the browser
+        # reconnect deadline -> the agent health endpoint timed out + clients hung
+        # in a "connecting..." reconnect loop for the entire build. Off-load so
+        # the per-frame loop runs in a worker thread and the loop/heartbeat stay
+        # live. Bodies are emit-free (the surrounding emit_tool_call wrapper does
+        # the emit). fetch_goes_active_fire reuses the same per-frame archive
+        # download + reproject core (_fetch_archive_frame_cog_bytes).
+        "fetch_goes_archive_animation",
+        "fetch_goes_active_fire",
         "fetch_cama_flood_discharge",
         "fetch_gtsm_tide_surge",
         # conservation micro-North-Star: PC STAC raster fetchers that do
