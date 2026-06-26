@@ -209,6 +209,48 @@ describe("resolveCardIo (FIX 2 — live Running… placeholder)", () => {
   });
 });
 
+// --- FIX 3 (NATE 2026-06-26): no fabricated IO chevron on a compute card --- //
+//
+// A compute-role step (the sim / solve dispatch twin) never receives a real
+// tool-io envelope, so the synthetic RUNNING_IO_PLACEHOLDER below would render
+// an empty "Running…" IO chevron the solve card should not have. resolveCardIo
+// must short-circuit to null for a running compute step (no chevron), while
+// still fabricating the placeholder for ordinary TOOL-role cards.
+describe("resolveCardIo (FIX 3 — compute-role cards get NO fabricated chevron)", () => {
+  it("returns null for a RUNNING compute-role step with no io (no chevron)", () => {
+    expect(
+      resolveCardIo(runningStep({ role: "compute" }), undefined),
+    ).toBeNull();
+    expect(resolveCardIo(runningStep({ role: "compute" }), null)).toBeNull();
+  });
+
+  it("passes a REAL io through verbatim for a compute step (never fabricates)", () => {
+    const realIo = {
+      step_id: "s1",
+      tool_name: "run_solver",
+      raw_args: '{"engine":"sfincs"}',
+      function_response: '{"status":"ok"}',
+      is_error: false,
+      args_truncated: false,
+      response_truncated: false,
+      args_bytes: 20,
+      response_bytes: 16,
+    };
+    // A real io still flows (in case one ever lands) — only the synthetic
+    // placeholder is suppressed for compute cards.
+    expect(resolveCardIo(runningStep({ role: "compute" }), realIo)).toBe(realIo);
+  });
+
+  it("STILL fabricates the placeholder for a running TOOL-role card (no regression)", () => {
+    const io = resolveCardIo(runningStep({ role: "tool" }), undefined);
+    expect(io).not.toBeNull();
+    expect(io!.function_response).toBe(RUNNING_IO_PLACEHOLDER);
+    // The default (role omitted) is the tool path — also still fabricates.
+    const ioDefault = resolveCardIo(runningStep(), undefined);
+    expect(ioDefault!.function_response).toBe(RUNNING_IO_PLACEHOLDER);
+  });
+});
+
 // --- C2: force-complete stuck running cards ------------------------------- //
 
 describe("forceRunningStepsToComplete (C2)", () => {

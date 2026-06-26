@@ -360,6 +360,45 @@ describe("PipelineCard — humanized step labels (job-0173 + job-0294)", () => {
     expect(label).toHaveTextContent("Post-processing SWAN waves…");
     expect(label.textContent).not.toContain("Swan");
   });
+
+  // FIX 2 (NATE 2026-06-26) — the agent stamps the sim/dispatch twin cards with
+  // a lowercase space-separated name ("sfincs solve" / "Dispatch sfincs solve").
+  // Before the explicit map entries these fell through titleCaseToolName and
+  // lower-cased the SOLVER ACRONYM into "Sfincs Solve". The card must keep the
+  // acronym ALL-CAPS.
+  it("renders 'sfincs solve' as 'SFINCS solve' (never 'Sfincs Solve')", () => {
+    const { unmount } = render(
+      <PipelineCard step={makeStep({ state: "running", name: "sfincs solve" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("SFINCS solve");
+    expect(label.textContent).not.toContain("Sfincs Solve");
+    unmount();
+
+    render(<PipelineCard step={makeStep({ state: "complete", name: "sfincs solve" })} />);
+    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("SFINCS solve");
+  });
+
+  it("renders 'Dispatch sfincs solve' as 'Dispatch SFINCS solve' (acronym kept)", () => {
+    render(
+      <PipelineCard step={makeStep({ state: "running", name: "Dispatch sfincs solve" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Dispatch SFINCS solve");
+    expect(label.textContent).not.toContain("Sfincs");
+  });
+
+  // FIX 4 (NATE 2026-06-26) — summarize_layer_statistics fronts a code-exec, so
+  // its terminal label is the honest "Code completed", not "Layer statistics
+  // ready".
+  it("renders summarize_layer_statistics COMPLETE as 'Code completed'", () => {
+    render(
+      <PipelineCard step={makeStep({ state: "complete", name: "summarize_layer_statistics" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Code completed");
+    expect(label.textContent).not.toContain("Layer statistics ready");
+  });
 });
 
 // --- Tool timer (job-0264) ----------------------------------------------- //

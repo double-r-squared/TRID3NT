@@ -702,9 +702,11 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
     running: "Computing zonal statistics…",
     complete: "Zonal statistics ready",
   },
+  // FIX 4 (NATE 2026-06-26) — this card fronts a code-exec, not a stats summary;
+  // surface the honest code-exec label instead of "Layer statistics ready".
   summarize_layer_statistics: {
-    running: "Summarizing layer statistics…",
-    complete: "Layer statistics ready",
+    running: "Running code…",
+    complete: "Code completed",
   },
   aggregate_property_within_zone: {
     running: "Aggregating within zone…",
@@ -884,6 +886,49 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
   postprocess_river_seepage: {
     running: "Post-processing seepage…",
     complete: "Seepage post-processed",
+  },
+
+  // --- Solve / dispatch cards (FIX 2, NATE 2026-06-26) ------------------- //
+  // The agent stamps the sim + dispatch twin cards with a lowercase
+  // space-separated step.name ("sfincs solve" / "Dispatch sfincs solve").
+  // Without an explicit entry these fall through to titleCaseToolName, which
+  // word-cases the SOLVER ACRONYM into "Sfincs Solve" (acronym lost). Map every
+  // live solver, both the "<solver> solve" and "Dispatch <solver> solve" keys,
+  // with acronym-correct labels. Follows the run_swan_waves precedent above.
+  "sfincs solve": { running: "SFINCS solve", complete: "SFINCS solve" },
+  "Dispatch sfincs solve": {
+    running: "Dispatch SFINCS solve",
+    complete: "Dispatch SFINCS solve",
+  },
+  "swmm solve": { running: "SWMM solve", complete: "SWMM solve" },
+  "Dispatch swmm solve": {
+    running: "Dispatch SWMM solve",
+    complete: "Dispatch SWMM solve",
+  },
+  "swan solve": { running: "SWAN solve", complete: "SWAN solve" },
+  "Dispatch swan solve": {
+    running: "Dispatch SWAN solve",
+    complete: "Dispatch SWAN solve",
+  },
+  "geoclaw solve": { running: "GeoClaw solve", complete: "GeoClaw solve" },
+  "Dispatch geoclaw solve": {
+    running: "Dispatch GeoClaw solve",
+    complete: "Dispatch GeoClaw solve",
+  },
+  "modflow solve": { running: "MODFLOW solve", complete: "MODFLOW solve" },
+  "Dispatch modflow solve": {
+    running: "Dispatch MODFLOW solve",
+    complete: "Dispatch MODFLOW solve",
+  },
+  "openquake solve": { running: "OpenQuake solve", complete: "OpenQuake solve" },
+  "Dispatch openquake solve": {
+    running: "Dispatch OpenQuake solve",
+    complete: "Dispatch OpenQuake solve",
+  },
+  "landlab solve": { running: "Landlab solve", complete: "Landlab solve" },
+  "Dispatch landlab solve": {
+    running: "Dispatch Landlab solve",
+    complete: "Dispatch Landlab solve",
   },
 };
 

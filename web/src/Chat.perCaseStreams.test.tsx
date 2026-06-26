@@ -400,6 +400,81 @@ describe("auto-create from root — flip into the new Case (job-0262 + job-0266)
     routeCaseOpen(cs, caseOpen(CASE_B));
     expect(cs.targetKey).toBe(CASE_A);
   });
+
+  // FIX 1 (NATE 2026-06-26) — the agent auto-creates the Case and stamps the
+  // FIRST pipeline-state / tool card with the NEW case_id BEFORE case-open
+  // arrives. The card must self-heal into the auto-created Case's stream (the
+  // SAME object the root user bubble already populated) so it never strands in
+  // a non-visible stream until reload. The just-typed bubble must survive the
+  // migration, and a later case-open replay must not double-append.
+  it("self-heals a case_id-stamped card from root into the auto-created Case (case-open arrives LAST)", () => {
+    const cs = createChatStreams();
+
+    // 1. User types from root; the bubble lands in the root stream.
+    routeUserMessage(cs, ROOT_STREAM_KEY, "flood depth for Fort Myers");
+    expect(cs.targetKey).toBe(ROOT_STREAM_KEY);
+
+    // 2. The agent auto-creates CASE_A and stamps the first card with it —
+    //    BEFORE case-open. adoptRootInto migrates the live root stream into
+    //    CASE_A so the card lands where the user will look, not a dead stream.
+    routePipelineState(cs, runningPipeline("p1", "fetch_dem"), CASE_A);
+    routeAgentChunk(cs, { message_id: "mA", delta: "On it.", done: false }, CASE_A);
+
+    // targetKey moved to CASE_A and the root buffer is clean.
+    expect(cs.targetKey).toBe(CASE_A);
+    expect(getStream(cs, ROOT_STREAM_KEY).messages).toHaveLength(0);
+
+    // The migrated CASE_A stream carries the ORIGINAL user bubble (not lost),
+    // the live card, and the agent delta — all in arrival order.
+    const a = getStream(cs, CASE_A);
+    expect(a.messages.map((m) => m.text)).toEqual([
+      "flood depth for Fort Myers",
+      "On it.",
+    ]);
+    expect(a.pipeline.live?.pipeline_id).toBe("p1");
+
+    // 3. case-open arrives LAST with the rehydrated history. routeCaseOpen's
+    //    isPlaceholder guard sees the now-non-empty adopted stream and leaves
+    //    it intact — NO double-append of the user bubble.
+    const opened = routeCaseOpen(
+      cs,
+      caseOpen(CASE_A, [
+        { id: "m1", role: "user", content: "flood depth for Fort Myers" },
+      ]),
+    );
+    expect(opened).toBe(CASE_A);
+    const after = getStream(cs, CASE_A);
+    expect(after.messages.map((m) => m.text)).toEqual([
+      "flood depth for Fort Myers",
+      "On it.",
+    ]);
+    expect(after.pipeline.live?.pipeline_id).toBe("p1");
+  });
+
+  // The migration must reuse the SAME StreamState object — proving the
+  // just-typed bubble + its order maps carry over by identity, not a copy.
+  it("migrates the SAME root StreamState object into the Case slot", () => {
+    const cs = createChatStreams();
+    routeUserMessage(cs, ROOT_STREAM_KEY, "hi");
+    const rootStream = getStream(cs, ROOT_STREAM_KEY);
+    routePipelineState(cs, runningPipeline("p1", "fetch_dem"), CASE_A);
+    expect(getStream(cs, CASE_A)).toBe(rootStream);
+  });
+
+  // An already-Case-owned turn (targetKey !== ROOT) never re-adopts even when a
+  // streaming envelope is stamped with a DIFFERENT case_id (preserves the
+  // ROOT-sentinel guard — same invariant as the routeCaseOpen test above).
+  it("does NOT re-adopt a Case-owned turn on a differently-stamped streaming card", () => {
+    const cs = createChatStreams();
+    routeCaseOpen(cs, caseOpen(CASE_A));
+    routeUserMessage(cs, CASE_A, "prompt in A");
+    expect(cs.targetKey).toBe(CASE_A);
+    // A card stamped with CASE_B routes by owningKey to CASE_B's stream but
+    // must NOT move targetKey (the turn is A-owned).
+    routePipelineState(cs, runningPipeline("pB", "fetch_dem"), CASE_B);
+    expect(cs.targetKey).toBe(CASE_A);
+    expect(getStream(cs, CASE_B).pipeline.live?.pipeline_id).toBe("pB");
+  });
 });
 
 // --- View-model integrity -------------------------------------------------- //

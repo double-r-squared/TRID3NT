@@ -280,6 +280,13 @@ export function resolveCardIo(
   step: PipelineStepSummary,
   io: ToolIoPayload | null | undefined,
 ): ToolIoPayload | null {
+  // FIX 3 (NATE 2026-06-26) — a compute-role card (the sim / solve dispatch
+  // twin) never receives a real tool-io envelope, so fabricating the synthetic
+  // RUNNING_IO_PLACEHOLDER below would render an empty "Running..." IO chevron
+  // the solve card should not have. Pass a REAL io through verbatim (in case one
+  // ever lands) but NEVER synthesize a placeholder for a compute step -> null
+  // -> no chevron. Ordinary tool-role cards keep the placeholder behavior.
+  if (step.role === "compute") return io ?? null;
   if (step.state !== "running") return io ?? null;
   if (io) {
     if (io.function_response && io.function_response.length > 0) return io;
@@ -1292,11 +1299,57 @@ function owningKey(cs: ChatStreams, caseId?: string | null): string {
     : cs.targetKey;
 }
 
+/**
+ * FIX 1 (NATE 2026-06-26) — self-heal ROOT -> auto-created-Case adoption so
+ * live tool/pipeline cards never strand in a non-visible stream until reload.
+ *
+ * Root cause: for a ROOT-originated turn the agent auto-creates a Case and
+ * stamps every pipeline-state / tool card with the NEW case_id, but the
+ * visible stream is still ROOT (activeCaseId === null) and ``case-open`` may
+ * arrive AFTER the first cards. ``owningKey`` then routes those cards by the
+ * envelope's (NEW) case_id while the user is looking at the ROOT stream, so
+ * they render nothing until a reopen replays them.
+ *
+ * Fix: the FIRST streaming envelope that carries a non-empty case_id while the
+ * turn is still ROOT-owned MIGRATES the live root StreamState into that Case's
+ * slot — the SAME object the just-typed user bubble already populated (so the
+ * bubble + arrivalSeq + messageOrder/stepOrder map identities survive intact)
+ * — exactly like routeCaseOpen's adoption (~1679-1683), then clears the root
+ * buffer. Guarded on the ROOT sentinel so an already-Case-owned turn never
+ * re-adopts (preserves Chat.perCaseStreams.test.tsx:396). A later
+ * routeCaseOpen replay is a no-op on the adopted stream: its isPlaceholder
+ * guard sees a non-empty stream and leaves it intact (no double-append).
+ *
+ * Defensive non-clobber: if the Case slot already holds REAL content (not an
+ * empty placeholder), we still re-point targetKey but do NOT overwrite that
+ * stream — mirrors routeCaseOpen's discipline of never clobbering live content.
+ */
+function adoptRootInto(cs: ChatStreams, caseId?: string | null): void {
+  if (cs.targetKey !== ROOT_STREAM_KEY) return;
+  if (typeof caseId !== "string" || caseId.length === 0) return;
+  const root = getStream(cs, ROOT_STREAM_KEY);
+  const existing = cs.streams.get(caseId);
+  const existingIsPlaceholder =
+    existing !== undefined &&
+    existing.messages.length === 0 &&
+    existing.pipeline.live === null &&
+    existing.pipeline.history.length === 0;
+  if (existing === undefined || existingIsPlaceholder) {
+    // Migrate the SAME root StreamState object into the Case slot so the live
+    // user bubble + order maps the root user-message already populated carry
+    // over verbatim. Then re-seed root as a clean empty stream.
+    cs.streams.set(caseId, root);
+  }
+  cs.targetKey = caseId;
+  clearRootStream(cs);
+}
+
 export function routeAgentChunk(
   cs: ChatStreams,
   p: AgentMessageChunkPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   recordMessageSeqIn(s, p.message_id);
   s.messages = appendDelta(s.messages, p);
@@ -1307,6 +1360,7 @@ export function routePipelineState(
   p: PipelineStatePayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   recordPipelineStepSeqsIn(s, p);
   s.pipeline = pipelineReducer(s.pipeline, {
@@ -1324,6 +1378,7 @@ export function routeSolveProgress(
   p: SolveProgressPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   const next = new Map(s.solveProgress);
   next.set(p.run_id, p);
@@ -1339,6 +1394,7 @@ export function routeToolIo(
   p: ToolIoPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   const next = new Map(s.toolIo);
   next.set(p.step_id, p);
@@ -1350,6 +1406,7 @@ export function routeSessionState(
   p: SessionStatePayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "session-state",
@@ -1394,6 +1451,7 @@ export function routeError(
   p: ErrorPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   s.lastError = `${p.error_code}: ${p.message}`;
   // job-0166 Part 1 — force the most-recent running step to failed so the
@@ -1417,6 +1475,7 @@ export function routeChartEmission(
   p: ChartPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   // De-dupe on chart_id so hub-delivered + direct arrivals don't double-stack.
   if (s.charts.some((c) => c.chart_id === p.chart_id)) return;
@@ -1428,6 +1487,7 @@ export function routeCodeExecRequest(
   p: CodeExecRequestPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   if (s.sandboxRequests.some((r) => r.code_exec_id === p.code_exec_id)) return;
   if (!s.sandboxSeqs.has(p.code_exec_id)) {
@@ -1483,6 +1543,7 @@ export function routeCredentialRequest(
   p: CredentialRequestPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   if (s.credentialRequests.some((r) => r.request_id === p.request_id)) return;
   if (!s.credentialSeqs.has(p.request_id)) {
@@ -1523,6 +1584,7 @@ export function routePayloadWarning(
   p: PayloadWarningEnvelopePayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   if (s.payloadWarnings.some((w) => w.warning_id === p.warning_id)) return;
   if (!s.payloadSeqs.has(p.warning_id)) {
@@ -1563,6 +1625,7 @@ export function routeRegionChoice(
   p: RegionChoiceRequestPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   if (s.regionChoices.some((r) => r.request_id === p.request_id)) return;
   if (!s.regionSeqs.has(p.request_id)) {
@@ -1605,6 +1668,7 @@ export function routeSpatialInput(
   p: SpatialInputRequestPayload,
   caseId?: string | null,
 ): void {
+  adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
   if (s.spatialInputs.some((r) => r.request_id === p.request_id)) return;
   if (!s.spatialSeqs.has(p.request_id)) {
