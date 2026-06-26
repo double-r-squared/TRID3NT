@@ -1,5 +1,7 @@
 # Live-feedback tracker (NATE driving, 2026-06-24 -> ) - single audit log
 
+> DEPLOY 2026-06-26: web pushed origin/main 766157f (Vercel auto-deploy, all web fixes). Agent deployed via SSM bundle (sha256-verified swap over /opt/grace2, grace2-agent restarted, 140 tools, service active; box then stopped for clean baseline). server.py + GOES + Sentinel-2 fixes live on next wake. NOTE: post-restart health showed stale busy:true at 0 connections - a persisted marker a clean wake clears.
+
 Status of every item from the live-testing feedback. DONE = committed + deployed (commit). QUEUED = not started/landed. Source detail: live-feedback-2026-06-25.md + live-feedback-2026-06-26-desktop-nova.md + tools-backlog/.
 
 ## DONE - deployed
