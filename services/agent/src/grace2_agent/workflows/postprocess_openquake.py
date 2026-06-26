@@ -172,9 +172,14 @@ def rasterize_hazard_sites(
 ) -> tuple[Any, tuple[float, float, float, float], float]:
     """Place the OpenQuake site values onto a regular EPSG:4326 raster grid.
 
-    The PSHA site grid is regular (laid by ``region_grid_spacing``), so the
-    distinct sorted lon/lat values define the lattice. We snap each site onto its
-    nearest lattice cell and fill the value; un-hit cells stay NaN. Returns
+    NATE 2026-06-26: OpenQuake's ``region_grid_spacing`` is in KM, so the site
+    grid is NOT a clean lat/lon lattice - the lon of each row is offset slightly
+    by latitude (km->deg for lon depends on lat), giving ~3e-5 deg jitter within a
+    column. The old ``round(., 6)`` treated those jittered near-duplicates as
+    DISTINCT lons (e.g. 34 "columns" for a real ~5, a striped raster + area=0,
+    proven by a real local oq run). We now CLUSTER near-duplicate axis values
+    within a tolerance (derived from the clean lat spacing) so the true lattice is
+    recovered, then snap each site to its nearest clustered node. Returns
     ``(grid, (min_lon,min_lat,max_lon,max_lat), cell_deg)``. ``grid`` is row 0 =
     NORTH (north-up, ready for ``from_origin(west, north, ...)``).
     """
@@ -185,21 +190,44 @@ def rasterize_hazard_sites(
             "OQ_DEPENDENCY_MISSING", message=f"numpy unavailable: {exc}"
         ) from exc
 
-    lons = sorted({round(r[0], 6) for r in rows})
-    lats = sorted({round(r[1], 6) for r in rows})
-    if len(lons) < 1 or len(lats) < 1:
+    if not rows:
         raise PostprocessOpenQuakeError(
             "OQ_HAZARD_EMPTY", message="no distinct site coordinates"
         )
 
-    # Cell size from the median spacing of the lattice axes (robust to a single
-    # row/col). Default to a small epsilon so a 1x1 grid still rasterizes.
     def _median_step(vals: list[float]) -> float:
         if len(vals) < 2:
             return 0.05
         steps = [b - a for a, b in zip(vals, vals[1:]) if b > a]
         steps.sort()
         return steps[len(steps) // 2] if steps else 0.05
+
+    # Cluster sorted values: merge any value within ``tol`` of the running
+    # cluster into it, returning each cluster's centroid (the recovered lattice
+    # node). Collapses the per-row km-grid lon jitter into one node per column.
+    def _cluster(vals: list[float], tol: float) -> list[float]:
+        if not vals:
+            return []
+        clusters: list[list[float]] = [[vals[0]]]
+        for v in vals[1:]:
+            if v - clusters[-1][-1] <= tol:
+                clusters[-1].append(v)
+            else:
+                clusters.append([v])
+        return [sum(c) / len(c) for c in clusters]
+
+    # Derive a reference cell size from the LAT axis (km-grid lats are regular -
+    # only the lon jitters), then cluster BOTH axes with a tolerance well below
+    # the real spacing but well above the jitter.
+    lat_raw = sorted({round(r[1], 6) for r in rows})
+    cell_ref = _median_step(lat_raw)  # ~ the km grid spacing in degrees
+    tol = max(cell_ref * 0.3, 1e-4)
+    lons = _cluster(sorted(r[0] for r in rows), tol)
+    lats = _cluster(sorted(r[1] for r in rows), tol)
+    if len(lons) < 1 or len(lats) < 1:
+        raise PostprocessOpenQuakeError(
+            "OQ_HAZARD_EMPTY", message="no distinct site coordinates"
+        )
 
     step_lon = _median_step(lons)
     step_lat = _median_step(lats)

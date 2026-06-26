@@ -131,16 +131,26 @@ def render_source_model_xml(
     distribution gives a simple vertical strike-slip demo geometry.
     """
     min_lon, min_lat, max_lon, max_lat = bbox
-    # NRML gml:posList is "lat lon lat lon ..." going around the rectangle.
+    # NATE 2026-06-26: OQ's area-source gml:posList parser (sourceconverter
+    # split_coords_2d) reads pairs as LON LAT, not lat lon. The old "lat lon"
+    # order made the engine read a longitude as a latitude ("latitude -122.45 <
+    # -90") - proven by a real local oq run. Emit LON LAT going around the bbox.
     pos_list = (
-        f"{min_lat} {min_lon} "
-        f"{min_lat} {max_lon} "
-        f"{max_lat} {max_lon} "
-        f"{max_lat} {min_lon}"
+        f"{min_lon} {min_lat} "
+        f"{max_lon} {min_lat} "
+        f"{max_lon} {max_lat} "
+        f"{min_lon} {max_lat}"
     )
+    # NATE 2026-06-26: the area-source body (areaSource directly under
+    # sourceModel + truncGutenbergRichterMFD) is the NRML 0.4 schema. The engine
+    # (oq 3.20) REJECTS this content under an xmlns nrml/0.5 declaration
+    # ("InvalidFile: ... should be xmlns=.../nrml/0.4") - proven by a real local
+    # `oq engine --run`. NRML 0.5 wraps sources in <sourceGroup>; since the body
+    # is 0.4-style, declare 0.4 (the unit tests string-match the XML so never
+    # caught this; only a real engine run does).
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <nrml xmlns:gml="http://www.opengis.net/gml"
-      xmlns="http://openquake.org/xmlns/nrml/0.5">
+      xmlns="http://openquake.org/xmlns/nrml/0.4">
     <sourceModel name="GRACE-2 demo area source">
         <areaSource id="{source_id}"
                     name="AOI area source"
@@ -265,7 +275,12 @@ def render_job_ini(
     ladder, which is injected when enabled).
     """
     min_lon, min_lat, max_lon, max_lat = bbox
-    grid_deg = round(_km_to_deg(site_grid_spacing_km), 6)
+    # NATE 2026-06-26: OpenQuake's [geometry] region_grid_spacing is in KM, NOT
+    # degrees. The old km->deg conversion wrote ~0.18 (deg for 20 km) which OQ
+    # then read as 0.18 KM -> a ~100x-too-fine site grid (12477 sites for a 0.2deg
+    # AOI vs the intended ~4) - proven by a real local oq run (absurdly slow +
+    # costly on a real AOI). Pass the km value directly.
+    grid_spacing_km = float(site_grid_spacing_km)
     # region = lon lat going round the rectangle (OpenQuake's region order is
     # lon lat, comma-separated vertices).
     region = (
@@ -299,7 +314,7 @@ random_seed = 23
 
 [geometry]
 region = {region}
-region_grid_spacing = {grid_deg}
+region_grid_spacing = {_num(grid_spacing_km)}
 
 [logic_tree]
 number_of_logic_tree_samples = 0

@@ -63,12 +63,16 @@ def test_render_job_ini_classical_psha_structure():
     assert "gsim_logic_tree_file = gmpe_logic_tree.xml" in text
     assert "investigation_time = 50.0" in text
     assert "maximum_distance = 300.0" in text
-    # Grid spacing converted km -> degrees (5 km ~= 0.0449 deg).
-    assert "region_grid_spacing = 0.0449" in text
+    # NATE 2026-06-26: region_grid_spacing is in KM (OpenQuake's unit), passed
+    # through directly - engine-verified by a real oq run. The old km->deg
+    # conversion made a ~100x-too-fine grid (OQ read the deg value AS km).
+    assert "region_grid_spacing = 5" in text
 
 
-def test_render_job_ini_grid_spacing_km_to_degrees():
-    # 11.132 km -> exactly ~0.1 deg (111.32 km/deg).
+def test_render_job_ini_grid_spacing_is_km():
+    # NATE 2026-06-26: OpenQuake region_grid_spacing is in KM and is passed
+    # through directly (engine-verified). 11.132 km renders as "11.132", NOT a
+    # km->deg conversion (the old bug rendered 0.1 deg, which OQ read as 0.1 km).
     text = render_job_ini(
         _BBOX,
         imt="SA(1.0)",
@@ -77,7 +81,7 @@ def test_render_job_ini_grid_spacing_km_to_degrees():
         site_grid_spacing_km=11.132,
         max_distance_km=200.0,
     )
-    assert "region_grid_spacing = 0.1" in text
+    assert "region_grid_spacing = 11.132" in text
     assert '"SA(1.0)"' in text
     assert "poes = 0.02" in text
 
@@ -99,8 +103,12 @@ def test_render_source_model_xml_area_source():
     assert 'minMag="5.0"' in xml
     assert 'maxMag="7.5"' in xml
     assert "truncGutenbergRichterMFD" in xml
-    # The bbox corners appear in the gml:posList (lat lon order).
-    assert "37.5 -122.5" in xml
+    # NATE 2026-06-26 (engine-verified by a real oq run): NRML 0.4 namespace (OQ
+    # rejects this 0.4-style area-source body under an 0.5 declaration) + the
+    # gml:posList in LON LAT order (OQ's area-source parser reads lon lat; the old
+    # lat lon order made it read a longitude as a latitude -> "latitude < -90").
+    assert 'xmlns="http://openquake.org/xmlns/nrml/0.4"' in xml
+    assert "-122.5 37.5" in xml
 
 
 def test_render_logic_trees():
