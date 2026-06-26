@@ -2656,5 +2656,19 @@
     "description": "Read-only design Agent: surgical plan to extend the #154 user-resolution gate to the heavy raster FETCHERS (NATE 'Go' on low-output-resolution; option b = user lever, not silent cost bump). Verdict: gate fetch_dem [1,3,10,30] + fetch_topobathy [3,10,30] only (NAIP/NDVI/GOES source-capped, no finer knob -> leave); reuse GranularitySuggestion + ResolutionPickerCard (no new UI), widen 2 Literals, add FETCH_CONFIRM_TOOLS excluded from the autostop solver-marker, finest-allowed-by-area cap (MAX_FETCH_PX). Separately CONFIRMED the SFINCS/SWMM solver defaults are NOT needlessly coarse + have super-linear cost -> no silent floor raise.",
     "model": "opus",
     "subagent_tokens": 137223
+  },
+  {
+    "job_id": "double-refresh-rootcause-wf",
+    "sprint": 17,
+    "description": "Read-only diagnostic (3 independent traces) of the recurring box-off double-refresh (case loads forever, 2nd reload shows layers). HIGH-confidence converged root cause: the cold-load case-VIEW effect (App.tsx ~1431-1484) latches its one-shot guard on cancel and is torn down by wsStatus connecting<->reconnecting flapping (box never connects asleep), so the in-flight cold fetch is cancelled + never re-fired -> layers never paint -> spinner (gated on wsStatus connecting) spins forever; 2nd reload wins only via warm-auth beating the 10s cancel race. My 371caa3 case-restore EXPOSED it (arms the cold-load on every reload-into-case).",
+    "model": "opus",
+    "subagent_tokens": 456669
+  },
+  {
+    "job_id": "case-state-rootcause-wf",
+    "sprint": 17,
+    "description": "Read-only diagnostic (3 traces) of case-delete-persists + exit-shows-only-one + mobile legend bbox-snap. HIGH-confidence: (delete) box-off delete is WS-only (queued, never reaches server) + the stale-yet-authoritative cold /case-list resurrects it + in-memory tombstone cleared by that list; needs a serverless delete Lambda (deferred) + durable client tombstone. (exit-one) 371caa3 seeds activeCaseId -> cold case-VIEW upserts the single case -> trips the cold case-LIST 'cases.length>0' guard -> full list never fetched = MY regression. (legend) mobile sheet-top-dock band branch fires before the AOI-snap branch -> center-band instead of bbox-edge.",
+    "model": "opus",
+    "subagent_tokens": 254213
   }
 ]
