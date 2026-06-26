@@ -253,6 +253,49 @@ describe("ResolutionPickerCard - decisions", () => {
     });
   });
 
+  // NATE 2026-06-26: the #154 gate now also describes a FETCHER resolution
+  // choice (dem / topobathy fetch, resolution_param "resolution_m"). The card
+  // is value-agnostic: it renders whatever ladder + key the contract carries
+  // and writes the chosen rung back under that exact key. No component change.
+  it("renders a FETCHER (dem) ladder and overrides under resolution_m", () => {
+    const g = granularity({
+      engine: "dem",
+      resolution_param: "resolution_m",
+      suggested_resolution_m: 10,
+      resolution_choices: [1, 3, 10, 30],
+      estimated_active_cells: 90000,
+      estimated_solve_seconds: 0,
+      vcpus: 1,
+      compute_class: "fetch",
+      coarsened: false,
+      spot_label: null,
+    });
+    const onDecide = vi.fn();
+    render(
+      <ResolutionPickerCard
+        warning={warning(g)}
+        granularity={g}
+        onDecide={onDecide}
+      />,
+    );
+    // The chip row renders the full fetch ladder, suggested rung defaulted.
+    expect(screen.getByTestId("resolution-picker-chip-1")).toBeInTheDocument();
+    expect(screen.getByTestId("resolution-picker-chip-3")).toBeInTheDocument();
+    expect(screen.getByTestId("resolution-picker-chip-10")).toBeInTheDocument();
+    expect(screen.getByTestId("resolution-picker-chip-30")).toBeInTheDocument();
+    expect(screen.getByTestId("resolution-picker-chip-10")).toHaveAttribute(
+      "data-selected",
+      "true",
+    );
+    // Override to the finer 1 m rung -> narrow_scope under the fetch key.
+    fireEvent.click(screen.getByTestId("resolution-picker-chip-1"));
+    fireEvent.click(screen.getByTestId("resolution-picker-confirm"));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onDecide).toHaveBeenCalledWith("narrow_scope", {
+      resolution_m: 1,
+    });
+  });
+
   it("Cancel -> cancel with null revised_args", () => {
     const g = granularity();
     const onDecide = vi.fn();

@@ -407,6 +407,26 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
 }
 
 
+# NATE 2026-06-26: the #154 granularity gate widened to the two HEAVY raster
+# FETCHERS (DEM + topobathy) so the user controls fetch resolution before a big
+# download/merge — same confirm machinery, same GranularitySuggestion card. Kept
+# a SEPARATE set from SOLVER_CONFIRM_TOOLS on purpose: the autostop solver-marker
+# (_is_solver_dispatch -> _solve_started) keys off SOLVER_CONFIRM_TOOLS only, and
+# a fetch is NOT a solve — marking one would skew the in-flight solve count + the
+# auto-stop coupling. The gate-trigger below fires for the UNION; the solver-only
+# confirmed/enable_autoscale injection stays guarded to SOLVER_CONFIRM_TOOLS.
+FETCH_CONFIRM_TOOLS: set[str] = {
+    "fetch_dem",
+    "fetch_topobathy",
+}
+
+#: NATE 2026-06-26: hard px-grid ceiling for the fetch-resolution gate. A fine
+#: rung on a huge AOI would materialize an enormous raster; finest_allowed_m is
+#: floored at max(ladder_floor, max(width_m, height_m) / MAX_FETCH_PX) so the
+#: finest selectable rung keeps the grid bounded to ~8192 px on the long axis.
+MAX_FETCH_PX: int = 8192
+
+
 #: job duplicate-flood-layer (SAFETY NET): tokens that mark a FLOOD / DEPTH COG
 #: (vs terrain / land-cover / plume / generic rasters). Used at the publish_layer
 #: wrap-site so a re-publish of a flood-depth COG that arrives with an EMPTY
@@ -5976,6 +5996,163 @@ async def _build_swmm_granularity_envelope(params: dict) -> tuple[Any, Any, str]
     return envelope, auto, dem_path
 
 
+# NATE 2026-06-26: per-fetcher resolution ladders for the fetch-resolution gate.
+# Finer = smaller metres. fetch_dem can go to 1 m (3DEP); fetch_topobathy floors
+# at 3 m (CUDEM tiles). Both default to 10 m (the tools' resolution_m default).
+_FETCH_RES_LADDERS: dict[str, list[float]] = {
+    "fetch_dem": [1.0, 3.0, 10.0, 30.0],
+    "fetch_topobathy": [3.0, 10.0, 30.0],
+}
+_FETCH_DEFAULT_RES_M: float = 10.0
+
+
+def _clamp_fetch_resolution(chosen_m: float, finest_allowed_m: float) -> float:
+    """Floor a user-chosen fetch resolution UP to the finest allowed cell size.
+
+    Finer = SMALLER metres, so the px-grid bound is a LOWER bound on the rung: a
+    request finer than ``finest_allowed_m`` (e.g. 1 m on a continent-scale AOI)
+    is clamped UP to ``finest_allowed_m`` so the materialized grid stays under
+    ``MAX_FETCH_PX`` on the long axis. A coarser request is honoured exactly.
+    """
+    return max(float(chosen_m), float(finest_allowed_m))
+
+
+async def _build_fetch_resolution_envelope(
+    tool_name: str, params: dict
+) -> tuple[Any, Any]:
+    """Build the fetch-resolution confirm card for ``fetch_dem`` / ``fetch_topobathy``.
+
+    NATE 2026-06-26: the #154 granularity gate widened to the two heavy raster
+    fetchers so the user controls the download/merge resolution before the big
+    fetch (memory: feedback_user_controlled_granularity). Modeled on
+    :func:`_build_swmm_granularity_envelope` but PURE arithmetic (no DEM read /
+    network): coerce the bbox, compute the bbox extent in metres, build the
+    per-fetcher ladder, and floor the finest selectable rung so a fine rung on a
+    huge AOI stays bounded to ``MAX_FETCH_PX`` px on the long axis.
+
+    Returns ``(envelope, fetch_suggestion)`` where ``fetch_suggestion`` is a
+    small namespace the decision tail reads (``coarse_default_m`` for proceed,
+    ``finest_allowed_m`` for the narrow_scope clamp, ``cap``). Raises on a
+    missing/invalid bbox so the caller's try/except fails OPEN (the fetch runs
+    with its own resolution_m default rather than being blocked by a gate error).
+    """
+    from grace2_contracts.payload_warning import (
+        GranularitySuggestion,
+        PayloadWarningEnvelopePayload,
+    )
+    from types import SimpleNamespace
+
+    from .tool_arg_normalizer import coerce_bbox_value
+    from .tools._pc_stac import bbox_pixel_dims
+
+    coerced = coerce_bbox_value(params.get("bbox"))
+    if coerced is None or len(coerced) != 4:
+        # No usable bbox: let the fetcher raise its own typed params error.
+        raise ValueError(f"{tool_name} gate: bbox missing/invalid")
+    bbox = (float(coerced[0]), float(coerced[1]),
+            float(coerced[2]), float(coerced[3]))
+
+    ladder = _FETCH_RES_LADDERS.get(tool_name, [3.0, 10.0, 30.0])
+    ladder_floor = min(ladder)
+    coarse_default = _FETCH_DEFAULT_RES_M
+
+    # The user's requested rung (the base the readout describes). Defaults to the
+    # fetcher's resolution_m default so an absent value matches the fetch.
+    try:
+        requested = float(params.get("resolution_m", coarse_default))
+    except (TypeError, ValueError):
+        requested = coarse_default
+
+    # bbox extent in metres (approx, mid-latitude) -> the finest selectable rung.
+    # A fine rung on a huge AOI would materialize an enormous raster; floor the
+    # finest allowed cell size at the long-axis extent / MAX_FETCH_PX so the grid
+    # stays bounded. Coarser than the ladder floor never gets finer than allowed.
+    min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lat = 0.5 * (min_lat + max_lat)
+    m_per_deg_lon = 111_320.0 * max(0.05, math.cos(math.radians(mid_lat)))
+    width_m = max(0.0, max_lon - min_lon) * m_per_deg_lon
+    height_m = max(0.0, max_lat - min_lat) * 111_320.0
+    long_axis_m = max(width_m, height_m)
+    finest_allowed_m = max(ladder_floor, long_axis_m / float(MAX_FETCH_PX))
+
+    # The default-selected rung: the coarse default when it clears the bound,
+    # else the finest allowed (so the card never pre-selects an unselectable rung
+    # on a continent-scale AOI where even the ladder floor would blow the grid).
+    suggested = (
+        coarse_default
+        if coarse_default >= finest_allowed_m - 1e-9
+        else finest_allowed_m
+    )
+
+    # The selectable ladder = rungs at/above finest_allowed_m (a fine rung on a
+    # huge AOI is dropped), plus the user's requested rung (if it clears the
+    # bound) AND the suggested rung (always selectable), ascending. Always keep
+    # at least one rung (the suggested fallback) so the card is never empty.
+    candidate = sorted(
+        {r for r in ladder if r >= finest_allowed_m - 1e-9}
+        | ({requested} if requested >= finest_allowed_m - 1e-9 else set())
+        | {suggested}
+    )
+    resolution_choices = [float(r) for r in candidate if r > 0]
+
+    # px-grid estimate at the SUGGESTED rung (pure arithmetic, no read). px_max
+    # raised to MAX_FETCH_PX so a large-AOI estimate is not clamped at the default
+    # 4096; estimated_active_cells = width_px * height_px.
+    width_px, height_px = bbox_pixel_dims(
+        bbox, suggested, px_min=1, px_max=MAX_FETCH_PX
+    )
+    px_estimate = int(width_px) * int(height_px)
+
+    finest_bounded = finest_allowed_m > ladder_floor + 1e-9
+    reason = (
+        f"{tool_name} at ~{suggested:.0f} m over a "
+        f"{long_axis_m / 1000.0:.1f} km AOI (~{px_estimate} px grid). "
+        + (
+            f"A finer rung is bounded to {finest_allowed_m:.0f} m to keep the "
+            f"grid under {MAX_FETCH_PX} px. "
+            if finest_bounded
+            else ""
+        )
+        + "Pick a finer or coarser resolution, or confirm."
+    )[:512]
+
+    engine = "dem" if tool_name == "fetch_dem" else "topobathy"
+    granularity = GranularitySuggestion(
+        engine=engine,
+        resolution_param="resolution_m",
+        suggested_resolution_m=float(suggested),
+        resolution_choices=resolution_choices,
+        estimated_active_cells=int(px_estimate),
+        estimated_solve_seconds=0.0,
+        vcpus=1,
+        compute_class="fetch",
+        cell_cap=int(MAX_FETCH_PX) ** 2,
+        coarsened=False,
+        reason=reason,
+        spot_label=None,
+    )
+
+    envelope = PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name=tool_name,
+        tool_args={
+            "bbox": list(bbox),
+            "resolution_m": float(suggested),
+        },
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation=reason,
+        options=["proceed", "cancel", "narrow_scope"],
+        granularity=granularity,
+    )
+    fetch_suggestion = SimpleNamespace(
+        coarse_default_m=float(suggested),
+        finest_allowed_m=float(finest_allowed_m),
+        cap=int(MAX_FETCH_PX) ** 2,
+    )
+    return envelope, fetch_suggestion
+
+
 async def _build_flood_run_settings_envelope(
     tool_name: str, params: dict
 ) -> tuple[Any, Any, float | None, float]:
@@ -6222,6 +6399,11 @@ async def _gate_on_solver_confirm(
     # proceed/cancel).
     swmm_autoscale: Any = None
     swmm_dem_path: str | None = None
+    # NATE 2026-06-26: the fetch-resolution gate's suggestion (coarse_default_m /
+    # finest_allowed_m / cap) so the decision tail can pin the suggested rung on
+    # proceed and floor-clamp a finer narrow_scope rung. None for every non-fetch
+    # gated tool (mirrors swmm_autoscale).
+    fetch_suggestion: Any = None
     # #154 cadence lever: the resolved flood animation interval (minutes) shown
     # on the card, pinned into the approved params on ``proceed`` so the run uses
     # EXACTLY what the user saw. None for the pluvial path (legacy hourly) and
@@ -6376,6 +6558,16 @@ async def _gate_on_solver_confirm(
                 swmm_autoscale,
                 swmm_dem_path,
             ) = await _build_swmm_granularity_envelope(params)
+        elif tool_name in FETCH_CONFIRM_TOOLS:
+            # NATE 2026-06-26: fetch-resolution gate for the heavy raster fetchers
+            # (fetch_dem / fetch_topobathy). The card carries a GranularitySuggestion
+            # (resolution_param="resolution_m") the user can override; the build is
+            # PURE arithmetic (no DEM read) so nothing is offloaded. fetch_suggestion
+            # carries coarse_default_m / finest_allowed_m / cap for the decision tail.
+            (
+                envelope,
+                fetch_suggestion,
+            ) = await _build_fetch_resolution_envelope(tool_name, params)
         else:  # unknown gated tool: fail open to the tool's own validation
             return True, params
     except Exception:  # noqa: BLE001 — never mask param errors with a gate
@@ -6447,6 +6639,36 @@ async def _gate_on_solver_confirm(
         return False, params
 
     if decision_payload.decision == "narrow_scope":
+        # NATE 2026-06-26: fetch-resolution override. Honour the chosen
+        # resolution_m, floored UP to finest_allowed_m so a finer rung on a huge
+        # AOI stays bounded (finer = smaller metres). No confirmed/enable_autoscale
+        # injection (fetchers do not read them). Returned BEFORE the SWMM
+        # fail-closed check below so a fetch never falls through to it.
+        if fetch_suggestion is not None:
+            revised = decision_payload.revised_args or {}
+            try:
+                chosen = float(
+                    revised.get("resolution_m", fetch_suggestion.coarse_default_m)
+                )
+            except (TypeError, ValueError):
+                chosen = float(fetch_suggestion.coarse_default_m)
+            clamped = _clamp_fetch_resolution(
+                chosen, fetch_suggestion.finest_allowed_m
+            )
+            approved = dict(params)
+            approved["resolution_m"] = int(clamped)
+            logger.info(
+                "fetch-resolution narrow_scope session=%s warning_id=%s "
+                "tool=%s chosen=%.2f finest_allowed=%.2f applied=%d",
+                state.session_id,
+                warning_id,
+                tool_name,
+                chosen,
+                fetch_suggestion.finest_allowed_m,
+                approved["resolution_m"],
+            )
+            return True, approved
+
         # Combined run-settings override (sprint-16): the flood gate advertises a
         # GranularitySuggestion (grid_resolution_m) AND a TimeScaleSuggestion
         # (output_interval_min / duration_hr) — the user can override EITHER (or
@@ -6611,6 +6833,15 @@ async def _gate_on_solver_confirm(
         approved["enable_autoscale"] = False
         if clamped:
             approved["_granularity_clamped"] = True
+        return True, approved
+
+    # NATE 2026-06-26: fetch proceed — pin the SUGGESTED resolution_m the card
+    # showed so the fetch matches what the user approved. Do NOT inject confirmed
+    # / enable_autoscale (fetchers do not read them). Returned BEFORE the solver
+    # proceed pinning below so a fetch never sets confirmed.
+    if fetch_suggestion is not None:
+        approved = dict(params)
+        approved["resolution_m"] = int(fetch_suggestion.coarse_default_m)
         return True, approved
 
     # proceed: pin the SUGGESTED resolution for SWMM (so the build matches the
@@ -8313,8 +8544,17 @@ async def _invoke_tool_via_emitter(
     # — the gate is server-owned; only an explicit user "proceed" injects it.
     # job-0326: SKIPPED on a reuse short-circuit (``_ReuseEntry``) — there is no
     # solver to confirm; we are handing back an already-produced layer.
-    if tool_name in SOLVER_CONFIRM_TOOLS and not isinstance(entry, _ReuseEntry):
-        params.pop("confirmed", None)
+    # NATE 2026-06-26: the gate now also fires for the heavy raster FETCHERS
+    # (FETCH_CONFIRM_TOOLS) — the SAME gate, building a fetch-resolution card.
+    # confirmed is stripped only for the solver branch (fetchers do not read it);
+    # _gate_on_solver_confirm guards the confirmed/enable_autoscale injection to
+    # SOLVER_CONFIRM_TOOLS, so a fetch's approved params carry resolution_m only.
+    if (
+        tool_name in (SOLVER_CONFIRM_TOOLS | FETCH_CONFIRM_TOOLS)
+        and not isinstance(entry, _ReuseEntry)
+    ):
+        if tool_name in SOLVER_CONFIRM_TOOLS:
+            params.pop("confirmed", None)
         should_run, params = await _gate_on_solver_confirm(
             websocket, state, tool_name, params
         )

@@ -939,8 +939,12 @@ export type PayloadWarningOption = "proceed" | "cancel" | "narrow_scope";
 // Invariant 9 (no cost theater): cells / seconds / vCPUs / instance label are
 // capacity + capability descriptors, NOT dollar figures. No dollar field.
 export interface GranularitySuggestion {
-  engine: "swmm" | "sfincs";
-  resolution_param: "target_resolution_m" | "grid_resolution_m";
+  // NATE 2026-06-26: widened to mirror the Python contract so the #154 gate can
+  // also describe a FETCHER resolution choice (dem / topobathy fetch, key
+  // "resolution_m"), not just the SWMM/SFINCS solver mesh. compute_class stays
+  // a free string -> a fetch gate sets compute_class="fetch" (no union change).
+  engine: "swmm" | "sfincs" | "dem" | "topobathy";
+  resolution_param: "target_resolution_m" | "grid_resolution_m" | "resolution_m";
   suggested_resolution_m: number;
   resolution_choices: number[];
   estimated_active_cells: number;

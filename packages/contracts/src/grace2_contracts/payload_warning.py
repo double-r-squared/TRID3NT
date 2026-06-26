@@ -106,11 +106,15 @@ class GranularitySuggestion(GraceModel):
 
     Fields:
 
-    - ``engine`` — the solver this suggestion is for (``"swmm"`` / ``"sfincs"``).
-    - ``resolution_param`` — the solver-args field the user overrides:
-      ``"target_resolution_m"`` (SWMM overland cell size) or
-      ``"grid_resolution_m"`` (SFINCS grid). The client writes the chosen
-      rung back into ``revised_args`` under this exact key.
+    - ``engine`` — the run this suggestion is for. Solvers ``"swmm"`` /
+      ``"sfincs"`` OR a FETCHER resolution choice ``"dem"`` / ``"topobathy"``
+      (#154 gate widened, NATE 2026-06-26) — the same ladder UI describes a
+      DEM/topobathy fetch resolution, not only a solver mesh.
+    - ``resolution_param`` — the args field the user overrides:
+      ``"target_resolution_m"`` (SWMM overland cell size),
+      ``"grid_resolution_m"`` (SFINCS grid), or ``"resolution_m"`` (a
+      DEM/topobathy fetcher's cell size). The client writes the chosen rung
+      back into ``revised_args`` under this exact key.
     - ``suggested_resolution_m`` — the autoscaler's recommended cell size in
       metres (> 0). The default-selected rung.
     - ``resolution_choices`` — the ascending ladder of selectable cell sizes
@@ -121,7 +125,12 @@ class GranularitySuggestion(GraceModel):
       at the suggested resolution (>= 0). An inference, surfaced as "est ~70s".
     - ``vcpus`` — vCPU count of the chosen compute class (> 0).
     - ``compute_class`` — human/infra label for the compute tier
-      (e.g. a Batch Spot instance type "c7i.2xlarge").
+      (e.g. a Batch Spot instance type "c7i.2xlarge"). FREE str (not a
+      Literal), so a fetch gate sets ``compute_class="fetch"`` with no
+      contract change (NATE 2026-06-26). A fetch suggestion passes the
+      analogue values ``vcpus=1``, ``estimated_solve_seconds=0.0``,
+      ``coarsened=False``, ``spot_label=None`` — all accepted by the
+      existing bounds (no field made Optional, no Literal added here).
     - ``cell_cap`` — the element-cap the autoscaler honoured (> 0); the
       ceiling above which the suggestion coarsens.
     - ``coarsened`` — True when the suggested resolution is COARSER than the
@@ -138,8 +147,14 @@ class GranularitySuggestion(GraceModel):
     capacity + capability descriptors, NOT dollar figures. No dollar field.
     """
 
-    engine: Literal["swmm", "sfincs"]
-    resolution_param: Literal["target_resolution_m", "grid_resolution_m"]
+    # NATE 2026-06-26: widened engine + resolution_param so the #154 gate can
+    # also describe a FETCHER resolution choice (dem / topobathy fetch), not
+    # just the SWMM/SFINCS solver mesh. compute_class stays a free str, so a
+    # fetch gate sets compute_class="fetch" with no Literal change.
+    engine: Literal["swmm", "sfincs", "dem", "topobathy"]
+    resolution_param: Literal[
+        "target_resolution_m", "grid_resolution_m", "resolution_m"
+    ]
     suggested_resolution_m: float = Field(gt=0.0)
     resolution_choices: list[float] = Field(default_factory=list)
     estimated_active_cells: int = Field(ge=0)
