@@ -46,7 +46,7 @@ Status of every item from the live-testing feedback. DONE = committed + deployed
 - [x] true-color deletion no longer deletes both: _restamp mints unique ids for list-returning tools (9bfd409)
 - [x] 3D terrain softened (exaggeration 2.0->1.4) + linear resampling in 3D (kills ~9px pixelation) (f2f472a)
 - [x] Sentinel-2 guardrail 0.5->1.0 deg^2 + honest auto-coarsening (c6cbfb1)
-- [ ] DEFERRED (NATE decision): low output image resolution = autoscaler COMPUTE-BUDGET lever (raising scales cost superlinearly). Options: (a) raise default budget/ladder, (b) expose resolution as a per-fetch user gate like the solver gate, (c) leave. NOT a silent cap bump.
+- [x] low output image resolution -> option (b) DONE (d929430, deployed): user-resolution gate extended to fetch_dem [1,3,10,30]m + fetch_topobathy [3,10,30]m via the #154 ResolutionPickerCard (opt-in finer, finest-allowed-by-area cap; NAIP/NDVI/GOES source-capped left as-is; SFINCS/SWMM solver defaults confirmed not coarse + super-linear -> no floor raise).
 - [ ] building-footprint METADATA thinning: ID-only GeoJSON + fetch-on-click enrich (= #165 MVT data-island)
 
 ### Engine
