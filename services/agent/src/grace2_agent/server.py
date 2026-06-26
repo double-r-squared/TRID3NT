@@ -404,6 +404,17 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
     # the existing tool-payload-confirmation ``narrow_scope`` path. Same gate
     # machinery, no new WS envelope type.
     "run_swmm_urban_flood",
+    # NATE 2026-06-26: the OpenQuake classical-PSHA solver joins the confirm set
+    # (Invariant 9 — a consequential long Batch run must be user-confirmed). It
+    # dispatches an area-source PSHA over the whole bbox via run_solver
+    # ('openquake'), so it is a solve like SFINCS/SWMM/MODFLOW, not a fetch — it
+    # belongs in SOLVER_CONFIRM_TOOLS so the gate fires AND the autostop
+    # solver-marker (_is_solver_dispatch -> _solve_started, which keys off this
+    # same set) arms (box stays busy mid-solve). The gate emits a simple
+    # proceed/cancel card (no granularity picker): the area source spans the
+    # whole AOI, so no rupture/incident-area user input is needed for classical
+    # PSHA (that is scenario mode, which is not built).
+    "run_seismic_hazard_psha",
 }
 
 
@@ -6368,6 +6379,92 @@ def _clamp_swmm_resolution_to_cap(
     return chosen, False
 
 
+def _build_psha_confirm_envelope(params: dict) -> Any:
+    """NATE 2026-06-26: build the OpenQuake classical-PSHA solver-confirm card.
+
+    A simple proceed/cancel confirmation (no granularity/resolution picker): the
+    deck lays a single area source over the WHOLE bbox/AOI, so there is no
+    rupture/incident-area user input to gate (that is scenario mode, not built).
+    The card summarizes the run (approximate AOI area, IMT, PoE -> return period)
+    so the user confirms the consequential Batch solve (Invariant 9). Built inline
+    from the tool args (no composer extraction — the run args ARE the args).
+    """
+    import math
+
+    from grace2_contracts.payload_warning import PayloadWarningEnvelopePayload
+    from .tool_arg_normalizer import coerce_bbox_value
+
+    imt = str(params.get("imt", "PGA"))
+    try:
+        poe = float(params.get("poe", 0.10))
+    except (TypeError, ValueError):
+        poe = 0.10
+    try:
+        inv_time = float(params.get("investigation_time_years", 50.0))
+    except (TypeError, ValueError):
+        inv_time = 50.0
+
+    # Return period implied by the PoE over the investigation time:
+    # RP = -investigation_time / ln(1 - poe). 10%/50yr -> ~475 yr.
+    return_period_years: float | None = None
+    if 0.0 < poe < 1.0 and inv_time > 0.0:
+        try:
+            return_period_years = -inv_time / math.log(1.0 - poe)
+        except (ValueError, ZeroDivisionError):
+            return_period_years = None
+
+    # Approximate AOI area (km^2) from the bbox via a cosine-latitude correction
+    # (~111.32 km/deg). Best-effort: None when the bbox is missing/malformed.
+    bbox_area_km2: float | None = None
+    coerced = coerce_bbox_value(params.get("bbox"))
+    if coerced is not None and len(coerced) == 4:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in coerced)
+        mid_lat = (min_lat + max_lat) / 2.0
+        width_km = abs(max_lon - min_lon) * 111.32 * math.cos(math.radians(mid_lat))
+        height_km = abs(max_lat - min_lat) * 111.32
+        bbox_area_km2 = max(0.0, width_km * height_km)
+
+    area_phrase = (
+        f"~{bbox_area_km2:,.0f} km^2 AOI" if bbox_area_km2 is not None
+        else "the requested AOI"
+    )
+    rp_phrase = (
+        f" (~{return_period_years:,.0f}-year return period)"
+        if return_period_years is not None
+        else ""
+    )
+    recommendation = (
+        f"Run a classical probabilistic seismic-hazard (PSHA) calculation over "
+        f"{area_phrase}: intensity measure {imt} at a {poe:g} probability of "
+        f"exceedance in {inv_time:g} years{rp_phrase}. This dispatches the "
+        f"OpenQuake engine to AWS Batch (a cloud solve, typically several "
+        f"minutes). Confirm to start."
+    )[:512]
+
+    return PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name="run_seismic_hazard_psha",
+        tool_args={
+            "bbox": list(coerced) if coerced is not None else params.get("bbox"),
+            "imt": imt,
+            "poe": poe,
+            "investigation_time_years": inv_time,
+            "return_period_years": (
+                round(return_period_years) if return_period_years is not None
+                else None
+            ),
+            "aoi_area_km2": (
+                round(bbox_area_km2) if bbox_area_km2 is not None else None
+            ),
+            "gmpe": params.get("gmpe", "BooreAtkinson2008"),
+        },
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation=recommendation,
+        options=["proceed", "cancel"],
+    )
+
+
 async def _gate_on_solver_confirm(
     websocket: ServerConnection,
     state: SessionState,
@@ -6568,6 +6665,16 @@ async def _gate_on_solver_confirm(
                 envelope,
                 fetch_suggestion,
             ) = await _build_fetch_resolution_envelope(tool_name, params)
+        elif tool_name == "run_seismic_hazard_psha":
+            # NATE 2026-06-26: OpenQuake classical-PSHA solver-confirm card. A
+            # SIMPLE proceed/cancel confirm (no granularity/resolution picker):
+            # the deck builds an area source over the WHOLE bbox/AOI, so there is
+            # no rupture/incident-area user input to gate (that is scenario mode,
+            # which is not built). The card summarizes the PSHA (AOI area, IMT,
+            # PoE -> return period) so the user confirms the heavy Batch run. No
+            # composer extraction is needed (the run args are the tool args), so
+            # this is built inline rather than via a workflow helper.
+            envelope = _build_psha_confirm_envelope(params)
         else:  # unknown gated tool: fail open to the tool's own validation
             return True, params
     except Exception:  # noqa: BLE001 — never mask param errors with a gate

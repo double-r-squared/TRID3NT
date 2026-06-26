@@ -262,7 +262,14 @@ PHYSICS_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
         "width_of_mfd_bin": {
             "type": float,
             "range": (0.05, 0.5),
-            "default": 0.1,
+            # NATE 2026-06-26: was 0.1, but the deck (services/workers/openquake/
+            # job_ini.py render_job_ini signature + render_openquake_deck's
+            # build_spec.get fallback) defaults width_of_mfd_bin to 0.2. With
+            # advanced_physics=None the registry merges nothing so the deck uses
+            # 0.2; an explicit advanced_physics passthrough would inject the
+            # registry default. Reconciled to 0.2 (the engine-proven local-run
+            # value) so the registry-merged value and the deck default agree.
+            "default": 0.2,
             "deck_target": "job.ini:width_of_mfd_bin",
             "doc": "Magnitude-frequency-distribution bin width.",
         },
