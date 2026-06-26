@@ -540,7 +540,16 @@ describe("useCases deleteCase tombstone (BUG 2 - no stale resurrection)", () => 
     expect(result.current.cases.some((c) => c.case_id === "01A")).toBe(false);
   });
 
-  it("an AUTHORITATIVE list re-affirming the Case CLEARS the tombstone (undo path)", () => {
+  it("an AUTHORITATIVE list still carrying the Case KEEPS it suppressed (box-off stale cold-list, B-CLIENT NATE 2026-06-26)", () => {
+    // CONTRACT CHANGE (B-CLIENT, NATE 2026-06-26): the earlier behavior cleared
+    // the tombstone whenever an authoritative list re-carried the id (treating
+    // authoritative == undo proof). That was the box-OFF resurrection bug: the
+    // `delete` command queues + never reaches the asleep server, while the cold
+    // /case-list fetch is dispatched isAuthoritative=true even though it is STALE
+    // (pre-delete) -> clearing on it re-added the just-deleted Case. We now KEEP
+    // the tombstone (never clear it from a plain authoritative list that still
+    // carries the id); it is cleared only on POSITIVE proof of un-delete or a
+    // bounded TTL (neither wired yet).
     const { result } = renderHook(() =>
       useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
     );
@@ -551,11 +560,10 @@ describe("useCases deleteCase tombstone (BUG 2 - no stale resurrection)", () => 
       result.current.deleteCase("01A");
     });
     expect(result.current.cases).toEqual([]);
-    // The server's AUTHORITATIVE list carries 01A again (an undo / the delete
-    // never landed) -> drop the tombstone and show it.
+    // The STALE box-off AUTHORITATIVE cold list still carries 01A -> stays gone.
     act(() => {
       result.current.onCaseList({ cases: [summary("01A", "A")] }, true);
     });
-    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01A"]);
+    expect(result.current.cases).toEqual([]);
   });
 });

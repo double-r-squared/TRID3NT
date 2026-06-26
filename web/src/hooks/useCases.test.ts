@@ -17,7 +17,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CaseSessionState, CaseSummary } from "../contracts";
-import { LS_ACTIVE_CASE, useCases } from "./useCases";
+import { LS_ACTIVE_CASE, LS_DELETED_CASE_IDS, useCases } from "./useCases";
 
 function summary(id: string, title: string): CaseSummary {
   return {
@@ -182,5 +182,125 @@ describe("useCases active-Case persistence (NATE 2026-06-26)", () => {
 
     getSpy.mockRestore();
     setSpy.mockRestore();
+  });
+});
+
+describe("useCases durable deletion tombstone box-off (B-CLIENT, NATE 2026-06-26)", () => {
+  it("deleteCase persists the tombstone to localStorage", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01DEL", "Doomed")] });
+      result.current.deleteCase("01DEL");
+    });
+
+    const raw = localStorage.getItem(LS_DELETED_CASE_IDS);
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw as string)).toContain("01DEL");
+    // And it is gone from the live rail.
+    expect(result.current.cases.map((c) => c.case_id)).not.toContain("01DEL");
+  });
+
+  it("a deleted Case stays gone even when an AUTHORITATIVE case-list still carries it (box-off stale cold list)", () => {
+    // Box-OFF: the `delete` command queues + never reaches the asleep server, so
+    // the cold /case-list fetch (dispatched isAuthoritative=true) is STALE and
+    // still lists the just-deleted Case. The durable tombstone must keep it
+    // suppressed - the authoritative-yet-stale list must NOT resurrect it nor
+    // clear the tombstone.
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01DEL", "Doomed"), summary("01KEEP", "Keep")] });
+      result.current.deleteCase("01DEL");
+    });
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01KEEP"]);
+
+    // The stale cold authoritative list still carries the deleted Case.
+    act(() => {
+      result.current.onCaseList(
+        { cases: [summary("01DEL", "Doomed"), summary("01KEEP", "Keep")] },
+        true,
+      );
+    });
+
+    // It must remain suppressed, and the tombstone must NOT have been cleared.
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01KEEP"]);
+    expect(JSON.parse(localStorage.getItem(LS_DELETED_CASE_IDS) as string)).toContain(
+      "01DEL",
+    );
+  });
+
+  it("survives a simulated reload: tombstone seeded from localStorage suppresses the Case", () => {
+    // First mount: delete a Case (box-off). The tombstone is persisted.
+    const first = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      first.result.current.onCaseList({ cases: [summary("01DEL", "Doomed")] });
+      first.result.current.deleteCase("01DEL");
+    });
+    first.unmount();
+
+    // Simulated RELOAD: a fresh hook seeds its tombstone set from localStorage.
+    // The stale cold authoritative list (pre-delete) still carries the Case.
+    const second = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      second.result.current.onCaseList(
+        { cases: [summary("01DEL", "Doomed"), summary("01KEEP", "Keep")] },
+        true,
+      );
+    });
+
+    // The deleted Case stays gone across the reload.
+    expect(second.result.current.cases.map((c) => c.case_id)).toEqual(["01KEEP"]);
+  });
+
+  it("a tombstoned restoredActiveCaseId does not become active (no resurrect-on-restore)", () => {
+    // Box-off the user deleted the open Case: the active-id mirror still points at
+    // it (LS_ACTIVE_CASE), and the durable tombstone carries it. On reload the
+    // restore must NOT re-open the deleted Case.
+    localStorage.setItem(LS_ACTIVE_CASE, "01DEAD");
+    localStorage.setItem(LS_DELETED_CASE_IDS, JSON.stringify(["01DEAD"]));
+
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+
+    // Seed suppresses the tombstoned active id: no active Case, no restore seed.
+    expect(result.current.activeCaseId).toBeNull();
+    expect(result.current.restoredActiveCaseId).toBeNull();
+  });
+
+  it("selectCase refuses to re-open a tombstoned id (371caa3 restore path)", () => {
+    const sent: Array<[string, string | null]> = [];
+    const spySend = ((cmd: string, caseId: string | null) => {
+      sent.push([cmd, caseId]);
+    }) as never;
+
+    localStorage.setItem(LS_DELETED_CASE_IDS, JSON.stringify(["01DEAD"]));
+
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: spySend, isSignedIn: true }),
+    );
+
+    // App dispatches selectCase(restored) on mount; a tombstoned id is a no-op.
+    act(() => {
+      result.current.selectCase("01DEAD");
+    });
+    expect(result.current.activeCaseId).toBeNull();
+    expect(sent).toHaveLength(0);
+
+    // A non-tombstoned select still works normally.
+    act(() => {
+      result.current.selectCase("01LIVE");
+    });
+    expect(result.current.activeCaseId).toBe("01LIVE");
+    expect(sent).toEqual([["select", "01LIVE"]]);
   });
 });

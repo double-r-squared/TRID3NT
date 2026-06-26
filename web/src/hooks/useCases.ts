@@ -110,6 +110,42 @@ function readPersistedActiveCase(): string | null {
   }
 }
 
+/**
+ * DURABLE DELETION TOMBSTONES (B-CLIENT, NATE 2026-06-26) - box-OFF a deleted
+ * Case reappears because the in-memory tombstone Set is lost on reload while the
+ * `delete` WS command sits QUEUED (never reaches the asleep server), so the next
+ * cold authoritative /case-list (which is STALE - pre-delete - yet flagged
+ * authoritative) re-adds the Case. Persisting the tombstone set to localStorage
+ * lets a reload-before-server-confirm still suppress the deleted Case, and the
+ * onCaseList reconcile no longer clears a tombstone just because a (stale)
+ * authoritative list still carries the id.
+ */
+export const LS_DELETED_CASE_IDS = "grace2.deletedCaseIds";
+
+/** Read the persisted deletion tombstone set, guarded against storage failure. */
+function readPersistedDeletedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_DELETED_CASE_IDS);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter((v): v is string => typeof v === "string" && v.length > 0),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/** Mirror the tombstone set to localStorage (JSON array), guarded against failure. */
+function persistDeletedIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(LS_DELETED_CASE_IDS, JSON.stringify([...ids]));
+  } catch {
+    /* storage unavailable - tombstone durability is best-effort */
+  }
+}
+
 /** Bound emitter for the `case-command` envelope. Matches GraceWs.sendCaseCommand. */
 export type CaseCommandEmitter = (
   command: CaseCommand,
@@ -231,9 +267,18 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   // reload re-opens the last-open Case instead of dropping to the Cases list.
   // The init runs once; `restoredActiveCaseId` captures that seed so App can
   // dispatch a single `selectCase(restored)` to rehydrate over the WS.
-  const [activeCaseId, setActiveCaseId] = useState<string | null>(() =>
-    readPersistedActiveCase(),
-  );
+  //
+  // B-CLIENT (NATE 2026-06-26) - but if that persisted active id is a Case the
+  // user deleted box-OFF (the `delete` command queued, never confirmed, so the
+  // active-id mirror still points at it), the 371caa3 restore would re-open the
+  // just-deleted Case. Consult the DURABLE tombstone set at the same mount tick
+  // (both read from localStorage) and treat a tombstoned restored id as NO
+  // active Case, so the deleted Case does not resurrect via restore.
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(() => {
+    const persisted = readPersistedActiveCase();
+    if (persisted && readPersistedDeletedIds().has(persisted)) return null;
+    return persisted;
+  });
   const restoredActiveCaseIdRef = useRef<string | null>(activeCaseId);
   const [activeSession, setActiveSession] = useState<CaseSessionState | null>(
     null,
@@ -252,11 +297,21 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   // in the rail (the same class as the layer-eviction tombstone + the raster
   // cold re-add). We filter EVERY incoming case-list AND the onCaseOpen upsert
   // against this set so a stale frame can never re-add a Case the user deleted
-  // this session. The id is removed from the set only if an AUTHORITATIVE list
-  // re-affirms the Case as live (an undo / a true reappearance) so the tombstone
-  // never permanently hides a legitimately-present Case. Kept in a ref (read
-  // inside the stable useCallback handlers without going stale).
-  const deletedIdsRef = useRef<Set<string>>(new Set());
+  // this session. Kept in a ref (read inside the stable useCallback handlers
+  // without going stale).
+  //
+  // DURABLE TOMBSTONES (B-CLIENT, NATE 2026-06-26) - box-OFF the `delete` WS
+  // command is QUEUED (never reaches the asleep server), so the tombstone is the
+  // ONLY thing suppressing the Case until a real serverless delete lands. An
+  // in-memory Set is lost on reload, after which the stale cold /case-list
+  // (authoritative-yet-pre-delete) resurrects the Case. We therefore SEED the
+  // set from localStorage at mount and MIRROR it on every add, so a reload before
+  // the server confirms still suppresses the deleted Case. We also NO LONGER
+  // clear a tombstone just because an authoritative list still carries the id
+  // (that list can be the box-off cold stale snapshot) - a tombstone is removed
+  // only on POSITIVE proof of un-delete (e.g. a future serverless-delete error
+  // path) or a bounded TTL, neither wired yet.
+  const deletedIdsRef = useRef<Set<string>>(readPersistedDeletedIds());
 
   // COLD-LIST RASTER FALLBACK - `onCaseList` is a stable useCallback([]) so it
   // cannot read `activeCaseId` / `onListLayerSummaries` from its closure
@@ -310,16 +365,21 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
       const incoming = payload.cases ?? [];
 
-      // DELETION TOMBSTONE RECONCILE (BUG 2). An AUTHORITATIVE list is the
-      // server's true answer: if it carries a tombstoned id, the user undid the
-      // delete (or it was never deleted) -> drop the tombstone and let it show.
-      // A NON-authoritative (keepalive / fresh-resume) frame is NOT trusted to
-      // resurrect: any tombstoned id it carries is filtered OUT so a stale frame
-      // racing the delete write cannot re-add the just-deleted Case.
+      // DELETION TOMBSTONE RECONCILE (BUG 2 + B-CLIENT box-off, NATE
+      // 2026-06-26). A tombstoned id is ALWAYS filtered out of the rail -
+      // from a non-authoritative (keepalive / fresh-resume) frame AND from an
+      // authoritative one. The earlier code cleared a tombstone whenever an
+      // authoritative list still carried the id (assuming authoritative ==
+      // un-delete proof); but box-OFF the `delete` WS command is QUEUED and
+      // never reaches the asleep server, while the cold /case-list fetch is
+      // dispatched isAuthoritative=true even though it is STALE (pre-delete) -
+      // so that clear resurrected the just-deleted Case on the device. We no
+      // longer treat "an authoritative list carries the id" as un-delete proof:
+      // the tombstone is kept and the id stays suppressed. A tombstone should be
+      // cleared only on POSITIVE proof of un-delete (a future serverless-delete
+      // error path) or a bounded TTL - neither wired yet, so for now we never
+      // clear it here.
       const tombstones = deletedIdsRef.current;
-      if (isAuthoritative && tombstones.size > 0) {
-        for (const c of incoming) tombstones.delete(c.case_id);
-      }
       const filteredIncoming =
         tombstones.size > 0
           ? incoming.filter((c) => !tombstones.has(c.case_id))
@@ -403,6 +463,13 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   const selectCase = useCallback(
     (caseId: string) => {
+      // B-CLIENT (NATE 2026-06-26) - never re-select a tombstoned (deleted) id.
+      // App dispatches one selectCase(restoredActiveCaseId) on mount to rehydrate
+      // the last-open Case; box-OFF that restored id can be a Case the user just
+      // deleted (the `delete` command is queued, never confirmed), and the
+      // 371caa3 restore would otherwise re-open it. Consulting the durable
+      // tombstone keeps the deleted Case from resurrecting via re-select.
+      if (deletedIdsRef.current.has(caseId)) return;
       // sleep/wake STAGE 2 (NATE 2026-06-19) - ALWAYS set the active Case
       // LOCALLY, not only via the server's case-open reply. When the agent box
       // is asleep the WS `select` below merely QUEUES (ws.ts sendOrQueue) and no
@@ -459,11 +526,18 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
       // rename patch above and does NOT touch the empty-keep keepalive rule.
       //
       // BUG 2 (stale-reappear trap): also TOMBSTONE the id synchronously so a
-      // NON-authoritative case-list frame (keepalive / fresh-resume) that races
-      // the server soft-delete write and still carries this Case cannot
-      // resurrect it in the rail. An authoritative server list that re-affirms
-      // the Case clears the tombstone (onCaseList).
+      // case-list frame (keepalive / fresh-resume / cold authoritative) that
+      // races the server soft-delete write and still carries this Case cannot
+      // resurrect it in the rail.
+      //
+      // DURABLE TOMBSTONE (B-CLIENT, NATE 2026-06-26) - mirror the set to
+      // localStorage on add. Box-OFF the `delete` command is QUEUED (never
+      // reaches the asleep server), so a reload would otherwise lose the
+      // in-memory tombstone and the stale cold /case-list would resurrect the
+      // Case; persisting it keeps the Case suppressed across that reload until a
+      // real serverless delete lands.
       deletedIdsRef.current.add(caseId);
+      persistDeletedIds(deletedIdsRef.current);
       setCases((prev) => prev.filter((c) => c.case_id !== caseId));
       bumpInFlight(+1);
       sendCaseCommand("delete", caseId, {});
