@@ -17,6 +17,7 @@ import {
   wrapIndex,
   SCRUBBER_MOBILE_BOTTOM_CSS,
   SCRUBBER_MOBILE_SHEET_CLEARANCE_PX,
+  SCRUBBER_SHEET_DOCK_GAP_PX,
 } from "./SequenceScrubber";
 
 afterEach(() => {
@@ -253,6 +254,106 @@ describe("SequenceScrubber — mobile placement vs the chat sheet", () => {
     renderScrubber();
     const el = screen.getByTestId("grace2-sequence-scrubber");
     expect(el.style.zIndex).toBe("51");
+  });
+});
+
+// TASK E (NATE 2026-06-26): on MOBILE the scrubber docks to the chat SHEET's TOP
+// EDGE and TRACKS it as the sheet is adjusted/collapsed. App passes the sheet's
+// live top in viewport px as `sheetTopPx`; the scrubber's BOTTOM sits GAP px
+// above it (bottom = viewportH - sheetTopPx + gap). A HIGHER sheetTopPx (sheet
+// expanded, top moves UP the screen... lower number = higher up) lifts the
+// scrubber. Desktop ignores sheetTopPx (the bottom-center 24px gutter).
+describe("SequenceScrubber — mobile sheet-top dock (TASK E)", () => {
+  const ORIG_H = window.innerHeight;
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // Restore the viewport height other suites assume.
+    Object.defineProperty(window, "innerHeight", {
+      value: ORIG_H,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  function stubPlatform(mobile: boolean): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: mobile,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+  }
+
+  function setViewportHeight(px: number): void {
+    Object.defineProperty(window, "innerHeight", {
+      value: px,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  it("mobile: docks the bottom to (viewportH - sheetTopPx + gap) when sheetTopPx is set", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    const sheetTopPx = 520; // the chat sheet's top edge, 520px from the viewport top.
+    renderScrubber({ sheetTopPx });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    const expectedBottom = 800 - sheetTopPx + SCRUBBER_SHEET_DOCK_GAP_PX;
+    expect(el.style.bottom).toBe(`${expectedBottom}px`);
+    // Still horizontally centered from the viewport center.
+    expect(el.style.left).toBe("50%");
+    expect(el.style.transform).toBe("translateX(-50%)");
+  });
+
+  it("mobile: a HIGHER sheetTopPx (sheet expanded, top higher up) LIFTS the scrubber", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    // Collapsed sheet: its top is LOWER on the screen (bigger sheetTopPx).
+    const { rerender } = renderScrubber({ sheetTopPx: 600 });
+    const collapsedBottom = Number.parseFloat(
+      screen.getByTestId("grace2-sequence-scrubber").style.bottom,
+    );
+    // Expanded sheet: its top moves UP the screen (smaller sheetTopPx) -> the
+    // scrubber's bottom grows -> it lifts WITH the sheet.
+    rerender(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={FRAMES}
+        activeIndex={0}
+        onStep={() => {}}
+        playing={false}
+        onPlayToggle={() => {}}
+        sheetTopPx={400}
+      />,
+    );
+    const expandedBottom = Number.parseFloat(
+      screen.getByTestId("grace2-sequence-scrubber").style.bottom,
+    );
+    expect(expandedBottom).toBeGreaterThan(collapsedBottom);
+  });
+
+  it("mobile: falls back to the safe-area composer clearance when sheetTopPx is null", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    renderScrubber({ sheetTopPx: null });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // jsdom drops the calc(env(...)) bottom to "", so assert it is NOT a docked
+    // pixel value (the dock path always yields a "<n>px" bottom).
+    expect(el.style.bottom).not.toMatch(/^\d+px$/);
+    expect(el.style.top).toBe("");
+  });
+
+  it("DESKTOP ignores sheetTopPx - stays bottom-pinned at 24px", () => {
+    stubPlatform(false);
+    setViewportHeight(800);
+    renderScrubber({ sheetTopPx: 400 });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.bottom).toBe("24px");
+    expect(el.style.top).toBe("");
   });
 });
 

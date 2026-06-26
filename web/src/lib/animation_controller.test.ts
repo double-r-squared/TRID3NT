@@ -474,6 +474,42 @@ describe("AnimationController - hide a group stops its frame advance (item 2)", 
     expect(c.getActiveGroup()?.key).toBe("grp-2"); // still NOT the hidden grp-1
   });
 
+  // TASK F (NATE 2026-06-26): hiding the animation LAYER must hide the SCRUBBER,
+  // and it must STAY hidden across the LayerPanel's per-heartbeat re-push of the
+  // same group set. The bug: setGroupHidden nulled the active key, but the very
+  // next setGroups([GROUP]) re-activated the hidden group via a `?? groups[0]`
+  // fallback - so the scrubber popped back. With every group hidden the active
+  // group must remain NULL (the App scrubber renders only when a group is active).
+  it("hiding the ONLY group keeps the active group NULL across a setGroups re-detect (scrubber stays hidden)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.setGroupHidden("grp-1", true);
+    expect(c.getActiveGroup()).toBeNull(); // scrubber would unmount
+    // The LayerPanel re-pushes the SAME (still-hidden) group on the next
+    // session-state heartbeat - the active group must NOT come back.
+    c.setGroups([GROUP]);
+    expect(c.getActiveGroup()).toBeNull(); // still hidden - the live-bug repro
+  });
+
+  it("showing the hidden ONLY group again re-activates it at the SAME frame (scrubber returns)", () => {
+    const c = new AnimationController(REDUCED);
+    c.setGroups([GROUP]);
+    c.setActiveGroup("grp-1");
+    c.stepGroupTo("grp-1", 2); // user parked on frame 2 (index 2)
+    c.setGroupHidden("grp-1", true);
+    expect(c.getActiveGroup()).toBeNull();
+    // The re-push while hidden must not resurrect it...
+    c.setGroups([GROUP]);
+    expect(c.getActiveGroup()).toBeNull();
+    // ...but un-hiding it (user re-checks the eye) brings the scrubber back at
+    // the SAME frame the user left it on (no reset to 0, no force-restart).
+    c.setGroupHidden("grp-1", false);
+    expect(c.getActiveGroup()?.key).toBe("grp-1");
+    expect(c.frameIndexFor("grp-1")).toBe(2);
+    expect(c.isPlaying()).toBe(false);
+  });
+
   it("isGroupHidden reflects the toggle; reset clears all hidden state", () => {
     const c = new AnimationController(REDUCED);
     c.setGroups([GROUP]);

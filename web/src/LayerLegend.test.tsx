@@ -728,10 +728,12 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
     expect(MOBILE_SHEET_DOCK_GAP_PX).toBeGreaterThan(0);
   });
 
-  it("docks the colorbar KEYS to the sheet top (suppressing the AOI snap)", () => {
-    // An AOI rect is present, but the sheet-top dock takes priority on mobile:
-    // the key sits in a bottom-center band just above the sheet, NOT railed to
-    // an AOI edge (which would set an absolute top with no `bottom`).
+  it("SNAPS the colorbar KEYS to the AOI bbox edge when the bbox is on screen (NATE 2026-06-26)", () => {
+    // SNAP-TO-BBOX FIX (NATE 2026-06-26): when the AOI bbox IS projected on
+    // screen the sheet-top band dock is SUPPRESSED and the keys snap to the REAL
+    // bbox edges (railing like desktop), NOT a bottom-center band. The single key
+    // lands on the BOTTOM edge: absolute top below the bbox bottom (300), with no
+    // `bottom` offset and no left:50% band centering.
     render(
       <LayerLegend
         layers={[makeLayer()]}
@@ -739,6 +741,20 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
         sheetTopPx={500}
       />,
     );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // AOI-edge absolute position: NOT the band's bottom-from-sheet offset.
+    expect(key.style.bottom).toBe("");
+    expect(key.style.bottom).not.toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
+    // Absolute left (px), NOT the band's left:50% centering.
+    expect(key.style.left).not.toBe("50%");
+    // Bottom side rail: top just below the bbox bottom edge (300).
+    expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
+  });
+
+  it("docks the colorbar KEYS to the sheet-top band ONLY when NO AOI bbox is on screen (fallback)", () => {
+    // No aoiRect -> the sheet-top band is the fallback so the keys still clear the
+    // composer when no bbox is projected: a bottom-center band just above the sheet.
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
     const key = screen.getByTestId("grace2-layer-legend-key");
     // Docked from the BOTTOM at viewportH - sheetTopPx + gap = 768-500+8 = 276.
     expect(key.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
@@ -755,25 +771,17 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
   });
 
   it("a HIGHER sheet top (expanded sheet) docks the keys further up the screen", () => {
+    // No aoiRect -> the band-dock path (which tracks the sheet top). With a bbox
+    // on screen the keys snap to the bbox edge instead (covered above).
     const { rerender } = render(
-      <LayerLegend
-        layers={[makeLayer()]}
-        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
-        sheetTopPx={700}
-      />,
+      <LayerLegend layers={[makeLayer()]} sheetTopPx={700} />,
     );
     // Collapsed: top edge 700 -> bottom = 768-700+8 = 76.
     expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
       `${768 - 700 + MOBILE_SHEET_DOCK_GAP_PX}px`,
     );
     // Expanded: top edge rises to 300 -> bottom = 768-300+8 = 476 (higher up).
-    rerender(
-      <LayerLegend
-        layers={[makeLayer()]}
-        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
-        sheetTopPx={300}
-      />,
-    );
+    rerender(<LayerLegend layers={[makeLayer()]} sheetTopPx={300} />);
     expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
       `${768 - 300 + MOBILE_SHEET_DOCK_GAP_PX}px`,
     );
@@ -817,10 +825,11 @@ describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past
 
   it("the docked mobile key carries a viewport-bounded max-width (not a fixed width wider than the viewport)", () => {
     // A wide barWidth would otherwise fix the card at 520px - wider than a phone.
+    // No aoiRect -> the sheet-top band path (the clamp lives there); with a bbox on
+    // screen the keys snap to the bbox edge with no band clamp (NATE 2026-06-26).
     render(
       <LayerLegend
         layers={[makeLayer()]}
-        aoiRect={{ left: 0, top: 0, right: 1000, bottom: 800 }}
         barWidth={520}
         sheetTopPx={500}
       />,
@@ -840,13 +849,9 @@ describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past
   });
 
   it("the docked mobile key carries a viewport-bounded max-height (cannot run off the top)", () => {
-    render(
-      <LayerLegend
-        layers={[makeLayer()]}
-        aoiRect={{ left: 0, top: 0, right: 1000, bottom: 800 }}
-        sheetTopPx={500}
-      />,
-    );
+    // No aoiRect -> the sheet-top band path carries the max-height clamp (with a
+    // bbox on screen the keys snap to the bbox edge, no clamp; NATE 2026-06-26).
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
     const key = screen.getByTestId("grace2-layer-legend-key");
     const bottom = sheetTopDockBottomPx(500)!;
     expect(key.style.maxHeight).toBe(mobileLegendMaxHeightCss(bottom));

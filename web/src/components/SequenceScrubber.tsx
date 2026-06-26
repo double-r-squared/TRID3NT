@@ -56,6 +56,14 @@ const SCRUBBER_BOTTOM_DESKTOP_PX = 24;
 export const SCRUBBER_MOBILE_SHEET_CLEARANCE_PX = 116;
 export const SCRUBBER_MOBILE_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${SCRUBBER_MOBILE_SHEET_CLEARANCE_PX}px)`;
 
+// TASK E (NATE 2026-06-26): on MOBILE the scrubber docks to the TOP EDGE of the
+// chat sheet (the panel, not the composer/text-form) and TRACKS it as the sheet
+// is dragged / collapsed. App threads the sheet's live top in viewport px as
+// `sheetTopPx`; the scrubber sits this many px ABOVE that edge. Higher
+// sheetTopPx = the sheet is more collapsed (its top is lower); a LOWER
+// sheetTopPx (sheet expanded, its top moves UP the screen) lifts the scrubber.
+export const SCRUBBER_SHEET_DOCK_GAP_PX = 8;
+
 // MOBILE Z-ORDER (NATE 2026-06-22): on mobile the chat is a bottom sheet at
 // zIndex 32 (Chat.tsx mobileSheetContainerStyle). The scrubber must sit
 // UNDERNEATH it so it never covers the chat composer. On desktop the chat is a
@@ -95,6 +103,15 @@ export interface SequenceScrubberProps {
   chatWidthPx?: number;
   /** Whether the right chat panel is collapsed (then its width is 0). */
   chatCollapsed?: boolean;
+  /**
+   * TASK E (NATE 2026-06-26) - MOBILE ONLY: the chat bottom-sheet's live TOP
+   * edge in viewport px (0 = top of viewport). When provided the mobile scrubber
+   * docks its BOTTOM just above this edge and TRACKS the sheet as it is
+   * adjusted/collapsed (a parallel owner threads it from App). null/undefined =
+   * unknown -> the scrubber falls back to SCRUBBER_MOBILE_BOTTOM_CSS (safe-area +
+   * composer clearance). Ignored on desktop (the chat is a side panel there).
+   */
+  sheetTopPx?: number | null;
 }
 
 /** Clamp `i` into [0, n) with wraparound so the scrubber loops cleanly. */
@@ -116,6 +133,7 @@ export function SequenceScrubber({
   leftPanelWidthPx = 0,
   chatWidthPx = 0,
   chatCollapsed = false,
+  sheetTopPx = null,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
   const isMobile = useIsMobile();
@@ -146,6 +164,13 @@ export function SequenceScrubber({
     typeof window !== "undefined" && Number.isFinite(window.innerWidth)
       ? window.innerWidth
       : null;
+  // TASK E (NATE 2026-06-26): viewport HEIGHT, guarded the same way - needed to
+  // convert the chat sheet's top edge (measured from the viewport top) into a
+  // CSS `bottom` offset (measured from the viewport bottom) for the mobile dock.
+  const viewportH =
+    typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : null;
 
   // STATIC POSITION (NATE 2026-06-26): pin bottom-center. Mobile centers in the
   // viewport (above the composer via the safe-area-inclusive bottom offset);
@@ -160,10 +185,22 @@ export function SequenceScrubber({
       const avail = viewportW - 2 * SCRUBBER_EDGE_MARGIN_PX;
       widthPx = Math.max(SCRUBBER_MIN_WIDTH, Math.min(SCRUBBER_WIDTH_DEFAULT, avail));
     }
+    // TASK E (NATE 2026-06-26): DOCK to the chat SHEET's top edge and TRACK it.
+    // The sheet's top is given in viewport px (from the top); convert to a CSS
+    // `bottom` (from the bottom): bottom = viewportH - sheetTopPx + gap, so the
+    // scrubber's bottom edge sits GAP px above the sheet top. A more-expanded
+    // sheet has a SMALLER sheetTopPx (its top is higher up the screen) -> a
+    // LARGER bottom -> the scrubber lifts WITH it. When the sheet top is unknown
+    // (sheetTopPx null, or no viewport height) fall back to the safe-area +
+    // composer-clearance offset (the prior static placement).
+    const dockBottom: number | string =
+      sheetTopPx != null && viewportH != null
+        ? Math.max(0, viewportH - sheetTopPx + SCRUBBER_SHEET_DOCK_GAP_PX)
+        : SCRUBBER_MOBILE_BOTTOM_CSS;
     posStyle = {
       position: "fixed",
       left: "50%",
-      bottom: SCRUBBER_MOBILE_BOTTOM_CSS,
+      bottom: dockBottom,
       transform: "translateX(-50%)",
       transformOrigin: "bottom center",
     };

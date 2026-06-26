@@ -18,7 +18,7 @@
 // (WS / auth / map). The App-internal AppSequenceScrubber is mirrored here as a
 // tiny harness with identical wiring.
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, act, cleanup } from "@testing-library/react";
 import { useMemo } from "react";
 import { LayerPanel } from "./LayerPanel";
@@ -113,8 +113,12 @@ const FRAMES = [makeFrame(1), makeFrame(3), makeFrame(6)];
 // Layers drawer's rows. The harness mirrors that gate.
 function AppScrubberHarness({
   hidden = false,
+  // TASK E (NATE 2026-06-26): App threads the chat sheet's live top edge (px) so
+  // the MOBILE scrubber docks to it; mirror that pass-through here.
+  sheetTopPx = null,
 }: {
   hidden?: boolean;
+  sheetTopPx?: number | null;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -131,6 +135,7 @@ function AppScrubberHarness({
       activeIndex={controller.frameIndexFor(active.key)}
       onStep={(idx) => controller.stepGroupTo(active.key, idx)}
       playing={anim.playing}
+      sheetTopPx={sheetTopPx}
       onPlayToggle={() => {
         controller.setActiveGroup(active.key);
         controller.togglePlaying();
@@ -488,5 +493,94 @@ describe("scrubber defaults to first frame; auto-play is opt-in", () => {
       "aria-label",
       "Play sequence",
     );
+  });
+});
+
+// --- TASK E (NATE 2026-06-26): the MOBILE scrubber docks to the chat sheet's
+// TOP EDGE (the panel, not the composer) and TRACKS it as the sheet is
+// adjusted/collapsed. App threads the sheet's live top in viewport px as
+// `sheetTopPx`; the harness mirrors that pass-through. Desktop ignores it. ---- //
+describe("TASK E - mobile scrubber docks to + tracks the chat sheet top edge", () => {
+  const ORIG_H = window.innerHeight;
+  beforeEach(() => {
+    installFakeTimerController();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "innerHeight", {
+      value: ORIG_H,
+      configurable: true,
+      writable: true,
+    });
+  });
+
+  function stubPlatform(mobile: boolean): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: mobile,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+  }
+
+  function setViewportHeight(px: number): void {
+    Object.defineProperty(window, "innerHeight", {
+      value: px,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  function pushGroup(): void {
+    act(() => {
+      getAnimationController().setGroups([
+        {
+          key: "grp",
+          label: "HRRR precip",
+          layerIds: ["run-a-f01", "run-a-f03", "run-a-f06"],
+          frameLabels: ["F+01h", "F+03h", "F+06h"],
+        },
+      ]);
+    });
+  }
+
+  it("mobile: docks the bottom to (viewportH - sheetTopPx + gap)", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    render(<AppScrubberHarness sheetTopPx={520} />);
+    pushGroup();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // gap is 8 (SCRUBBER_SHEET_DOCK_GAP_PX): 800 - 520 + 8 = 288.
+    expect(el.style.bottom).toBe("288px");
+    expect(el.style.left).toBe("50%");
+  });
+
+  it("mobile: a HIGHER sheetTopPx (sheet expanded) lifts the scrubber", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    const { rerender } = render(<AppScrubberHarness sheetTopPx={600} />);
+    pushGroup();
+    const collapsedBottom = Number.parseFloat(
+      screen.getByTestId("grace2-sequence-scrubber").style.bottom,
+    );
+    rerender(<AppScrubberHarness sheetTopPx={400} />);
+    const expandedBottom = Number.parseFloat(
+      screen.getByTestId("grace2-sequence-scrubber").style.bottom,
+    );
+    expect(expandedBottom).toBeGreaterThan(collapsedBottom);
+  });
+
+  it("DESKTOP ignores sheetTopPx (stays bottom-pinned at 24px)", () => {
+    stubPlatform(false);
+    setViewportHeight(800);
+    render(<AppScrubberHarness sheetTopPx={400} />);
+    pushGroup();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.bottom).toBe("24px");
+    expect(el.style.top).toBe("");
   });
 });

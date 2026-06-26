@@ -370,20 +370,27 @@ export class AnimationController {
       return;
     }
 
-    // Keep activeGroupKey valid; default to the first group.
+    // Keep activeGroupKey valid; default to the first VISIBLE group.
     // ITEM 2 - default the active group to the first VISIBLE group (skip ones
     // the user hid), so re-detection while a group is hidden never re-points the
-    // scrubber back at the hidden sequence. Falls back to the first group only
-    // when every group is hidden (then there is nothing visible to drive).
+    // scrubber back at the hidden sequence.
+    // TASK F (NATE 2026-06-26): when EVERY group is hidden there is NOTHING to
+    // drive, so the active group must go NULL (the App-level scrubber unmounts).
+    // The previous `?? groups[0]` fallback re-activated the hidden group on the
+    // very next session-state re-detect (the LayerPanel re-pushes the same group
+    // set on every heartbeat), which is exactly why hiding the animation layer
+    // did NOT hide the scrubber live: setGroupHidden nulled the active key, then
+    // the next setGroups silently re-pointed it back at the hidden sequence.
     const firstVisible =
-      groups.find((g) => !this.hiddenGroups.has(g.key)) ?? groups[0];
-    if (
-      firstVisible &&
-      (!this.activeGroupKey ||
-        !groups.some((g) => g.key === this.activeGroupKey) ||
-        this.hiddenGroups.has(this.activeGroupKey))
-    ) {
-      this.activeGroupKey = firstVisible.key;
+      groups.find((g) => !this.hiddenGroups.has(g.key)) ?? null;
+    const activeStillValid =
+      this.activeGroupKey != null &&
+      groups.some((g) => g.key === this.activeGroupKey) &&
+      !this.hiddenGroups.has(this.activeGroupKey);
+    if (!activeStillValid) {
+      // Re-point at the first visible group, or null when none is visible (so
+      // the scrubber disappears instead of clinging to a hidden sequence).
+      this.activeGroupKey = firstVisible ? firstVisible.key : null;
     }
 
     // AUTOPLAY-OFF (NATE 2026-06-24): on a freshly-loaded multi-frame group make

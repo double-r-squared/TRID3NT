@@ -1051,7 +1051,17 @@ export function LayerLegend({
         let clampStyle: React.CSSProperties = {};
         if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
-        } else if (mobileDockBottomPx != null) {
+        } else if (mobileDockBottomPx != null && !aoiRect) {
+          // SNAP-TO-BBOX FIX (NATE 2026-06-26)  -  gate the sheet-top band dock on
+          // the ABSENCE of a real AOI rect. When the AOI bbox IS projected on
+          // screen the band branch is SKIPPED and the aoiRect snap branch below
+          // takes over on mobile too, so the keys rail along the REAL bbox edges
+          // (left/right vertical, top horizontal) - identical to desktop. The
+          // band stays ONLY as the AOI-less fallback so the keys still clear the
+          // composer when no bbox is projected. (Bug: the band's left:50% +
+          // translate transform corrupted the snapped positions, landing the keys
+          // in a bottom-center band instead of on the bbox edge.)
+          //
           // Band dock: use the bottom-center-RELATIVE stack (not `snapPos`, which
           // is absolute when an AOI rect is present) so left:50% + translate puts
           // the keys in a clean horizontal band just above the chat sheet top.
