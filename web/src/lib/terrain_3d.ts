@@ -119,13 +119,13 @@ export const TERRAIN_DEM_SOURCE_ID = "grace2-terrain-dem";
 export const TERRAIN_HILLSHADE_LAYER_ID = "grace2-terrain-hillshade";
 export const TERRAIN_SKY_LAYER_ID = "grace2-terrain-sky";
 
-/** Default vertical exaggeration for setTerrain. 2.0 makes relief read STRONGLY
- *  at AOI / city scale (the zoom NATE works at) once the camera is pitched - the
- *  earlier 1.4 was too subtle and, with a flat top-down camera, made "3D mode"
- *  look like a mere hillshade filter. 2.0 sits below the spiky-artifact regime of
- *  2.5+ while reading as dramatic, navigable relief. Named export so it stays
- *  the single source of truth (unit-tested + asserted by Map.tsx wiring). */
-export const TERRAIN_EXAGGERATION = 2.0;
+/** Default vertical exaggeration for setTerrain. 1.4 reads as navigable relief
+ *  at AOI / city scale (the zoom NATE works at) once the camera is pitched.
+ *  NATE 2026-06-26: dropped from 2.0 -> 1.4 - at the ~67deg 3D pitch over a coarse
+ *  GLOBAL DEM, 2.0x made relief look spiky / too aggressive. 1.4 keeps the relief
+ *  legible as depth without the exaggerated spikes. Named export so it stays the
+ *  single source of truth (unit-tested + asserted by Map.tsx wiring). */
+export const TERRAIN_EXAGGERATION = 1.4;
 
 // --- pure camera-pose builders (Priority 1: make 3D actually LOOK 3D) ------ //
 //

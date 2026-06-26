@@ -3575,6 +3575,51 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
     expect(ease.bearing).toBeGreaterThan(0);
   });
 
+  it("switches overlay rasters to linear resampling when 3D is toggled ON (NATE 2026-06-26 pixelation fix)", () => {
+    // Overlay rasters paint with raster-resampling: "nearest" (job-0078) for
+    // crisp per-cell alignment in flat 2D - but draped over a pitched terrain
+    // mesh those nearest cells read as hard ~9px blocks. Enabling 3D must sweep
+    // every added raster overlay to "linear" so the drape smooths out. The
+    // raster is added BEFORE 3D toggles on, proving the sweep also reaches
+    // rasters that predate the toggle (the raster-add effect does not re-run).
+    const sessionBus = makeSessionBus();
+    const { rerender } = render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+
+    const m = lastMapMock!;
+    // The added overlay layer is a raster (getLayer(...).type === "raster") so
+    // the sweep targets it (vector layers carry no raster-resampling).
+    m.getLayer.mockImplementation((id: string) =>
+      id === "flood-demo" ? { id, type: "raster" } : { id },
+    );
+    m.setPaintProperty.mockClear();
+
+    // Flip 3D ON - this re-runs the terrain effect (dep: terrain3dEnabled).
+    rerender(
+      <MapView
+        terrain3dEnabled
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    expect(m.setPaintProperty).toHaveBeenCalledWith(
+      "flood-demo",
+      "raster-resampling",
+      "linear",
+    );
+  });
+
   it("tears terrain down + re-locks 2D when the toggle flips back off", () => {
     const { rerender } = render(<MapView terrain3dEnabled />);
     const m = lastMapMock!;

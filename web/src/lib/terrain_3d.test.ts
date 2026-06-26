@@ -100,10 +100,11 @@ describe("terrain_3d - buildTerrainDemSource", () => {
 });
 
 describe("terrain_3d - camera poses (Priority 1: make 3D look 3D)", () => {
-  it("exaggeration is strong enough to read as relief (>= 1.8, < 2.5)", () => {
-    // The old 1.4 was too subtle; 2.5+ goes spiky. Guard the tuned band.
-    expect(TERRAIN_EXAGGERATION).toBeGreaterThanOrEqual(1.8);
-    expect(TERRAIN_EXAGGERATION).toBeLessThan(2.5);
+  it("exaggeration reads as relief without going spiky (>= 1.2, < 1.8)", () => {
+    // NATE 2026-06-26: 2.0x was too aggressive / spiky at the 67deg pitch over a
+    // coarse global DEM; 1.4 keeps depth legible without exaggerated spikes.
+    expect(TERRAIN_EXAGGERATION).toBeGreaterThanOrEqual(1.2);
+    expect(TERRAIN_EXAGGERATION).toBeLessThan(1.8);
   });
 
   it("3D pose pitches strongly but stays under the 75deg max pitch", () => {

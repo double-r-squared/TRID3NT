@@ -2787,6 +2787,36 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const easeMs = prefersReducedMotion ? 0 : TERRAIN_3D_EASE_MS;
 
+    // NATE 2026-06-26: overlay raster pixelation under 3D. Session-added raster
+    // layers paint with raster-resampling: "nearest" (job-0078) so their COG
+    // cells stay 1:1 with the basemap grid in the flat 2D top-down view - the
+    // only visually-irrefutable proof of per-cell geographic alignment. But when
+    // those nearest-sampled cells DRAPE over a pitched terrain mesh, each cell
+    // reads as a hard ~9px block and the overlay looks extremely pixelated. So
+    // make resampling 3D-aware: switch every overlay raster layer to "linear"
+    // (smooths the drape) while 3D is on, and restore "nearest" (the 2D default)
+    // when 3D is off. We sweep addedSourceIds.current here - rather than at the
+    // raster-add block, whose effect dep array does NOT re-run on the 3D toggle -
+    // so this also fixes rasters that were added BEFORE 3D was enabled.
+    const setOverlayRasterResampling = (
+      mode: "linear" | "nearest",
+    ): void => {
+      const mm = map.current;
+      if (!mm) return;
+      for (const id of addedSourceIds.current) {
+        try {
+          // Only raster overlay layers carry raster-resampling; setting it on a
+          // vector layer throws. getLayer(...).type guards that (and skips ids
+          // whose layer is mid-add / already torn down).
+          const layer = mm.getLayer(id) as { type?: string } | undefined;
+          if (layer?.type !== "raster") continue;
+          mm.setPaintProperty(id, "raster-resampling", mode);
+        } catch {
+          /* one bad layer must not abort the sweep - skip + continue */
+        }
+      }
+    };
+
     // Disable path: ease the camera FLAT (top-down, north-up) FIRST, THEN tear
     // the terrain down + re-lock 2D once the move settles. Easing before teardown
     // means the user sees the relief lower back to flat rather than the terrain
@@ -2805,6 +2835,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // setMaxPitch(0) inside removeTerrain3d re-locks 2D AFTER the camera is
           // already flat, so the pitch we just eased to is not clamped mid-flight.
           removeTerrain3d(map.current as unknown as TerrainMapLike);
+          // NATE 2026-06-26: restore the 2D nearest-resampling default so overlay
+          // rasters return to crisp per-cell alignment once the terrain is gone.
+          setOverlayRasterResampling("nearest");
         } catch {
           /* map already torn down - fine */
         }
@@ -2853,6 +2886,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // AWS Terrarium tiles. Once the agent emits a per-case DEM COG, thread it
       // through here as a prop -> TiTiler terrain-RGB path (see FOLLOW-UPS).
       applyTerrain3d(tm, { contoursRequested: contoursEnabled });
+      // NATE 2026-06-26: smooth overlay rasters that drape over the pitched
+      // terrain mesh - nearest-sampled cells read as hard ~9px blocks in 3D.
+      setOverlayRasterResampling("linear");
       // Pitch the camera so the relief actually reads. applyTerrain3d already
       // unlocked maxPitch (75) + rotate, so this easeTo is not clamped. Keep
       // center + zoom (easeTo merges over the current pose).
