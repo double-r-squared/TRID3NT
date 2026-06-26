@@ -45,6 +45,26 @@ import {
 } from "./lib/spatial_input_bus";
 import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
 import { AoiPickerCard } from "./components/AoiPickerCard";
+// deck.gl SPIKE (#169): heavy/footprint vectors paint through an INTERLEAVED
+// deck.gl MapboxOverlay on the SAME MapLibre map (basemap + every other layer +
+// control stay on MapLibre). Map.tsx owns the overlay lifecycle.
+//
+// LAZY-LOAD (deck.gl SPIKE, #169): the deck.gl bundle (~211 KB gz: @deck.gl/core
+// + /layers + /mapbox) is NOT in the main app chunk. We import only the PURE,
+// deck.gl-FREE routing predicate + the layer type STATICALLY (the reconcile must
+// decide routing synchronously); the deck.gl MapboxOverlay + the GeoJsonLayer
+// builder are pulled in via a one-time `await import(...)` the FIRST time a
+// deck-routed (footprint/heavy) layer actually appears. `import type` is erased,
+// so nothing here reaches deck.gl in the static module graph.
+import {
+  shouldRouteToDeck,
+  type DeckRoutableLayer,
+} from "./lib/deck_routing";
+// Lazily-loaded deck.gl module shapes (the dynamic-import targets). `import type`
+// is type-only (erased at build), so referencing these types does NOT pull deck.gl
+// into the main chunk - only the runtime `await import(...)` below does, lazily.
+import type { MapboxOverlay as MapboxOverlayType } from "@deck.gl/mapbox";
+import type { buildDeckGeoJsonLayer as BuildDeckGeoJsonLayerFn } from "./lib/deck_layers";
 // NATE map/loading-UX polish item 4 - the always-on "Draw AOI" map control that
 // arms the bbox rectangle-draw on demand and stages it for the next prompt.
 import { DrawAoiControl } from "./components/DrawAoiControl";
@@ -2468,6 +2488,40 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const layerCache = getLayerCache();
   // useRef so this survives effect re-runs without triggering re-render (A.7).
   const addedSourceIds = useRef<Set<string>>(new Set());
+  // deck.gl SPIKE (#169): the single interleaved MapboxOverlay (constructed +
+  // addControl'd in the map-init `m.once("load")` below) and the set of layer_ids
+  // we ROUTED to deck (so add/remove/case-clear + opacity/visibility/order
+  // overrides drive the overlay, not the MapLibre vector path). The geometry +
+  // resolved properties for each routed layer are kept so a picked deck feature
+  // can be adapted into the same FeaturePopup payload the MapLibre click builds.
+  const deckOverlay = useRef<MapboxOverlayType | null>(null);
+  const deckRoutedIds = useRef<Set<string>>(new Set());
+  const deckRoutedLayers = useRef<Map<string, DeckRoutableLayer>>(new Map());
+  // LAZY-LOAD (deck.gl SPIKE, #169): cached ref to the dynamically-imported deck.gl
+  // GeoJsonLayer builder. Null until the first deck-routed layer triggers
+  // `ensureDeckLoaded()` (one `await import(...)` for @deck.gl/mapbox +
+  // ./lib/deck_layers); once cached, every subsequent reconcile pass reads it (and
+  // the overlay) SYNCHRONOUSLY. `deckLoadInFlight` dedupes concurrent triggers so we
+  // construct exactly ONE overlay.
+  const buildDeckGeoJsonLayerFn = useRef<typeof BuildDeckGeoJsonLayerFn | null>(
+    null,
+  );
+  const deckLoadInFlight = useRef<boolean>(false);
+  // deck.gl SPIKE (#169): true while an agent spatial-input (draw/pick) request OR
+  // a region-choice pick is in flight. While set, deck layers are rebuilt
+  // NON-pickable so deck does not swallow the canvas pointer events terra-draw /
+  // the pick surface / the region-choropleth need (mirrors the queryRenderedFeatures
+  // pick path staying inert during those flows). A ref (not state) so the stable
+  // applyLatest reconcile closure reads the LIVE value; a setter effect re-runs the
+  // deck rebuild when it flips.
+  const deckPickSuppressed = useRef<boolean>(false);
+  // deck.gl SPIKE (#169): the picking-bridge click handler (assigned by the click
+  // effect that owns buildFeaturePopupData) + a rebuild trigger so flipping the
+  // suppress flag re-emits the overlay layers non-pickable without waiting for the
+  // next session-state push. Both are refs so the stable applyLatest closure reads
+  // the live values.
+  const onDeckClickRef = useRef<((info: unknown) => void) | null>(null);
+  const rebuildDeckLayersRef = useRef<(() => void) | null>(null);
   // CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22)  -  mirror `caseActive` into a ref
   // so the session-state reconcile (a STABLE closure with deps [subscribeSessionState],
   // deliberately not re-created on prop flips to avoid churning the subscription)
@@ -2649,6 +2703,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     // re-block layer adds/removals. See mapStyleReady().
     m.once("load", () => {
       (m as ReadyMap).__grace2StyleReady = true;
+      // deck.gl SPIKE (#169) + LAZY-LOAD: the interleaved MapboxOverlay is NO LONGER
+      // constructed here. The deck.gl bundle (~211 KB gz) is kept out of the main
+      // chunk; the overlay is built ON DEMAND by ensureDeckLoaded() the FIRST time a
+      // deck-routed (footprint/heavy) layer appears in applyLatest. A session with
+      // no footprint layer never loads deck.gl at all.
       // BUG 3 (cold rasters don't paint until WS connect): a session-state push or
       // a zoom-to that arrived BEFORE this `load` was never applied - the map sat
       // quiescent (no idle re-emit on a cold map) so the deferral stalled until a
@@ -2681,6 +2740,24 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     }
 
     return () => {
+      // deck.gl SPIKE (#169): drop the overlay before the map so deck releases its
+      // GL resources cleanly. Best-effort - m.remove() below also tears the context.
+      // LAZY-LOAD null-guard: the overlay may NEVER have been constructed (no
+      // footprint layer this session, or an import still in flight), so removeControl
+      // only runs when it exists; the bookkeeping + lazy-load state always resets so
+      // a remount re-imports cleanly.
+      if (deckOverlay.current) {
+        try {
+          m.removeControl(deckOverlay.current as unknown as maplibregl.IControl);
+        } catch {
+          /* already detached / map mid-teardown */
+        }
+        deckOverlay.current = null;
+      }
+      deckRoutedIds.current.clear();
+      deckRoutedLayers.current.clear();
+      buildDeckGeoJsonLayerFn.current = null;
+      deckLoadInFlight.current = false;
       m.remove();
       map.current = null;
       if (activeMap === m) activeMap = null;
@@ -2800,6 +2877,60 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // registers tile URLs  -  never computes colors, reads COGs, or touches GCS.
   useEffect(() => {
     if (!subscribeSessionState) return;
+
+    /**
+     * LAZY-LOAD (deck.gl SPIKE, #169): one-time dynamic import of the deck.gl
+     * bundle (@deck.gl/mapbox MapboxOverlay + the deck_layers builder), construct
+     * the ONE interleaved overlay, addControl it, then re-run the reconcile so the
+     * deck setProps path runs SYNCHRONOUSLY now that the modules are cached. Called
+     * fire-and-forget from applyLatest the FIRST time a deck-routed layer appears.
+     * Idempotent + deduped: a second call while the import is in flight is a no-op,
+     * and once the overlay exists it returns immediately. A failed import leaves the
+     * MapLibre paths fully functional (deckOverlay stays null -> the heavy vector
+     * falls back to the MapLibre vector path on the same/next pass).
+     */
+    const ensureDeckLoaded = (): void => {
+      if (deckOverlay.current || deckLoadInFlight.current) return;
+      const m = map.current;
+      if (!m) return;
+      deckLoadInFlight.current = true;
+      void (async () => {
+        try {
+          const [mapboxMod, layersMod] = await Promise.all([
+            import("@deck.gl/mapbox"),
+            import("./lib/deck_layers"),
+          ]);
+          buildDeckGeoJsonLayerFn.current = layersMod.buildDeckGeoJsonLayer;
+          // The map may have torn down while the import was resolving.
+          const live = map.current;
+          if (!live) return;
+          if (!deckOverlay.current) {
+            // interleaved:true draws deck layers INTO the MapLibre GL context (so
+            // they respect the beforeId ordering we assign + share the basemap
+            // depth buffer). addControl accepts any IControl; the cast bridges the
+            // maplibre-gl vs mapbox-gl IControl nominal-type gap.
+            const overlay = new mapboxMod.MapboxOverlay({
+              interleaved: true,
+              layers: [],
+            });
+            deckOverlay.current = overlay;
+            live.addControl(overlay as unknown as maplibregl.IControl);
+          }
+          // Re-run the (idempotent) reconcile so the now-loaded overlay gets its
+          // deck layers built + setProps'd in the synchronous rebuild block.
+          applyLatestRef.current?.();
+        } catch (err) {
+          // Additive feature: a failure leaves MapLibre fully functional.
+          console.warn(
+            "[grace2] deck.gl lazy import / overlay init failed; falling back to MapLibre",
+            err,
+          );
+          deckOverlay.current = null;
+        } finally {
+          deckLoadInFlight.current = false;
+        }
+      })();
+    };
 
     /**
      * Apply the latest session-state payload (from `latestSessionState`) to
@@ -2980,6 +3111,18 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           vectorFetchGen.current.set(id, (vectorFetchGen.current.get(id) ?? 0) + 1);
         }
       }
+      // deck.gl SPIKE (#169): mirror the teardown for deck-ROUTED layers. They
+      // have no MapLibre source (they live in the overlay), so the addedSourceIds
+      // loop above never touches them - drop their bookkeeping here on the same
+      // cache-gated authoritative replace so a Case switch / exit / delete clears
+      // footprints from the overlay too. The actual overlay.setProps rebuild below
+      // emits the surviving set (the removed id is simply absent from it).
+      for (const id of Array.from(deckRoutedIds.current)) {
+        if (!currentIds.has(id) && layerCache.allowsEvict(evictCaseId, id)) {
+          deckRoutedIds.current.delete(id);
+          deckRoutedLayers.current.delete(id);
+        }
+      }
       }
 
       // C3 (job-0356 / per-case-layer-durability)  -  the CLIENT is the source of
@@ -3037,6 +3180,33 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // job-0258: keep the preset bookkeeping current for the map-command
         // opacity path (Pelicun fill multiplier).
         layerStylePresets.current.set(layer.layer_id, layer.style_preset ?? null);
+
+        // deck.gl SPIKE (#169) + LAZY-LOAD: ROUTE heavy/footprint inline-GeoJSON
+        // vectors to the interleaved deck.gl overlay instead of the MapLibre vector
+        // path. Light vectors, vector-tile layers, and rasters fall through
+        // unchanged below. The overlay is rebuilt declaratively once per pass
+        // (overlay.setProps), so we just RECORD the latest layer object here
+        // (covering both first-add and a metadata/inline refresh) and skip the
+        // MapLibre add/update paths.
+        //
+        // The routing predicate is PURE + deck.gl-free, so we decide it WITHOUT
+        // loading the bundle. The FIRST deck-routed layer kicks ensureDeckLoaded()
+        // (one-time `await import(...)` of @deck.gl/mapbox + the builder), which on
+        // resolve constructs the overlay + re-runs this reconcile so the setProps
+        // rebuild block below paints it. We still RECORD + `continue` while the
+        // import is in flight (the layer is tracked; it renders on the deck rebuild
+        // once the overlay mounts) so it never double-renders on the MapLibre path.
+        if (shouldRouteToDeck(layer as unknown as DeckRoutableLayer)) {
+          if (!deckOverlay.current) ensureDeckLoaded();
+          deckRoutedIds.current.add(layer.layer_id);
+          // Store the EFFECTIVE layer (carries the visibility-resolved copy) so a
+          // recreated/refreshed deck layer honors the user's hide on rebuild.
+          deckRoutedLayers.current.set(
+            layer.layer_id,
+            effectiveLayer as unknown as DeckRoutableLayer,
+          );
+          continue;
+        }
 
         if (addedSourceIds.current.has(layer.layer_id)) {
           // Update paint/layout on existing layer via the shared helpers
@@ -3219,11 +3389,107 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         .sort((a, b) => b.z - a.z || a.id.localeCompare(b.id))
         .map((e) => e.id);
       if (ordered.length > 0) applyLayerOrder(m, ordered);
+
+      // deck.gl SPIKE (#169): rebuild the interleaved overlay from the deck-ROUTED
+      // set, declaratively. setProps with the full layer array each pass IS the
+      // add/update/remove path (deck diffs by layer id), so a removed id simply
+      // drops out, an opacity/visibility/z override re-applies, and a refreshed
+      // inline re-paints - all in one call.
+      //
+      // LAZY-LOAD guard: both the overlay AND the lazily-imported builder must be
+      // resolved. On the very first footprint pass neither is ready yet (the import
+      // is in flight); ensureDeckLoaded() re-runs this reconcile on resolve, at
+      // which point both refs are populated and the layers paint synchronously.
+      const buildDeckLayer = buildDeckGeoJsonLayerFn.current;
+      if (deckOverlay.current && buildDeckLayer) {
+        // Order deck layers by the SAME effective-z comparator the MapLibre stack
+        // uses (override.zIndex -> wire z_index -> 0), top-first, so the overlay's
+        // own draw order matches the LayerPanel.
+        const deckOrdered = currentLayers
+          .filter((l) => deckRoutedIds.current.has(l.layer_id))
+          .map((l) => {
+            const ov = caseOverrides[l.layer_id];
+            const wireZ = (l as { z_index?: number | null }).z_index;
+            const z =
+              ov?.zIndex !== undefined
+                ? ov.zIndex
+                : typeof wireZ === "number"
+                  ? wireZ
+                  : 0;
+            return { id: l.layer_id, z };
+          })
+          .sort((a, b) => b.z - a.z || a.id.localeCompare(b.id));
+
+        // beforeId: place each deck layer so the MIXED MapLibre+deck stack still
+        // respects LayerPanel order. `ordered` is the MapLibre stack top-first; the
+        // FIRST MapLibre layer whose effective z is <= the deck layer's z is the one
+        // the deck layer should draw BELOW (i.e. deck inserts BEFORE it). Reuses the
+        // same effective-z the applyLayerOrder intent above computes. When no such
+        // MapLibre layer exists the deck layer goes on top (beforeId undefined).
+        const mapLibreZById = new Map<string, number>();
+        for (const l of currentLayers) {
+          if (!addedSourceIds.current.has(l.layer_id)) continue;
+          const ov = caseOverrides[l.layer_id];
+          const wireZ = (l as { z_index?: number | null }).z_index;
+          mapLibreZById.set(
+            l.layer_id,
+            ov?.zIndex !== undefined
+              ? ov.zIndex
+              : typeof wireZ === "number"
+                ? wireZ
+                : 0,
+          );
+        }
+        const beforeIdFor = (deckZ: number): string | undefined => {
+          // `ordered` is MapLibre ids top-first (highest z first). Walk bottom-up
+          // (lowest z first) to find the lowest MapLibre layer that sits ABOVE this
+          // deck layer (its z >= deckZ) and exists on the map; deck draws before it.
+          for (let i = ordered.length - 1; i >= 0; i--) {
+            const id = ordered[i]!;
+            const z = mapLibreZById.get(id) ?? 0;
+            if (z >= deckZ) {
+              try {
+                if (m.getLayer(id)) return id;
+              } catch {
+                /* layer mid-removal - skip */
+              }
+            }
+          }
+          return undefined;
+        };
+
+        const suppress = deckPickSuppressed.current;
+        const deckLayers = deckOrdered.map(({ id, z }) => {
+          const routed = deckRoutedLayers.current.get(id)!;
+          const ov = layerCache.getOverride(layerCache.activeCaseId, id);
+          const built = buildDeckLayer(routed, ov, {
+            suppressPicking: suppress,
+            onClick: onDeckClickRef.current ?? undefined,
+          });
+          // beforeId is a deck.gl interleaved-mode prop (not a GeoJsonLayer ctor
+          // field), so clone with it. Cast: deck's per-layer beforeId is accepted
+          // by MapboxOverlay's interleaved path but not in the layer prop types.
+          const bid = beforeIdFor(z);
+          return bid
+            ? (built.clone({ beforeId: bid } as unknown as Record<string, unknown>))
+            : built;
+        });
+        try {
+          deckOverlay.current.setProps({ layers: deckLayers });
+        } catch (err) {
+          console.warn("[grace2] deck overlay setProps failed", err);
+        }
+      }
     };
 
     // Expose applyLatest so the caseActive sync effect can re-run the reconcile
     // when the Case-entered state flips (without waiting for a session-state push).
     applyLatestRef.current = applyLatest;
+    // deck.gl SPIKE (#169): the suppress-flip effect re-runs the full (idempotent)
+    // reconcile so the overlay rebuilds with deck layers pickable / non-pickable.
+    // applyLatest is a no-op when there is no retained session-state, so an early
+    // flip before the first push is harmless.
+    rebuildDeckLayersRef.current = applyLatest;
 
     const unsub = subscribeSessionState((payload) => {
       latestSessionState.current = payload;
@@ -4194,6 +4460,59 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       setFeaturePopup(data);
     };
 
+    // deck.gl SPIKE (#169) PICKING BRIDGE: queryRenderedFeatures is BLIND to deck
+    // layers, so a footprint tap must come back through deck's own onClick. We
+    // adapt deck's PickingInfo into the SAME FeaturePopup payload the MapLibre
+    // click path builds (buildFeaturePopupData), so clicking a deck footprint
+    // opens the popup identically. info.object is the picked GeoJSON Feature;
+    // info.layer.id is the layer_id we routed; info.coordinate is [lng,lat].
+    const onDeckClick = (info: unknown): void => {
+      const i = info as {
+        object?: { properties?: Record<string, unknown> | null; geometry?: unknown } | null;
+        layer?: { id?: string } | null;
+        x?: number;
+        y?: number;
+        coordinate?: number[] | null;
+      };
+      if (!i || !i.object) return; // a miss (clicked empty deck area) - ignore.
+      const layerId = i.layer?.id;
+      const px = typeof i.x === "number" ? i.x : 0;
+      const py = typeof i.y === "number" ? i.y : 0;
+      // Highlight the tapped footprint geometry via the same shared source.
+      try {
+        setFeatureHighlight(m, (i.object.geometry ?? null) as Geometry | null);
+      } catch {
+        /* highlight best-effort */
+      }
+      const lngLat =
+        Array.isArray(i.coordinate) &&
+        typeof i.coordinate[0] === "number" &&
+        typeof i.coordinate[1] === "number"
+          ? { lng: i.coordinate[0]!, lat: i.coordinate[1]! }
+          : undefined;
+      let refZoom: number | undefined;
+      try {
+        refZoom = m.getZoom();
+      } catch {
+        refZoom = undefined;
+      }
+      const data: FeaturePopupData = {
+        ...buildFeaturePopupData(
+          (i.object.properties ?? null) as Record<string, unknown> | null,
+          { x: px, y: py },
+          { layerName: layerId, geomKindLabel: geomLabel("polygon") },
+        ),
+        lngLat,
+        refZoom,
+      };
+      setMapCanvasSize(readCanvasSize());
+      if (typeof refZoom === "number") setCurrentZoom(refZoom);
+      setFeaturePopup(data);
+    };
+    // Publish the bridge so the reconcile's deck rebuild wires it into each
+    // pickable deck layer's onClick.
+    onDeckClickRef.current = onDeckClick;
+
     // Desktop cursor affordance  -  pointer over a hittable feature. We attach a
     // single mousemove handler (cheap) instead of per-layer enter/leave so it
     // keeps working as vector layers come and go without re-binding.
@@ -4222,6 +4541,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       } catch {
         /* map may already be torn down */
       }
+      // deck.gl SPIKE (#169): drop the picking bridge so a stale handler can't
+      // fire after the effect (and its `m`) is torn down.
+      onDeckClickRef.current = null;
     };
   }, []);
 
@@ -4476,6 +4798,34 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     });
     return unsub;
   }, []);
+
+  // deck.gl SPIKE (#169): SUPPRESS deck picking while a draw / pick / region-choice
+  // request is in flight, so deck does not swallow the canvas pointer events
+  // terra-draw / the SpatialDrawSurface / the region-choropleth pick need. A draw
+  // request is `spatialRequest != null` (also the #170 AOI-capture card), and a
+  // region-choice is the bus's `request != null`. When either is active we flip
+  // the ref + rebuild the overlay non-pickable; when both clear we restore picking.
+  useEffect(() => {
+    let regionActive = regionChoiceBus.getState().request != null;
+    const apply = () => {
+      const suppressed = spatialRequest != null || aoiCaptureActive === true || regionActive;
+      if (deckPickSuppressed.current === suppressed) return; // no change.
+      deckPickSuppressed.current = suppressed;
+      // Re-run the (idempotent) reconcile so the overlay rebuilds with the deck
+      // layers pickable / non-pickable to match.
+      try {
+        rebuildDeckLayersRef.current?.();
+      } catch {
+        /* best-effort - the next session-state push reconciles anyway */
+      }
+    };
+    apply();
+    const unsub = regionChoiceBus.subscribe((st: RegionChoiceBusState) => {
+      regionActive = st.request != null;
+      apply();
+    });
+    return unsub;
+  }, [spatialRequest, aoiCaptureActive]);
 
   // job-0321 (F43)  -  resolve the legend placement.
   //   - aoiBbox + on-screen anchor -> hang off the box's bottom edge, nudged
