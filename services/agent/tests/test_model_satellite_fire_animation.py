@@ -309,6 +309,105 @@ def test_confirm_empty_run_is_not_ok_honesty_floor():
     assert result["n_frames"] == 0
 
 
+def test_confirm_emits_each_published_frame_as_a_loaded_layer():
+    """NATE 2026-06-26: the render-blocker fix. Each frame whose publish returned
+    an http(s) tile URL must be EMITTED into session-state loaded_layers via
+    add_loaded_layer (the step the composer omitted -> frames published but never
+    rendered). The emitted LayerURI carries the PUBLISHED http(s) uri, NOT the raw
+    s3:// COG uri; a frame whose publish failed (no http url) is honestly SKIPPED.
+    """
+    bbox = tuple(_INCIDENT["bbox"])
+
+    def _frame(ts_iso):
+        return LayerURI(
+            layer_id=f"goes-anim-geocolor-{ts_iso}",
+            name=f"GOES GeoColor {ts_iso} (GOES-18)",
+            layer_type="raster",
+            uri=f"s3://fake/{ts_iso}.tif",
+            style_preset="goes_rgb_animation",
+            role="context",
+            units=None,
+            bbox=bbox,
+        )
+
+    frames = [
+        _frame("2026-06-22T13:30:00Z"),
+        _frame("2026-06-22T13:35:00Z"),
+        _frame("2026-06-22T13:40:00Z"),
+    ]
+
+    def _fake_goes(*a, **k):
+        return frames
+
+    def _fake_peek(product, b, s, e):
+        return len(frames)
+
+    # The first two frames publish to TiTiler (http url); the third FAILS to
+    # publish (absent from the map) -> it must be honestly skipped, never emitted
+    # with its raw s3:// uri.
+    published_map = {
+        frames[0].layer_id: "https://tiles.example/wms?layer=" + frames[0].layer_id,
+        frames[1].layer_id: "https://tiles.example/wms?layer=" + frames[1].layer_id,
+    }
+
+    async def _fake_publish(layers, pipeline_emitter):
+        # Mirror the real _publish_layers contract: {layer_id: published_url}.
+        return dict(published_map)
+
+    emitter = _RecordingEmitter()
+
+    with patch.dict(
+        TOOL_REGISTRY,
+        {
+            "geocode_location": _reg(_fake_geocode_precise),
+            "fetch_wfigs_incident": _reg(_fake_wfigs),
+            "fetch_goes_animation": _reg(_fake_goes),
+        },
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._peek_frame_count",
+        _fake_peek,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_firms",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._safe_overlay_perimeters",
+        _async_none,
+    ), patch(
+        "grace2_agent.workflows.model_satellite_fire_animation._publish_layers",
+        _fake_publish,
+    ):
+        result = _run(
+            model_satellite_fire_animation(
+                "Iron",
+                products=["geocolor"],
+                state="UT",
+                start_utc="2026-06-22T13:30:00Z",
+                end_utc="2026-06-22T20:00:00Z",
+                confirm=True,
+                overlay_firms=False,
+                overlay_perimeters=False,
+                pipeline_emitter=emitter,  # type: ignore[arg-type]
+            )
+        )
+
+    assert result["status"] == "ok"
+    assert result["n_frames"] == 3
+    # Only the TWO frames that PUBLISHED (http url) are emitted; the publish-fail
+    # frame is honestly skipped (NOT emitted with its raw s3:// uri).
+    assert len(emitter.loaded_layers) == 2
+    emitted_ids = {lyr.layer_id for lyr in emitter.loaded_layers}
+    assert emitted_ids == set(published_map)
+    # Every emitted frame carries an http(s) tile uri -- NEVER the raw s3:// COG.
+    for lyr in emitter.loaded_layers:
+        assert lyr.uri.startswith(("http://", "https://")), lyr.uri
+        assert not lyr.uri.startswith("s3://")
+        assert lyr.uri == published_map[lyr.layer_id]
+        # The other identity fields are copied through unchanged.
+        assert lyr.style_preset == "goes_rgb_animation"
+        assert lyr.role == "context"
+        assert lyr.bbox == bbox
+
+
 # ---- GOES blended GeoColor + Fire Temperature animation (NATE 2026-06-22) ---
 #
 # A GOES fire run FOLDS the co-temporal pair into ONE scrubber: each frame is a
@@ -672,10 +771,16 @@ def test_densest_hotspot_bbox_tight_around_densest_cluster():
 
 
 class _RecordingEmitter:
-    """Minimal PipelineEmitter stand-in that records map-command emissions."""
+    """Minimal PipelineEmitter stand-in that records map-command emissions.
+
+    NATE 2026-06-26: also records add_loaded_layer so we can lock in that each
+    published animation frame is emitted into session-state loaded_layers (the
+    step the composer omitted -- frames published to TiTiler but never rendered).
+    """
 
     def __init__(self):
         self.map_commands: list[tuple[str, dict]] = []
+        self.loaded_layers: list[LayerURI] = []
 
     async def add_step(self, name, tool_name):
         return "step-1"
@@ -691,6 +796,9 @@ class _RecordingEmitter:
 
     async def emit_map_command(self, command, args):
         self.map_commands.append((command, args))
+
+    async def add_loaded_layer(self, layer):
+        self.loaded_layers.append(layer)
 
 
 def test_coarse_geocode_localizes_from_firms_and_emits_aoi_pre_gate():

@@ -697,6 +697,14 @@ async def model_satellite_fire_animation(
         raise SatelliteFireAnimationInputError(
             f"incident_name must be a non-empty string; got {incident_name!r}"
         )
+    # NATE 2026-06-26: animation frames never rendered because the registered
+    # wrapper passes pipeline_emitter=None, so the per-frame add_loaded_layer
+    # emit (the step the working flood composer does) never ran. Bind the LIVE
+    # current_emitter() here, exactly like model_flood_scenario.py, so confirm
+    # runs emit each published frame into session-state loaded_layers.
+    from ..pipeline_emitter import current_emitter
+
+    pipeline_emitter = pipeline_emitter or current_emitter()
     products = list(products) if products else list(GOES_PRODUCTS)
     for p in products:
         if p not in SUPPORTED_PRODUCTS:
@@ -899,6 +907,45 @@ async def model_satellite_fire_animation(
 
     # --- Stage 5 (confirmed): publish every layer via TiTiler (to_thread). ---
     published = await _publish_layers(all_layers + overlay_layers, pipeline_emitter)
+
+    # NATE 2026-06-26: EMIT each published frame into session-state loaded_layers
+    # (mirrors model_flood_scenario.py ~3774). _publish_layers returns
+    # {layer_id: http(s) tile url} for the frames it could publish; build a NEW
+    # LayerURI copy with uri=<published url> and add_loaded_layer it so the map
+    # actually renders the animation. HONESTY FLOOR: only emit frames whose
+    # publish returned an http(s) url -- a raw s3:// frame never renders, so it
+    # is skipped (never added). When current_emitter() is None (direct/smoke/
+    # unit test without an emitter) emission is skipped; the {id: url} map is
+    # still returned for the summary.
+    if pipeline_emitter is not None:
+        for layer in all_layers + overlay_layers:
+            published_url = published.get(layer.layer_id)
+            if not (
+                isinstance(published_url, str)
+                and published_url.startswith(("http://", "https://"))
+            ):
+                # Publish failed / returned a non-http value -> honest skip; do
+                # NOT emit the raw s3:// frame (it would never render).
+                continue
+            emit_layer = LayerURI(
+                layer_id=layer.layer_id,
+                name=layer.name,
+                layer_type=layer.layer_type,
+                uri=published_url,
+                style_preset=layer.style_preset,
+                temporal=layer.temporal,
+                role=layer.role,
+                units=layer.units,
+                bbox=layer.bbox,
+            )
+            try:
+                await pipeline_emitter.add_loaded_layer(emit_layer)
+            except Exception as exc:  # noqa: BLE001 -- a publish/emit hiccup is non-fatal
+                logger.warning(
+                    "model_satellite_fire_animation: add_loaded_layer(%s) failed (%s)",
+                    layer.layer_id,
+                    exc,
+                )
 
     n_frames = len(all_layers)
     # Honesty floor: no imagery frames -> NOT ok.

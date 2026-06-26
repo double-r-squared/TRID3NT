@@ -282,6 +282,104 @@ def test_direct_run_returns_ordered_step_frames_no_news(monkeypatch):
     assert res["peak_fj"] > 0
 
 
+class _RecordingEmitter:
+    """Minimal PipelineEmitter stand-in that records the per-frame emissions.
+
+    NATE 2026-06-26: records add_loaded_layer so we can lock in that each
+    published lightning frame is emitted into session-state loaded_layers (the
+    step the composer omitted -> frames published to TiTiler but never rendered).
+    """
+
+    def __init__(self):
+        self.map_commands: list[tuple[str, dict]] = []
+        self.loaded_layers: list = []
+
+    async def add_step(self, name, tool_name):
+        return "step-1"
+
+    async def mark_running(self, step_id):
+        return None
+
+    async def mark_complete(self, step_id):
+        return None
+
+    async def mark_failed(self, step_id, code, msg):
+        return None
+
+    async def emit_map_command(self, command, args):
+        self.map_commands.append((command, args))
+
+    async def add_loaded_layer(self, layer):
+        self.loaded_layers.append(layer)
+
+
+def test_confirm_emits_each_published_frame_as_a_loaded_layer(monkeypatch):
+    """NATE 2026-06-26: the render-blocker fix. Each baked + overlay frame whose
+    publish returned an http(s) tile URL must be EMITTED into session-state
+    loaded_layers via add_loaded_layer (the step the composer omitted -> frames
+    published but never rendered). The emitted LayerURI carries the PUBLISHED
+    http(s) uri, NOT the raw cache uri.
+    """
+    _wire_synthetic(monkeypatch)  # publish stub returns https://fake/<layer_id>
+    emitter = _RecordingEmitter()
+
+    res = _run(model_glm_lightning_animation(
+        bbox=_UT_BBOX,
+        start_utc="2025-07-05T18:00:00Z",
+        end_utc="2025-07-05T18:03:00Z",  # 3 one-min frames
+        satellite="goes-19",
+        accumulation_window_s=60,
+        storm_name="UT Gulf TC",
+        pipeline_emitter=emitter,  # type: ignore[arg-type]
+    ))
+    assert res["status"] == "ok"
+    # 3 baked frames + 3 standalone overlay frames = 6 published renderable layers.
+    n_published = res["n_frames"] + res["n_overlay_frames"]
+    assert n_published == 6
+    # EVERY published frame is emitted into loaded_layers (the fix).
+    assert len(emitter.loaded_layers) == n_published
+    # Each emitted frame carries the PUBLISHED http(s) tile uri -- NEVER a raw
+    # s3:// / file:// cache uri (those never render).
+    for lyr in emitter.loaded_layers:
+        assert lyr.uri.startswith(("http://", "https://")), lyr.uri
+        assert lyr.uri == f"https://fake/{lyr.layer_id}"
+    # Distinct frames (no dedup collapse): one emit per published layer_id.
+    emitted_ids = [lyr.layer_id for lyr in emitter.loaded_layers]
+    assert len(set(emitted_ids)) == len(emitted_ids)
+
+
+def test_publish_failure_frame_is_skipped_not_emitted_raw(monkeypatch):
+    """HONESTY FLOOR: a frame whose publish returns a NON-http value (publish
+    failed) must NOT be emitted -- its raw cache uri would never render."""
+    _wire_synthetic(monkeypatch)
+
+    class _Entry:
+        def __init__(self, fn):
+            self.fn = fn
+
+    # publish_layer returns a NON-http sentinel -> every frame fails the http
+    # gate -> nothing is emitted (but the run still succeeds + returns frames).
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "publish_layer",
+        _Entry(lambda uri, lid, preset=None: "PUBLISH_FAILED_NOT_A_URL"),
+    )
+    emitter = _RecordingEmitter()
+
+    res = _run(model_glm_lightning_animation(
+        bbox=_UT_BBOX,
+        start_utc="2025-07-05T18:00:00Z",
+        end_utc="2025-07-05T18:02:00Z",  # 2 frames
+        accumulation_window_s=60,
+        overlay_standalone_ged=False,
+        pipeline_emitter=emitter,  # type: ignore[arg-type]
+    ))
+    assert res["status"] == "ok"
+    assert res["n_frames"] == 2
+    # Non-http publish -> honest skip -> NO frames emitted (never a raw cache uri).
+    assert emitter.loaded_layers == []
+
+
 def test_baked_frame_is_real_rgb_cog(monkeypatch):
     captured = _wire_synthetic(monkeypatch)
     _run(model_glm_lightning_animation(

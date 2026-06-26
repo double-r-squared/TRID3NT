@@ -117,10 +117,18 @@ _NATIVE_CELL_M = 10.0
 #: typical AOI finds a usable scene; the least-cloudy match is then chosen.
 _DEFAULT_MAX_CLOUD = 30.0
 
-#: bbox area guardrail (deg^2). A Sentinel-2 NDVI over a huge AOI would span
-#: many MGRS tiles + materialize an enormous grid; the atomic-tool surface is
-#: AOI-scoped. ~0.25 deg^2 ~ a county-ish extent.
-_MAX_BBOX_DEG2 = 0.5
+#: bbox area guardrail (deg^2). NATE 2026-06-26: raised 0.5 -> 1.0. This is NOT a
+#: memory ceiling: the emitted grid is already px-clamped to [16,4096]/axis by
+#: _pc_stac.bbox_pixel_dims, so a ~0.77-1.0 deg^2 AOI clamps to 4096x4096 and
+#: auto-coarsens to ~20-24 m/px -- COG byte size stays bounded regardless of
+#: bbox area. The old 0.5 cap rejected legitimate county-ish AOIs (~0.77 deg^2)
+#: with no recourse. ~1.0 deg^2 ~ a county-ish extent; beyond it we still raise.
+_MAX_BBOX_DEG2 = 1.0
+
+#: Native-10m comfort window (deg^2). Below this an AOI fits the 4096px grid at
+#: ~native 10 m; between this and _MAX_BBOX_DEG2 the px-clamp coarsens the cell
+#: (honest auto-coarsen, logged) rather than rejecting. NATE 2026-06-26.
+_NATIVE_COMFORT_DEG2 = 0.5
 
 #: 6-dp bbox quantization (~0.1 m) for cache-key stability.
 _BBOX_DECIMALS = 6
@@ -193,7 +201,22 @@ def _validate_bbox(bbox: tuple[float, float, float, float]) -> None:
     if area > _MAX_BBOX_DEG2:
         raise NDVIBboxError(
             f"bbox area {area:.3f} deg^2 exceeds {_MAX_BBOX_DEG2} deg^2 guardrail "
-            "for compute_ndvi (Sentinel-2 NDVI is AOI-scoped; narrow the bbox)."
+            "for compute_ndvi. AOIs up to ~1.0 deg^2 are auto-coarsened to fit "
+            "the 4096px grid (effective cell ~= bbox_m/4096); narrow the bbox for "
+            "native 10 m."
+        )
+    # NATE 2026-06-26: between the native-10m comfort window and the cap we do
+    # NOT raise -- the px-clamp ([16,4096]/axis in _pc_stac.bbox_pixel_dims)
+    # already coarsens the grid so the COG stays bounded. Log an honest note so
+    # the user understands the resolution trade (native 10 m -> ~20-24 m/px).
+    if area > _NATIVE_COMFORT_DEG2:
+        logger.info(
+            "compute_ndvi: bbox area %.3f deg^2 exceeds the ~%.2f deg^2 native-10m "
+            "comfort window; the 4096px grid clamp auto-coarsens this AOI to an "
+            "effective cell ~= bbox_m/4096 (~20-24 m/px). Narrow the bbox for "
+            "native 10 m resolution.",
+            area,
+            _NATIVE_COMFORT_DEG2,
         )
 
 
@@ -432,7 +455,10 @@ def compute_ndvi(
 
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. AOI-scoped (<= 0.5 deg^2).
+      Required. AOI-scoped (<= 1.0 deg^2). AOIs under ~0.5 deg^2 read at native
+      10 m; larger AOIs (up to ~1.0 deg^2) are auto-coarsened to fit the 4096px
+      grid (effective cell ~= bbox_m/4096, ~20-24 m/px); narrow the bbox for
+      native 10 m.
     - ``start_date`` / ``end_date`` (str, optional): ``"YYYY-MM-DD"`` window
       bounds. Default: a trailing ~14-month window ending today.
     - ``max_cloud_cover`` (float, default 30.0): only scenes below this

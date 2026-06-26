@@ -152,6 +152,19 @@ def test_too_large_bbox_raises() -> None:
         compute_ndvi(bbox=(-82.0, 30.0, -79.0, 33.0))  # 9 deg^2
 
 
+def test_county_ish_bbox_does_not_raise_validation() -> None:
+    """NATE 2026-06-26: a ~0.77 deg^2 county-ish AOI must NOT be rejected by the
+    bbox guardrail -- the 4096px grid clamp auto-coarsens it (effective cell
+    ~= bbox_m/4096) so the COG stays bounded. The old 0.5 deg^2 cap wrongly
+    rejected it with no recourse. _validate_bbox proceeds (does not raise)."""
+    # (-80.44, 32.56, -79.56, 33.44): area = 0.88 * 0.88 = ~0.774 deg^2.
+    bbox = (-80.44, 32.56, -79.56, 33.44)
+    area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+    assert 0.5 < area <= 1.0  # in the auto-coarsen window, under the new cap
+    # Must not raise NDVIBboxError (validation passes for the coarsened AOI).
+    ndvi_mod._validate_bbox(bbox)
+
+
 def test_bbox_error_not_retryable() -> None:
     try:
         compute_ndvi(bbox=(-80.0, 32.0, -80.0, 32.0))
