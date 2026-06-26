@@ -1366,9 +1366,10 @@ describe("desktopChatContainerStyle (job-0283 + ux-batch-1 J1 drag-resize)", () 
     expect(s.position).toBe("absolute");
     expect(s.right).toBe(16);
     expect(s.top).toBe(16);
-    // NATE 2026-06-17 chat-chrome rework (item 6) — the desktop panel now runs
-    // flush to the BOTTOM of the window (was a 16px gap).
-    expect(s.bottom).toBe(0);
+    // NATE 2026-06-22 chat-chrome rework (item 6 → item 7) — the desktop panel
+    // bottom edge now aligns with the Settings button (bottom: 12), creating a
+    // clean visual band with matching offsets across the left-rail controls.
+    expect(s.bottom).toBe(12);
     expect(String(s.width)).toContain("384px");
     expect(s.overflow).toBe("hidden");
   });

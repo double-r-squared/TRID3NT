@@ -2012,12 +2012,14 @@ export function desktopChatContainerStyle(
     position: "absolute",
     right: 16,
     top: 16,
-    // NATE 2026-06-17 chat-chrome rework (item 6) — the desktop panel now runs
-    // flush to the BOTTOM of the window (was a 16px gap). The composer is the
-    // panel's last flex child, so it sits flush against the window bottom; the
-    // scroll area's bottom-padding (inputHeightPx + INPUT_GAP_PX) still clears
-    // the floating composer overlay, so nothing is clipped.
-    bottom: 0,
+    // NATE 2026-06-22 chat panel alignment — the desktop chat panel's bottom
+    // edge now aligns with the Settings button (bottom: 12px), mirroring the
+    // bottom offset used by BottomRowButtons. This creates a clean visual
+    // alignment and leaves a gap between the panel bottom and viewport bottom
+    // (vs the prior flush-to-bottom layout). The composer is still the panel's
+    // last flex child; the scroll area's bottom-padding (inputHeightPx +
+    // INPUT_GAP_PX) still clears the floating composer overlay.
+    bottom: 12,
     width: `min(${clampChatWidth(widthPx)}px, 92vw)`,
     background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
@@ -4305,9 +4307,13 @@ export function Chat({
           // scroll area (not a floating overlay), so the overlay-clearing
           // bottom padding isn't needed. Collapsed sheet hides the scroll
           // area entirely (stays mounted — stream + scroll state survive).
+          // NATE 2026-06-26 — desktop bottom padding increased to account for
+          // composer height plus 12px top + 12px bottom padding = 12 +
+          // inputHeightPx + 12, rounded to (inputHeightPx + 24px) so messages
+          // are fully visible above the floating composer, not clipped behind it.
           padding: mobile
             ? "4px 12px 12px 12px"
-            : `12px 12px ${inputHeightPx + INPUT_GAP_PX}px 12px`,
+            : `12px 12px ${inputHeightPx + INPUT_GAP_PX + 24}px 12px`,
           // NATE redesign - the mobile scrollback (the "back panel") is hidden
           // ENTIRELY in the not-connected states (only the floating composer
           // shows), and stays hidden while collapsed. On connect it eases in a
