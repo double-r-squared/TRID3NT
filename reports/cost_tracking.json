@@ -2635,5 +2635,19 @@
     "description": "MODFLOW Option A engine fix (2 specialist agents, local mf6 6.7.0, on branch modflow-grid-containment-fix). Agent 1 (grid, died on 529 after 66 tool-uses but left verified work): AOI-aware adaptive grid containing spill+fields (c32fd8f). Agent 2 (physics calibration, NATE picked spill-at-field-edge): solubility-capped CNC source (peak 53342->1100 mg/L = TCE solubility) + offset 0.5->0.1km field-edge placement (f4b83eb). PROVEN local: Ames AOI now 2/238 fields affected (Soybeans 22.7, Corn 0.066 mg/L) above the 0.005 MCL, mf6 Normal termination, honesty floor verified, 76 tests pass (1 pre-existing GRACE2_RUNS_BUCKET failure). NOT pushed/deployed; deploy needs MODFLOW worker-image rebuild + agent deploy.",
     "model": "opus",
     "subagent_tokens": 307052
+  },
+  {
+    "job_id": "queue-scope-wf",
+    "sprint": 17,
+    "description": "Read-only scoping workflow (13 parallel Opus agents, one per remaining live-feedback queued item) mapping each to exact files + root cause + surgical fix, so the implement fan-out could be partitioned into disjoint file-owners with no parallel-edit collisions. Surfaced: layer-delete-cascade + true-color-double-delete + tool-cards-on-refresh are server.py defects; 3D pixelation = nearest-resampling draped on pitched terrain; Sentinel-2 cap is in compute_ndvi not data_fetch and is px-clamp-safe; GOES-animation frames never reach add_loaded_layer; low-res output is a cost-budget lever (deferred to NATE).",
+    "model": "opus",
+    "subagent_tokens": 1629817
+  },
+  {
+    "job_id": "queue-implement-wf",
+    "sprint": 17,
+    "description": "Implement+verify workflow for the remaining live-feedback queue: 9 parallel Opus implementers partitioned into disjoint file-owners (zero collisions) + 3 verifiers (web tsc+vitest, agent pytest, adversarial routing review). Landed across 5 commits: server.py delete-cascade/true-color-double-delete/cards-on-refresh; web chat-card streaming + solver labels; 3D terrain softening + linear resampling; mobile/UI polish (draw-AOI z-order, case-restore-on-reload, tools-catalog timeout, sandbox-card state machine); GOES-animation frame emission + Sentinel-2 guardrail. Verify: tsc clean, web vitest 2087/2087, agent pytest 82/82, routing review SOLID.",
+    "model": "opus",
+    "subagent_tokens": 963629
   }
 ]

@@ -29,21 +29,22 @@ Status of every item from the live-testing feedback. DONE = committed + deployed
 
 ## QUEUED - not landed
 ### Web UI
-- [ ] mobile: DRAWN-AOI button renders OVER the settings button -> put it UNDER (currently inaccessible)
-- [ ] tool cards do not appear until a refresh
-- [ ] mobile REFRESH navigates to the cases LIST instead of staying in the current case
-- [ ] cannot see the TOOLS CATALOG to test
-- [ ] "sfincs solve" -> capitalize SFINCS; active solve needs NO dropdown
-- [ ] python sandbox cards: fold inline after completion/approval; FAILED -> red; acceptance gates fold inline (desktop+mobile); folded reuse dims+accent + GLOW while running
-- [ ] humanize "Layer statistics ready" -> "Code completed" for sandbox steps
+### Web UI - LANDED (queue-implement workflow, 2026-06-26)
+- [x] mobile: DRAWN-AOI button now drops BELOW the settings gear (top 64); Settings tappable (371caa3)
+- [x] tool cards appear LIVE (no refresh): Chat ROOT->case stream self-heal (adoptRootInto) + agent always-emit case-open (2bff862 + 9bfd409)
+- [x] mobile REFRESH stays in the open case: localStorage grace2.activeCaseId persist + restore-on-mount (371caa3)
+- [x] TOOLS CATALOG no longer hangs box-off: 10s timeout + honest "agent may be asleep" error (371caa3)
+- [x] "sfincs solve" -> "SFINCS solve" (all solvers); active solve card dropdown removed (2bff862)
+- [x] python sandbox cards: fold-after-resolve + FAILED red + status accent + glow-while-running (371caa3)
+- [x] "Layer statistics ready" -> "Code completed" (2bff862)
 
-### Rendering/data
-- [ ] GOES not always displayed, esp. during ANIMATION runs (single-frame works)
-- [ ] low output image resolution
-- [ ] deleting one layer momentarily drops MANY others (refresh restores)
-- [ ] true-color raster deletion deletes BOTH rasters (recurring)
-- [ ] 3D terrain too aggressive -> extreme pixelation (~9 px)
-- [ ] Sentinel-2 guardrail 0.5 deg^2 too strict for ~0.77 deg^2; offer a resolution gate; (deck.gl unify - spike DONE)
+### Rendering/data - LANDED (queue-implement workflow, 2026-06-26)
+- [x] GOES animation frames now render: composer emits each published frame to loaded_layers (honesty floor) (c6cbfb1)
+- [x] deleting one layer no longer drops many: re-inline surviving vectors before the delete echo (9bfd409)
+- [x] true-color deletion no longer deletes both: _restamp mints unique ids for list-returning tools (9bfd409)
+- [x] 3D terrain softened (exaggeration 2.0->1.4) + linear resampling in 3D (kills ~9px pixelation) (f2f472a)
+- [x] Sentinel-2 guardrail 0.5->1.0 deg^2 + honest auto-coarsening (c6cbfb1)
+- [ ] DEFERRED (NATE decision): low output image resolution = autoscaler COMPUTE-BUDGET lever (raising scales cost superlinearly). Options: (a) raise default budget/ladder, (b) expose resolution as a per-fetch user gate like the solver gate, (c) leave. NOT a silent cap bump.
 - [ ] building-footprint METADATA thinning: ID-only GeoJSON + fetch-on-click enrich (= #165 MVT data-island)
 
 ### Engine
