@@ -2670,5 +2670,26 @@
     "description": "Read-only diagnostic (3 traces) of case-delete-persists + exit-shows-only-one + mobile legend bbox-snap. HIGH-confidence: (delete) box-off delete is WS-only (queued, never reaches server) + the stale-yet-authoritative cold /case-list resurrects it + in-memory tombstone cleared by that list; needs a serverless delete Lambda (deferred) + durable client tombstone. (exit-one) 371caa3 seeds activeCaseId -> cold case-VIEW upserts the single case -> trips the cold case-LIST 'cases.length>0' guard -> full list never fetched = MY regression. (legend) mobile sheet-top-dock band branch fires before the AOI-snap branch -> center-band instead of bbox-edge.",
     "model": "opus",
     "subagent_tokens": 254213
+  },
+  {
+    "job_id": "coldpath-and-overlays-fix-wf",
+    "sprint": 17,
+    "description": "Implement+verify workflow (4 disjoint owners, sequenced Leaf->App->Verify) for the cold-path + overlay live bugs: double-refresh cold-load race (App.tsx decouple from wsStatus flapping + guard-release-on-cancel + fetch timeout + bounded spinner), exit-shows-only-one (cold case-LIST gated on casesSettled not cases.length), case-delete durable tombstone + no-resurrect (useCases), mobile legend snaps to AOI bbox edge (gate band on !aoiRect), mobile scrubber docks to chat-panel top + tracks it + hide-with-layer. Verify: tsc clean, web vitest 2106/2106, cold-path review SOLID. 3 commits, web-only deploy.",
+    "model": "opus",
+    "subagent_tokens": 667967
+  },
+  {
+    "job_id": "openquake-state-assess-wf",
+    "sprint": 17,
+    "description": "Read-only assessment (3 facets) of the existing OpenQuake integration. Finding: classical-PSHA HAZARD path is BUILT + unit-proven (32 tests) and Batch infra ~95% LIVE (ECR grace2-openquake image pushed, Batch job-def grace2-openquake ACTIVE rev1 on grace2-solvers, hazard-runs+cache buckets, IAM reused). Gaps to functional: real `oq engine --run` NEVER executed (test-locally-first gate), box env GRACE2_AWS_BATCH_JOB_DEF_OPENQUAKE not set, run_seismic_hazard_psha absent from SOLVER_CONFIRM_TOOLS (no confirm + no autostop marker), physics_registry default drift, hardcoded demo seismic inputs; risk archetypes (scenario_damage/risk + GEM exposure/vulnerability/Vs30 fetchers) = follow-on.",
+    "model": "opus",
+    "subagent_tokens": 388584
+  },
+  {
+    "job_id": "openquake-confirm-gate-mfd",
+    "sprint": 17,
+    "description": "Opus Agent: 2 small agent-side OpenQuake gaps - added run_seismic_hazard_psha to SOLVER_CONFIRM_TOOLS (proceed/cancel confirm card via _build_psha_confirm_envelope + autostop solver-busy marker, Invariant 9) + reconciled physics_registry width_of_mfd_bin default 0.1->0.2 to match the engine-proven deck default. 71 agent tests green. Part of the OpenQuake local-proof-then-deploy (4 deck/postprocess bugs the orchestrator found + fixed via a real local oq engine run; worker image CodeBuild-rebuilt + agent SSM-deployed).",
+    "model": "opus",
+    "subagent_tokens": 122517
   }
 ]
