@@ -333,57 +333,42 @@ describe("Item b - mobile legend toggle lives INSIDE the Layers section", () => 
   });
 });
 
-// --- NATE 2026-06-22 - scrubber+legend SCALING UNIFICATION ----------------- //
+// --- STATIC SCRUBBER + AUTOPLAY HANDLE (NATE 2026-06-26) -------------------- //
 //
-// NATE on mobile: the legend "scales nicely, follows the bbox width" and does
-// NOT vanish on zoom-out, but the scrubber DID hide + had side padding. The fix
-// unifies them: the scrubber now (a) PERSISTS on zoom-out like the legend (no
-// hide-below-threshold), and (b) tracks the AOI bbox on-screen WIDTH directly.
-import { aoiScaleFactor, type ScreenRect } from "./lib/legend_snap";
-
-describe("scrubber+legend scaling unification (NATE 2026-06-22)", () => {
-  it("stays MOUNTED on a tiny zoomed-out aoiRect (no hide-below-threshold)", () => {
-    // A 12px-wide bbox: under the OLD scrubberVisibleForAoi this returned null
-    // (hidden); now the scrubber persists like the legend.
-    const tiny: ScreenRect = { left: 500, top: 500, right: 512, bottom: 540 };
-    render(
-      <SequenceScrubber
-        label="HRRR precip"
-        frameLabels={["F+01h", "F+03h", "F+06h"]}
-        activeIndex={0}
-        onStep={() => {}}
-        playing={false}
-        onPlayToggle={() => {}}
-        aoiRect={tiny}
-      />,
-    );
-    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+// The scrubber is now STATIC at the bottom (no AOI-bbox snap/dock). The
+// remaining behavioural contract worth pinning at the integration level is the
+// AUTOPLAY-HANDLE fix: when the controller advances a frame (auto tick), the
+// App-owned scrubber re-renders (useAnimationState) and the slider HANDLE tracks
+// the new frame index - NATE: "the frame number changes but the handle does not
+// move." This proves the live activeIndex reaches the controlled slider.
+describe("static scrubber - slider handle tracks the autoplay frame (NATE 2026-06-26)", () => {
+  beforeEach(() => {
+    installFakeTimerController();
   });
 
-  it("renders a width that tracks the AOI bbox on-screen width", () => {
-    // A 440px-wide bbox -> the scrubber spans it (no narrowing padding band).
-    const rect: ScreenRect = { left: 100, top: 50, right: 540, bottom: 300 };
-    render(
-      <SequenceScrubber
-        label="HRRR precip"
-        frameLabels={["F+01h", "F+03h", "F+06h"]}
-        activeIndex={0}
-        onStep={() => {}}
-        playing={false}
-        onPlayToggle={() => {}}
-        aoiRect={rect}
-      />,
+  it("advances the slider value as the controller auto-advances frames", () => {
+    render(<LayerPanel initialLayers={FRAMES} />);
+    render(<AppScrubberHarness />);
+    const ctrl = getAnimationController();
+    const key = ctrl.getActiveGroup()!.key;
+    // Start playback from frame 0.
+    act(() => {
+      ctrl.stepGroupTo(key, 0);
+      ctrl.setPlaying(true);
+    });
+    const slider0 = screen.getByTestId("scrubber-slider") as HTMLInputElement;
+    expect(slider0.value).toBe("0");
+    // One auto tick -> frame 1; the slider HANDLE (value) must move with it.
+    act(() => {
+      fireTick();
+    });
+    expect(ctrl.frameIndexFor(key)).toBe(1);
+    expect((screen.getByTestId("scrubber-slider") as HTMLInputElement).value).toBe(
+      "1",
     );
-    const el = screen.getByTestId("grace2-sequence-scrubber") as HTMLElement;
-    // Width tracks the bbox on-screen width (right - left = 440), not a fixed band.
-    expect(el.style.width).toBe("440px");
-  });
-
-  it("the scrubber and the legend consume the SAME shared scale for a rect", () => {
-    // Both overlays now call aoiScaleFactor with the same defaults, so the scale
-    // is identical by construction -> they 'share scaling' (NATE's ask 4).
-    const rect: ScreenRect = { left: 0, top: 0, right: 360, bottom: 360 };
-    expect(aoiScaleFactor(rect)).toBe(aoiScaleFactor(rect));
+    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent(
+      `2/${FRAMES.length}`,
+    );
   });
 });
 

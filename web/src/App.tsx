@@ -2747,7 +2747,6 @@ export function App(): JSX.Element {
           aoiScreenRect. Carries its own play/pause button (item 3) wired to the
           controller, so closing the panel never drops the scrubber or playback. */}
       <AppSequenceScrubber
-        aoiRect={aoiScreenRect}
         /* ITEM 2 (NATE 2026-06-23) - the scrubber is a MAP overlay; while the
            full-screen mobile Layers drawer is open it would float OVER the layer
            rows (reported: a scrubber pill mid-list). Hide it whenever the mobile
@@ -2756,17 +2755,14 @@ export function App(): JSX.Element {
            NATE 2026-06-24: also hide while the Settings panel is open so the
            bottom overlays do not overlap Settings. */
         hidden={(isMobile && mobileDrawerOpen) || settingsOpen}
-        /* GUTTER CLAMP (NATE 2026-06-24) - thread the desktop panel geometry so
-           the scrubber's width/position never extends under the side panels.
-           Mirrors the values fed to MapView for the bbox snap. */
+        /* STATIC SCRUBBER (NATE 2026-06-26): the scrubber is now STATIC at the
+           bottom of the screen (no AOI-bbox snap / dock). The only position input
+           is the desktop side-panel geometry, so it centers in the open gutter
+           and never hides under the side panels - a stable shift only on a panel
+           toggle, never per animation frame. */
         leftPanelWidthPx={!isMobile && !leftCollapsed ? 288 : 0}
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
-        /* MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the chat
-           sheet's top edge; the scrubber docks its bottom edge just above it so
-           it sits in a clean band at the chat-panel top, not over the map. Null
-           on desktop (keeps the viewport-bottom placement). */
-        sheetTopPx={sheetTopPx}
       />
     </div>
     </AuthGuard>
@@ -2782,14 +2778,11 @@ export function App(): JSX.Element {
 // play/pause go straight to the controller (which drives the map + the interval);
 // the LayerPanel, when open, mirrors the controller's frame into its own rows.
 function AppSequenceScrubber({
-  aoiRect,
   hidden = false,
   leftPanelWidthPx = 0,
   chatWidthPx = 0,
   chatCollapsed = false,
-  sheetTopPx = null,
 }: {
-  aoiRect: ScreenRect | null;
   /**
    * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open, or the
    * Settings panel open). The scrubber is a map overlay; when the full-screen
@@ -2797,19 +2790,12 @@ function AppSequenceScrubber({
    * Hooks still run above this guard.
    */
   hidden?: boolean;
-  /** Desktop left rail width (288 when open, else 0) - gutter clamp. */
+  /** Desktop left rail width (288 when open, else 0) - gutter centering. */
   leftPanelWidthPx?: number;
-  /** Right chat panel width (px) - gutter clamp. */
+  /** Right chat panel width (px) - gutter centering. */
   chatWidthPx?: number;
   /** Whether the chat panel is collapsed (its width counts as 0). */
   chatCollapsed?: boolean;
-  /**
-   * MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the on-screen Y of the mobile chat
-   * sheet's top edge. When set the scrubber docks its BOTTOM edge just above it
-   * (a clean band at the chat-panel top) instead of clamping to a fixed mobile
-   * clearance over the composer. Null on desktop.
-   */
-  sheetTopPx?: number | null;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -2822,6 +2808,9 @@ function AppSequenceScrubber({
   // scrubber over the layer list. (Placed AFTER the hooks above so hook order
   // is stable across renders.)
   if (hidden) return null;
+  // activeIndex is read LIVE from the controller every render; useAnimationState
+  // re-renders on every controller notify (incl. the auto-advance tick), so the
+  // scrubber slider handle tracks autoplay (NATE 2026-06-26 autoplay-handle fix).
   const activeIndex = controller.frameIndexFor(activeGroup.key);
   return (
     <SequenceScrubber
@@ -2834,11 +2823,9 @@ function AppSequenceScrubber({
         controller.setActiveGroup(activeGroup.key);
         controller.togglePlaying();
       }}
-      aoiRect={aoiRect}
       leftPanelWidthPx={leftPanelWidthPx}
       chatWidthPx={chatWidthPx}
       chatCollapsed={chatCollapsed}
-      sheetTopPx={sheetTopPx}
     />
   );
 }
