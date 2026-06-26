@@ -48,7 +48,7 @@ import {
   setLayerCache,
   getLayerCache,
 } from "./lib/layer_cache";
-import { useCases } from "./hooks/useCases";
+import { LS_ACTIVE_CASE, useCases } from "./hooks/useCases";
 import type {
   CaseOpenEnvelopePayload,
   MapCommandPayload,
@@ -224,6 +224,13 @@ function ColdOpenHarness({
       <div data-testid="app-layer-count">{layers.length}</div>
       <div data-testid="app-bbox-mode">{bboxProgress.mode}</div>
       <div data-testid="app-has-aoi">{aoiScreenRect ? "yes" : "no"}</div>
+      {/* ACTIVE-CASE RESTORE (NATE 2026-06-26) - App keys CasesPanel vs CaseView
+          PURELY on activeCaseId===null (App.tsx). Reflect that branch so the
+          reload-restore test can assert the open Case is RESTORED (case-view)
+          on mount from a seeded localStorage key, not dropped to the list. */}
+      <div data-testid="app-view">
+        {activeCaseId === null ? "cases-panel" : "case-view"}
+      </div>
       {/* The App empty-state, gated on layers.length (App.tsx:1532). */}
       {layers.length === 0 && <div>{EMPTY_STATE_TEXT}</div>}
       {/* The REAL LayerPanel on the same bus (App.tsx:1571 wiring). */}
@@ -243,6 +250,15 @@ beforeEach(() => {
   // Fresh, isolated real LayerCache per test (in-memory backend, no IndexedDB).
   setLayerCache(new LayerCache({ maxCases: 4, backend: memBackend() }));
   lastLayers = [];
+  // ACTIVE-CASE RESTORE (NATE 2026-06-26) - useCases now SEEDS activeCaseId from
+  // localStorage (LS_ACTIVE_CASE). Clear it so the existing cold-open tests
+  // start from the no-restore (null active Case) baseline; the restore test
+  // seeds it explicitly.
+  try {
+    localStorage.clear();
+  } catch {
+    /* ignore */
+  }
 });
 
 afterEach(() => {
@@ -452,5 +468,33 @@ describe("BUG 2 - exit-to-root clears the AOI overlay and the layers", () => {
     });
     expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
     expect(screen.getByTestId("app-bbox-mode").textContent).toBe("none");
+  });
+});
+
+// ── ACTIVE-CASE RESTORE (NATE 2026-06-26): on RELOAD (felt most on mobile) the
+// app must STAY in the open Case (CaseView), not drop to the Cases LIST. App
+// keys CasesPanel vs CaseView PURELY on activeCaseId===null; useCases now SEEDS
+// activeCaseId from a persisted localStorage key (LS_ACTIVE_CASE) so a fresh
+// mount (a reload) restores the open Case before any WS round-trip. ───────── //
+describe("ACTIVE-CASE RESTORE - reload stays in the open Case (not the list)", () => {
+  it("a seeded localStorage active-Case id restores CaseView on mount (simulated reload)", () => {
+    // Simulate the prior session having left a Case open: the persisted key is
+    // present at the instant the app (re)mounts, exactly as after a reload.
+    const restoredId = COLD_PAYLOAD.session_state!.case.case_id;
+    localStorage.setItem(LS_ACTIVE_CASE, restoredId);
+
+    render(<ColdOpenHarness onLayers={(l) => (lastLayers = l)} />);
+
+    // The hook seeded activeCaseId from localStorage on mount -> App renders
+    // CaseView, NOT the Cases list. This is the whole bug: without the seed the
+    // view would be "cases-panel" (activeCaseId === null) after every reload.
+    expect(screen.getByTestId("app-view").textContent).toBe("case-view");
+  });
+
+  it("with NO persisted id the app mounts to the Cases list (baseline unchanged)", () => {
+    // No LS_ACTIVE_CASE key (cleared in beforeEach) -> activeCaseId null -> the
+    // Cases list, proving the restore is opt-in on a persisted id only.
+    render(<ColdOpenHarness onLayers={(l) => (lastLayers = l)} />);
+    expect(screen.getByTestId("app-view").textContent).toBe("cases-panel");
   });
 });

@@ -115,11 +115,19 @@ const CHAT_HAMBURGER_RIGHT_PX = 12; // App hamburgerBtnStyle right (chat)
 const CHAT_HAMBURGER_TOP_PX = 12; // App hamburgerBtnStyle top
 const CHAT_HAMBURGER_SIZE_PX = 40; // App hamburgerBtnStyle width/height
 const CONTROL_GAP_PX = 8; // gap between the control and the panel/hamburger
+// NATE 2026-06-26 (mobile z-order fix): the mobile Settings gear lives at the
+// SAME top-right corner (App.tsx ~2300-2330: top:12, right:12, 44x44, zIndex:36).
+// The 38px draw button was blanketing it (identical top:12/right:12), making
+// Settings untappable. Mirror the gear's geometry so we can drop the draw control
+// BELOW it instead of on top of it.
+const MOBILE_SETTINGS_TOP_PX = 12; // App.tsx mobile Settings gear top (~2300-2330)
+const MOBILE_SETTINGS_SIZE_PX = 44; // App.tsx mobile Settings gear width/height
 
 /**
  * FIX 2 (pure, exported for tests) - the control wrapper's absolute position.
  * Three placements:
- *   - mobile: plain top-right (the chat is a bottom sheet; nothing to clear).
+ *   - mobile: top-right but DROPPED below the Settings gear (NATE 2026-06-26) so
+ *     the gear stays tappable; the chat is a bottom sheet, nothing else to clear.
  *   - desktop + collapsed: UNDER the top-right chat-expand hamburger, aligned to
  *     its right edge.
  *   - desktop + expanded: at the chat panel's TOP, railed to the LEFT of the
@@ -134,7 +142,12 @@ export function drawAoiControlPosition(opts: {
 }): { top: number; right: number } {
   const { chatWidthPx, chatCollapsed, mobile } = opts;
   if (mobile) {
-    return { top: CHAT_HAMBURGER_TOP_PX, right: CHAT_HAMBURGER_RIGHT_PX };
+    // NATE 2026-06-26: drop BELOW the mobile Settings gear (top:12, 44px tall) so
+    // the gear stays tappable - the old { top:12, right:12 } sat directly on it.
+    return {
+      top: MOBILE_SETTINGS_TOP_PX + MOBILE_SETTINGS_SIZE_PX + CONTROL_GAP_PX,
+      right: CHAT_HAMBURGER_RIGHT_PX,
+    };
   }
   if (chatCollapsed || chatWidthPx === undefined) {
     // Tuck under the chat-expand hamburger (collapsed), aligned to its right.

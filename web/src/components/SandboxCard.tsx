@@ -38,7 +38,15 @@
 // live in the parent (Chat.tsx).
 
 import { useState } from "react";
-import { IconSandbox, IconWarning, IconChevronRight, IconArrowRight } from "./icons";
+import {
+  IconSandbox,
+  IconWarning,
+  IconChevronRight,
+  IconChevronDown,
+  IconArrowRight,
+  IconCheck,
+  IconClose,
+} from "./icons";
 
 // ---------------------------------------------------------------------------
 // Wire shapes (mirrors sandbox_contracts.py — hand-mirrored, no codegen).
@@ -126,6 +134,29 @@ const STATUS_LABEL: Record<CodeExecStatus, string> = {
   blocked: "blocked",
 };
 
+// Per-accent solid color (matches the STATUS_COLOR chip palette ~116-121 so the
+// card border / icon / summary read as the same lineage as the status chip).
+// NATE 2026-06-26: FAILED must be red on the WHOLE card, not just the chip, and
+// the indigo border can no longer be hardcoded — derive the accent below.
+const INDIGO_ACCENT = "#6366f1"; // pending / running
+const STATUS_ACCENT: Record<CodeExecStatus, string> = {
+  ok:      "#10b981", // green
+  error:   "#ef4444", // red
+  timeout: "#eab308", // amber
+  blocked: "#ef4444", // red
+};
+
+/**
+ * Derive the single card accent from the lifecycle state. PENDING/RUNNING are
+ * indigo; a result maps to its status color (success green, error/blocked red,
+ * timeout amber); a cancelled-without-result card keeps the neutral indigo (the
+ * compact summary itself uses a muted grey glyph). NATE 2026-06-26.
+ */
+function deriveAccent(result: CodeExecResultPayload | undefined): string {
+  if (result === undefined) return INDIGO_ACCENT;
+  return STATUS_ACCENT[result.status];
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -169,6 +200,30 @@ function renderResultDescriptor(
   return { text: raw, capped: false };
 }
 
+/**
+ * Cheap one-line hint appended to the success summary when the result descriptor
+ * carries a scalar value or a figure. Returns "" when nothing cheap is available
+ * (dict/json/dataframe/too_large) — we never pretty-print a whole dict into the
+ * folded summary. NATE 2026-06-26.
+ */
+function cheapResultHint(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: Record<string, any> | null,
+): string {
+  if (!result) return "";
+  const kind = result["kind"];
+  if (kind === "chart") return "figure";
+  if (kind === "json") {
+    const value = result["value"];
+    const isScalar =
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      typeof value === "string";
+    if (isScalar) return String(value);
+  }
+  return "";
+}
+
 /** Download a JSON blob as a file. */
 function downloadJson(data: unknown, filename: string): void {
   try {
@@ -193,23 +248,28 @@ function downloadJson(data: unknown, filename: string): void {
 const MONO_FONT =
   'ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", monospace';
 
-const CARD_STYLE: React.CSSProperties = {
-  background: "rgba(16,18,24,0.96)",
-  border: "1px solid rgba(255,255,255,0.07)",
-  borderLeft: "3px solid #6366f1", // indigo accent — distinct from warning/danger
-  borderRadius: 8,
-  boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
-  color: "#e5e7eb",
-  padding: "10px 12px",
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-  fontSize: 12,
-  lineHeight: 1.45,
-  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-  width: "100%",
-  boxSizing: "border-box",
-};
+// NATE 2026-06-26: the left border is now a function of the derived accent (was a
+// hardcoded indigo #6366f1) so FAILED reads red / timeout amber / success green
+// on the whole card, not just the status chip.
+function cardStyle(accent: string): React.CSSProperties {
+  return {
+    background: "rgba(16,18,24,0.96)",
+    border: "1px solid rgba(255,255,255,0.07)",
+    borderLeft: `3px solid ${accent}`,
+    borderRadius: 8,
+    boxShadow: "0 4px 14px rgba(0,0,0,0.35)",
+    color: "#e5e7eb",
+    padding: "10px 12px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    fontSize: 12,
+    lineHeight: 1.45,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    width: "100%",
+    boxSizing: "border-box",
+  };
+}
 
 const HEADER_STYLE: React.CSSProperties = {
   display: "flex",
@@ -326,11 +386,40 @@ export function SandboxCard({
   // Collapsible stdout / stderr (default collapsed to keep card tidy)
   const [stdoutOpen, setStdoutOpen] = useState(false);
   const [stderrOpen, setStderrOpen] = useState(false);
+  // NATE 2026-06-26: a decided/resolved card folds to a compact one-line summary
+  // (mirrors SpatialInputCard / ResolutionPickerCard); the full chrome lives
+  // under this expander so a resolved card no longer shows a verbose footer +
+  // a forever-expanded result section.
+  const [expanded, setExpanded] = useState(false);
 
-  // Determine current state
+  // ---- State machine ---------------------------------------------------- //
+  // PENDING        : decided === null && !hasResult
+  // RUNNING        : decided === "proceed" && !hasResult
+  // RESOLVED-*     : hasResult (status drives success/failed)
+  // CANCELLED      : decided === "cancel" && !hasResult
   const isRunning = decided === "proceed" && result === undefined;
   const isCancelled = decided === "cancel";
   const hasResult = result !== undefined;
+  const isPending = decided === null && !hasResult;
+  // The card folds whenever it is decided OR resolved (i.e. anything but PENDING
+  // and RUNNING — RUNNING keeps full chrome + glow while the work is in flight).
+  const isFolded = !isPending && !isRunning;
+  const isSuccess = hasResult && result!.status === "ok";
+
+  // Derive the single card accent (indigo pending/running, status color on a
+  // result). NATE 2026-06-26.
+  const accent = deriveAccent(result);
+
+  // Stable data-state for tests + downstream styling.
+  const dataState = hasResult
+    ? isSuccess
+      ? "resolved-ok"
+      : "resolved-failed"
+    : isCancelled
+      ? "cancelled"
+      : isRunning
+        ? "running"
+        : "pending";
 
   // Gate buttons (REQUEST state only)
   function handleProceed(): void {
@@ -343,14 +432,126 @@ export function SandboxCard({
   const hasLayerRefs =
     request.layer_refs && Object.keys(request.layer_refs).length > 0;
 
+  // ---- Compact summary (folded state) ----------------------------------- //
+  // Leading glyph + one-line text per resolved/cancelled state. Success shows a
+  // cheap scalar/figure hint when available; failed shows the status; cancelled
+  // is a plain note. NATE 2026-06-26.
+  function renderCompactSummary(): JSX.Element {
+    let glyph: JSX.Element;
+    let text: string;
+    let textColor: string;
+    if (hasResult && result) {
+      if (isSuccess) {
+        const hint = cheapResultHint(result.result);
+        glyph = <IconCheck size={13} color={accent} />;
+        text = hint ? `Python sandbox - ok (${hint})` : "Python sandbox - ok";
+        textColor = accent;
+      } else {
+        glyph = <IconWarning size={13} color={accent} />;
+        text = `Python sandbox - ${result.status}`;
+        textColor = accent;
+      }
+    } else {
+      // Cancelled-without-result.
+      glyph = <IconClose size={13} color="#9ca3af" />;
+      text = "Execution cancelled";
+      textColor = "#9ca3af";
+    }
+    return (
+      <div
+        data-testid="sandbox-card-summary"
+        style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}
+      >
+        <span
+          aria-hidden="true"
+          style={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}
+        >
+          {glyph}
+        </span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            color: textColor,
+            fontWeight: 600,
+            fontSize: 12,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={text}
+        >
+          {text}
+        </span>
+        <button
+          type="button"
+          data-testid="sandbox-card-expand"
+          aria-label={expanded ? "Collapse details" : "Show details"}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 2,
+            margin: 0,
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            color: "#9ca3af",
+            flexShrink: 0,
+          }}
+        >
+          {expanded ? (
+            <IconChevronDown size={13} color="#9ca3af" />
+          ) : (
+            <IconChevronRight size={13} color="#9ca3af" />
+          )}
+        </button>
+      </div>
+    );
+  }
+
+  // The card root carries the running glow (guarded for prefers-reduced-motion
+  // via the @media block inside the <style> below). NATE 2026-06-26.
+  const rootStyle: React.CSSProperties = {
+    ...cardStyle(accent),
+    ...(isRunning
+      ? { animation: "sandbox-glow 1.6s ease-in-out infinite" }
+      : {}),
+  };
+
   return (
     <div
       data-testid="sandbox-card"
       data-code-exec-id={request.code_exec_id}
-      style={CARD_STYLE}
+      data-state={dataState}
+      data-accent={accent}
+      style={rootStyle}
       role="region"
       aria-label="Python sandbox code execution"
     >
+      {/* Running glow keyframes (disabled under reduced-motion). */}
+      <style>{`
+        @keyframes sandbox-glow {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); }
+          50% { box-shadow: 0 0 12px 2px rgba(99,102,241,0.55); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          [data-testid="sandbox-card"][data-state="running"] { animation: none !important; }
+        }
+      `}</style>
+
+      {/* Compact summary row (folded states: resolved / cancelled). The full
+          chrome below renders only when expanded. */}
+      {isFolded && renderCompactSummary()}
+
+      {/* Full chrome: always for PENDING / RUNNING; behind the expander when
+          folded (resolved / cancelled). NATE 2026-06-26. */}
+      {(!isFolded || expanded) && (
+        <div
+          data-testid="sandbox-card-detail"
+          style={{ display: "flex", flexDirection: "column", gap: 8 }}
+        >
       {/* Header */}
       <div style={HEADER_STYLE}>
         <span aria-hidden="true" style={{ color: "#6366f1", lineHeight: 1.2, flexShrink: 0, display: "inline-flex" }}>
@@ -580,16 +781,11 @@ export function SandboxCard({
           </button>
         </div>
       )}
-
-      {/* Post-decision footer (gate sent) */}
-      {decided !== null && !hasResult && (
-        <div
-          data-testid="sandbox-card-decision-footer"
-          style={{ color: "#6b7280", fontSize: 11 }}
-        >
-          Decision sent: <strong style={{ color: decided === "proceed" ? "#a5b4fc" : "#9ca3af" }}>{decided}</strong>
         </div>
       )}
+      {/* NATE 2026-06-26: the verbose "Decision sent: <x>" footer is gone — a
+          decided card now folds to the compact summary row above (the gate is
+          implied by the resolved/cancelled summary). */}
     </div>
   );
 }

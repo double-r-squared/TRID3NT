@@ -116,6 +116,13 @@ function renderWithResult(
   return { onDecide };
 }
 
+// NATE 2026-06-26: a resolved/cancelled card folds to a compact summary; the
+// full result chrome lives behind the expander. Tests that assert on the detail
+// chrome must expand the card first.
+function expandCard() {
+  fireEvent.click(screen.getByTestId("sandbox-card-expand"));
+}
+
 // ---------------------------------------------------------------------------
 // REQUEST state
 // ---------------------------------------------------------------------------
@@ -204,10 +211,13 @@ describe("SandboxCard — gate buttons emit correct decisions", () => {
     expect(screen.queryByTestId("sandbox-card-actions")).toBeNull();
   });
 
-  it("shows decision footer after decision", () => {
+  // NATE 2026-06-26: the verbose "Decision sent: <x>" footer is removed. A
+  // proceed decision with no result yet is the RUNNING state (running indicator,
+  // no footer). The folded compact summary covers the decided/resolved states.
+  it("no verbose decision footer after a proceed decision (running state)", () => {
     renderRequest({}, "proceed");
-    const footer = screen.getByTestId("sandbox-card-decision-footer");
-    expect(footer.textContent).toContain("proceed");
+    expect(screen.queryByTestId("sandbox-card-decision-footer")).toBeNull();
+    expect(screen.getByTestId("sandbox-card-running")).toBeTruthy();
   });
 });
 
@@ -248,8 +258,11 @@ describe("SandboxCard — RUNNING state", () => {
 describe("SandboxCard — RESULT state status chips", () => {
   afterEach(() => cleanup());
 
+  // NATE 2026-06-26: the status chip lives in the header chrome, now behind the
+  // expander on a folded resolved card.
   it("ok status: chip with 'ok' text", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     const chip = screen.getByTestId("sandbox-card-status-chip");
     expect(chip.textContent).toBe("ok");
     expect(chip.dataset.status).toBe("ok");
@@ -257,6 +270,7 @@ describe("SandboxCard — RESULT state status chips", () => {
 
   it("error status: chip with 'error' text", () => {
     renderWithResult(ERROR_RESULT);
+    expandCard();
     const chip = screen.getByTestId("sandbox-card-status-chip");
     expect(chip.textContent).toBe("error");
     expect(chip.dataset.status).toBe("error");
@@ -264,6 +278,7 @@ describe("SandboxCard — RESULT state status chips", () => {
 
   it("timeout status: chip with 'timeout' text", () => {
     renderWithResult(TIMEOUT_RESULT);
+    expandCard();
     const chip = screen.getByTestId("sandbox-card-status-chip");
     expect(chip.textContent).toBe("timeout");
     expect(chip.dataset.status).toBe("timeout");
@@ -271,6 +286,7 @@ describe("SandboxCard — RESULT state status chips", () => {
 
   it("blocked status: chip with 'blocked' text", () => {
     renderWithResult(BLOCKED_RESULT);
+    expandCard();
     const chip = screen.getByTestId("sandbox-card-status-chip");
     expect(chip.textContent).toBe("blocked");
     expect(chip.dataset.status).toBe("blocked");
@@ -284,51 +300,62 @@ describe("SandboxCard — RESULT state status chips", () => {
 describe("SandboxCard — RESULT state content", () => {
   afterEach(() => cleanup());
 
-  it("shows result section when result is non-null", () => {
+  // NATE 2026-06-26: the result chrome now folds; expand the card to assert on
+  // the detail sections.
+  it("shows result section when result is non-null (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     expect(screen.getByTestId("sandbox-card-result-section")).toBeTruthy();
   });
 
-  it("shows scalar result inline", () => {
+  it("shows scalar result inline (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     const scalar = screen.getByTestId("sandbox-result-scalar");
     expect(scalar.textContent).toBe("2");
   });
 
-  it("shows stdout toggle when stdout_tail present", () => {
+  it("shows stdout toggle when stdout_tail present (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     expect(screen.getByTestId("sandbox-card-stdout")).toBeTruthy();
   });
 
   it("stdout content hidden by default (collapsed)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     expect(screen.queryByTestId("sandbox-card-stdout-content")).toBeNull();
   });
 
   it("stdout toggle opens the content", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     fireEvent.click(screen.getByTestId("sandbox-card-stdout-toggle"));
     expect(screen.getByTestId("sandbox-card-stdout-content")).toBeTruthy();
     expect(screen.getByTestId("sandbox-card-stdout-content").textContent).toContain("stdout line 1");
   });
 
-  it("shows stderr toggle when stderr_tail present", () => {
+  it("shows stderr toggle when stderr_tail present (after expand)", () => {
     renderWithResult(ERROR_RESULT);
+    expandCard();
     expect(screen.getByTestId("sandbox-card-stderr")).toBeTruthy();
   });
 
-  it("does NOT show stdout toggle when stdout_tail is empty", () => {
+  it("does NOT show stdout toggle when stdout_tail is empty (after expand)", () => {
     renderWithResult(ERROR_RESULT);
+    expandCard();
     expect(screen.queryByTestId("sandbox-card-stdout")).toBeNull();
   });
 
-  it("Save button is present in RESULT state", () => {
+  it("Save button is present in RESULT state (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     expect(screen.getByTestId("sandbox-card-save-button")).toBeTruthy();
   });
 
-  it("shows duration when non-zero", () => {
+  it("shows duration when non-zero (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     const dur = screen.getByTestId("sandbox-card-duration");
     expect(dur.textContent).toContain("0.42s");
   });
@@ -341,13 +368,15 @@ describe("SandboxCard — RESULT state content", () => {
 describe("SandboxCard — truncated marker", () => {
   afterEach(() => cleanup());
 
-  it("shows truncated marker when truncated=true", () => {
+  it("shows truncated marker when truncated=true (after expand)", () => {
     renderWithResult(TRUNCATED_RESULT);
+    expandCard();
     expect(screen.getByTestId("sandbox-card-truncated")).toBeTruthy();
   });
 
-  it("does NOT show truncated marker when truncated=false", () => {
+  it("does NOT show truncated marker when truncated=false (after expand)", () => {
     renderWithResult(OK_RESULT);
+    expandCard();
     expect(screen.queryByTestId("sandbox-card-truncated")).toBeNull();
   });
 });
@@ -375,32 +404,35 @@ describe("SandboxCard — edge cases / graceful handling", () => {
     expect(screen.getByTestId("sandbox-card-code").textContent).toBe("x=1");
   });
 
-  it("renders without crash when result is null", () => {
+  it("renders without crash when result is null (after expand)", () => {
     renderWithResult({ ...ERROR_RESULT, result: null });
+    expandCard();
     // result-descriptor section should be absent when result is null
     expect(screen.queryByTestId("sandbox-card-result-descriptor")).toBeNull();
   });
 
-  it("renders too_large result descriptor", () => {
+  it("renders too_large result descriptor (after expand)", () => {
     const res: CodeExecResultPayload = {
       ...OK_RESULT,
       result: { kind: "too_large", original_bytes: 5_000_000 },
     };
     renderWithResult(res);
+    expandCard();
     expect(screen.getByTestId("sandbox-result-too-large")).toBeTruthy();
     expect(screen.getByTestId("sandbox-result-too-large").textContent).toContain("4883");
   });
 
-  it("renders chart result with note when no PNG present", () => {
+  it("renders chart result with note when no PNG present (after expand)", () => {
     const res: CodeExecResultPayload = {
       ...OK_RESULT,
       result: { kind: "chart", chart_id: "chart-xyz", title: "My chart" },
     };
     renderWithResult(res);
+    expandCard();
     expect(screen.getByTestId("sandbox-result-chart-note")).toBeTruthy();
   });
 
-  it("renders chart PNG inline when png_base64 present and not truncated", () => {
+  it("renders chart PNG inline when png_base64 present and not truncated (after expand)", () => {
     // 1x1 transparent PNG (valid base64, content irrelevant to the test).
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -414,6 +446,7 @@ describe("SandboxCard — edge cases / graceful handling", () => {
       },
     };
     renderWithResult(res);
+    expandCard();
     const wrap = screen.getByTestId("sandbox-result-chart-image");
     expect(wrap).toBeTruthy();
     const img = wrap.querySelector("img");
@@ -423,7 +456,7 @@ describe("SandboxCard — edge cases / graceful handling", () => {
     expect(screen.queryByTestId("sandbox-result-chart-note")).toBeNull();
   });
 
-  it("falls back to the note when png_truncated is true (PNG dropped)", () => {
+  it("falls back to the note when png_truncated is true (PNG dropped) (after expand)", () => {
     const res: CodeExecResultPayload = {
       ...OK_RESULT,
       result: {
@@ -434,8 +467,128 @@ describe("SandboxCard — edge cases / graceful handling", () => {
       },
     };
     renderWithResult(res);
+    expandCard();
     expect(screen.queryByTestId("sandbox-result-chart-image")).toBeNull();
     const note = screen.getByTestId("sandbox-result-chart-note");
     expect(note.textContent).toContain("too large");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FOLD + state-machine behavior (NATE 2026-06-26)
+//
+// A decided/resolved card collapses to a compact one-line summary; the full
+// chrome lives behind a chevron expander. The card accent (left border / icon /
+// summary color) is a function of status: indigo pending/running, green ok, red
+// error/blocked, amber timeout. A running card carries the glow animation.
+// ---------------------------------------------------------------------------
+
+describe("SandboxCard — fold + compact summary", () => {
+  afterEach(() => cleanup());
+
+  it("folds to a compact summary by default after a successful result", () => {
+    renderWithResult(OK_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("resolved-ok");
+    // Compact summary present; detail chrome hidden until expanded.
+    const summary = screen.getByTestId("sandbox-card-summary");
+    expect(summary.textContent).toContain("Python sandbox - ok");
+    expect(screen.queryByTestId("sandbox-card-detail")).toBeNull();
+    expect(screen.queryByTestId("sandbox-card-result-section")).toBeNull();
+  });
+
+  it("success summary carries the cheap scalar hint", () => {
+    renderWithResult(OK_RESULT);
+    const summary = screen.getByTestId("sandbox-card-summary");
+    // OK_RESULT.result = { kind: "json", value: 2.0 } -> "2" hint.
+    expect(summary.textContent).toContain("Python sandbox - ok (2)");
+  });
+
+  it("expander toggles the detail chrome open and closed", () => {
+    renderWithResult(OK_RESULT);
+    expect(screen.queryByTestId("sandbox-card-detail")).toBeNull();
+    // Open
+    fireEvent.click(screen.getByTestId("sandbox-card-expand"));
+    expect(screen.getByTestId("sandbox-card-detail")).toBeTruthy();
+    expect(screen.getByTestId("sandbox-card-result-section")).toBeTruthy();
+    // Close
+    fireEvent.click(screen.getByTestId("sandbox-card-expand"));
+    expect(screen.queryByTestId("sandbox-card-detail")).toBeNull();
+  });
+
+  it("error result: red accent on the card + failed summary text", () => {
+    renderWithResult(ERROR_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("resolved-failed");
+    expect(card.dataset.accent).toBe("#ef4444");
+    const summary = screen.getByTestId("sandbox-card-summary");
+    expect(summary.textContent).toContain("Python sandbox - error");
+  });
+
+  it("blocked result: red accent on the card", () => {
+    renderWithResult(BLOCKED_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("resolved-failed");
+    expect(card.dataset.accent).toBe("#ef4444");
+    expect(screen.getByTestId("sandbox-card-summary").textContent).toContain(
+      "Python sandbox - blocked",
+    );
+  });
+
+  it("timeout result: amber accent on the card", () => {
+    renderWithResult(TIMEOUT_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.accent).toBe("#eab308");
+    expect(screen.getByTestId("sandbox-card-summary").textContent).toContain(
+      "Python sandbox - timeout",
+    );
+  });
+
+  it("success result: green accent on the card", () => {
+    renderWithResult(OK_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("resolved-ok");
+    expect(card.dataset.accent).toBe("#10b981");
+  });
+
+  it("cancelled (no result): compact summary, no detail chrome", () => {
+    render(
+      <SandboxCard request={BASE_REQUEST} decided="cancel" onDecide={vi.fn()} />,
+    );
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("cancelled");
+    const summary = screen.getByTestId("sandbox-card-summary");
+    expect(summary.textContent).toContain("Execution cancelled");
+    expect(screen.queryByTestId("sandbox-card-detail")).toBeNull();
+  });
+
+  it("pending (REQUEST) state is NOT folded — full chrome, no summary", () => {
+    renderRequest();
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("pending");
+    expect(card.dataset.accent).toBe("#6366f1");
+    expect(screen.queryByTestId("sandbox-card-summary")).toBeNull();
+    // Full chrome rendered inline (the gate buttons live in it).
+    expect(screen.getByTestId("sandbox-card-actions")).toBeTruthy();
+  });
+
+  it("running state carries the glow animation + indigo accent", () => {
+    render(
+      <SandboxCard request={BASE_REQUEST} decided="proceed" onDecide={vi.fn()} />,
+    );
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.dataset.state).toBe("running");
+    expect(card.dataset.accent).toBe("#6366f1");
+    // The glow animation is applied to the running card root (inline style).
+    expect(card.style.animation).toContain("sandbox-glow");
+    // Running is NOT folded — no compact summary, running indicator shown.
+    expect(screen.queryByTestId("sandbox-card-summary")).toBeNull();
+    expect(screen.getByTestId("sandbox-card-running")).toBeTruthy();
+  });
+
+  it("non-running cards do NOT carry the glow animation", () => {
+    renderWithResult(OK_RESULT);
+    const card = screen.getByTestId("sandbox-card");
+    expect(card.style.animation).not.toContain("sandbox-glow");
   });
 });

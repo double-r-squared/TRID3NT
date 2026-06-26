@@ -312,6 +312,37 @@ describe("ToolsCatalogPopup", () => {
     });
   });
 
+  it("times out a never-resolving fetch and shows an asleep-aware error", async () => {
+    // NATE 2026-06-26: /api/tool-catalog is BOX-LOCAL, so when the EC2 agent is
+    // asleep a bare fetch hangs forever. With the 10s AbortController bound, the
+    // popup must leave loading and surface an honest timeout/asleep error.
+    vi.useFakeTimers();
+    // Never-resolving fetch that rejects with an AbortError when aborted.
+    const fetchMock = vi.fn(
+      (_url: string, init?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ToolsCatalogPopup onClose={() => undefined} />);
+    // Initially loading.
+    expect(screen.getByTestId("grace2-tools-catalog-loading")).toBeTruthy();
+    // Advance past the 10s timeout and flush the rejected promise microtasks.
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+    });
+    const errorEl = screen.getByTestId("grace2-tools-catalog-error");
+    expect(errorEl).toBeTruthy();
+    expect(errorEl.textContent).toMatch(/timed out after 10s/);
+    expect(errorEl.textContent).toMatch(/agent may be asleep/);
+    expect(screen.queryByTestId("grace2-tools-catalog-loading")).toBeNull();
+    vi.useRealTimers();
+  });
+
   it("close button + backdrop + Esc invoke onClose", () => {
     const onClose = vi.fn();
     render(

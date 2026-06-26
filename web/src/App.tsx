@@ -723,6 +723,7 @@ export function App(): JSX.Element {
   const {
     cases,
     activeCaseId,
+    restoredActiveCaseId,
     activeSession,
     casesSettled,
     onCaseList: useCases_onCaseList,
@@ -1142,6 +1143,26 @@ export function App(): JSX.Element {
     // the socket every render. (Tested in App.test.tsx "GraceWs creation effect
     // stability".)
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, authEpoch]);
+
+  // ACTIVE-CASE RESTORE (NATE 2026-06-26) - on reload (felt most on mobile) the
+  // app dropped to the Cases LIST instead of staying in the open Case, because
+  // nothing rehydrated the persisted active Case: useCases now seeds
+  // activeCaseId from localStorage, but the server's reconnect path
+  // (_handle_session_resume) re-emits session-state + case-list and NEVER a
+  // case-open, so without a client `select` the Case shell stays empty. Dispatch
+  // ONE selectCase(restored) AFTER the socket is wired (this effect runs after
+  // the socket-construction effect above) so layers / chat / map rehydrate: the
+  // WS `select` flushes to the server (or cold-loads via the disconnected path),
+  // and selectCase is idempotent with any live case-open that re-affirms the
+  // same id. A stale / deleted restored id self-heals via the archived/deleted
+  // reconcile + tombstones on the next authoritative case-list. One-shot: gated
+  // by a ref so it never re-fires on later renders.
+  const didRestoreActiveCaseRef = useRef(false);
+  useEffect(() => {
+    if (didRestoreActiveCaseRef.current) return;
+    didRestoreActiveCaseRef.current = true;
+    if (restoredActiveCaseId) selectCase(restoredActiveCaseId);
+  }, [restoredActiveCaseId, selectCase]);
 
   // LANE CASE-WEB  -  keep the GraceWs's notion of the CURRENT active Case in
   // sync with useCases.activeCaseId. ws.ts STAMPS this onto every outbound

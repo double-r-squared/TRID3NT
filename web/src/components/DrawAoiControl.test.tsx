@@ -269,9 +269,11 @@ describe("drawAoiControlPosition (FIX 2 - tracks the chat panel)", () => {
     expect(pos.right).toBe(12);
   });
 
-  it("mobile: keeps the plain top-right placement (bottom sheet, nothing to clear)", () => {
+  it("mobile: drops below the Settings gear so it stays tappable", () => {
+    // NATE 2026-06-26: gear is top:12, 44px tall, right:12 (App.tsx ~2300-2330).
+    // The draw control drops below it (12+44+8) at right 12 instead of overlapping.
     const pos = drawAoiControlPosition({ chatWidthPx: 384, mobile: true });
-    expect(pos.top).toBe(12);
+    expect(pos.top).toBe(64);
     expect(pos.right).toBe(12);
   });
 

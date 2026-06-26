@@ -368,9 +368,19 @@ export function ToolsCatalogPopup({
     if (initialCatalog) return;
     let cancelled = false;
     const url = catalogUrl ?? defaultCatalogUrl();
+    // NATE 2026-06-26: bound this fetch the same way RoutingQualityDashboard
+    // does. The /api/tool-catalog endpoint is BOX-LOCAL, so when the EC2 agent
+    // is asleep a bare fetch never resolves and the popup hangs on
+    // "Loading catalog..." forever. Time it out and surface an honest error.
+    const TIMEOUT_MS = 10_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     (async () => {
       try {
-        const resp = await fetch(url, { method: "GET" });
+        const resp = await fetch(url, {
+          method: "GET",
+          signal: controller.signal,
+        });
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
         }
@@ -380,14 +390,24 @@ export function ToolsCatalogPopup({
         setState("ready");
       } catch (err) {
         if (cancelled) return;
+        const isAbort =
+          err instanceof DOMException && err.name === "AbortError";
         setErrorText(
-          err instanceof Error ? err.message : "unknown fetch error",
+          isAbort
+            ? `request timed out after ${TIMEOUT_MS / 1000}s (the agent may be asleep)`
+            : err instanceof Error
+              ? err.message
+              : "unknown fetch error",
         );
         setState("error");
+      } finally {
+        clearTimeout(timer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
     };
   }, [catalogUrl, initialCatalog]);
 

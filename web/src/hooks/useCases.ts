@@ -86,6 +86,30 @@ export type PersistenceState =
   | "anonymous"
   | "disconnected";
 
+/**
+ * ACTIVE-CASE RESTORE (NATE 2026-06-26) - on reload (felt most on mobile) the
+ * app dropped back to the Cases LIST instead of staying in the open Case,
+ * because nothing persisted the active Case id client-side: the hook inited
+ * `activeCaseId` to null every load, and the server's reconnect path
+ * (`_handle_session_resume`) re-emits session-state + case-list but NEVER a
+ * `case-open`, so the open Case was forgotten. We mirror the active Case id to
+ * localStorage on every transition and seed from it on mount; App.tsx then
+ * dispatches one `selectCase(restored)` after the socket is wired so layers /
+ * chat / map rehydrate. A stale / deleted persisted id self-heals via the
+ * existing archived/deleted reconcile effect + deletion tombstones.
+ */
+export const LS_ACTIVE_CASE = "grace2.activeCaseId";
+
+/** Read the persisted active Case id, guarded against storage being unavailable. */
+function readPersistedActiveCase(): string | null {
+  try {
+    const v = localStorage.getItem(LS_ACTIVE_CASE);
+    return v && v.trim().length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Bound emitter for the `case-command` envelope. Matches GraceWs.sendCaseCommand. */
 export type CaseCommandEmitter = (
   command: CaseCommand,
@@ -128,6 +152,15 @@ export interface UseCasesReturn {
   cases: CaseSummary[];
   /** ULID of the currently-open Case, or null when no Case is open. */
   activeCaseId: string | null;
+  /**
+   * ACTIVE-CASE RESTORE (NATE 2026-06-26). The active Case id that was seeded
+   * from localStorage at mount (null if none was persisted). App.tsx reads this
+   * ONCE to dispatch a single `selectCase(restored)` after the socket is wired,
+   * so the persisted open Case rehydrates (the server never re-emits a
+   * `case-open` on resume). Stable for the life of the hook (it is the initial
+   * seed, not the live `activeCaseId`).
+   */
+  restoredActiveCaseId: string | null;
   /** The most recent rehydration envelope (chat + layers + map). */
   activeSession: CaseSessionState | null;
   /** Drives PersistenceChip. */
@@ -194,7 +227,14 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   const { sendCaseCommand, isSignedIn, onListLayerSummaries } = opts;
 
   const [cases, setCases] = useState<CaseSummary[]>([]);
-  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  // ACTIVE-CASE RESTORE (NATE 2026-06-26) - seed lazily from localStorage so a
+  // reload re-opens the last-open Case instead of dropping to the Cases list.
+  // The init runs once; `restoredActiveCaseId` captures that seed so App can
+  // dispatch a single `selectCase(restored)` to rehydrate over the WS.
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(() =>
+    readPersistedActiveCase(),
+  );
+  const restoredActiveCaseIdRef = useRef<string | null>(activeCaseId);
   const [activeSession, setActiveSession] = useState<CaseSessionState | null>(
     null,
   );
@@ -441,6 +481,22 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
     sendCaseCommand("deselect", null, {});
   }, [sendCaseCommand]);
 
+  // ACTIVE-CASE RESTORE (NATE 2026-06-26) - mirror EVERY active-Case transition
+  // to localStorage. One effect covers all the paths that set activeCaseId
+  // (onCaseOpen, selectCase, clearActive, deleteCase, the archived/deleted
+  // reconcile below) so the persisted id always tracks the live open Case. A
+  // null active Case removes the key (so exit-to-root genuinely forgets the open
+  // Case and the next reload lands on the Cases list). Guarded so a storage
+  // failure (private mode / quota) never throws.
+  useEffect(() => {
+    try {
+      if (activeCaseId) localStorage.setItem(LS_ACTIVE_CASE, activeCaseId);
+      else localStorage.removeItem(LS_ACTIVE_CASE);
+    } catch {
+      /* storage unavailable - restore is best-effort */
+    }
+  }, [activeCaseId]);
+
   // If the active Case was archived/deleted, clear local active state so the
   // map / chat reset cleanly. (case-list frame is the source of truth.) We
   // skip this check when `cases` is empty — case-open can arrive before
@@ -467,6 +523,7 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   return {
     cases,
     activeCaseId,
+    restoredActiveCaseId: restoredActiveCaseIdRef.current,
     activeSession,
     persistenceState,
     casesSettled,
