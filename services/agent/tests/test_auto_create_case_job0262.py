@@ -249,6 +249,42 @@ def test_autoname_probe_skipped_for_auto_created_case(
     assert "Flood" in case.title  # original prompt-derived title intact
 
 
+def test_root_prompt_rehydration_failure_still_emits_nonnull_case_open(
+    _persistence_bound: Persistence, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NATE 2026-06-26: when get_session_state momentarily fails, the auto
+    case-open must STILL carry a non-null session_state.case (the just-created
+    Case). A null/absent case-open would leave the client's activeCaseId
+    unchanged so it never leaves the Cases root, and the turn would then
+    dispatch with the new case bound -> cards stamped with a case_id the
+    client never opened (nothing renders until reload)."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    state.authenticated_user_id = new_ulid()
+
+    # Force the richer rehydration to raise so the fallback branch fires. The
+    # Case itself was already upserted (auto-create persists before this), so
+    # the minimal fallback re-fetch still finds it.
+    async def _boom(_case_id):  # noqa: ANN001
+        raise RuntimeError("rehydration down")
+
+    monkeypatch.setattr(_persistence_bound, "get_session_state", _boom)
+
+    asyncio.run(_prepare_user_turn(ws, state, PROMPT))
+
+    case_open = next(
+        (env for env in ws.sent if env["type"] == "case-open"), None
+    )
+    assert case_open is not None, "expected a case-open even on rehydration fail"
+    ss = case_open["payload"]["session_state"]
+    # The core guarantee: a NON-NULL session_state with the new Case so the
+    # client flips out of the Cases root (a null session_state would null
+    # activeCaseId — see the test note above).
+    assert ss is not None
+    assert ss["case"] is not None
+    assert ss["case"]["case_id"] == state.active_case_id
+
+
 # --------------------------------------------------------------------------- #
 # Paths that must NOT auto-create
 # --------------------------------------------------------------------------- #

@@ -4736,10 +4736,17 @@ async def _emit_auto_case_open(
     ``useCases.onCaseOpen`` sets ``activeCaseId`` and the left rail flips
     from the Cases root into the Case view.
 
-    Best-effort: when rehydration fails we SKIP case-open (a
-    ``session_state=None`` frame would null the client's activeCaseId and
-    flush the chat panel) but still refresh ``case-list`` so the left rail
-    at least shows the new Case.
+    NATE 2026-06-26: when rehydration fails we no longer SKIP case-open. A
+    skipped (or ``session_state=None``) case-open leaves the client's
+    activeCaseId unchanged, so the client never leaves the Cases root — the
+    turn then dispatches with the new case bound and cards flow stamped with a
+    case_id the client never opened, so nothing renders until a reload. On the
+    rehydration-failure branch we now emit a MINIMAL non-null case-open whose
+    ``session_state.case`` is the just-upserted ``CaseSummary`` (re-fetched, or
+    a bare ``CaseSummary(case_id=...)`` if even that read fails).
+    ``CaseSessionState`` only requires ``case`` (other fields default empty),
+    so this guarantees the client flips out of the Cases root even when the
+    richer rehydration momentarily fails.
     """
     p = get_persistence()
     if p is not None:
@@ -4756,6 +4763,35 @@ async def _emit_auto_case_open(
                 state.session_id,
                 case_id,
             )
+            # NATE 2026-06-26: fall back to a minimal non-null case-open so the
+            # client still leaves the Cases root (never a null session_state).
+            try:
+                case = await p.get_case(case_id)
+            except Exception:  # noqa: BLE001 — re-fetch is best-effort
+                case = None
+            if case is None:
+                # Last-resort minimal summary so session_state.case is non-null.
+                now = now_utc()
+                case = CaseSummary(
+                    case_id=case_id,
+                    title="Untitled Case",
+                    created_at=now,
+                    updated_at=now,
+                    status="active",
+                )
+            try:
+                fallback = CaseOpenEnvelopePayload(
+                    session_state=CaseSessionState(case=case)
+                )
+                await websocket.send(
+                    _new_envelope("case-open", state.session_id, fallback)
+                )
+            except Exception:  # noqa: BLE001 — fallback emit is best-effort
+                logger.exception(
+                    "auto-case-open minimal fallback failed session=%s case=%s",
+                    state.session_id,
+                    case_id,
+                )
     await _emit_case_list(websocket, state)
 
 
@@ -8353,8 +8389,29 @@ async def _invoke_tool_via_emitter(
     _mint_unique_layer_id = not isinstance(entry, _ReuseEntry)
 
     def _restamp(value: Any) -> Any:
-        if _mint_unique_layer_id and isinstance(value, LayerURI):
+        if not _mint_unique_layer_id:
+            return value
+        if isinstance(value, LayerURI):
             return value.model_copy(update={"layer_id": new_ulid()})
+        # NATE 2026-06-26: true-color / satellite tools return list[LayerURI]
+        # (fetch_goes_animation, fetch_goes_archive_animation,
+        # fetch_goes_active_fire, fetch_glm_lightning, fetch_viirs_day_fire).
+        # The single-LayerURI branch above NEVER re-stamped those, so members
+        # kept source-derived ids that can coincide; add_loaded_layer dedups by
+        # COG-identity (TiTiler url= param), NOT by layer_id, so two layers with
+        # the same id both persist and collide on delete-by-id (deleting one
+        # tore down BOTH). Re-stamp every LayerURI element with a fresh ULID,
+        # passing non-LayerURI elements through, and PRESERVE the sequence type
+        # (list stays list, tuple stays tuple) so downstream isinstance(result,
+        # list) checks (auto-publish loop, uri_registry) are unaffected.
+        if isinstance(value, (list, tuple)):
+            restamped = [
+                el.model_copy(update={"layer_id": new_ulid()})
+                if isinstance(el, LayerURI)
+                else el
+                for el in value
+            ]
+            return type(value)(restamped)
         return value
 
     async def _emit_early_input_frame() -> None:
@@ -10277,6 +10334,23 @@ async def _handle_layer_delete(
         if layer.layer_id != layer_id
     ]
     state.emitter.reset_loaded_layers(survivors)
+
+    # NATE 2026-06-26: re-inline surviving vectors BEFORE emit so a delete never
+    # transiently drops sibling vector layers. emit_session_state only attaches
+    # inline_geojson for ids already in _inline_geojson_by_layer_id; a survivor
+    # whose inline payload is missing on THIS socket would ship without
+    # inline_geojson and the client (never fetches s3:// directly — job-0175)
+    # cannot render it. reinline_vector_layers is idempotent (skips already-
+    # inlined ids) so it is a cheap no-op when the side-table is already full.
+    # Mirrors the session-resume / case-open re-inline (server.py ~3580).
+    try:
+        await state.emitter.reinline_vector_layers()
+    except Exception:  # noqa: BLE001 — re-inline is best-effort
+        logger.warning(
+            "layer-delete vector re-inline failed session=%s case=%s",
+            state.session_id,
+            target_case,
+        )
 
     # Emit the refreshed session-state. Map.tsx removes the now-absent layer
     # from MapLibre via replace-not-reconcile (Appendix A.7). session-state is
