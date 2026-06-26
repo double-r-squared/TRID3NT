@@ -32,6 +32,9 @@
 
 import { normalizePublicBase } from "./public_base";
 import { CaseListEnvelopePayload } from "../contracts";
+// DOUBLE-REFRESH FIX (NATE 2026-06-26): reuse the same wedged-fetch bound the
+// case-VIEW cold-load uses, so a hung /case-list also fails fast.
+import { COLD_FETCH_TIMEOUT_MS, makeAbortController } from "./case_view";
 
 /** Read `VITE_GRACE2_PUBLIC_BASE` (build-time), normalised. null when unset. */
 function publicBase(): string | null {
@@ -115,20 +118,38 @@ export async function fetchCaseList(
   const doFetch: FetchLike =
     fetchFn ?? ((input, init) => (globalThis.fetch as unknown as FetchLike)(input, init));
 
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): bound a wedged /case-list GET with a
+  // ~10s AbortController + timer so a stuck endpoint resolves to null fast
+  // instead of relying on the caller's effect-teardown to cancel it.
+  const controller = makeAbortController();
+  const timer =
+    controller !== null
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            /* ignore */
+          }
+        }, COLD_FETCH_TIMEOUT_MS)
+      : null;
+  const signal = controller?.signal;
+
   try {
     const headers: Record<string, string> = { accept: "application/json" };
     if (authToken != null && authToken.trim() !== "") {
       headers.authorization = `Bearer ${authToken.trim()}`;
     }
-    const resp = await doFetch(endpoint, { method: "GET", headers });
+    const resp = await doFetch(endpoint, { method: "GET", headers, signal });
     if (!resp.ok) return null;
 
     const payload = (await resp.json()) as CaseListEnvelopePayload | null;
     return validateCaseListPayload(payload);
   } catch {
-    // Network / parse failure -> no cold-load (fall back to Connecting/Wake).
-    // NEVER throw; the open flow must not wedge.
+    // Network / parse / ABORT (timeout) failure -> no cold-load (fall back to
+    // Connecting/Wake). NEVER throw; the open flow must not wedge.
     return null;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 

@@ -1428,14 +1428,38 @@ export function App(): JSX.Element {
   //   cold-load per (caseId) while disconnected; a healthy reconnect or a Case
   //   switch resets it so a later disconnect can cold-load again.
   const coldLoadedCaseRef = useRef<string | null>(null);
+  // The signed-in identity (uid, or "anon"). Shared by BOTH cold-load effects:
+  // the cold-VIEW effect re-arms on a TOKEN-readiness identity flip (so load 1
+  // paints the OWNER snapshot, no 2nd reload), and the cold-LIST effect keys its
+  // guard to it. Defined here (above the cold-VIEW effect) so both can read it.
+  const coldListIdentity = isSignedIn ? authUser?.uid ?? "signed-in" : "anon";
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): once a cold-VIEW attempt for the
+  // ACTIVE Case has RESOLVED (success OR a clean null/abort), record it so the
+  // layers spinner can stop forcing itself purely on transient wsStatus
+  // oscillation (box-off the WS never connects, so connecting<->reconnecting
+  // flaps forever). Keyed to the caseId so a Case switch re-arms the spinner.
+  const [coldViewAttemptedCaseId, setColdViewAttemptedCaseId] = useState<
+    string | null
+  >(null);
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): reset the cold-load-view guard the
+  // instant the App socket goes healthy - a live case-open is now authoritative
+  // and a future disconnect should be allowed to cold-load again. Its OWN tiny
+  // effect keyed on connected-ness so it does NOT re-run (and tear down the
+  // in-flight fetch in the effect below) on every connecting<->reconnecting
+  // flap while the box is asleep.
   useEffect(() => {
-    // Reset the cold-load guard whenever the App socket goes healthy: a live
-    // case-open is now authoritative and a future disconnect should be allowed
-    // to cold-load again.
     if (wsStatus === "connected") {
       coldLoadedCaseRef.current = null;
-      return;
     }
+  }, [wsStatus]);
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): depend on a COARSE notConnected
+  // boolean, not raw wsStatus, so the box-off connecting<->reconnecting
+  // oscillation (ws.ts CONNECT_ATTEMPT_TIMEOUT, ~10s) does NOT re-run this
+  // effect and cancel the in-flight cold-fetch. Only a real transition
+  // to/from "connected" flips this boolean.
+  const notConnected = wsStatus !== "connected";
+  useEffect(() => {
+    if (!notConnected) return;
     if (!caseViewConfigured()) return;
     if (activeCaseId === null) return;
     // Already have the live session for this Case (it round-tripped over the WS
@@ -1444,7 +1468,10 @@ export function App(): JSX.Element {
     // Already cold-loaded this Case during the current disconnected episode.
     if (coldLoadedCaseRef.current === activeCaseId) return;
 
-    coldLoadedCaseRef.current = activeCaseId;
+    // DOUBLE-REFRESH FIX (NATE 2026-06-26): do NOT advance the guard yet - it
+    // now latches ONLY on a SUCCESSFUL fetch (success branch below). A cancel /
+    // null / empty-token path always leaves it released so the next arm (a
+    // token-ready identity flip, or a fresh notConnected episode) re-fetches.
     let cancelled = false;
     // #147 Feature B GAP B2 - forward the signed-in owner's Cognito bearer token
     // (the SAME token ws.ts sends in the `auth-token` handshake) to the signer
@@ -1456,19 +1483,45 @@ export function App(): JSX.Element {
     void (async () => {
       const rawToken = await getIdToken().catch(() => null);
       if (cancelled) return;
+      // DOUBLE-REFRESH FIX (NATE 2026-06-26): signed in but the token is not
+      // ready yet -> do NOT burn the attempt on a tokenless request (the signer
+      // would answer with the anon tier / an empty owner snapshot). Release the
+      // guard + return so the coldListIdentity-keyed re-run (added to the deps)
+      // retries the instant the warm token arrives - so load 1 paints the
+      // OWNER snapshot, no 2nd reload needed.
+      if (
+        isSignedIn &&
+        (rawToken == null || rawToken.trim() === "")
+      ) {
+        coldLoadedCaseRef.current = null;
+        return;
+      }
       const authToken =
         rawToken != null && rawToken.trim() !== "" ? rawToken : undefined;
       const payload = await fetchCaseView(activeCaseId, undefined, authToken);
-      if (cancelled || payload === null) {
-        // fetchCaseView never throws, but guard belt-and-suspenders: a failed
-        // cold-load just leaves the Case shell + Wake UI and releases the guard
-        // so a later attempt in the same disconnected episode can re-fetch.
-        if (!cancelled) coldLoadedCaseRef.current = null;
+      if (cancelled) {
+        // DOUBLE-REFRESH FIX (NATE 2026-06-26): a teardown ALWAYS releases the
+        // guard (no `!cancelled` gate) so the next arm re-fetches - the old
+        // code latched the guard on cancel, wedging the cold-load forever.
+        coldLoadedCaseRef.current = null;
         return;
       }
-      // Feed the cold snapshot through the SAME path the live WS case-open
-      // uses. The rehydration effect above ([activeSession, bus]) then paints
-      // it. If a live case-open arrives later it supersedes idempotently.
+      // Mark the attempt resolved for THIS Case so the spinner can fall through
+      // to the honest empty / Wake stub even box-off (where wsStatus never
+      // settles). Runs on BOTH the null (no-snapshot/abort) and success paths.
+      setColdViewAttemptedCaseId(activeCaseId);
+      if (payload === null) {
+        // No snapshot / wedged hop aborted -> leave the Case shell + Wake UI and
+        // release the guard so a later attempt in the same disconnected episode
+        // can re-fetch.
+        coldLoadedCaseRef.current = null;
+        return;
+      }
+      // SUCCESS: latch the guard so we don't refetch this Case while still
+      // disconnected, then feed the cold snapshot through the SAME path the live
+      // WS case-open uses. The rehydration effect ([activeSession, bus]) then
+      // paints it. A later live case-open supersedes idempotently.
+      coldLoadedCaseRef.current = activeCaseId;
       useCases_onCaseOpen(payload);
       // job-0179  -  ALSO push the case-open onto the bus so Chat (which does
       // not subscribe to App's useCases state) can materialize the COLD
@@ -1481,7 +1534,20 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeCaseId, wsStatus, activeSession, useCases_onCaseOpen, bus]);
+    // coldListIdentity (the signed-in uid / "anon") re-arms this effect on TOKEN
+    // readiness: an empty-token early return above releases the guard, and the
+    // identity flip on sign-in / token-ready re-runs the fetch with the warm
+    // token. notConnected (coarse) replaces raw wsStatus so connect-attempt
+    // oscillation does NOT cancel the in-flight fetch.
+  }, [
+    activeCaseId,
+    notConnected,
+    coldListIdentity,
+    isSignedIn,
+    activeSession,
+    useCases_onCaseOpen,
+    bus,
+  ]);
 
   // sleep/wake STAGE 2 (NATE 2026-06-19) - COLD-LOAD the Cases LIST when the
   // agent box is asleep. SIBLING of the case-VIEW cold-load above: that paints
@@ -1494,10 +1560,16 @@ export function App(): JSX.Element {
   // cases (the LAST-CASE EDGE FIX in useCases.onCaseList).
   //
   // Fires ONCE per (signed-in identity) ref guard only while: the App socket is
-  // NOT connected AND cold-load is configured AND the rail is still empty
-  // (cases.length === 0). A later live `case-list` over the WS supersedes it
-  // (non-empty replaces; the reconcile is idempotent). Gated to dev/LAN safety
-  // by caseListConfigured() (null endpoint -> no fetch).
+  // NOT connected AND cold-load is configured AND NO authoritative list has been
+  // applied yet (`!casesSettled`). TASK C (NATE 2026-06-26): the guard is
+  // `casesSettled`, NOT `cases.length === 0` - on reload the cold case-VIEW
+  // effect optimistically upserts the ONE restored case into cases[], so the old
+  // length guard bailed and the full /case-list was never fetched (rail showed
+  // only the restored case); `casesSettled` flips only on a real onCaseList
+  // frame, so a lone cold-VIEW upsert no longer suppresses the cold list. A
+  // later live `case-list` over the WS supersedes it (non-empty replaces; the
+  // reconcile is idempotent). Gated to dev/LAN safety by caseListConfigured()
+  // (null endpoint -> no fetch).
   //
   // COLD-LIST SIGNED-IN FIX (NATE 2026-06-19)  -  NATE is signed in (Cognito) but
   // saw an EMPTY rail with the box asleep. Root cause: the effect fired on mount
@@ -1516,7 +1588,6 @@ export function App(): JSX.Element {
   //      a token-ready re-render) retries  -  we must not burn the one attempt on
   //      a tokenless request that the Lambda would answer empty.
   const coldLoadedListIdRef = useRef<string | null>(null);
-  const coldListIdentity = isSignedIn ? authUser?.uid ?? "signed-in" : "anon";
   useEffect(() => {
     // Reset the cold-load-list guard whenever the App socket goes healthy:
     // a live `case-list` is now authoritative and a future disconnect should
@@ -1531,7 +1602,16 @@ export function App(): JSX.Element {
     // episode. A sign-in (identity flip) clears this by inequality below.
     if (coldLoadedListIdRef.current === coldListIdentity) return;
     if (!caseListConfigured()) return;
-    if (cases.length > 0) return;
+    // TASK C FIX (NATE 2026-06-26): gate on whether an AUTHORITATIVE list has
+    // been applied, NOT on cases.length. On reload, 371caa3 seeds activeCaseId
+    // non-null, so the cold case-VIEW effect runs first and OPTIMISTICALLY
+    // UPSERTS the single restored case into cases[]; the old `cases.length > 0`
+    // guard then bailed and the full /case-list was NEVER fetched -> the rail
+    // showed ONLY the restored case. `casesSettled` flips only on a real
+    // onCaseList frame (an onCaseOpen upsert does NOT set it), so a lone
+    // optimistic cold-VIEW upsert no longer counts as "rail already loaded" and
+    // the cold /case-list always runs once -> the FULL rail loads.
+    if (casesSettled) return;
 
     coldLoadedListIdRef.current = coldListIdentity;
     let cancelled = false;
@@ -1561,7 +1641,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [wsStatus, cases.length, coldListIdentity, isSignedIn, useCases_onCaseList]);
+  }, [wsStatus, casesSettled, coldListIdentity, isSignedIn, useCases_onCaseList]);
 
   // Lift layers from session-state.
   //
@@ -1708,13 +1788,54 @@ export function App(): JSX.Element {
     layers.length === 0 &&
     (activeSession === null ||
       activeSession.case.case_id !== activeCaseId);
+
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): BOUND the spinner box-off. The spinner
+  // ties to wsStatus connecting/reconnecting, which box-off NEVER clears (the WS
+  // can't connect, so it flaps connecting<->reconnecting forever) -> an endless
+  // "Loading layers...". Arm a ~12s cold-settle timer (> the ~10s connect-attempt
+  // timeout) whenever a Case is active, the socket is NOT connected, and we still
+  // have zero layers; once it fires (OR the cold-VIEW attempt for this Case has
+  // resolved) we STOP forcing the spinner purely on transient wsStatus and fall
+  // through to the honest empty / Wake stub. Reset per (activeCaseId) so a Case
+  // switch re-arms it; cleared the instant layers paint or the socket connects.
+  const COLD_SETTLE_MS = 12_000;
+  const [coldSettleTimedOut, setColdSettleTimedOut] = useState(false);
+  useEffect(() => {
+    setColdSettleTimedOut(false);
+    if (activeCaseId === null) return;
+    if (wsStatus === "connected") return;
+    if (layers.length > 0) return;
+    const t = setTimeout(() => setColdSettleTimedOut(true), COLD_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [activeCaseId, wsStatus, layers.length]);
+
+  // The cold-VIEW attempt for the ACTIVE Case has RESOLVED (success/null/abort).
+  const coldViewSettledForCase =
+    activeCaseId !== null && coldViewAttemptedCaseId === activeCaseId;
+
   const layersLoading = useMemo(
-    () =>
-      activeCaseId !== null &&
-      (caseSelectedButUnsettled ||
-        wsStatus === "connecting" ||
-        wsStatus === "reconnecting"),
-    [activeCaseId, caseSelectedButUnsettled, wsStatus],
+    () => {
+      if (activeCaseId === null) return false;
+      // Genuine pre-paint loading: a Case is selected but its layers are not
+      // present yet AND no cold-load attempt has settled / timed out. Once the
+      // cold-VIEW attempt resolved OR the cold-settle timer fired, do NOT keep
+      // the spinner alive on transient wsStatus oscillation - show the honest
+      // empty / Wake stub instead.
+      const coldDone = coldViewSettledForCase || coldSettleTimedOut;
+      if (caseSelectedButUnsettled && !coldDone) return true;
+      // Transport churn still forces the spinner WHILE a cold-load could still
+      // resolve; once cold-done it no longer does (box-off would spin forever).
+      if (!coldDone && (wsStatus === "connecting" || wsStatus === "reconnecting"))
+        return true;
+      return false;
+    },
+    [
+      activeCaseId,
+      caseSelectedButUnsettled,
+      wsStatus,
+      coldViewSettledForCase,
+      coldSettleTimedOut,
+    ],
   );
 
   // LANE B #4 (no-replay): suppress the loading shimmer REPLAY on a re-enter /
@@ -2784,6 +2905,10 @@ export function App(): JSX.Element {
         leftPanelWidthPx={!isMobile && !leftCollapsed ? 288 : 0}
         chatWidthPx={chatWidth}
         chatCollapsed={rightCollapsed}
+        /* TASK E (NATE 2026-06-26): thread the App's chat-sheet top-edge Y (the
+           same value the mobile legend docks to) so the MOBILE scrubber docks
+           to + tracks the chat panel top. Null on desktop -> bottom-pinned. */
+        sheetTopPx={sheetTopPx}
       />
     </div>
     </AuthGuard>
@@ -2803,6 +2928,7 @@ function AppSequenceScrubber({
   leftPanelWidthPx = 0,
   chatWidthPx = 0,
   chatCollapsed = false,
+  sheetTopPx = null,
 }: {
   /**
    * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open, or the
@@ -2817,6 +2943,13 @@ function AppSequenceScrubber({
   chatWidthPx?: number;
   /** Whether the chat panel is collapsed (its width counts as 0). */
   chatCollapsed?: boolean;
+  /**
+   * TASK E (NATE 2026-06-26): the on-screen Y of the chat sheet's TOP edge
+   * (mobile only; null on desktop). Threaded to SequenceScrubber so the MOBILE
+   * scrubber docks its bottom to + tracks the chat panel top instead of floating
+   * over the map. Desktop ignores it (stays bottom-pinned).
+   */
+  sheetTopPx?: number | null;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -2847,6 +2980,7 @@ function AppSequenceScrubber({
       leftPanelWidthPx={leftPanelWidthPx}
       chatWidthPx={chatWidthPx}
       chatCollapsed={chatCollapsed}
+      sheetTopPx={sheetTopPx}
     />
   );
 }

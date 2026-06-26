@@ -92,6 +92,23 @@ export type FetchLike = (
   },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 
+/** DOUBLE-REFRESH FIX (NATE 2026-06-26): cap a wedged cold-fetch at ~10s. Just
+ *  longer than the live WS connect-attempt timeout (ws.ts) so a hung hop fails
+ *  fast and the caller can release its guard + re-arm, instead of the request
+ *  hanging past the effect-teardown that cancels it. */
+export const COLD_FETCH_TIMEOUT_MS = 10_000;
+
+/** Build an AbortController if the runtime has one (browsers + happy-dom do).
+ *  Returns null when unavailable so the fetch still runs (unbounded) rather
+ *  than throwing - the timeout is best-effort, never a hard dependency. */
+export function makeAbortController(): AbortController | null {
+  try {
+    return typeof AbortController !== "undefined" ? new AbortController() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Signer-response shape: a pre-signed S3 GET URL + metadata. */
 interface SignerResponse {
   url?: unknown;
@@ -136,6 +153,25 @@ export async function fetchCaseView(
   const doFetch: FetchLike =
     fetchFn ?? ((input, init) => (globalThis.fetch as unknown as FetchLike)(input, init));
 
+  // DOUBLE-REFRESH FIX (NATE 2026-06-26): a WEDGED hop (signer or S3 hanging
+  // with the box asleep) must FAIL FAST rather than relying on the caller's
+  // effect-teardown to cancel it. Bound BOTH hops with a single ~10s
+  // AbortController + timer so a stuck request resolves to null (no cold-load)
+  // well before the caller's connect-attempt oscillation tears the effect down.
+  // The signal threads into every hop; the timer is always cleared.
+  const controller = makeAbortController();
+  const timer =
+    controller !== null
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            /* ignore */
+          }
+        }, COLD_FETCH_TIMEOUT_MS)
+      : null;
+  const signal = controller?.signal;
+
   try {
     // --- Hop 1: signer -> pre-signed S3 url -------------------------------- //
     const signerUrl = `${signer}?case_id=${encodeURIComponent(caseId.trim())}`;
@@ -143,7 +179,7 @@ export async function fetchCaseView(
     if (authToken != null && authToken.trim() !== "") {
       headers.authorization = `Bearer ${authToken.trim()}`;
     }
-    const signerResp = await doFetch(signerUrl, { method: "GET", headers });
+    const signerResp = await doFetch(signerUrl, { method: "GET", headers, signal });
     // 404 = no snapshot for this case (never materialised) -> caller shows the
     // case shell + Wake; any other non-2xx is also a clean "no cold-load".
     if (!signerResp.ok) return null;
@@ -156,15 +192,17 @@ export async function fetchCaseView(
     // --- Hop 2: pre-signed S3 GET -> the case-open envelope JSON ----------- //
     // No auth header: the pre-signed url carries its own signature in the query
     // string (and adding headers can invalidate an S3 SigV4 pre-sign).
-    const s3Resp = await doFetch(presigned, { method: "GET" });
+    const s3Resp = await doFetch(presigned, { method: "GET", signal });
     if (!s3Resp.ok) return null;
 
     const payload = (await s3Resp.json()) as CaseOpenEnvelopePayload | null;
     return validateCaseOpenPayload(payload);
   } catch {
-    // Network / parse failure on either hop -> no cold-load (fall back to
-    // Connecting/Wake). NEVER throw; the open flow must not wedge.
+    // Network / parse / ABORT (timeout) failure on either hop -> no cold-load
+    // (fall back to Connecting/Wake). NEVER throw; the open flow must not wedge.
     return null;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
 }
 

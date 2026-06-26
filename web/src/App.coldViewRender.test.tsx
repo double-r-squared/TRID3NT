@@ -498,3 +498,365 @@ describe("ACTIVE-CASE RESTORE - reload stays in the open Case (not the list)", (
     expect(screen.getByTestId("app-view").textContent).toBe("cases-panel");
   });
 });
+
+// ── DOUBLE-REFRESH FIX (TASK A, NATE 2026-06-26): box-off a Case loads FOREVER
+// and only a 2nd reload shows layers. ROOT: the cold case-VIEW effect set its
+// one-shot guard SYNCHRONOUSLY before an async fetch and depended on RAW
+// wsStatus; box-off the WS flaps connecting<->reconnecting every ~10s, each flip
+// tearing the effect down -> cancelling the in-flight fetch -> re-running ->
+// bailing on the latched guard (which the cancel branch did NOT release) so the
+// fetch never completed and onCaseOpen never fired. The fix:
+//   1. depend on a COARSE `notConnected` boolean so connecting<->reconnecting
+//      flaps do NOT re-run/cancel the in-flight fetch;
+//   2. release the guard on EVERY cancel + only latch it on SUCCESS;
+//   3. a cold-settle / attempt-resolved signal so layersLoading stops spinning.
+// This harness reproduces the FIXED cold-VIEW fetch effect VERBATIM (the App.tsx
+// effect body) wired to the REAL useCases hook, driven by a DEFERRED cold-load
+// so the test can flip wsStatus connecting->reconnecting MID-FETCH. ────────── //
+type DeferredColdLoad = {
+  promise: Promise<CaseOpenEnvelopePayload | null>;
+  resolve: (p: CaseOpenEnvelopePayload | null) => void;
+};
+function makeDeferred(): DeferredColdLoad {
+  let resolve!: (p: CaseOpenEnvelopePayload | null) => void;
+  const promise = new Promise<CaseOpenEnvelopePayload | null>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+type WsStatusLike = "connecting" | "connected" | "disconnected" | "reconnecting";
+
+function ColdViewFetchHarness({
+  wsStatus,
+  coldLoad,
+  onLayers,
+}: {
+  wsStatus: WsStatusLike;
+  // The deferred cold-load stands in for fetchCaseView: the test resolves it
+  // AFTER flipping wsStatus to prove a mid-fetch flap does not cancel it.
+  coldLoad: () => Promise<CaseOpenEnvelopePayload | null>;
+  onLayers: (layers: ProjectLayerSummary[]) => void;
+}): JSX.Element {
+  const bus = useRef(createLayerPanelBus()).current;
+  const layerCache = useRef(getLayerCache()).current;
+
+  const cases = useCases({
+    sendCaseCommand: () => {
+      /* no-op: box asleep */
+    },
+    isSignedIn: true,
+  });
+  const { activeSession, activeCaseId, onCaseOpen, selectCase } = cases;
+
+  const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
+  useEffect(() => {
+    onLayers(layers);
+  }, [layers, onLayers]);
+
+  // (a) layerCache.activeCaseId lockstep (App.tsx) - verbatim-minimal.
+  const activeCaseIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prevCaseId = activeCaseIdRef.current;
+    activeCaseIdRef.current = activeCaseId;
+    if (prevCaseId !== null && prevCaseId !== activeCaseId) {
+      layerCache.evictCase(prevCaseId);
+    }
+    if (activeCaseId === null) setLayers([]);
+    layerCache.activeCaseId = activeCaseId;
+  }, [activeCaseId, layerCache]);
+
+  // (b) Case rehydration replay effect (App.tsx) - the layer push.
+  useEffect(() => {
+    if (activeSession === null) {
+      bus.pushSessionState({
+        loaded_layers: [],
+        chat_history: [],
+        pipeline_history: [],
+        current_pipeline: null,
+        map_view: null,
+        replace_layers: true,
+      });
+      return;
+    }
+    bus.pushSessionState({
+      loaded_layers: activeSession.loaded_layers ?? [],
+      chat_history: activeSession.chat_history ?? [],
+      pipeline_history: activeSession.pipeline_history ?? [],
+      current_pipeline: activeSession.current_pipeline ?? null,
+      map_view: null,
+      replace_layers: true,
+    } as unknown as Parameters<typeof bus.pushSessionState>[0]);
+  }, [activeSession, bus]);
+
+  // (c) bus subscriber (App.tsx) - verbatim.
+  useEffect(() => {
+    const unsub = bus.subscribeSessionState((p) => {
+      const incoming = p.loaded_layers ?? [];
+      const authoritativeReplace =
+        (p as { replace_layers?: boolean }).replace_layers !== false;
+      const caseId = layerCache.activeCaseId;
+      const merged = layerCache.mergeSnapshot(caseId, incoming, {
+        authoritativeReplace,
+      });
+      setLayers(merged);
+    });
+    return unsub;
+  }, [bus, layerCache]);
+
+  // ── The FIXED cold-VIEW fetch effect (App.tsx ~1430), reproduced. ──────── //
+  const coldLoadedCaseRef = useRef<string | null>(null);
+  const [coldViewAttemptedCaseId, setColdViewAttemptedCaseId] = useState<
+    string | null
+  >(null);
+  // (1) reset-on-connected in its OWN effect keyed on wsStatus===connected.
+  useEffect(() => {
+    if (wsStatus === "connected") coldLoadedCaseRef.current = null;
+  }, [wsStatus]);
+  // (1) depend on the COARSE notConnected boolean, NOT raw wsStatus.
+  const notConnected = wsStatus !== "connected";
+  useEffect(() => {
+    if (!notConnected) return;
+    if (activeCaseId === null) return;
+    if (activeSession && activeSession.case.case_id === activeCaseId) return;
+    if (coldLoadedCaseRef.current === activeCaseId) return;
+    let cancelled = false;
+    void (async () => {
+      const payload = await coldLoad();
+      if (cancelled) {
+        // (2) ALWAYS release the guard on cancel so the next arm re-fetches.
+        coldLoadedCaseRef.current = null;
+        return;
+      }
+      setColdViewAttemptedCaseId(activeCaseId);
+      if (payload === null) {
+        coldLoadedCaseRef.current = null;
+        return;
+      }
+      // (2) latch the guard only on SUCCESS, then feed onCaseOpen.
+      coldLoadedCaseRef.current = activeCaseId;
+      onCaseOpen(payload);
+      bus.pushCaseOpen(payload);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCaseId, notConnected, activeSession, onCaseOpen, bus, coldLoad]);
+
+  // ── The FIXED layersLoading derivation (App.tsx), reproduced. ──────────── //
+  const caseSelectedButUnsettled =
+    activeCaseId !== null &&
+    layers.length === 0 &&
+    (activeSession === null || activeSession.case.case_id !== activeCaseId);
+  const coldViewSettledForCase =
+    activeCaseId !== null && coldViewAttemptedCaseId === activeCaseId;
+  const layersLoading = useMemo(() => {
+    if (activeCaseId === null) return false;
+    const coldDone = coldViewSettledForCase; // (no timer in the harness)
+    if (caseSelectedButUnsettled && !coldDone) return true;
+    if (!coldDone && (wsStatus === "connecting" || wsStatus === "reconnecting"))
+      return true;
+    return false;
+  }, [activeCaseId, caseSelectedButUnsettled, wsStatus, coldViewSettledForCase]);
+
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__test_selectCase = (
+      id: string,
+    ) => selectCase(id);
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__test_selectCase;
+    };
+  }, [selectCase]);
+
+  return (
+    <div>
+      <div data-testid="app-layer-count">{layers.length}</div>
+      <div data-testid="app-layers-loading">{layersLoading ? "yes" : "no"}</div>
+      {layers.length === 0 && <div>{EMPTY_STATE_TEXT}</div>}
+    </div>
+  );
+}
+
+describe("TASK A - cold-VIEW survives a mid-fetch connecting->reconnecting flap", () => {
+  it("a wsStatus flap MID-FETCH does NOT cancel the cold-load: onCaseOpen fires + all 26 layers reach setLayers + the spinner clears on the FIRST load", async () => {
+    const deferred = makeDeferred();
+    let lastLayers2: ProjectLayerSummary[] = [];
+
+    const { rerender } = render(
+      <ColdViewFetchHarness
+        wsStatus="connecting"
+        coldLoad={() => deferred.promise}
+        onLayers={(l) => (lastLayers2 = l)}
+      />,
+    );
+
+    // Select the Case while disconnected (box asleep) - the cold-VIEW effect
+    // arms and AWAITS the deferred cold-load.
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+    });
+
+    // Pre-resolve: zero layers, the spinner is up (genuine pre-paint loading).
+    expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+    expect(screen.getByTestId("app-layers-loading").textContent).toBe("yes");
+
+    // THE FLAP: wsStatus connecting->reconnecting MID-FETCH (the deferred
+    // cold-load has NOT resolved yet). With the OLD raw-wsStatus dep this tore
+    // the effect down + cancelled + latched the guard forever. With the coarse
+    // notConnected dep the effect does NOT re-run, so the in-flight fetch lives.
+    await act(async () => {
+      rerender(
+        <ColdViewFetchHarness
+          wsStatus="reconnecting"
+          coldLoad={() => deferred.promise}
+          onLayers={(l) => (lastLayers2 = l)}
+        />,
+      );
+    });
+
+    // Now resolve the cold-load (as the real fetch would, post-flap).
+    await act(async () => {
+      deferred.resolve(COLD_PAYLOAD);
+      await deferred.promise;
+    });
+
+    // FIRST LOAD paints all 26 layers (no 2nd reload needed) ...
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layer-count").textContent).toBe(
+        String(EXPECTED_LAYERS),
+      );
+    });
+    expect(lastLayers2.length).toBe(EXPECTED_LAYERS);
+    expect(screen.queryByText(EMPTY_STATE_TEXT)).toBeNull();
+    // ... and the spinner CLEARS even though wsStatus is still "reconnecting"
+    // box-off (the attempt resolved -> stop forcing the spinner on the flap).
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layers-loading").textContent).toBe("no");
+    });
+  });
+
+  it("a no-snapshot cold-load (null) box-off STOPS the spinner instead of spinning forever", async () => {
+    const deferred = makeDeferred();
+    render(
+      <ColdViewFetchHarness
+        wsStatus="reconnecting"
+        coldLoad={() => deferred.promise}
+        onLayers={() => {}}
+      />,
+    );
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+    });
+    // Spinner up while the attempt is in flight.
+    expect(screen.getByTestId("app-layers-loading").textContent).toBe("yes");
+    // Resolve to NULL (no snapshot) - the attempt is now RESOLVED.
+    await act(async () => {
+      deferred.resolve(null);
+      await deferred.promise;
+    });
+    // Still zero layers, but the spinner CLEARS (honest empty / Wake stub),
+    // NOT an endless "Loading layers..." on the box-off reconnecting flap.
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layers-loading").textContent).toBe("no");
+    });
+    expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+    expect(screen.queryByText(EMPTY_STATE_TEXT)).not.toBeNull();
+  });
+});
+
+// ── TASK C (NATE 2026-06-26): EXITING/RELOADING a Case shows ONLY that ONE
+// case; the rest vanish. ROOT: on reload activeCaseId is seeded non-null, the
+// cold case-VIEW effect runs FIRST and OPTIMISTICALLY UPSERTS the single
+// restored case into cases[]; the cold case-LIST effect then bailed on its old
+// `if (cases.length > 0) return` guard -> the authoritative full /case-list was
+// NEVER fetched. The fix gates on `casesSettled` (flips only on a real
+// onCaseList frame; an onCaseOpen upsert does NOT set it), so the cold
+// /case-list ALWAYS runs once even after a restored-case upsert. This harness
+// reproduces the FIXED cold-LIST guard against the REAL useCases hook. ─────── //
+function ColdListGuardHarness({
+  onListFetched,
+}: {
+  onListFetched: () => void;
+}): JSX.Element {
+  const cases = useCases({
+    sendCaseCommand: () => {
+      /* no-op: box asleep */
+    },
+    isSignedIn: true,
+  });
+  const {
+    cases: caseList,
+    casesSettled,
+    onCaseOpen,
+    onCaseList,
+    selectCase,
+  } = cases;
+
+  // The FIXED cold-LIST guard (App.tsx): gate on casesSettled, NOT cases.length.
+  const coldLoadedListIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Box asleep (never connected) so the reset-on-connected branch is moot.
+    if (coldLoadedListIdRef.current === "signed-in") return;
+    // TASK C: an optimistic cold-VIEW upsert leaves cases.length > 0 but
+    // casesSettled FALSE, so the OLD guard bailed and this NEVER ran. The fixed
+    // guard runs because casesSettled is still false.
+    if (casesSettled) return;
+    coldLoadedListIdRef.current = "signed-in";
+    // Stand in for fetchCaseList -> useCases_onCaseList(payload, true): the FULL
+    // authoritative list of THREE cases (incl. the restored one).
+    onListFetched();
+    onCaseList(
+      {
+        envelope_type: "case-list",
+        cases: [
+          { case_id: COLD_PAYLOAD.session_state!.case.case_id, title: "Restored" },
+          { case_id: "CASE_B", title: "Case B" },
+          { case_id: "CASE_C", title: "Case C" },
+        ],
+      } as never,
+      true,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casesSettled, onCaseList, onListFetched]);
+
+  // Expose the restored-case optimistic upsert (the cold-VIEW path on reload).
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__test_restoreUpsert = () =>
+      onCaseOpen(COLD_PAYLOAD);
+    (window as unknown as Record<string, unknown>).__test_selectCase = (
+      id: string,
+    ) => selectCase(id);
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__test_restoreUpsert;
+      delete (window as unknown as Record<string, unknown>).__test_selectCase;
+    };
+  }, [onCaseOpen, selectCase]);
+
+  return <div data-testid="rail-count">{caseList.length}</div>;
+}
+
+describe("TASK C - cold /case-list runs even after a restored-case cold-VIEW upsert", () => {
+  it("box-off reload: a seeded restored-case upsert does NOT suppress the cold /case-list -> the rail shows ALL cases, not just the restored one", async () => {
+    let listFetched = 0;
+    render(<ColdListGuardHarness onListFetched={() => (listFetched += 1)} />);
+
+    // Reload sequence: the cold case-VIEW optimistically upserts the ONE
+    // restored case into cases[] BEFORE any authoritative list arrives.
+    await act(async () => {
+      (
+        window as unknown as { __test_restoreUpsert: () => void }
+      ).__test_restoreUpsert();
+    });
+
+    // The cold /case-list STILL runs (the bug: it did not) ...
+    await waitFor(() => expect(listFetched).toBeGreaterThan(0));
+    // ... and the rail now shows ALL THREE cases, not just the restored one.
+    await waitFor(() => {
+      expect(screen.getByTestId("rail-count").textContent).toBe("3");
+    });
+  });
+});
