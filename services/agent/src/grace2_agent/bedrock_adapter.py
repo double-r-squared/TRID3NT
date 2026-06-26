@@ -227,6 +227,8 @@ def _build_converse_kwargs(
     """
     model_id = model or bedrock_model_id()
     _system_unused, messages = contents_to_bedrock_messages(contents)
+    # Normalize messages to start with role=='user' (Bedrock requirement).
+    messages = _ensure_messages_start_with_user(messages)
     system_blocks: list[dict[str, Any]] = (
         [{"text": system_prompt}] if system_prompt else []
     )
@@ -252,6 +254,20 @@ def _build_converse_kwargs(
             [*tools, {"cachePoint": {"type": "default"}}] if cache else tools
         )
         kwargs["toolConfig"] = {"tools": tool_list, "toolChoice": {"auto": {}}}
+
+    # Log LLM input preview (system text length + message array shape).
+    if os.environ.get("GRACE2_LOG_LLM_INPUT", "").lower() in {"1", "true", "yes", "on"}:
+        system_text_len = sum(
+            len(block.get("text", "")) for block in (kwargs.get("system") or [])
+        )
+        msg_shape = [
+            {"role": m.get("role"), "content_types": [list(c.keys()) for c in m.get("content", [])]}
+            for m in messages
+        ]
+        logger.info(
+            f"LLM input preview: system_text_len={system_text_len}, messages={msg_shape}"
+        )
+
     return kwargs
 
 
@@ -390,6 +406,39 @@ _TYPE_MAP = {
     "OBJECT": "object",
     "TYPE_UNSPECIFIED": "string",
 }
+
+
+def _ensure_messages_start_with_user(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize messages to always start with a role=='user' message.
+
+    Bedrock's ConverseStream requires the first message to have role 'user'.
+    This function strips any leading non-user messages (assistant/tool/etc)
+    and, if the result is empty or still doesn't start with 'user', prepends
+    a minimal synthetic user message "(context)" to satisfy Bedrock's requirement.
+
+    Args:
+        messages: A list of message dicts with 'role' and 'content' keys.
+
+    Returns:
+        The normalized messages list, guaranteed to start with role 'user'.
+    """
+    if not messages:
+        return [{"role": "user", "content": [{"text": "(context)"}]}]
+
+    # Strip leading non-user messages.
+    idx = 0
+    while idx < len(messages) and messages[idx].get("role") != "user":
+        idx += 1
+
+    # If we stripped all messages, prepend a synthetic one and return the rest.
+    if idx >= len(messages):
+        # All messages were non-user; return synthetic + everything.
+        return [{"role": "user", "content": [{"text": "(context)"}]}] + messages
+
+    # We found a user message at position idx; return from there onward.
+    return messages[idx:]
 
 
 def _genai_schema_to_json_schema(node: Any) -> dict[str, Any]:
