@@ -2649,5 +2649,12 @@
     "description": "Implement+verify workflow for the remaining live-feedback queue: 9 parallel Opus implementers partitioned into disjoint file-owners (zero collisions) + 3 verifiers (web tsc+vitest, agent pytest, adversarial routing review). Landed across 5 commits: server.py delete-cascade/true-color-double-delete/cards-on-refresh; web chat-card streaming + solver labels; 3D terrain softening + linear resampling; mobile/UI polish (draw-AOI z-order, case-restore-on-reload, tools-catalog timeout, sandbox-card state machine); GOES-animation frame emission + Sentinel-2 guardrail. Verify: tsc clean, web vitest 2087/2087, agent pytest 82/82, routing review SOLID.",
     "model": "opus",
     "subagent_tokens": 963629
+  },
+  {
+    "job_id": "fetch-resolution-gate-design",
+    "sprint": 17,
+    "description": "Read-only design Agent: surgical plan to extend the #154 user-resolution gate to the heavy raster FETCHERS (NATE 'Go' on low-output-resolution; option b = user lever, not silent cost bump). Verdict: gate fetch_dem [1,3,10,30] + fetch_topobathy [3,10,30] only (NAIP/NDVI/GOES source-capped, no finer knob -> leave); reuse GranularitySuggestion + ResolutionPickerCard (no new UI), widen 2 Literals, add FETCH_CONFIRM_TOOLS excluded from the autostop solver-marker, finest-allowed-by-area cap (MAX_FETCH_PX). Separately CONFIRMED the SFINCS/SWMM solver defaults are NOT needlessly coarse + have super-linear cost -> no silent floor raise.",
+    "model": "opus",
+    "subagent_tokens": 137223
   }
 ]
