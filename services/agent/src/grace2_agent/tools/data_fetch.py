@@ -348,6 +348,13 @@ _FETCH_DEM_METADATA = AtomicToolMetadata(
     ttl_class="static-30d",
     source_class="dem",
     cacheable=True,
+    # Deterministic auto-publish opt-OUT (NATE 2026-06-26): the raw DEM is a
+    # pure INTERMEDIATE input that feeds compute_hillshade / compute_slope /
+    # compute_aspect / SFINCS setup. The user normally wants the DERIVED terrain
+    # product painted, not the bare elevation grid, so do NOT auto-render it.
+    # The LLM can still explicitly publish_layer the raw DEM when the user asks
+    # to see elevation directly.
+    auto_publish=False,
 )
 
 

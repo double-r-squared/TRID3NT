@@ -174,6 +174,10 @@ _METADATA = AtomicToolMetadata(
     cacheable=True,
     supports_global_query=False,
     payload_mb_estimator_name="estimate_payload_mb",
+    # Deterministic auto-publish opt-OUT (NATE 2026-06-26): the 3DEP-extra
+    # derivative grids (role="input") are pure intermediates that feed terrain
+    # analysis / solver setup, not standalone products the user asks to view.
+    auto_publish=False,
 )
 
 

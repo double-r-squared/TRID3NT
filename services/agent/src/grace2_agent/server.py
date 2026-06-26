@@ -453,6 +453,62 @@ def _resolve_publish_wrap_style_preset(
     return ""
 
 
+def _is_droppable_object_store_raster(value: Any) -> bool:
+    """True iff ``value`` is exactly the LayerURI class ``emit_layer_uri`` DROPS.
+
+    The deterministic auto-publish (NATE 2026-06-26) targets precisely the
+    LayerURIs that ``layer_uri_emit.emit_layer_uri`` refuses to deliver: a
+    RENDERABLE RASTER carrying a raw object-store uri (``s3://`` / ``gs://``),
+    which MapLibre cannot fetch. Those must be converted to an http(s) tile URL
+    via publish_layer before they can render. A vector (inline-GeoJSON path), an
+    http(s)-uri raster (already renderable), or any non-LayerURI return is NOT a
+    candidate. ``PlumeLayerURI`` / ``SeepageLayerURI`` are LayerURI subclasses,
+    so ``isinstance(..., LayerURI)`` covers them.
+    """
+    if not isinstance(value, LayerURI):
+        return False
+    if value.layer_type != "raster":
+        return False
+    uri = value.uri or ""
+    return uri.startswith("s3://") or uri.startswith("gs://")
+
+
+#: Result keys that mark a dispatch as having PRODUCED a real artifact -- a
+#: published / registered layer, a stored object, a feature set. Used by the
+#: loop-watchdog progress witness (job-186): a round that produces one of these
+#: is ADVANCING the Case (a new layer/handle appears) even if the model
+#: pathologically repeats the same call, so it is allowed to run to the step cap
+#: / loop-exhausted envelope rather than being watchdog-aborted. The bare-ack
+#: wedge shape from the incident (``{"ok": True}`` re-issued forever) carries
+#: none of these and so loads the no-progress streak.
+_PROGRESS_RESULT_KEYS: tuple[str, ...] = (
+    "layer_id",
+    "wms_url",
+    "uri",
+    "layer_uri",
+    "feature_count",
+)
+
+
+def _dispatch_made_progress(result: Any) -> bool:
+    """True iff a single tool dispatch produced a real artifact (job-186).
+
+    A ``LayerURI`` return (any subclass) is always progress -- a renderable
+    layer was produced. A dict carrying a layer/handle/feature signal
+    (:data:`_PROGRESS_RESULT_KEYS`) is progress. Everything else -- a bare ack
+    (``{"ok": True}``), ``None``, a primitive, an empty dict -- is NOT progress:
+    that is the no-op-repeat shape the watchdog must catch.
+    """
+    if isinstance(result, LayerURI):
+        return True
+    if isinstance(result, dict):
+        return any(
+            result.get(k) not in (None, "", [], {})
+            for k in _PROGRESS_RESULT_KEYS
+        )
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Session-scoped confirmation registry (job-0243)
 # --------------------------------------------------------------------------- #
@@ -2616,24 +2672,30 @@ async def _stream_gemini_reply(
                 )
                 break
 
-            # GUARD 3 (loop watchdog): feed THIS round's (tool, args_hash) calls
-            # to the watchdog BEFORE dispatching them. A no-progress runaway --
-            # the SAME tool+args (or identical round signature) N rounds in a row
-            # (Nova Lite's failure shape) -- trips the watchdog and aborts the
-            # turn instead of re-dispatching the identical call(s) yet again.
+            # GUARD 3 (loop watchdog): compute THIS round's (tool, args_hash)
+            # signature now, but feed it to the watchdog AFTER dispatch (below)
+            # together with a PROGRESS witness. A no-progress runaway -- the SAME
+            # tool+args (or identical round signature) N rounds in a row that
+            # keeps RETURNING NOTHING NEW (Nova Lite's failure shape) -- trips the
+            # watchdog and aborts. A round that PRODUCES a layer/artifact, or one
+            # the circuit breaker owns (all calls failed / short-circuited), is
+            # NOT counted: a producing loop runs to the step-cap / loop-exhausted
+            # envelope, and the breaker (not the watchdog) handles the failing
+            # tool by delivering CIRCUIT_BREAKER_TRIPPED so the model adapts.
+            # Recording after dispatch (vs before) costs at most ONE extra
+            # identical round before the trip -- still far under the step cap, so
+            # the box stays un-wedgeable while the breaker / loop-exhausted paths
+            # are no longer pre-empted.
             _round_sig = [
                 (c.name, compute_args_hash(c.args)) for c in turn_function_calls
             ]
-            _wd_trip = _watchdog.record_round(_round_sig)
-            if _wd_trip is not None:
-                logger.warning(
-                    "loop watchdog tripped session=%s iter=%d sig=%r",
-                    state.session_id,
-                    iterations,
-                    _round_sig,
-                )
-                _agent_abort = (_wd_trip, abort_message(_wd_trip))
-                break
+            # Per-round progress witness, OR'd across the round's calls. Seeded
+            # True only if EVERY call ends up failing / short-circuited (the
+            # breaker's territory) -- tracked as no calls-succeeded-without-output
+            # below. Starts False; set True by a producing dispatch.
+            _round_made_progress = False
+            _round_had_failure = False
+            _round_had_success = False
 
             # job-0315: a function-call round is about to dispatch — close the
             # current narration bubble (if any text was emitted) BEFORE the
@@ -2822,6 +2884,15 @@ async def _stream_gemini_reply(
                     # job-B8: record success so the consecutive-failure counter
                     # resets — a recovered tool should not stay penalised.
                     state.circuit_breaker.record_success(call.name)
+                    # job-186 loop-watchdog progress witness: a successful call
+                    # that PRODUCED a real artifact (a layer/handle/feature set)
+                    # advances the Case, so it resets the no-progress streak even
+                    # if the model repeats the same call. A successful bare-ack
+                    # return ({"ok": True}, None, primitive) does NOT -- that is
+                    # the no-op-repeat wedge shape the watchdog exists to catch.
+                    _round_had_success = True
+                    if _dispatch_made_progress(result):
+                        _round_made_progress = True
                     # On a successful dispatch, mark the tool sticky so the
                     # LLM can re-issue the same tool on a later turn with
                     # refined args without re-opening its category.
@@ -2859,6 +2930,14 @@ async def _stream_gemini_reply(
                     if not isinstance(exc, CircuitBreakerError):
                         state.circuit_breaker.record_failure(call.name, exc)
                     dispatch_error = exc
+                    # job-186 loop-watchdog: a failed / circuit-broken call is
+                    # the CIRCUIT BREAKER's territory (it delivers
+                    # CIRCUIT_BREAKER_TRIPPED so the model adapts and the turn
+                    # continues). Mark the round so the watchdog does NOT also
+                    # count it -- the breaker, not the watchdog, owns a turn that
+                    # is a stream of failures, so the watchdog cannot pre-empt
+                    # the graceful CIRCUIT_BREAKER_TRIPPED response.
+                    _round_had_failure = True
                 _tool_latency_ms = (asyncio.get_running_loop().time() - _tool_start) * 1000.0
 
                 summary = summarize_tool_result(
@@ -3019,32 +3098,91 @@ async def _stream_gemini_reply(
                     build_function_response_content(call.name, summary, call.call_id)
                 )
 
+            # GUARD 3 (loop watchdog) -- POST-DISPATCH record. The round counts
+            # toward the no-progress streak ONLY when it had calls, did NOT
+            # produce a real artifact, and was NOT a failure / circuit-broken
+            # round (those are the breaker's territory). A producing round, an
+            # all-failed round, or a short-circuited round resets the streak so
+            # the watchdog never pre-empts the loop-exhausted (MAX_ITERATIONS_
+            # REACHED) envelope at the step cap or the CIRCUIT_BREAKER_TRIPPED
+            # graceful path. A genuine no-op-repeat runaway (same successful call
+            # returning nothing new, N rounds running) trips and aborts.
+            _round_progressed = _round_made_progress or (
+                _round_had_failure and not _round_had_success
+            )
+            _wd_trip = _watchdog.record_round(
+                _round_sig, made_progress=_round_progressed
+            )
+            if _wd_trip is not None:
+                logger.warning(
+                    "loop watchdog tripped session=%s iter=%d sig=%r "
+                    "made_progress=%s had_failure=%s had_success=%s",
+                    state.session_id,
+                    iterations,
+                    _round_sig,
+                    _round_made_progress,
+                    _round_had_failure,
+                    _round_had_success,
+                )
+                _agent_abort = (_wd_trip, abort_message(_wd_trip))
+                break
+
             # Loop: re-stream with the appended call + response so Gemini can
             # decide its next move (another tool call OR a narrative wrap-up).
         else:
-            # Loop fell through the STEP CAP without a clean (no-tool-call) exit.
-            # This is the natural step-cap fail-stop for a runaway loop: the
-            # ``while`` completed all ``_step_cap`` iterations without ``break``.
-            # job-B9: emit a distinct ``loop_exhausted`` envelope so the web UI
-            # can render "Agent ran out of steps" rather than a generic failure.
-            # job-186: a guard (wall-clock / watchdog) abort instead ``break``s
-            # with ``_agent_abort`` set and is surfaced in the dedicated block
-            # below — so this ``else`` only handles natural step-cap exhaustion.
-            if _agent_abort is None:
+            # Loop fell through the STEP CAP without a clean (no-tool-call) exit:
+            # the ``while`` completed all ``_step_cap`` iterations without
+            # ``break``. job-186: a guard (wall-clock / watchdog) abort instead
+            # ``break``s with ``_agent_abort`` set and is surfaced in the
+            # dedicated block below -- so this ``else`` only handles a natural
+            # exhaustion of the step cap.
+            #
+            # RECONCILE THE STEP CAP WITH MAX_TURN_ITERATIONS (job-186): when the
+            # binding bound is the HISTORICAL ``MAX_TURN_ITERATIONS`` (i.e. the
+            # cap was NOT tightened below it -- full-tier models, where
+            # ``_step_cap >= MAX_TURN_ITERATIONS``), natural exhaustion is the
+            # SAME event the pre-existing ``loop_exhausted`` /
+            # ``MAX_ITERATIONS_REACHED`` envelope has always signalled, so emit
+            # THAT (the user-facing contract the web UI + tests rely on). Only
+            # when the cap was TIGHTENED for a cheap / loop-prone tier
+            # (``_step_cap < MAX_TURN_ITERATIONS``) is this a NEW, tighter
+            # runaway backstop, surfaced as the distinct ``AGENT_STEP_LIMIT_
+            # REACHED`` abort. AGENT_LOOP_DETECTED stays reserved for the
+            # watchdog (a genuine no-progress repeat), never natural exhaustion.
+            if _agent_abort is None and _step_cap < MAX_TURN_ITERATIONS:
                 _agent_abort = (
                     ABORT_STEP_CAP, abort_message(ABORT_STEP_CAP)
                 )
             logger.warning(
                 "gemini loop hit step cap=%d (full=%d) session=%s — "
-                "emitting agent-abort envelope",
+                "emitting %s envelope",
                 _step_cap,
                 MAX_TURN_ITERATIONS,
                 state.session_id,
+                "agent-abort" if _agent_abort is not None else "loop_exhausted",
             )
+            # Full-tier natural exhaustion: the historical loop_exhausted path.
+            if _agent_abort is None:
+                await _send_loop_exhausted(websocket, state.session_id)
+                # The client waits for a stream-closing done=True to stop
+                # spinning. A cap-hit turn ended mid tool-dispatch with no
+                # trailing narration (``current_message_id is None``), so the
+                # final-segment finalize below no-ops -- emit a standalone
+                # terminator here with a fresh id (mirrors the abort path).
+                if current_message_id is None:
+                    await websocket.send(
+                        _new_envelope(
+                            "agent-message-chunk",
+                            state.session_id,
+                            AgentMessageChunkPayload(
+                                message_id=new_ulid(), delta="", done=True
+                            ),
+                        )
+                    )
 
-        # job-186 RUNAWAY-AGENT GUARD: a guard fired (step cap, wall-clock, or
-        # loop watchdog). Surface the honest typed abort envelope and a
-        # stream-closing terminal frame, then fall through to the normal
+        # job-186 RUNAWAY-AGENT GUARD: a guard fired (tightened step cap,
+        # wall-clock, or loop watchdog). Surface the honest typed abort envelope
+        # and a stream-closing terminal frame, then fall through to the normal
         # finalize/pipeline-complete path so the turn TERMINATES cleanly and its
         # busy/lock state releases (the wrapper's finally + the task done-callback
         # drop the in-flight marker -- the box never stays wedged). The model
@@ -8448,6 +8586,50 @@ async def _invoke_tool_via_emitter(
                     turn_case_id,
                 )
 
+    # DETERMINISTIC LAYER AUTO-PUBLISH (NATE 2026-06-26): "we should not have the
+    # LLM enforce publishing of layers -- this should just be done without LLM
+    # intervention." When a tool returns a renderable RASTER LayerURI carrying a
+    # raw object-store uri (s3:// / gs://), the layer_uri_emit seam DROPS it
+    # (MapLibre cannot fetch an object-store uri), so historically it only ever
+    # rendered if the LLM separately called publish_layer to convert the COG to an
+    # http(s) TiTiler tile URL. Here we AUTO-CALL publish_layer server-side -- no
+    # new LLM turn, no LLM action -- and feed the resulting http(s) URL through the
+    # SAME emit_layer_uri -> add_loaded_layer machinery the publish_layer wrap-site
+    # below uses. This is exactly the class of LayerURI emit_layer_uri would drop.
+    #
+    # Gating: skip publish_layer itself (it has its own wrap-site just below) and
+    # the reuse short-circuit (the layer is already loaded), and honor the per-tool
+    # ``auto_publish`` metadata flag (default True; pure intermediates like
+    # fetch_dem / fetch_topobathy / fetch_3dep_extra opt OUT so their raw input
+    # raster is not auto-rendered).
+    #
+    # Dedup: add_loaded_layer dedups by underlying-COG identity, so if the LLM ALSO
+    # calls publish_layer for the SAME COG the two rows MERGE (no double-add).
+    #
+    # Honesty floor: if the auto publish_layer FAILS (raises, or returns a non-http
+    # value) we DO NOT silently drop the layer and narrate success -- we surface a
+    # typed ``LAYER_AUTO_PUBLISH_FAILED`` error envelope so a failed render is never
+    # a silent green. The LLM-visible tool ``result`` is left UNCHANGED.
+    if (
+        tool_name != "publish_layer"
+        and not isinstance(entry, _ReuseEntry)
+        and getattr(entry.metadata, "auto_publish", True)
+    ):
+        _auto_pub_candidates = (
+            list(result)
+            if isinstance(result, list)
+            else [result]
+        )
+        for _cand in _auto_pub_candidates:
+            if not _is_droppable_object_store_raster(_cand):
+                continue
+            await _auto_publish_droppable_raster(
+                websocket,
+                state,
+                layer=_cand,
+                case_id=turn_case_id,
+            )
+
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
     # detect mangles. Best-effort — registration never breaks the dispatch.
@@ -8704,6 +8886,181 @@ async def _run_to_completion_shielded(coro: Awaitable[Any]) -> None:
     if cancelled:
         # Invariant 8: the write landed; now honor the parent cancellation.
         raise asyncio.CancelledError
+
+
+async def _auto_publish_droppable_raster(
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    layer: LayerURI,
+    case_id: str | None,
+) -> None:
+    """Deterministically publish + render a droppable object-store raster.
+
+    DETERMINISTIC LAYER AUTO-PUBLISH (NATE 2026-06-26): ``layer`` is exactly the
+    class ``emit_layer_uri`` DROPS -- a renderable raster carrying a raw
+    ``s3://`` / ``gs://`` uri MapLibre cannot fetch. Rather than rely on the LLM
+    separately calling ``publish_layer``, we call it server-side here -- off the
+    asyncio loop (publish_layer is a synchronous tool that polls TiTiler /
+    PyQGIS, so a bare call would stall the WS keepalive; the no-sync-blocking
+    norm) -- and feed the resulting http(s) tile URL through the SAME
+    ``emit_layer_uri`` -> ``add_loaded_layer`` -> persist machinery the
+    publish_layer wrap-site uses (so dedup, z-index, snapshot, and manifest all
+    behave identically; if the LLM ALSO publishes the same COG the rows MERGE by
+    COG identity -- no double-add).
+
+    Honesty floor: on FAILURE (publish_layer raises, or returns a non-http value
+    such as the raw uri) we surface a typed ``LAYER_AUTO_PUBLISH_FAILED`` error
+    envelope -- a failed render is NEVER a silent green. The LLM-visible tool
+    result is left UNCHANGED so the existing retry-on-failure narration can act.
+    Best-effort: this never raises, so it cannot break the dispatch.
+    """
+    publish_entry = TOOL_REGISTRY.get("publish_layer")
+    if publish_entry is None:  # pragma: no cover - publish_layer always present
+        logger.warning(
+            "auto-publish: publish_layer not in registry; cannot render "
+            "raster layer_id=%s uri=%s",
+            layer.layer_id,
+            layer.uri,
+        )
+        return
+
+    style_preset = _resolve_publish_wrap_style_preset(
+        style_preset=layer.style_preset,
+        layer_uri=layer.uri,
+        layer_id=layer.layer_id,
+    )
+
+    try:
+        # publish_layer is synchronous (polls TiTiler / PyQGIS); run it OFF the
+        # event loop so it cannot stall the WS heartbeat. The server wrapper
+        # normally resolves the case-scoped .qgs for publish_layer; here we pass
+        # case_id straight through so the same per-Case routing applies inside
+        # the tool body.
+        published_url = await asyncio.to_thread(
+            publish_entry.fn,
+            layer_uri=layer.uri,
+            layer_id=layer.layer_id,
+            style_preset=style_preset or None,
+            case_id=case_id,
+        )
+    except (asyncio.CancelledError, GeneratorExit):
+        raise
+    except BaseException as exc:  # noqa: BLE001 - classify into honesty floor
+        logger.exception(
+            "auto-publish: publish_layer FAILED layer_id=%s uri=%s",
+            layer.layer_id,
+            layer.uri,
+        )
+        await _emit_auto_publish_failure(
+            websocket, state, layer=layer, reason=str(exc) or exc.__class__.__name__
+        )
+        return
+
+    # Honesty floor: a non-http(s) return (e.g. the raw s3:// uri fell through)
+    # is NOT a renderable layer -- never add it + narrate success.
+    if not (isinstance(published_url, str) and published_url.startswith("http")):
+        logger.warning(
+            "auto-publish: publish_layer returned a non-http value for "
+            "layer_id=%s uri=%s -> %r; treating as render failure",
+            layer.layer_id,
+            layer.uri,
+            published_url,
+        )
+        await _emit_auto_publish_failure(
+            websocket,
+            state,
+            layer=layer,
+            reason="publish_layer did not return a renderable http(s) URL",
+        )
+        return
+
+    # Success: route the http tile URL through the SINGLE emission seam (it passes
+    # http(s) through untouched) and the existing add_loaded_layer machinery. The
+    # published layer keeps the producing layer's id/name so the COG-identity
+    # dedup collapses a later LLM re-publish of the same COG into this same row.
+    try:
+        _emit_layer = emit_layer_uri(
+            LayerURI(
+                layer_id=layer.layer_id,
+                name=layer.name,
+                layer_type="raster",
+                uri=published_url,
+                style_preset=style_preset,
+                role=layer.role,
+                units=layer.units,
+                bbox=layer.bbox,
+            )
+        )
+        if _emit_layer is None:  # pragma: no cover - http never drops
+            return
+        await state.emitter.add_loaded_layer(_emit_layer)
+        # Track the layer on the active turn so the closing CaseChatMessage
+        # captures it (mirrors the publish_layer wrap-site).
+        if layer.layer_id:
+            state.current_turn_layer_ids.append(layer.layer_id)
+        # Re-persist AFTER this add: the dispatch finally-persist ran BEFORE this
+        # auto-publish, so without re-persisting the rendered layer would live
+        # only in memory and a Case reopen would rehydrate without it (the exact
+        # publish_layer-wrap-site durability concern). Shielded so a parent cancel
+        # cannot interrupt the write; each persist swallows its own errors.
+        if case_id:
+            await _run_to_completion_shielded(
+                _persist_case_loaded_layers(state, case_id=case_id)
+            )
+            await _run_to_completion_shielded(
+                _persist_case_view_snapshot(state, case_id=case_id)
+            )
+            await _run_to_completion_shielded(
+                _persist_case_manifest(state, case_id=case_id)
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - emission/persist is best-effort
+        logger.exception(
+            "auto-publish: rendered-layer emission failed layer_id=%s",
+            layer.layer_id,
+        )
+
+
+async def _emit_auto_publish_failure(
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    layer: LayerURI,
+    reason: str,
+) -> None:
+    """Surface a typed 'computed but not displayable' state (honesty floor).
+
+    When the deterministic auto-publish cannot produce a renderable http(s) URL,
+    we MUST NOT silently drop the layer and narrate success. Emit a typed
+    ``LAYER_AUTO_PUBLISH_FAILED`` error envelope so the failure is visible to the
+    user (a degraded card / honest error) and the LLM-visible retry loop can act.
+    Best-effort: never raises.
+    """
+    try:
+        # The A.6 ErrorCode literal is a closed set; INTERNAL_ERROR is the right
+        # wire code for an unexpected server-side render failure. The typed
+        # ``[LAYER_AUTO_PUBLISH_FAILED]`` marker leads the human-readable message
+        # so the surface is unambiguous + greppable (and the web can special-case
+        # a degraded layer card off it) without widening the contract enum.
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            (
+                f"[LAYER_AUTO_PUBLISH_FAILED] Computed layer {layer.name!r} "
+                f"({layer.layer_id}) could not be displayed: {reason}. The result "
+                f"was produced but is not renderable on the map."
+            ),
+            retryable=True,
+        )
+    except Exception:  # noqa: BLE001 - the honesty surface must never break dispatch
+        logger.debug(
+            "auto-publish failure-envelope emit failed layer_id=%s",
+            layer.layer_id,
+            exc_info=True,
+        )
 
 
 async def _terminate_turn_inflight_batch_jobs(state: SessionState) -> None:

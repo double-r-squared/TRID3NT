@@ -196,6 +196,29 @@ class LoopWatchdog:
     Text-only rounds (no tool calls) also reset -- the model is narrating, which
     is progress toward a terminal turn. Cheap to call; O(1) state.
 
+    PROGRESS-AWARE RESET (job-186 reconciliation): a round that MADE PROGRESS
+    also resets the streak even when its signature repeats. ``made_progress`` is
+    the per-round witness the driver passes after dispatch:
+
+      * ``True`` when at least one call produced a real artifact (a published /
+        registered layer, a substantive result) -- a model that keeps producing
+        NEW output each round is advancing the Case, not wedging the box, so it
+        is allowed to run to the step cap / loop-exhausted envelope rather than
+        being watchdog-aborted. This is what separates an identical-but-PRODUCING
+        loop (-> ``MAX_ITERATIONS_REACHED`` at the cap) from the wedge shape.
+      * ``True`` ALSO when every call this round FAILED or was circuit-breaker
+        short-circuited -- the CIRCUIT BREAKER owns the failing-tool case (it
+        delivers ``CIRCUIT_BREAKER_TRIPPED`` so the model adapts, the turn
+        continues gracefully). The watchdog must NOT pre-empt a turn the breaker
+        is already handling, so a failure/short-circuit round does not load the
+        no-progress streak.
+
+    The watchdog therefore only counts a round toward its no-progress streak when
+    that round had calls, repeated the prior signature, AND made no progress
+    (``made_progress=False``): the genuine "ignored the result, re-issued the
+    same successful no-op call" runaway (Nova Lite's failure shape). Cheap to
+    call; O(1) state.
+
     :meth:`tripped` returns the reason code (``ABORT_LOOP_WATCHDOG``) once the
     streak hits the threshold, else ``None``.
     """
@@ -205,15 +228,22 @@ class LoopWatchdog:
         self._last_signature: tuple[tuple[str, str], ...] | None = None
         self._repeat_count: int = 0
 
-    def record_round(self, calls: list[tuple[str, str]]) -> str | None:
+    def record_round(
+        self, calls: list[tuple[str, str]], *, made_progress: bool = False
+    ) -> str | None:
         """Record one round's ``(tool_name, args_hash)`` calls.
 
         Returns the abort reason code if this round trips the watchdog, else
         ``None``. ``calls`` empty (a text-only / terminal round) resets the
-        streak -- narration is progress.
+        streak -- narration is progress. ``made_progress=True`` ALSO resets the
+        streak (a producing round, or a round the circuit breaker owns), so the
+        watchdog only catches a repeated, SUCCESSFUL-but-NO-OP call.
         """
-        if not calls:
-            # Text-only round -> progress -> reset the no-progress streak.
+        if not calls or made_progress:
+            # Text-only round, a producing round, or a breaker-owned (all-failed
+            # / short-circuited) round -> progress -> reset the no-progress
+            # streak. ``_last_signature`` is cleared so the NEXT repeat starts a
+            # fresh count rather than resuming an interrupted streak.
             self._last_signature = None
             self._repeat_count = 0
             return None

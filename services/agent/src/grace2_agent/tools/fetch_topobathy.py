@@ -215,6 +215,11 @@ _METADATA = AtomicToolMetadata(
     cacheable=True,
     supports_global_query=False,
     payload_mb_estimator_name="estimate_payload_mb",
+    # Deterministic auto-publish opt-OUT (NATE 2026-06-26): topobathy is a pure
+    # INPUT raster (role="input") that feeds SFINCS / wave model setup, not a
+    # product the user asks to see on its own. The flood/wave result is what
+    # auto-renders; this raw merged topo-bathy surface does not.
+    auto_publish=False,
 )
 
 
