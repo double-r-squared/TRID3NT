@@ -535,10 +535,17 @@ async def test_stream_gemini_reply_caps_runaway_loop():
             sock, state, settings, "x", "research"
         )
 
-    # The loop ran exactly MAX_TURN_ITERATIONS times, no more.
-    assert dispatch_count == MAX_TURN_ITERATIONS, (
-        f"runaway not capped: {dispatch_count} dispatches vs cap {MAX_TURN_ITERATIONS}"
+    # job-186: the runaway is fail-stopped FAST. Every round is the SAME
+    # tool+args (identical fetch_dem), so the LOOP WATCHDOG trips at
+    # loop_repeat_n() rounds - well before the historical MAX_TURN_ITERATIONS
+    # cap. (A varied-tool runaway hits the step cap instead - next test.)
+    from grace2_agent.runaway_guard import loop_repeat_n
+
+    assert dispatch_count <= loop_repeat_n(), (
+        f"identical-repeat runaway not watchdog-capped: {dispatch_count} "
+        f"dispatches vs watchdog threshold {loop_repeat_n()}"
     )
+    assert dispatch_count < MAX_TURN_ITERATIONS
 
 
 # ---------------------------------------------------------------------------

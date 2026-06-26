@@ -90,6 +90,16 @@ from grace2_contracts.ws import (
 
 from .main import MAX_TURNS_PER_SESSION
 
+from .runaway_guard import (
+    ABORT_LOOP_WATCHDOG,
+    ABORT_STEP_CAP,
+    ABORT_WALL_CLOCK,
+    LoopWatchdog,
+    abort_message,
+    max_turn_seconds,
+    step_cap_for_model,
+)
+
 from .adapter import (
     FunctionCallEvent,
     GeminiSettings,
@@ -1457,11 +1467,48 @@ def _any_live_turn(session_id: str) -> "asyncio.Task | None":
 # ---------------------------------------------------------------------------
 _SOLVE_IN_FLIGHT: int = 0
 
+#: job-186 STALE-BUSY AUTO-CLEAR: monotonic-clock timestamp of the most recent
+#: ``_solve_started`` (refreshed on each increment). ``solve_in_flight_count``
+#: auto-zeroes the marker if it has stood >`` _SOLVE_STALE_SECONDS`` without a
+#: clean release. ``_SOLVE_IN_FLIGHT`` is a bare int with NO task backing -- only
+#: the ``_invoke_tool_via_emitter`` finally decrements it, so a solve killed by a
+#: docker-kill / a hung await that never reaches the finally would strand it
+#: ``>0`` and pin the box FOREVER (the live wedge). The auto-clear is the safety
+#: net so a stranded marker can never block new cases/turns indefinitely.
+_SOLVE_STARTED_AT: float | None = None
+
+#: Default stale window for ``_SOLVE_IN_FLIGHT`` (seconds). A real Batch solve
+#: runs minutes (``wait_for_completion`` bounds itself at 1800s), so the window
+#: is set well ABOVE the longest legitimate solve so a healthy in-flight solve is
+#: NEVER falsely cleared; only a genuinely-stranded marker (no release for this
+#: long) is reaped. Env-overridable via ``GRACE2_SOLVE_STALE_SECONDS``.
+_SOLVE_STALE_SECONDS_DEFAULT: float = 2400.0
+
+
+def _solve_stale_seconds() -> float:
+    """Resolve the stale-busy window for ``_SOLVE_IN_FLIGHT`` (env-overridable)."""
+    raw = os.environ.get("GRACE2_SOLVE_STALE_SECONDS")
+    if raw is None:
+        return _SOLVE_STALE_SECONDS_DEFAULT
+    try:
+        val = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return _SOLVE_STALE_SECONDS_DEFAULT
+    return val if val > 0 else _SOLVE_STALE_SECONDS_DEFAULT
+
+
+def _monotonic() -> float:
+    """Monotonic clock (does not jump on wall-clock change). Lazy import."""
+    import time as _time
+
+    return _time.monotonic()
+
 
 def _solve_started() -> None:
     """Mark a solver dispatch as in flight (auto-stop safety gate)."""
-    global _SOLVE_IN_FLIGHT
+    global _SOLVE_IN_FLIGHT, _SOLVE_STARTED_AT
     _SOLVE_IN_FLIGHT += 1
+    _SOLVE_STARTED_AT = _monotonic()
 
 
 def _solve_finished() -> None:
@@ -1470,12 +1517,43 @@ def _solve_finished() -> None:
     Clamped at zero — a defensive double-decrement can never drive the count
     negative and trick the auto-stop gate into reading ``busy=false`` while a
     solve is still running."""
-    global _SOLVE_IN_FLIGHT
+    global _SOLVE_IN_FLIGHT, _SOLVE_STARTED_AT
     _SOLVE_IN_FLIGHT = max(0, _SOLVE_IN_FLIGHT - 1)
+    if _SOLVE_IN_FLIGHT == 0:
+        _SOLVE_STARTED_AT = None
+
+
+def _force_clear_solve_marker() -> int:
+    """Zero the solve in-flight marker (force-sleep / stale-busy reap).
+
+    Returns the count cleared. Used by the FORCE-SLEEP override and the
+    stale-busy auto-clear to break a stranded ``_SOLVE_IN_FLIGHT`` that no
+    ``finally`` will ever release (docker-kill / hung await)."""
+    global _SOLVE_IN_FLIGHT, _SOLVE_STARTED_AT
+    cleared = _SOLVE_IN_FLIGHT
+    _SOLVE_IN_FLIGHT = 0
+    _SOLVE_STARTED_AT = None
+    return cleared
 
 
 def solve_in_flight_count() -> int:
-    """Number of solver dispatches currently executing (auto-stop gate)."""
+    """Number of solver dispatches currently executing (auto-stop gate).
+
+    job-186 STALE-BUSY AUTO-CLEAR: if the marker has stood ``>0`` for longer than
+    ``_solve_stale_seconds()`` with no release, it is presumed STRANDED (the
+    decrementing ``finally`` never ran) and auto-zeroed here so a hung solve can
+    never pin the box / block new cases forever. The window sits well above the
+    longest legitimate solve so a healthy in-flight solve is never reaped."""
+    global _SOLVE_IN_FLIGHT, _SOLVE_STARTED_AT
+    if _SOLVE_IN_FLIGHT > 0 and _SOLVE_STARTED_AT is not None:
+        if _monotonic() - _SOLVE_STARTED_AT > _solve_stale_seconds():
+            logger.warning(
+                "stale-busy auto-clear: _SOLVE_IN_FLIGHT=%d stood > %.0fs "
+                "with no release -> presumed stranded, zeroing",
+                _SOLVE_IN_FLIGHT,
+                _solve_stale_seconds(),
+            )
+            _force_clear_solve_marker()
     return _SOLVE_IN_FLIGHT
 
 
@@ -1934,6 +2012,50 @@ async def _send_loop_exhausted(
         )
 
 
+async def _send_agent_abort(
+    websocket: ServerConnection,
+    session_id: str,
+    reason_code: str,
+    message: str,
+) -> None:
+    """Emit the runaway-agent abort envelope (#186, live-down 2026-06-25).
+
+    Sent when a per-turn guard fires (step cap, wall-clock, or loop watchdog) to
+    stop a runaway turn BEFORE it can wedge the shared box. Reuses the distinct
+    typed ``loop_exhausted`` wire type (the web UI already renders it as "Agent
+    ran out of steps" rather than a generic failure), but carries the specific
+    guard ``error_code`` + an honest message (honesty floor — we say exactly why
+    the turn stopped, never a fabricated success). Best-effort: a wire failure is
+    logged, never re-raised, so the turn still terminates + releases busy.
+    """
+    import json as _json
+
+    try:
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "loop_exhausted",
+                    "session_id": session_id,
+                    "payload": {
+                        "status": "loop_exhausted",
+                        "error_code": reason_code,
+                        "message": message,
+                        "retryable": False,
+                    },
+                }
+            )
+        )
+        logger.warning(
+            "agent-abort session=%s reason=%s", session_id, reason_code
+        )
+    except Exception:  # noqa: BLE001 — observability; never break the reply path
+        logger.exception(
+            "agent-abort envelope send failed session=%s reason=%s",
+            session_id,
+            reason_code,
+        )
+
+
 async def _emit_turn_complete(
     websocket: ServerConnection,
     state: SessionState,
@@ -2368,9 +2490,36 @@ async def _stream_gemini_reply(
     # Per-turn usage metadata harvested from the stream (job-B6).
     last_usage: UsageMetadataEvent | None = None
 
+    # RUNAWAY-AGENT GUARD (#186, live-down 2026-06-25). Three independent
+    # per-turn bounds, all routed to a single clean ABORT that terminates the
+    # turn (releasing busy) instead of letting the model<->tool loop run away
+    # and wedge the shared box:
+    #   1. STEP CAP -- min of the historical MAX_TURN_ITERATIONS and the
+    #      model-tier step cap (cheap/Nova/Haiku tiers get HALF -- they are the
+    #      loop-prone tier from the incident). Normal full-tier turns are
+    #      UNCHANGED: MAX_TURN_ITERATIONS (12) stays the binding bound.
+    #   2. WALL-CLOCK -- a per-turn deadline aborts a slow turn even under the
+    #      step cap.
+    #   3. LOOP WATCHDOG -- aborts when the SAME tool+args (or identical round
+    #      signature) repeats N rounds in a row with no progress.
+    # ``_agent_abort`` is set to (reason_code, message) the moment a guard fires;
+    # the loop breaks and the post-loop block surfaces the honest typed envelope
+    # (honesty floor) exactly like the loop_exhausted fail-stop.
+    _step_cap = min(MAX_TURN_ITERATIONS, step_cap_for_model(bedrock_model))
+    _turn_deadline = started_at + max_turn_seconds()
+    _watchdog = LoopWatchdog()
+    _agent_abort: tuple[str, str] | None = None
+
     iterations = 0
     try:
-        while iterations < MAX_TURN_ITERATIONS:
+        while iterations < _step_cap:
+            # GUARD 2 (wall-clock): abort BEFORE the next (potentially long)
+            # model round if this turn has already overrun its budget. Checked
+            # at the top of every iteration so a turn whose rounds are each slow
+            # cannot exceed the wall-clock bound by more than one round.
+            if asyncio.get_running_loop().time() >= _turn_deadline:
+                _agent_abort = (ABORT_WALL_CLOCK, abort_message(ABORT_WALL_CLOCK))
+                break
             iterations += 1
             # Per-turn collectors: text emitted, function-calls Gemini requested.
             turn_text_parts: list[str] = []
@@ -2465,6 +2614,25 @@ async def _stream_gemini_reply(
                     iterations,
                     len(turn_text_parts),
                 )
+                break
+
+            # GUARD 3 (loop watchdog): feed THIS round's (tool, args_hash) calls
+            # to the watchdog BEFORE dispatching them. A no-progress runaway --
+            # the SAME tool+args (or identical round signature) N rounds in a row
+            # (Nova Lite's failure shape) -- trips the watchdog and aborts the
+            # turn instead of re-dispatching the identical call(s) yet again.
+            _round_sig = [
+                (c.name, compute_args_hash(c.args)) for c in turn_function_calls
+            ]
+            _wd_trip = _watchdog.record_round(_round_sig)
+            if _wd_trip is not None:
+                logger.warning(
+                    "loop watchdog tripped session=%s iter=%d sig=%r",
+                    state.session_id,
+                    iterations,
+                    _round_sig,
+                )
+                _agent_abort = (_wd_trip, abort_message(_wd_trip))
                 break
 
             # job-0315: a function-call round is about to dispatch — close the
@@ -2854,27 +3022,43 @@ async def _stream_gemini_reply(
             # Loop: re-stream with the appended call + response so Gemini can
             # decide its next move (another tool call OR a narrative wrap-up).
         else:
-            # Loop fell through the cap.  This is a fail-stop for runaway
-            # Gemini loops, not a normal exit.  job-B9: emit a distinct
-            # ``loop_exhausted`` envelope (error_code=MAX_ITERATIONS_REACHED)
-            # so the web UI can render "Agent ran out of steps" rather than a
-            # generic failure or silent stop.
+            # Loop fell through the STEP CAP without a clean (no-tool-call) exit.
+            # This is the natural step-cap fail-stop for a runaway loop: the
+            # ``while`` completed all ``_step_cap`` iterations without ``break``.
+            # job-B9: emit a distinct ``loop_exhausted`` envelope so the web UI
+            # can render "Agent ran out of steps" rather than a generic failure.
+            # job-186: a guard (wall-clock / watchdog) abort instead ``break``s
+            # with ``_agent_abort`` set and is surfaced in the dedicated block
+            # below — so this ``else`` only handles natural step-cap exhaustion.
+            if _agent_abort is None:
+                _agent_abort = (
+                    ABORT_STEP_CAP, abort_message(ABORT_STEP_CAP)
+                )
             logger.warning(
-                "gemini loop hit MAX_TURN_ITERATIONS=%d session=%s — "
-                "emitting loop_exhausted envelope",
+                "gemini loop hit step cap=%d (full=%d) session=%s — "
+                "emitting agent-abort envelope",
+                _step_cap,
                 MAX_TURN_ITERATIONS,
                 state.session_id,
             )
-            await _send_loop_exhausted(websocket, state.session_id)
-            # job-0315: the runaway loop ALWAYS exits with the last round in a
-            # tool dispatch (it never emits trailing narration), so
-            # ``current_message_id is None`` and the segment finalize below
+
+        # job-186 RUNAWAY-AGENT GUARD: a guard fired (step cap, wall-clock, or
+        # loop watchdog). Surface the honest typed abort envelope and a
+        # stream-closing terminal frame, then fall through to the normal
+        # finalize/pipeline-complete path so the turn TERMINATES cleanly and its
+        # busy/lock state releases (the wrapper's finally + the task done-callback
+        # drop the in-flight marker -- the box never stays wedged). The model
+        # CONTEXT is preserved (contents already hold the partial chain); we just
+        # stop dispatching. NOT a loop continuation -- this only runs on abort.
+        if _agent_abort is not None:
+            _abort_code, _abort_msg = _agent_abort
+            await _send_agent_abort(
+                websocket, state.session_id, _abort_code, _abort_msg
+            )
+            # A runaway loop exits mid tool-dispatch with no trailing narration,
+            # so ``current_message_id is None`` and the segment finalize below
             # no-ops. The client still waits for a stream-closing done=True to
-            # stop spinning, so emit a standalone terminator with a fresh id —
-            # this preserves the pre-fix contract where the unconditional
-            # terminal frame closed the stream on the cap-hit path too. The
-            # web ``appendDelta`` renders this empty closing frame as a no-op
-            # bubble next to the loop_exhausted error card.
+            # stop spinning, so emit a standalone terminator with a fresh id.
             if current_message_id is None:
                 await websocket.send(
                     _new_envelope(
