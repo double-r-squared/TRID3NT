@@ -16,7 +16,12 @@ The search endpoint paginates with ``offset``/``limit``; the response carries
 300-record pages until ``endOfRecords`` is True OR we have ``>= max_records``.
 
 The species-match endpoint resolves a scientific name (e.g. ``"Puma concolor coryi"``)
-into a numeric ``usageKey`` we can pass to ``search`` as ``taxonKey``.
+into a numeric ``usageKey`` we can pass to ``search`` as ``taxonKey``. We accept the
+resolution ONLY when ``matchType == "EXACT"``: a ``FUZZY`` near-spelling or a
+``HIGHERRANK`` parent-taxon match (GBIF silently returns either for a typo'd or
+truncated name) would drive the search off the WRONG taxon -- the "goes18 vs goes-18"
+identifier hazard -- so we raise a loud, clarifiable ``GBIFInputError`` naming the
+match GBIF found rather than hallucinating success on points for the wrong species.
 
 FR-TA-2 atomic tool. FR-CE-8 / FR-DC-3/4: routed through ``read_through`` so
 identical ``(taxonKey, bbox, year_range, max_records)`` calls reuse the cached
@@ -117,6 +122,20 @@ _USER_AGENT = (
     "grace-2/0.1 (Hazard Modeling Agent; "
     "https://github.com/double-r-squared/GRACE-2; agent@grace-2.dev)"
 )
+
+# species/match matchType values we will ACCEPT as an unambiguous resolution.
+# GBIF returns matchType in {EXACT, FUZZY, HIGHERRANK, NONE} (and the legacy
+# alias EXACT->"EXACT"). Only an EXACT match is safe to drive an occurrence
+# search off a caller-supplied name string: FUZZY swaps in a near-spelling
+# taxon (e.g. "Puma concoler" -> Puma concolor at confidence 95) and HIGHERRANK
+# silently WIDENS to a parent taxon (e.g. the typo'd subspecies
+# "Puma concolar coyi" -> the whole species Puma concolor). Both are the
+# "goes18 vs goes-18" hazard shape: a malformed identifier resolves to the
+# WRONG external token and the search returns plausible-but-wrong points.
+# Per the data-source-fallback norm we fail LOUD on anything else so the caller
+# can disambiguate, rather than hallucinating success. A deliberate higher-taxon
+# query (genus/family) must be made by passing its numeric taxonKey directly.
+_ACCEPTED_MATCH_TYPES = frozenset({"EXACT"})
 
 # ---------------------------------------------------------------------------
 # AtomicToolMetadata — registered once at import time.
@@ -233,12 +252,42 @@ def _resolve_species_name_to_taxon_key(
             ) from exc
 
         usage_key = payload.get("usageKey")
+        # match_type drives the accept/reject gate below. GBIF normalizes the
+        # spelling; WE validate that the normalization is unambiguous before we
+        # trust it to drive the occurrence search (matchType in
+        # {EXACT, FUZZY, HIGHERRANK, NONE}).
+        match_type = payload.get("matchType")
         if usage_key is None:
             # GBIF returns matchType="NONE" + no usageKey for unknown names.
-            match_type = payload.get("matchType", "?")
             raise GBIFInputError(
                 f"GBIF could not resolve species name {name!r} "
-                f"(matchType={match_type!r})"
+                f"(matchType={match_type if match_type is not None else '?'!r})"
+            )
+
+        # NORMALIZE-then-VALIDATE (job-fetcher-id-hazard): GBIF will happily
+        # return a usageKey for a FUZZY near-spelling or a HIGHERRANK parent
+        # taxon. Accepting it would drive the search off the WRONG taxon and
+        # return plausible-but-wrong points -- a hallucinated success. Fail LOUD
+        # with the match GBIF *did* find so the caller can confirm or correct,
+        # naming the accepted forms (an EXACT name match, or pass the numeric
+        # taxonKey directly for a deliberate higher-taxon query).
+        matched_name = (
+            payload.get("scientificName")
+            or payload.get("canonicalName")
+            or "?"
+        )
+        matched_rank = payload.get("rank", "?")
+        confidence = payload.get("confidence")
+        if match_type not in _ACCEPTED_MATCH_TYPES:
+            accepted = ", ".join(sorted(_ACCEPTED_MATCH_TYPES))
+            raise GBIFInputError(
+                f"GBIF resolved species name {name!r} only via a "
+                f"matchType={match_type!r} (confidence={confidence}) match to "
+                f"{matched_name!r} (rank={matched_rank!r}, taxonKey={usage_key}); "
+                f"refusing to drive an occurrence search off an ambiguous match. "
+                f"Did you mean {matched_name!r}? Re-issue with the exact "
+                f"scientific name (accepted matchType: {accepted}) or pass the "
+                f"numeric GBIF taxonKey directly for a deliberate higher-taxon query."
             )
 
         if not isinstance(usage_key, int):
@@ -250,9 +299,14 @@ def _resolve_species_name_to_taxon_key(
                 ) from exc
 
         logger.info(
-            "fetch_gbif_occurrences: resolved species name=%r → taxonKey=%d",
+            "fetch_gbif_occurrences: resolved species name=%r -> taxonKey=%d "
+            "(matched=%r rank=%s matchType=%s confidence=%s)",
             name,
             usage_key,
+            matched_name,
+            matched_rank,
+            match_type,
+            confidence,
         )
         return usage_key
     finally:

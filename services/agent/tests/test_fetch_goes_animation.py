@@ -27,6 +27,7 @@ from grace2_agent.tools._satellite_slider import (
     ts_int_to_datetime,
     ts_int_to_iso,
 )
+from grace2_agent.tools.fetch_goes_satellite import GOESInputError
 from grace2_agent.tools.fetch_goes_animation import (
     GOESAnimBboxRequiredError,
     GOESAnimEmptyError,
@@ -270,6 +271,71 @@ def test_two_goes_products_are_time_synchronized_by_step(monkeypatch):
     assert "Fire Temperature" in f_layers[0].name
 
 
+# ---- shared satellite normalizer migration (goes18/GOES West accepted) -----
+#
+# The fetcher now routes ``satellite`` through the shared ``_normalize_satellite``
+# seam BEFORE the allow-list, so the "goes18 vs goes-18" spelling zoo is accepted
+# (GOES-18 / goes18 / "GOES West" all resolve to the canonical goes-18 bird) and
+# the canonical token flows into every SLIDER path / cache key / LayerURI label.
+# A truly-unknown bird (GOES-99) still fails LOUD; a valid GOES bird this tool
+# does not serve (goes-16/goes-17) still raises the tool's OWN typed error.
+
+
+@pytest.mark.parametrize("spelling", ["GOES-18", "goes18", "GOES West", "GOES_18", "G18", "18"])
+def test_satellite_spellings_accepted_and_canonicalized(monkeypatch, spelling):
+    """Forgiving GOES-West spellings all normalize to goes-18 and proceed; the
+    emitted LayerURI label carries the canonical GOES-18 token (not the raw input)."""
+    seen: list[str] = []
+    frame_ts = _patch_slider_for_three_frames(monkeypatch, seen)
+    layers = fetch_goes_animation(
+        bbox=_UT_BBOX,
+        band="geocolor",
+        satellite=spelling,
+        start_utc="2026-06-22T17:30:00Z",
+        end_utc="2026-06-22T18:30:00Z",
+    )
+    assert len(layers) == len(frame_ts) == 3
+    # Every frame label carries the canonical, upper-cased GOES-18 token -- the
+    # raw spelling was normalized to goes-18 before the name was built.
+    for layer in layers:
+        assert layer.name.endswith("(GOES-18)")
+
+
+@pytest.mark.parametrize("spelling", ["GOES-18", "goes18", "GOES West"])
+def test_blend_fetcher_satellite_spellings_accepted(monkeypatch, spelling):
+    """The blend fetcher also accepts the spelling zoo and canonicalizes to goes-18."""
+    calls: list[int] = []
+    frame_ts = _patch_blend_slider(monkeypatch, calls)
+    layers = fetch_goes_blend_animation(
+        bbox=_UT_BBOX,
+        satellite=spelling,
+        start_utc="2026-06-22T17:30:00Z",
+        end_utc="2026-06-22T18:30:00Z",
+    )
+    assert len(layers) == len(frame_ts) == 3
+    for layer in layers:
+        assert layer.name.endswith("(GOES-18)")
+
+
+def test_genuinely_unknown_bird_raises_loud():
+    """A genuinely-unknown bird (GOES-99) fails LOUD via the shared normalizer's
+    typed error -- never a silent bad SLIDER path."""
+    with pytest.raises(GOESInputError):
+        fetch_goes_animation(bbox=_UT_BBOX, satellite="GOES-99")
+    with pytest.raises(GOESInputError):
+        fetch_goes_blend_animation(bbox=_UT_BBOX, satellite="GOES-99")
+
+
+def test_valid_but_unsupported_bird_raises_tool_own_error():
+    """A REAL GOES bird this tool does not serve (goes-16 -- only goes-18/goes-19
+    are in GOES_ANIM_SATELLITES) normalizes fine, then raises the tool's OWN typed
+    error (not the base normalizer error leaking through)."""
+    with pytest.raises(GOESAnimInputError):
+        fetch_goes_animation(bbox=_UT_BBOX, satellite="goes-16")
+    with pytest.raises(GOESAnimInputError):
+        fetch_goes_blend_animation(bbox=_UT_BBOX, satellite="goes-16")
+
+
 # ---- typed-error surface --------------------------------------------------
 
 
@@ -284,7 +350,9 @@ def test_unknown_band_raises():
 
 
 def test_unknown_satellite_raises():
-    with pytest.raises(GOESAnimInputError):
+    # A non-GOES bird is truly unknown to the shared normalizer -> the loud base
+    # typed error (GOESInputError) fires before the tool's own allow-list.
+    with pytest.raises(GOESInputError):
         fetch_goes_animation(bbox=_UT_BBOX, satellite="himawari-9")
 
 
@@ -534,5 +602,7 @@ def test_blend_fetcher_bbox_required():
 
 
 def test_blend_fetcher_unknown_satellite_raises():
-    with pytest.raises(GOESAnimInputError):
+    # A non-GOES bird is truly unknown to the shared normalizer -> the loud base
+    # typed error (GOESInputError) fires before the tool's own allow-list.
+    with pytest.raises(GOESInputError):
         fetch_goes_blend_animation(bbox=_UT_BBOX, satellite="himawari-9")

@@ -80,6 +80,7 @@ from .fetch_goes_satellite import (
     _doy_hour,
     _download_to_tempfile,
     _list_keys_for_prefix,
+    _normalize_satellite,
 )
 from ._satellite_slider import rgb_array_to_cog_bytes
 
@@ -527,6 +528,12 @@ def _list_archive_keys_in_window(
         ``GOESArchiveInputError``: unknown satellite.
         ``GOESArchiveUpstreamError``: every probed hour partition failed.
     """
+    # Normalize any human/LLM spelling (GOES-18 / goes18 / G18 / "GOES West" / 18)
+    # to the canonical "goes-NN" token BEFORE the bucket lookup; a truly-unknown
+    # bird raises the shared loud typed error. (Belt-and-suspenders: this helper is
+    # importable/callable directly in tests + siblings, so it normalizes its own
+    # entry rather than trusting the caller.)
+    satellite = _normalize_satellite(satellite)
     bucket = _SATELLITE_BUCKETS.get(satellite)
     if bucket is None:
         raise GOESArchiveInputError(
@@ -1529,6 +1536,12 @@ def fetch_goes_archive_animation(
     - Driven by: ``run_model_satellite_fire_animation`` (the historical GOES path).
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
+    # Normalize any human/LLM spelling (GOES-18 / goes18 / G18 / "GOES West" / 18)
+    # to the canonical "goes-NN" token BEFORE the allow-list check + before the
+    # token is used to build any bucket/path/cache key. A truly-unknown bird raises
+    # the shared loud typed error; a recognized-but-this-tool-doesn't-serve bird
+    # still fails on the tool's OWN allow-list with the tool's OWN error type.
+    satellite = _normalize_satellite(satellite)
     if satellite not in GOES_ARCHIVE_SATELLITES:
         raise GOESArchiveInputError(
             f"unknown satellite={satellite!r}; allowed: "

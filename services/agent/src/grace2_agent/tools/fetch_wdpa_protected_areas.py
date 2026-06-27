@@ -49,11 +49,19 @@ so we enumerate the columns explicitly.
 Pagination uses ``resultOffset`` when the service indicates more features are
 available (we detect this via ``exceededTransferLimit`` in the response).
 
-OQ-0089-DESIGNATION-FILTER-SEMANTICS (TENTATIVE): designation_filter is an
-exact-match list against ``desig_eng``. The WDPA designation vocabulary is
-not fully standardized (e.g. "National Park" vs "National Parks"). For v0.1
-we expose exact match; a future enrichment job can add a designation-alias
-table if conservation tools surface false-negative complaints.
+OQ-0089-DESIGNATION-FILTER-SEMANTICS (RESOLVED): designation_filter was an
+exact, case-sensitive match against ``desig_eng`` -- so a natural spelling
+that did not byte-match ("national park", "National Parks", "NP") silently
+filtered EVERY feature out and returned a valid 0-feature FlatGeobuf with no
+error (the same "goes18 vs goes-18" silent-identifier-mismatch class). We now
+NORMALIZE every entry through ``_normalize_designation_filter``: each accepted
+human/LLM spelling (case variant, plural, abbreviation/alias) maps to the
+EXACT live ``desig_eng`` token, the membership test casefolds both sides, and
+an unknown/malformed entry raises ``WDPADesignationError`` (non-retryable)
+listing the accepted forms. When a known filter still reduces N>0 fetched
+features to 0, we raise loudly listing the designations actually present in
+the bbox rather than returning a silent empty layer (data-source-fallback
+norm: fail LOUD, never a hallucinated success or silent dead-end).
 
 OQ-0089-WDPA-VERSION (TENTATIVE): the endpoint path embeds ``WDPA_v0`` which
 is UNEP-WCMC's current "v0" service alias (continuously refreshed against
@@ -112,6 +120,21 @@ class WDPABboxError(WDPAError):
     retryable = False
 
 
+class WDPADesignationError(WDPAError):
+    """A ``designation_filter`` entry is malformed or an unknown designation.
+
+    Raised by ``_normalize_designation_filter`` when an entry is not a
+    non-empty string, or when an entry resolves to neither a known
+    ``desig_eng`` value nor a known alias. This makes the "goes18 vs goes-18"
+    class of silent-mismatch fail LOUD with a list of accepted forms rather
+    than silently filtering every feature out and returning a 0-feature
+    FlatGeobuf (the OQ-0089-DESIGNATION-FILTER-SEMANTICS hazard).
+    """
+
+    error_code = "WDPA_DESIGNATION_INVALID"
+    retryable = False
+
+
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -135,6 +158,195 @@ _WDPA_DESIG_FIELD = "desig_eng"
 
 #: The NAME field name in the live schema (lowercase).
 _WDPA_NAME_FIELD = "name_eng"
+
+
+# ---------------------------------------------------------------------------
+# Designation vocabulary + alias table (OQ-0089-DESIGNATION-FILTER-SEMANTICS).
+#
+# The WDPA ``desig_eng`` field is a free-text English phrase (e.g.
+# "National Park", "National Wildlife Refuge"), NOT a short code. Humans and
+# LLM prompts spell these many ways: case variants ("national park"), plurals
+# ("National Parks"), and abbreviations ("NP", "NWR"). An exact byte-match
+# against the live field silently filters EVERY feature out and returns a
+# valid 0-feature FlatGeobuf with no error - the same "goes18 vs goes-18"
+# silent-mismatch class. We normalize every accepted spelling to the EXACT
+# ``desig_eng`` token the filter compares against, case/whitespace/plural
+# insensitive, and raise ``WDPADesignationError`` listing the accepted forms
+# when an entry resolves to nothing known.
+#
+# ``_CANONICAL_DESIGNATIONS`` is the curated set of the most common US/global
+# ``desig_eng`` values (their EXACT live casing). It is deliberately not
+# exhaustive - the WDPA corpus carries thousands of national designations -
+# so an unknown-but-plausible designation is reported with the accepted set
+# rather than guessed. Comparison is always casefolded, so any casing of a
+# listed designation is accepted even though only the canonical form is shown.
+# ---------------------------------------------------------------------------
+
+#: Curated canonical ``desig_eng`` values (exact live casing). Comparison is
+#: casefolded, so the canonical form here is only used for error messages and
+#: the cache-key normalization.
+_CANONICAL_DESIGNATIONS: tuple[str, ...] = (
+    "National Park",
+    "National Wildlife Refuge",
+    "National Preserve",
+    "National Monument",
+    "National Forest",
+    "National Recreation Area",
+    "National Seashore",
+    "National Lakeshore",
+    "National Conservation Area",
+    "National Marine Sanctuary",
+    "National Estuarine Research Reserve",
+    "Wilderness Area",
+    "State Park",
+    "State Forest",
+    "State Wildlife Management Area",
+    "State Wildlife Area",
+    "Wildlife Management Area",
+    "Wildlife Sanctuary",
+    "Nature Reserve",
+    "Marine Protected Area",
+    "Habitat/Species Management Area",
+    "Protected Landscape/Seascape",
+    "Ramsar Site, Wetland of International Importance",
+    "World Heritage Site (natural or mixed)",
+    "UNESCO-MAB Biosphere Reserve",
+    "Area of Outstanding Natural Beauty",
+    "Site of Special Scientific Interest",
+    "Special Area of Conservation (Habitats Directive)",
+    "Special Protection Area (Birds Directive)",
+    "Conservation Area",
+    "Game Reserve",
+    "Forest Reserve",
+)
+
+#: Casefold -> canonical mapping for the curated vocabulary. The key is the
+#: casefolded designation (so any casing matches); the value is the EXACT live
+#: ``desig_eng`` token. Built once at import time.
+_DESIG_CANONICAL_BY_FOLD: dict[str, str] = {
+    d.casefold(): d for d in _CANONICAL_DESIGNATIONS
+}
+
+#: Alias -> canonical mapping for the common human/LLM shorthands and plural
+#: forms. Keys are casefolded so "np", "NP", and "N.P." normalize the same
+#: (dots/whitespace are stripped before lookup; see ``_fold_designation``).
+#: Values MUST appear in ``_CANONICAL_DESIGNATIONS`` so a single source of
+#: truth governs the accepted output tokens.
+_DESIG_ALIASES: dict[str, str] = {
+    # Abbreviations.
+    "np": "National Park",
+    "nps": "National Park",
+    "nwr": "National Wildlife Refuge",
+    "nm": "National Monument",
+    "nf": "National Forest",
+    "nra": "National Recreation Area",
+    "nms": "National Marine Sanctuary",
+    "nerr": "National Estuarine Research Reserve",
+    "wma": "Wildlife Management Area",
+    "mpa": "Marine Protected Area",
+    "sssi": "Site of Special Scientific Interest",
+    "aonb": "Area of Outstanding Natural Beauty",
+    "sac": "Special Area of Conservation (Habitats Directive)",
+    "spa": "Special Protection Area (Birds Directive)",
+    # Plurals (casefolded; singularization is also attempted generically in
+    # ``_normalize_one_designation`` for any trailing-"s" form).
+    "national parks": "National Park",
+    "national wildlife refuges": "National Wildlife Refuge",
+    "national monuments": "National Monument",
+    "national forests": "National Forest",
+    "national preserves": "National Preserve",
+    "wilderness areas": "Wilderness Area",
+    "state parks": "State Park",
+    "nature reserves": "Nature Reserve",
+    "marine protected areas": "Marine Protected Area",
+    "wildlife management areas": "Wildlife Management Area",
+    # Common phrasings.
+    "biosphere reserve": "UNESCO-MAB Biosphere Reserve",
+    "ramsar site": "Ramsar Site, Wetland of International Importance",
+    "ramsar": "Ramsar Site, Wetland of International Importance",
+    "world heritage site": "World Heritage Site (natural or mixed)",
+    "world heritage": "World Heritage Site (natural or mixed)",
+}
+
+
+def _fold_designation(value: str) -> str:
+    """Casefold + collapse whitespace + strip dots for tolerant lookup.
+
+    Mirrors the ``goes-18`` lesson: normalize the human/LLM token to a single
+    canonical key before any membership test so case, internal-whitespace, and
+    abbreviation-dot variants ("N.P.", "n p", "National  Park") all collapse
+    to one comparison key.
+    """
+    return " ".join(value.replace(".", " ").split()).casefold()
+
+
+def _normalize_one_designation(value: str) -> str:
+    """Resolve one human/LLM designation spelling to its EXACT ``desig_eng`` token.
+
+    Resolution order (all case/whitespace insensitive):
+    1. exact canonical vocabulary (any casing),
+    2. alias table (abbreviations, plurals, common phrasings),
+    3. generic trailing-"s" singularization against the canonical vocabulary.
+
+    Raises ``WDPADesignationError`` (non-retryable) listing the accepted forms
+    when nothing matches, so a typo fails LOUD rather than silently filtering
+    every feature out.
+    """
+    if not isinstance(value, str):
+        raise WDPADesignationError(
+            f"designation_filter entries must be str; got {type(value).__name__}"
+        )
+    stripped = value.strip()
+    if not stripped:
+        raise WDPADesignationError(
+            "designation_filter entries must be non-empty strings; got an "
+            "empty/whitespace value"
+        )
+
+    fold = _fold_designation(stripped)
+    if fold in _DESIG_CANONICAL_BY_FOLD:
+        return _DESIG_CANONICAL_BY_FOLD[fold]
+    if fold in _DESIG_ALIASES:
+        return _DESIG_ALIASES[fold]
+    # Acronyms written with dots ("N.P.") fold to "n p"; collapse the internal
+    # whitespace and retry the alias table so "N.P." == "NP" == "np".
+    fold_nospace = fold.replace(" ", "")
+    if fold_nospace in _DESIG_ALIASES:
+        return _DESIG_ALIASES[fold_nospace]
+    # Generic plural -> singular: "national parks" -> "national park".
+    if fold.endswith("s") and fold[:-1] in _DESIG_CANONICAL_BY_FOLD:
+        return _DESIG_CANONICAL_BY_FOLD[fold[:-1]]
+
+    accepted = ", ".join(_CANONICAL_DESIGNATIONS)
+    raise WDPADesignationError(
+        f"designation_filter entry {value!r} is not a known WDPA designation "
+        f"or alias. Accepted designations (case/plural/abbreviation "
+        f"insensitive): {accepted}. Accepted aliases include: "
+        f"{', '.join(sorted(_DESIG_ALIASES))}. "
+        "Pass designation_filter=None to keep all designations."
+    )
+
+
+def _normalize_designation_filter(
+    designation_filter: list[str] | None,
+) -> list[str] | None:
+    """Normalize a designation_filter list to canonical ``desig_eng`` tokens.
+
+    Maps every accepted spelling to its EXACT live token, de-duplicates, and
+    sorts for cache-key stability. ``None`` / empty-list mean "no filter" and
+    return ``None``. Raises ``WDPADesignationError`` on a malformed or unknown
+    entry (data-source-fallback norm: fail LOUD, never build a filter that
+    silently matches nothing).
+    """
+    if not designation_filter:
+        return None
+    if not isinstance(designation_filter, list):
+        raise WDPADesignationError(
+            f"designation_filter must be a list[str] or None; "
+            f"got {type(designation_filter).__name__}"
+        )
+    canonical = {_normalize_one_designation(d) for d in designation_filter}
+    return sorted(canonical)
 
 # Page size. WDPA's FeatureServer default cap is 2000 — request that
 # explicitly so server-side defaults do not surprise us.
@@ -321,12 +533,18 @@ def _fetch_wdpa_features(
         )
 
     # Client-side designation filter (lowercase field name per the live schema).
+    # ``designation_filter`` arrives already canonicalized to exact ``desig_eng``
+    # tokens by ``_normalize_designation_filter``; we casefold BOTH sides of the
+    # membership test so the comparison is robust to any live-casing drift and a
+    # canonical token never silently misses on a case variant
+    # (OQ-0089-DESIGNATION-FILTER-SEMANTICS; same class as "goes18 vs goes-18").
     if designation_filter:
-        filter_set = set(designation_filter)
+        filter_set = {d.casefold() for d in designation_filter}
         filtered = [
             f
             for f in all_features
-            if (f.get("properties") or {}).get(_WDPA_DESIG_FIELD) in filter_set
+            if str((f.get("properties") or {}).get(_WDPA_DESIG_FIELD, "")).casefold()
+            in filter_set
         ]
         logger.info(
             "fetch_wdpa_protected_areas: designation_filter=%s reduced %d -> %d",
@@ -334,6 +552,25 @@ def _fetch_wdpa_features(
             len(all_features),
             len(filtered),
         )
+        # Honest degrade: if the bbox had protected areas but the filter
+        # eliminated ALL of them, do NOT return a silent 0-feature FlatGeobuf.
+        # Fail LOUD listing the designations actually present so the caller can
+        # correct the filter (data-source-fallback norm).
+        if all_features and not filtered:
+            present = sorted(
+                {
+                    str((f.get("properties") or {}).get(_WDPA_DESIG_FIELD, "")).strip()
+                    for f in all_features
+                    if (f.get("properties") or {}).get(_WDPA_DESIG_FIELD)
+                }
+            )
+            raise WDPADesignationError(
+                f"designation_filter {designation_filter} matched 0 of "
+                f"{len(all_features)} protected area(s) in the bbox. "
+                f"Designations actually present here: {present}. "
+                "Adjust designation_filter to one of these, or pass "
+                "designation_filter=None to keep all."
+            )
         all_features = filtered
 
     return all_features
@@ -483,10 +720,14 @@ def fetch_wdpa_protected_areas(
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
       Example: ``(-82.0, 25.0, -80.0, 26.5)`` for Everglades region.
-    - ``designation_filter`` (list[str] or None): exact-match list of
-      ``desig_eng`` strings to retain, e.g.
-      ``["National Park", "National Wildlife Refuge"]``. ``None`` returns all
-      designations. Filter is applied client-side after spatial fetch.
+    - ``designation_filter`` (list[str] or None): list of designations to
+      retain, e.g. ``["National Park", "National Wildlife Refuge"]``. Each
+      entry is NORMALIZED to the exact live ``desig_eng`` token, so case
+      variants ("national park"), plurals ("National Parks"), and common
+      abbreviations ("NP", "NWR") all resolve. An unknown designation raises
+      ``WDPADesignationError`` (non-retryable) listing the accepted forms
+      rather than silently filtering everything out. ``None`` returns all
+      designations. Filter is applied client-side after the spatial fetch.
 
     **Returns:**
     ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
@@ -507,12 +748,15 @@ def fetch_wdpa_protected_areas(
     # Quantize bbox to 6dp for cache-key stability (audit.md spec).
     q_bbox = _round_bbox_to_6dp(bbox)
 
-    # Normalize designation_filter for cache-key stability: sort + dedupe,
-    # treat None and empty list as the same (no filter).
-    if designation_filter:
-        df_normalized: list[str] | None = sorted(set(designation_filter))
-    else:
-        df_normalized = None
+    # Normalize designation_filter to EXACT live ``desig_eng`` tokens (resolves
+    # case variants / plurals / abbreviations like "national park", "National
+    # Parks", "NP" -> "National Park") and raise WDPADesignationError on an
+    # unknown/malformed entry. This is the "goes18 vs goes-18" guard: a typo
+    # fails LOUD with the accepted forms instead of silently filtering every
+    # feature out. Normalization also dedupes + sorts for cache-key stability.
+    df_normalized: list[str] | None = _normalize_designation_filter(
+        designation_filter
+    )
 
     params = {
         "bbox": list(q_bbox),
@@ -535,7 +779,7 @@ def fetch_wdpa_protected_areas(
         filter_label = " (" + ", ".join(df_normalized) + ")"
     else:
         filter_label = ""
-    name = f"Protected Areas — WDPA{filter_label}"
+    name = f"Protected Areas - WDPA{filter_label}"
 
     return LayerURI(
         layer_id=f"wdpa-{q_bbox[0]:.4f}-{q_bbox[1]:.4f}",

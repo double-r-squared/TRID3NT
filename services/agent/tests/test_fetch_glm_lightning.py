@@ -363,6 +363,63 @@ def test_animation_skips_empty_buckets(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Satellite-spelling normalization (shared _normalize_satellite seam).
+#
+# GOES-18 / goes18 / "GOES West" used to be REJECTED by the bare-string
+# membership check; after migrating to the shared normalizer they canonicalize
+# to "goes-18" and the tool proceeds. A truly-unknown bird still raises loud.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "spelling, expected_token, expected_label",
+    [
+        ("GOES-18", "goes-18", "GOES-18"),   # hyphenated upper-case
+        ("goes18", "goes-18", "GOES-18"),    # glued, no hyphen
+        ("GOES West", "goes-18", "GOES-18"),  # directional alias -> current West
+        ("G19", "goes-19", "GOES-19"),       # filename code
+        ("east", "goes-19", "GOES-19"),      # bare directional -> current East
+    ],
+)
+def test_satellite_spelling_accepted_and_canonicalized(
+    monkeypatch, spelling, expected_token, expected_label
+):
+    """A forgiving spelling resolves to the canonical bird and proceeds (single frame)."""
+    captured = _wire_synthetic_glm(monkeypatch)
+    layer = fetch_glm_lightning(
+        bbox=_UT_BBOX,
+        satellite=spelling,
+        start_utc="2025-09-07T18:00:00Z",
+        end_utc="2025-09-07T18:03:00Z",
+    )
+    assert not isinstance(layer, list)
+    assert layer.layer_type == "raster"
+    # the canonical token flows into the layer_id + cache params + name label
+    assert expected_token in layer.layer_id
+    assert f"({expected_label})" in layer.name
+    assert len(captured["calls"]) == 1
+    assert captured["calls"][0]["params"]["satellite"] == expected_token
+    _assert_valid_rgba_cog(captured["calls"][0]["data"])
+
+
+def test_genuinely_unknown_satellite_raises_loud_glm_input_error():
+    """A non-existent bird (GOES-99) fails LOUD as this tool's own typed error,
+    not the shared normalizer's base GOESInputError (no leak across the seam)."""
+    from grace2_agent.tools.fetch_goes_satellite import GOESInputError
+
+    with pytest.raises(GLMInputError) as ei:
+        fetch_glm_lightning(bbox=_UT_BBOX, satellite="GOES-99")
+    # the base GOES error type must NOT leak out of the GLM fetcher
+    assert not isinstance(ei.value, GOESInputError)
+    assert ei.value.error_code == "GLM_INPUT_INVALID"
+    assert ei.value.retryable is False
+
+
+def test_non_string_satellite_raises_loud_glm_input_error():
+    """A non-string satellite is rejected loud as GLMInputError (re-wrapped seam error)."""
+    with pytest.raises(GLMInputError):
+        fetch_glm_lightning(bbox=_UT_BBOX, satellite=18)  # bare int, not "18"
+
+
+# ---------------------------------------------------------------------------
 # Payload estimator.
 # ---------------------------------------------------------------------------
 def test_estimate_payload_mb_scales_and_is_small():

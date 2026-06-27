@@ -50,6 +50,14 @@ from .fetch_goes_archive_animation import (
     _rgba_array_to_cog_bytes,
     _round_bbox,
 )
+# Shared satellite-identifier normalizer (the single canonicalization seam in
+# fetch_goes_satellite, the import-acyclic base of the GOES fetcher family). It
+# maps every human/LLM spelling -- "GOES-18", "goes18", "G18", "GOES West", a
+# bare "18" -- onto the canonical hyphenated "goes-NN" token that keys
+# _GLM_SATELLITE_BUCKETS, or raises LOUD on a truly-unknown bird. We canonicalize
+# the input through it BEFORE the allow-list check, then keep this tool's own
+# membership check + GLMInputError for the valid-but-unsupported case.
+from .fetch_goes_satellite import GOESInputError, _normalize_satellite
 
 __all__ = [
     "fetch_glm_lightning",
@@ -554,6 +562,17 @@ def fetch_glm_lightning(
       ``fetch_goes_active_fire`` (split-window hot pixels).
     """
     q_bbox = _round_bbox(_validate_glm_bbox(bbox))
+    # Normalize-then-validate: canonicalize GOES-18 / goes18 / G18 / "GOES West"
+    # / 18 etc. to the hyphenated "goes-NN" bucket-key token BEFORE the bucket
+    # path or cache key is built. A truly-unknown bird fails LOUD; we re-wrap the
+    # shared normalizer's base error as this tool's GLMInputError so the GOES base
+    # error type never leaks out of this fetcher. We then KEEP this tool's own
+    # membership check + GLMInputError for the valid-but-unsupported case (a real
+    # GOES bird this GLM tool does not serve).
+    try:
+        satellite = _normalize_satellite(satellite)
+    except GOESInputError as exc:
+        raise GLMInputError(str(exc)) from exc
     if satellite not in _GLM_SATELLITE_BUCKETS:
         raise GLMInputError(
             f"unknown satellite={satellite!r}; allowed: "

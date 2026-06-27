@@ -34,6 +34,9 @@ from grace2_agent.tools.fetch_administrative_boundaries import (
     AdminBoundaryError,
     AdminBoundaryLevelError,
     AdminBoundaryUpstreamError,
+    _ALASKA_ANTIMERIDIAN_BBOX,
+    _ALASKA_FIPS,
+    _fetch_admin_boundaries_bytes,
     _round_bbox_to_6dp,
     _state_fips_for_bbox,
     _tiger_url,
@@ -173,6 +176,78 @@ def test_state_fips_for_bbox_returns_empty_for_ocean():
     assert fips_list == [], f"Expected empty list for Atlantic bbox; got {fips_list}"
 
 
+# ---------------------------------------------------------------------------
+# Routing-hazard tests: the AK antimeridian fix + the corrected error category
+# for an unroutable place bbox (the "goes18 vs goes-18" identifier/routing
+# bug class -- a heuristic-built routing token that must match coverage and
+# fail with the RIGHT typed error, never a misleading upstream/silent dead-end).
+# ---------------------------------------------------------------------------
+
+
+def test_state_fips_for_bbox_routes_eastern_aleutians_to_alaska():
+    """Adak (negative-lon Aleutians, ~ -176) routes to AK ('02')."""
+    fips_list = _state_fips_for_bbox((-176.0, 51.5, -174.0, 52.5))
+    assert _ALASKA_FIPS in fips_list, (
+        f"Expected AK '02' for the eastern Aleutians; got {fips_list}"
+    )
+
+
+def test_state_fips_for_bbox_routes_western_aleutians_across_antimeridian():
+    """Attu (western Aleutians, positive-lon ~ +173) routes to AK ('02').
+
+    This is the antimeridian-crossing case the single AK envelope missed: the
+    western Aleutian Islands use eastern-hemisphere (positive) longitudes, so a
+    valid US place query there must NOT dead-end.
+    """
+    fips_list = _state_fips_for_bbox((172.0, 52.5, 173.5, 53.2))
+    assert _ALASKA_FIPS in fips_list, (
+        f"Expected AK '02' for the trans-antimeridian western Aleutians; got {fips_list}"
+    )
+
+
+def test_state_fips_for_bbox_no_duplicate_alaska_for_mainland():
+    """Mainland AK routes to a single '02' (the antimeridian tail must not dup it)."""
+    fips_list = _state_fips_for_bbox((-150.0, 60.0, -149.0, 61.5))
+    assert fips_list.count(_ALASKA_FIPS) == 1, (
+        f"Expected exactly one AK '02' entry; got {fips_list}"
+    )
+
+
+def test_alaska_antimeridian_bbox_is_eastern_hemisphere():
+    """The AK antimeridian envelope uses positive (eastern-hemisphere) longitudes."""
+    a_min_lon, _a_min_lat, a_max_lon, _a_max_lat = _ALASKA_ANTIMERIDIAN_BBOX
+    assert a_min_lon > 0 and a_max_lon > 0, (
+        f"AK antimeridian box must be positive-lon; got {_ALASKA_ANTIMERIDIAN_BBOX}"
+    )
+    assert a_max_lon <= 180.0, "Longitude must not exceed +180"
+
+
+def test_unroutable_place_bbox_raises_level_error_not_upstream():
+    """An ocean place bbox raises AdminBoundaryLevelError (routing), NOT a misleading
+    AdminBoundaryUpstreamError.
+
+    Nothing is fetched from census.gov for an unroutable bbox, so labeling it an
+    UPSTREAM failure is wrong/misleading. The error must name the real cause
+    (not routable to a TIGER state) and the actionable fallback (use county /
+    a CONUS-or-territory bbox).
+    """
+    with pytest.raises(AdminBoundaryLevelError, match="not routable to a TIGER state"):
+        _fetch_admin_boundaries_bytes("place", (-50.0, 40.0, -45.0, 45.0))
+
+
+def test_unroutable_place_error_mentions_county_fallback():
+    """The routing error guides the caller to the level='county' fallback."""
+    try:
+        _fetch_admin_boundaries_bytes("place", (-50.0, 40.0, -45.0, 45.0))
+    except AdminBoundaryLevelError as exc:
+        assert "county" in str(exc).lower(), (
+            f"Expected the error to suggest level='county'; got {exc!r}"
+        )
+        assert exc.retryable is False
+    else:
+        pytest.fail("Expected AdminBoundaryLevelError for an unroutable place bbox")
+
+
 @pytest.mark.parametrize("level,expected_fragment", [
     ("state", "STATE/tl_2024_us_state.zip"),
     ("county", "COUNTY/tl_2024_us_county.zip"),
@@ -198,6 +273,21 @@ def test_tiger_url_place_without_fips_raises():
     """_tiger_url for place without state_fips raises AdminBoundaryLevelError."""
     with pytest.raises(AdminBoundaryLevelError):
         _tiger_url("place", state_fips=None)
+
+
+def test_tiger_url_place_for_alaska_matches_exact_census_format():
+    """The AK place URL is the EXACT census.gov token (tl_2024_02_place.zip).
+
+    Identifier-format guard (the "goes18 vs goes-18" class): the 2-digit FIPS is
+    glued into the filename with single underscores; no extra hyphen/space must
+    sneak in for the antimeridian-routed AK case.
+    """
+    url = _tiger_url("place", state_fips="02")
+    assert url == (
+        "https://www2.census.gov/geo/tiger/TIGER2024/PLACE/tl_2024_02_place.zip"
+    ), f"Unexpected AK place URL: {url!r}"
+    # Defensive: the only hyphen must be in the host, never in the filename token.
+    assert "tl_2024-02" not in url and "tl_2024_02-place" not in url
 
 
 def test_round_bbox_to_6dp():

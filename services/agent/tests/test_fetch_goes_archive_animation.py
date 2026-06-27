@@ -29,6 +29,7 @@ import pytest
 
 from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools import fetch_goes_archive_animation as mod
+from grace2_agent.tools.fetch_goes_satellite import GOESInputError
 from grace2_agent.tools.fetch_goes_archive_animation import (
     FIRE_TEMP_BLUE_REFL_MAX,
     FIRE_TEMP_GREEN_REFL_MAX,
@@ -187,9 +188,12 @@ def test_list_archive_keys_all_listings_fail_raises_upstream(monkeypatch):
 
 
 def test_list_archive_keys_unknown_satellite_raises():
+    # After the shared-normalizer migration, a genuinely-unknown bird now fails
+    # LOUD on the shared _normalize_satellite seam (typed GOESInputError listing
+    # the accepted forms) BEFORE the bucket lookup -- never a silent 404.
     start = datetime(2026, 6, 22, 13, 0, tzinfo=timezone.utc)
     end = datetime(2026, 6, 22, 13, 30, tzinfo=timezone.utc)
-    with pytest.raises(GOESArchiveInputError):
+    with pytest.raises(GOESInputError):
         _list_archive_keys_in_window("himawari-9", start, end)
 
 
@@ -534,13 +538,85 @@ def test_bbox_none_raises_bbox_required():
 
 
 def test_unknown_satellite_raises():
-    with pytest.raises(GOESArchiveInputError):
+    # A genuinely-unknown bird fails LOUD on the shared _normalize_satellite seam
+    # (typed GOESInputError listing the accepted forms) before any bucket/path is
+    # built -- never a silent 404 / blank fetch.
+    with pytest.raises(GOESInputError):
         fetch_goes_archive_animation(bbox=_UT_BBOX, satellite="himawari-9")
 
 
 def test_unknown_band_raises():
     with pytest.raises(GOESArchiveInputError):
         fetch_goes_archive_animation(bbox=_UT_BBOX, band="geocolor")
+
+
+# ---- shared satellite-normalizer migration (GOES-18 / goes18 / GOES West) ---
+
+
+@pytest.mark.parametrize("spelling", ["GOES-18", "goes18", "GOES West"])
+def test_forgiving_satellite_spelling_resolves_and_proceeds(monkeypatch, spelling):
+    """The shared _normalize_satellite seam accepts every spelling: GOES-18 /
+    goes18 / "GOES West" all canonicalize to goes-18 and the run PROCEEDS (instead
+    of being rejected). We mirror the end-to-end mock (stub the S3 key listing +
+    read_through) and assert the emitted layer names carry the canonical (GOES-18)
+    bird -- proof the normalized token flowed all the way through.
+    """
+    times = [datetime(2026, 6, 22, 18, m, tzinfo=timezone.utc) for m in (0, 5, 10)]
+    pairs = [(t, _mk_key(t)) for t in times]
+    monkeypatch.setattr(mod, "_list_archive_keys_in_window", lambda *a, **k: list(pairs))
+
+    def _fake_read_through(metadata, params, ext, fetch_fn):
+        # The cache-key params must already carry the canonical token, never the
+        # raw spelling -- the normalize-before-any-key-built contract.
+        assert params["satellite"] == "goes-18"
+        return _FakeReadResult(uri=f"s3://fake/{params['ts_start']}.tif")
+
+    monkeypatch.setattr(mod, "read_through", _fake_read_through)
+
+    layers = fetch_goes_archive_animation(
+        bbox=_UT_BBOX,
+        satellite=spelling,
+        start_utc="2026-06-22T17:30:00Z",
+        end_utc="2026-06-22T18:30:00Z",
+    )
+    assert len(layers) == 3
+    # The (SAT) token in every emitted name is the canonical bird, not the raw
+    # spelling -- so GOES-18 / goes18 / "GOES West" all land on GOES-18.
+    assert all("(GOES-18)" in lyr.name for lyr in layers)
+
+
+def test_genuinely_unknown_bird_still_raises_loud():
+    """A genuinely-unknown bird (GOES-99) is not a real GOES satellite, so the
+    shared normalizer fails LOUD (typed GOESInputError listing the accepted forms)
+    -- never a silent 404 / blank fetch."""
+    with pytest.raises(GOESInputError):
+        fetch_goes_archive_animation(bbox=_UT_BBOX, satellite="GOES-99")
+
+
+def test_list_archive_keys_forgiving_spelling_resolves(monkeypatch):
+    """The directly-callable helper also normalizes its own entry: "GOES West"
+    resolves to goes-18 and lists against the noaa-goes18 bucket (proceeds), where
+    pre-migration it would have rejected the spelling."""
+    seen_buckets: list[str] = []
+
+    def _fake_list(bucket, prefix, *, session=None):
+        seen_buckets.append(bucket)
+        return []
+
+    monkeypatch.setattr(mod, "_list_keys_for_prefix", _fake_list)
+    start = datetime(2026, 6, 22, 13, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 22, 13, 30, tzinfo=timezone.utc)
+    # "GOES West" -> goes-18 -> the noaa-goes18 bucket (no rejection).
+    assert _list_archive_keys_in_window("GOES West", start, end) == []
+    assert seen_buckets and all(b == "noaa-goes18" for b in seen_buckets)
+
+
+def test_list_archive_keys_genuinely_unknown_bird_raises_loud():
+    """The helper fails LOUD on a genuinely-unknown bird via the shared seam."""
+    start = datetime(2026, 6, 22, 13, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 6, 22, 13, 30, tzinfo=timezone.utc)
+    with pytest.raises(GOESInputError):
+        _list_archive_keys_in_window("GOES-99", start, end)
 
 
 def test_degenerate_bbox_raises():

@@ -131,9 +131,23 @@ _METADATA = AtomicToolMetadata(
 # Used by "place" level to identify which per-state ZIP(s) to download.
 # Covers 50 states + DC + PR + VI. Envelopes are intentionally generous (~10km
 # buffer) so bbox queries near state borders include the correct state file.
+# Alaska's western Aleutian Islands cross the 180th meridian into the eastern
+# hemisphere (Attu Island ~ +173 lon). A single WGS84 envelope cannot span the
+# antimeridian, so Alaska gets TWO envelopes that are OR-ed together below: the
+# main body (negative lon, down to -180) plus the trans-antimeridian Aleutian
+# tail (positive lon, +172 .. +180). See ``_state_fips_for_bbox``.
+_ALASKA_FIPS = "02"
+_ALASKA_ANTIMERIDIAN_BBOX: tuple[float, float, float, float] = (
+    172.0, 51.0, 180.0, 53.5
+)
+
 _STATE_FIPS_BBOXES: dict[str, tuple[float, float, float, float]] = {
     "01": (-88.5, 30.1, -84.9, 35.0),   # Alabama
-    "02": (-180.0, 51.2, -130.0, 71.5),  # Alaska (rough CONUS-adjacent box)
+    # Alaska main body (negative-lon hemisphere). The trans-antimeridian
+    # Aleutian tail is handled separately via _ALASKA_ANTIMERIDIAN_BBOX so a
+    # query over the western Aleutians (e.g. Attu, lon ~ +173) still routes to
+    # the AK ("02") per-state PLACE ZIP instead of dead-ending.
+    "02": (-180.0, 51.0, -129.9, 71.5),  # Alaska (main body; W. Aleutians: see below)
     "04": (-114.8, 31.3, -109.0, 37.0),  # Arizona
     "05": (-94.6, 33.0, -89.7, 36.5),   # Arkansas
     "06": (-124.5, 32.5, -114.1, 42.0),  # California
@@ -188,23 +202,48 @@ _STATE_FIPS_BBOXES: dict[str, tuple[float, float, float, float]] = {
 }
 
 
+def _bbox_intersects(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> bool:
+    """Return True iff axis-aligned bboxes ``a`` and ``b`` overlap (inclusive).
+
+    Bboxes intersect iff neither is entirely to one side of the other on
+    either axis. Both are ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326
+    and assumed NOT to cross the antimeridian (callers split such bboxes first).
+    """
+    a_min_lon, a_min_lat, a_max_lon, a_max_lat = a
+    b_min_lon, b_min_lat, b_max_lon, b_max_lat = b
+    return (
+        a_min_lon <= b_max_lon and a_max_lon >= b_min_lon
+        and a_min_lat <= b_max_lat and a_max_lat >= b_min_lat
+    )
+
+
 def _state_fips_for_bbox(bbox: tuple[float, float, float, float]) -> list[str]:
     """Return all state FIPS codes whose bounding boxes intersect ``bbox``.
 
-    Uses simple bbox-vs-bbox intersection test. A future enrichment job can
-    replace this with a real point-in-polygon over TIGER state polygons for
-    better accuracy near state borders.
+    Uses a simple bbox-vs-bbox intersection test against ``_STATE_FIPS_BBOXES``.
+    Alaska is special-cased to also match the trans-antimeridian Aleutian tail
+    (``_ALASKA_ANTIMERIDIAN_BBOX``, positive longitudes) so the western
+    Aleutians route to the AK ("02") PLACE ZIP instead of silently missing.
+
+    A future enrichment job can replace this with a real point-in-polygon over
+    TIGER state polygons for better accuracy near state borders (TODO).
 
     Returns at least one FIPS code if the bbox is within CONUS/territories.
     Returns an empty list if no state envelope matches (bbox outside coverage).
     """
     min_lon, min_lat, max_lon, max_lat = bbox
     results: list[str] = []
-    for fips, (s_min_lon, s_min_lat, s_max_lon, s_max_lat) in _STATE_FIPS_BBOXES.items():
-        # Bboxes intersect iff neither is entirely to one side of the other.
-        if min_lon <= s_max_lon and max_lon >= s_min_lon and \
-           min_lat <= s_max_lat and max_lat >= s_min_lat:
+    for fips, env in _STATE_FIPS_BBOXES.items():
+        if _bbox_intersects(bbox, env):
             results.append(fips)
+    # Alaska antimeridian tail: a western-Aleutian bbox uses positive longitudes
+    # (e.g. Attu ~ +173) and so misses the main "02" envelope above. Add AK if
+    # the query overlaps the trans-antimeridian Aleutian box (and avoid a dup).
+    if _ALASKA_FIPS not in results and _bbox_intersects(bbox, _ALASKA_ANTIMERIDIAN_BBOX):
+        results.append(_ALASKA_FIPS)
     return results
 
 
@@ -484,9 +523,17 @@ def _fetch_admin_boundaries_bytes(
         # Per-state: identify intersecting states, download each, merge.
         state_fips_list = _state_fips_for_bbox(bbox)
         if not state_fips_list:
-            raise AdminBoundaryUpstreamError(
-                f"no state envelopes intersect bbox={bbox}; "
-                "bbox may be outside CONUS/territory coverage"
+            # No TIGER state envelope routes this bbox. This is NOT an upstream
+            # (census.gov) failure -- nothing was even fetched -- so raise a
+            # routing/input error with actionable guidance instead of a
+            # misleading UPSTREAM error (the "goes18 vs goes-18" class of bug:
+            # a heuristic-built routing token that does not match coverage and
+            # dead-ends as a cryptic/wrong-category error).
+            raise AdminBoundaryLevelError(
+                f"bbox={bbox} is not routable to a TIGER state for level='place'; "
+                "the per-state PLACE ZIPs require a bbox over US land within a "
+                "state/territory envelope. Use level='county' (nationwide file, "
+                "no per-state routing) or a bbox over CONUS/AK/HI/PR/VI."
             )
 
         try:

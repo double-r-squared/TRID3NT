@@ -923,6 +923,84 @@ def test_worldpop_url_for_default_returns_1km_url():
     )
 
 
+# ---------------------------------------------------------------------------
+# WorldPop vintage-year normalize-then-validate (the 'goes18 vs goes-18'
+# identifier-format class): a year outside the published Global_2000_2020
+# product window MUST fail LOUD with a clear typed error at parse time, NOT
+# build a well-formed URL into a non-existent path that 404s downstream.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("year", [2000, 2005, 2010, 2015, 2020])
+def test_worldpop_year_from_dataset_accepts_in_range_vintages(year):
+    """Every vintage in [2000,2020] parses to the exact int year."""
+    assert data_fetch._worldpop_year_from_dataset(f"worldpop_{year}") == year
+
+
+@pytest.mark.parametrize(
+    "year",
+    [1999, 1850, 2021, 2024, 2030],
+)
+def test_worldpop_year_from_dataset_rejects_out_of_range_year(year):
+    """An out-of-range vintage (e.g. the docstring-advertised 2024) fails LOUD.
+
+    Regression for the 'goes18 vs goes-18' identifier-format hazard: previously
+    ``worldpop_2024`` composed a well-formed URL into a non-existent path and
+    only surfaced as a bare HTTP 404 after a network round-trip. The typed
+    error must name the dataset, the offending year, and the supported window.
+    """
+    dataset = f"worldpop_{year}"
+    with pytest.raises(UpstreamAPIError) as excinfo:
+        data_fetch._worldpop_year_from_dataset(dataset)
+    msg = str(excinfo.value)
+    assert dataset in msg, msg
+    assert str(year) in msg, msg
+    assert "[2000,2020]" in msg, msg
+
+
+def test_worldpop_year_from_dataset_rejects_non_numeric_suffix():
+    """A non-numeric vintage suffix fails with the 'worldpop_YYYY' guidance."""
+    with pytest.raises(UpstreamAPIError) as excinfo:
+        data_fetch._worldpop_year_from_dataset("worldpop_latest")
+    assert "worldpop_YYYY" in str(excinfo.value)
+
+
+def test_worldpop_year_from_dataset_rejects_non_worldpop_prefix():
+    """A dataset that is not a worldpop_ token is rejected before parsing."""
+    with pytest.raises(UpstreamAPIError) as excinfo:
+        data_fetch._worldpop_year_from_dataset("acs_2022")
+    assert "WorldPop branch" in str(excinfo.value)
+
+
+def test_fetch_worldpop_population_bytes_rejects_2024_before_network(monkeypatch):
+    """fetch_population(worldpop_2024) raises a typed error WITHOUT any HTTP call.
+
+    The validation must fire at parse time (before requests.get / rasterio),
+    so the malformed identifier never reaches the network as a bare 404. We
+    fail the test if any HTTP request is attempted.
+    """
+
+    def _no_network(*_a, **_kw):  # pragma: no cover - must not be reached
+        raise AssertionError("requests.get must NOT be called for an out-of-range year")
+
+    monkeypatch.setattr(data_fetch.requests, "get", _no_network)
+
+    with pytest.raises(UpstreamAPIError) as excinfo:
+        data_fetch._fetch_worldpop_population_bytes(FORT_MYERS_BBOX, "worldpop_2024")
+    assert "2024" in str(excinfo.value)
+    assert "[2000,2020]" in str(excinfo.value)
+
+
+def test_worldpop_url_built_only_for_validated_year_matches_real_format():
+    """A validated in-range year composes the EXACT published bucket path."""
+    year = data_fetch._worldpop_year_from_dataset("worldpop_2020")
+    url = data_fetch._worldpop_url_for("USA", year)
+    assert url == (
+        "https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/2020/"
+        "USA/usa_ppp_2020_1km_Aggregated.tif"
+    )
+
+
 def _patch_population_cache(monkeypatch, fake_storage):
     """Route fetch_population's read_through through a fake storage client."""
     from grace2_agent.tools import cache as cache_mod

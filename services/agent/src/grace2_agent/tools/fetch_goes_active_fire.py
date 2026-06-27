@@ -60,6 +60,11 @@ from .fetch_goes_archive_animation import (
     _select_window_keys,
     _validate_bbox,
 )
+# Shared satellite-identifier normalizer (base GOES module; acyclic -- it imports
+# none of the siblings). Canonicalizes every spelling (GOES-18/goes18/G18/"GOES
+# West"/18) to the goes-NN token, so the membership check below sees the SAME
+# canonical form GOES_ARCHIVE_SATELLITES holds instead of rejecting valid birds.
+from .fetch_goes_satellite import _normalize_satellite
 
 __all__ = [
     "fetch_goes_active_fire",
@@ -167,6 +172,12 @@ def fetch_goes_active_fire(
       base the hotspots overlay) + ``fetch_nifc_fire_perimeters``.
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
+    # Normalize-then-validate: canonicalize GOES-18/goes18/G18/"GOES West"/18 to
+    # the goes-NN token BEFORE it is used to build any bucket/key/path (it feeds
+    # the archive listing + every cache-key param below). A truly-unknown bird
+    # fails LOUD via the shared normalizer; a real GOES bird this tool does not
+    # serve still raises THIS tool's own GOESArchiveInputError (no base-error leak).
+    satellite = _normalize_satellite(satellite)
     if satellite not in GOES_ARCHIVE_SATELLITES:
         raise GOESArchiveInputError(
             f"unknown satellite={satellite!r}; allowed: "

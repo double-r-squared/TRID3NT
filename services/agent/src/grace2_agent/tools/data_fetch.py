@@ -1211,6 +1211,50 @@ def _iso3_for_lonlat(lon: float, lat: float) -> str | None:
     return None
 
 
+# The only WorldPop tree these URLs build against is ``Global_2000_2020`` /
+# ``Global_2000_2020_1km`` -- by name those products only publish the vintages
+# 2000..2020 inclusive. A ``worldpop_<YEAR>`` dataset with YEAR outside this
+# window composes a well-formed URL into a NON-EXISTENT path -> a bare HTTP 404.
+# Per the data-source-fallback norm we normalize-then-VALIDATE the parsed year
+# against this range so an unknown vintage fails LOUD at parse time (a clear
+# typed error naming the supported window) rather than after a network 404.
+_WORLDPOP_MIN_YEAR = 2000
+_WORLDPOP_MAX_YEAR = 2020
+
+
+def _worldpop_year_from_dataset(dataset: str) -> int:
+    """Parse + validate the vintage year off a ``worldpop_<YEAR>`` dataset token.
+
+    Normalize-then-validate (the ``goes18`` vs ``goes-18`` identifier-format
+    norm): the year is parsed off the suffix and range-checked against the
+    Global_2000_2020 product window BEFORE any URL is composed, so a malformed
+    or out-of-range vintage fails LOUD with a clear, typed error listing the
+    supported range rather than building a bogus path that 404s downstream.
+
+    Raises ``UpstreamAPIError`` (NOT retryable in spirit -- re-running the same
+    bad dataset string will not resolve) when the suffix is non-numeric or the
+    year falls outside ``[_WORLDPOP_MIN_YEAR, _WORLDPOP_MAX_YEAR]``.
+    """
+    if not dataset.startswith("worldpop_"):
+        raise UpstreamAPIError(
+            f"unsupported dataset={dataset!r} for WorldPop branch; expected 'worldpop_2020'"
+        )
+    try:
+        year = int(dataset.split("_", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise UpstreamAPIError(
+            f"could not parse vintage year from dataset={dataset!r}; expected 'worldpop_YYYY'"
+        ) from exc
+    if not (_WORLDPOP_MIN_YEAR <= year <= _WORLDPOP_MAX_YEAR):
+        raise UpstreamAPIError(
+            f"WorldPop dataset={dataset!r}: year {year} is outside the "
+            f"Global_2000_2020 product range "
+            f"[{_WORLDPOP_MIN_YEAR},{_WORLDPOP_MAX_YEAR}]; only those vintages "
+            "are published in this tree (e.g. 'worldpop_2020')"
+        )
+    return year
+
+
 def _worldpop_url_for(iso3: str, year: int, resolution_m: int = 1000) -> str:
     """Compose the WorldPop GeoTIFF URL for a country/year at a given resolution.
 
@@ -1264,16 +1308,10 @@ def _fetch_worldpop_population_bytes(
     100m path is a ~4GB upstream country download per cache miss (opt-in cost).
     """
     _validate_bbox(bbox)
-    if not dataset.startswith("worldpop_"):
-        raise UpstreamAPIError(
-            f"unsupported dataset={dataset!r} for WorldPop branch; expected 'worldpop_2020'"
-        )
-    try:
-        year = int(dataset.split("_", 1)[1])
-    except (IndexError, ValueError) as exc:
-        raise UpstreamAPIError(
-            f"could not parse vintage year from dataset={dataset!r}; expected 'worldpop_YYYY'"
-        ) from exc
+    # Normalize-then-validate the vintage year against the published product
+    # window BEFORE composing a URL: an out-of-range year (e.g. worldpop_2024)
+    # otherwise builds a well-formed path into a non-existent tree -> bare 404.
+    year = _worldpop_year_from_dataset(dataset)
 
     mid_lon = 0.5 * (bbox[0] + bbox[2])
     mid_lat = 0.5 * (bbox[1] + bbox[3])
@@ -1562,10 +1600,14 @@ def fetch_population(
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
         dataset: ``"worldpop_2020"`` (Tier-1 default, no key) or
             ``"acs_2022"`` (Tier-2 opt-in, US-only, Census key required for
-            high-volume use). Future vintages: ``"worldpop_2024"`` will land
-            once the v2024B file URLs stabilize (currently the Global_2000_2020
-            tree is the canonical analytical product; tracked as
-            OQ-37-WORLDPOP-VINTAGE-YEAR).
+            high-volume use). The WorldPop branch only publishes the
+            Global_2000_2020 tree, so the vintage year MUST be in 2000..2020
+            inclusive (``"worldpop_2020"`` is the canonical analytical
+            product); a year outside that window raises ``UpstreamAPIError``
+            at parse time rather than 404ing on a non-existent path. Newer
+            vintages (e.g. ``"worldpop_2024"``) are NOT available until the
+            v2024B file URLs stabilize and the range is widened here (tracked
+            as OQ-37-WORLDPOP-VINTAGE-YEAR).
         target_resolution_m: ground cell size for the WorldPop branch.
             Default ``1000`` (the 1km-aggregated product, ~50MB per country —
             unchanged). Pass ``100`` (or any value ``<= 100``) to opt into the

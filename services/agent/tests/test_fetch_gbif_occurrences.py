@@ -564,6 +564,160 @@ def test_mocked_unknown_species_name_raises_input_error():
             )
 
 
+def test_mocked_fuzzy_match_raises_input_error_with_did_you_mean():
+    """A species/match FUZZY near-spelling must FAIL LOUD, not silently widen.
+
+    "goes18 vs goes-18" hazard for taxon names: GBIF maps a single typo
+    (``"Puma concoler"``) to ``Puma concolor`` with matchType=FUZZY at
+    confidence 95. Accepting that usageKey would drive the occurrence search
+    off a taxon the caller never asked for. The fix raises GBIFInputError
+    naming the fuzzy match so the caller can confirm or correct (verified
+    against the live GBIF response shape 2026-06-27).
+    """
+    fuzzy_response = {
+        "usageKey": 2435099,
+        "scientificName": "Puma concolor (Linnaeus, 1771)",
+        "canonicalName": "Puma concolor",
+        "rank": "SPECIES",
+        "status": "ACCEPTED",
+        "confidence": 95,
+        "matchType": "FUZZY",
+    }
+    with patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.httpx.Client"
+    ) as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.get.return_value = _FakeHTTPResponse(200, fuzzy_response)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(GBIFInputError) as exc_info:
+            fetch_gbif_occurrences(
+                species_key="Puma concoler",  # single-letter typo
+                bbox=_EVERGLADES_BBOX,
+            )
+    msg = str(exc_info.value)
+    assert "FUZZY" in msg, f"error must name the matchType; got: {msg}"
+    assert "Puma concolor" in msg, f"error must name the matched taxon; got: {msg}"
+    assert "Did you mean" in msg, f"error must be clarifiable; got: {msg}"
+    # Never reached the occurrence/search call -- only the species/match resolve.
+    assert mock_client.get.call_count == 1
+    # Loud + non-retryable (caller must disambiguate, not blindly retry).
+    assert exc_info.value.retryable is False
+
+
+def test_mocked_higherrank_match_raises_input_error():
+    """A HIGHERRANK match (typo'd subspecies -> parent species) must fail loud.
+
+    Reproduces the named hazard: ``"Puma concolar coyi"`` (two typos) returns
+    matchType=HIGHERRANK with the *species* usageKey 2435099 -- GBIF silently
+    discarded the bad subspecies epithet and widened to the parent. The old
+    code accepted any usageKey and searched the broader taxon. Now it refuses.
+    """
+    higherrank_response = {
+        "usageKey": 2435099,
+        "scientificName": "Puma concolor (Linnaeus, 1771)",
+        "canonicalName": "Puma concolor",
+        "rank": "SPECIES",
+        "status": "ACCEPTED",
+        "confidence": 95,
+        "matchType": "HIGHERRANK",
+    }
+    with patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.httpx.Client"
+    ) as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.get.return_value = _FakeHTTPResponse(200, higherrank_response)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(GBIFInputError) as exc_info:
+            fetch_gbif_occurrences(
+                species_key="Puma concolar coyi",  # two typos in subspecies name
+                bbox=_EVERGLADES_BBOX,
+            )
+    msg = str(exc_info.value)
+    assert "HIGHERRANK" in msg, f"error must name the matchType; got: {msg}"
+    assert "taxonKey=2435099" in msg, (
+        f"error must surface the resolved (wrong) taxonKey; got: {msg}"
+    )
+    # Did not proceed to search the wrong taxon.
+    assert mock_client.get.call_count == 1
+
+
+def test_mocked_genus_name_exact_match_resolves():
+    """An EXACT match (even at genus rank) is accepted -- matchType is the gate.
+
+    A bare genus name like ``"Puma"`` returns matchType=EXACT/rank=GENUS from
+    GBIF (verified live). EXACT is unambiguous, so we accept it and proceed to
+    search; the resolved rank is surfaced in the resolution log so a deliberate
+    higher-taxon query is visible in telemetry rather than silent. This guards
+    against over-tightening the gate into rejecting legitimate EXACT matches.
+    """
+    fake_gcs = FakeStorageClient()
+    genus_match = {
+        "usageKey": 2435098,
+        "scientificName": "Puma Jardine, 1834",
+        "canonicalName": "Puma",
+        "rank": "GENUS",
+        "status": "ACCEPTED",
+        "confidence": 94,
+        "matchType": "EXACT",
+    }
+    page = _make_search_page(
+        [_make_occurrence_record(gbif_id=1, lon=-81.0, lat=26.0)],
+        end_of_records=True,
+    )
+    with patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ), patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.httpx.Client"
+    ) as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.get.side_effect = [
+            _FakeHTTPResponse(200, genus_match),  # species/match
+            _FakeHTTPResponse(200, page),  # occurrence/search
+        ]
+        mock_client_cls.return_value = mock_client
+
+        result = fetch_gbif_occurrences(
+            species_key="Puma",
+            bbox=_EVERGLADES_BBOX,
+        )
+
+    assert result.uri is not None
+    # Proceeded to the search using the EXACT-resolved genus usageKey.
+    assert mock_client.get.call_count == 2
+    second_params = mock_client.get.call_args_list[1].kwargs["params"]
+    assert second_params["taxonKey"] == 2435098
+
+
+def test_mocked_missing_match_type_raises_input_error():
+    """A usageKey present but matchType absent/None must fail loud, not guess.
+
+    Defensive: if GBIF (or a proxy) returns a usageKey with no matchType, we
+    cannot certify the match as EXACT, so we refuse rather than silently
+    trusting an unverifiable resolution.
+    """
+    no_match_type = {
+        "usageKey": 2435099,
+        "scientificName": "Puma concolor (Linnaeus, 1771)",
+        "canonicalName": "Puma concolor",
+        "rank": "SPECIES",
+    }
+    with patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.httpx.Client"
+    ) as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.get.return_value = _FakeHTTPResponse(200, no_match_type)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(GBIFInputError):
+            fetch_gbif_occurrences(
+                species_key="Puma concolor",
+                bbox=_EVERGLADES_BBOX,
+            )
+
+
 def test_mocked_empty_bbox_returns_empty_flatgeobuf():
     """An endOfRecords=True page with no records → empty FlatGeobuf, no error."""
     fake_gcs = FakeStorageClient()

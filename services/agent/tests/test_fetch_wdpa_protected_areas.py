@@ -30,9 +30,12 @@ import pytest
 from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools.fetch_wdpa_protected_areas import (
     WDPABboxError,
+    WDPADesignationError,
     WDPAError,
     WDPAUpstreamError,
     _bbox_to_envelope,
+    _normalize_designation_filter,
+    _normalize_one_designation,
     _round_bbox_to_6dp,
     _validate_bbox,
     fetch_wdpa_protected_areas,
@@ -222,6 +225,225 @@ def test_degenerate_bbox_raises_through_public_tool():
     """The public tool surface validates the bbox before any network call."""
     with pytest.raises(WDPABboxError):
         fetch_wdpa_protected_areas(bbox=(-81.0, 25.0, -81.0, 25.0))
+
+
+# ---------------------------------------------------------------------------
+# designation_filter normalization tests (OQ-0089-DESIGNATION-FILTER-SEMANTICS;
+# the "goes18 vs goes-18" silent-identifier-mismatch guard).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "spelling, expected",
+    [
+        ("National Park", "National Park"),  # exact canonical
+        ("national park", "National Park"),  # lowercase
+        ("NATIONAL PARK", "National Park"),  # uppercase
+        ("  National   Park  ", "National Park"),  # extra whitespace
+        ("National Parks", "National Park"),  # plural in alias table
+        ("national parks", "National Park"),  # lowercase plural
+        ("NP", "National Park"),  # abbreviation
+        ("np", "National Park"),  # lowercase abbreviation
+        ("N.P.", "National Park"),  # abbreviation with dots
+        ("NWR", "National Wildlife Refuge"),  # abbreviation
+        ("national wildlife refuges", "National Wildlife Refuge"),  # plural
+        ("WMA", "Wildlife Management Area"),  # abbreviation
+        ("biosphere reserve", "UNESCO-MAB Biosphere Reserve"),  # phrasing
+        ("ramsar", "Ramsar Site, Wetland of International Importance"),
+        ("world heritage", "World Heritage Site (natural or mixed)"),
+        ("State Forests", "State Forest"),  # generic trailing-s singularize
+    ],
+)
+def test_normalize_one_designation_maps_to_canonical(spelling, expected):
+    """Every accepted human/LLM spelling maps to the EXACT live desig_eng token."""
+    assert _normalize_one_designation(spelling) == expected
+
+
+def test_normalize_one_designation_unknown_raises_with_help():
+    """An unknown designation raises WDPADesignationError listing accepted forms."""
+    with pytest.raises(WDPADesignationError) as exc:
+        _normalize_one_designation("Marsupial Sanctuary")
+    msg = str(exc.value)
+    # The error must be HELPFUL: name the bad token + list accepted designations
+    # and aliases so a typo fails LOUD, not into a silent empty layer.
+    assert "Marsupial Sanctuary" in msg
+    assert "National Park" in msg
+    assert "alias" in msg.lower()
+    assert exc.value.error_code == "WDPA_DESIGNATION_INVALID"
+    assert exc.value.retryable is False
+
+
+def test_normalize_one_designation_empty_string_raises():
+    """An empty / whitespace-only entry raises WDPADesignationError (fail loud)."""
+    with pytest.raises(WDPADesignationError):
+        _normalize_one_designation("   ")
+
+
+def test_normalize_one_designation_non_str_raises():
+    """A non-str entry raises WDPADesignationError."""
+    with pytest.raises(WDPADesignationError):
+        _normalize_one_designation(42)  # type: ignore[arg-type]
+
+
+def test_normalize_designation_filter_dedupes_and_sorts():
+    """Mixed spellings of the same designation collapse to one canonical token."""
+    out = _normalize_designation_filter(["NP", "national park", "National Parks"])
+    assert out == ["National Park"]
+
+
+def test_normalize_designation_filter_none_and_empty_are_no_filter():
+    """None and empty list both mean 'no filter' (return None)."""
+    assert _normalize_designation_filter(None) is None
+    assert _normalize_designation_filter([]) is None
+
+
+def test_normalize_designation_filter_multiple_canonical_sorted():
+    """Multiple distinct designations normalize, dedupe, and sort."""
+    out = _normalize_designation_filter(["NWR", "np"])
+    assert out == ["National Park", "National Wildlife Refuge"]
+
+
+def test_normalize_designation_filter_non_list_raises():
+    """A non-list designation_filter raises WDPADesignationError."""
+    with pytest.raises(WDPADesignationError):
+        _normalize_designation_filter("National Park")  # type: ignore[arg-type]
+
+
+def test_lowercase_designation_filter_matches_through_public_tool():
+    """A lowercase 'national park' filter now matches (was a silent 0-feature dead end).
+
+    Reproduces the confirmed hazard: before the fix, designation_filter=
+    ['national park'] returned 0 features even though Everglades NP is present.
+    After normalization both sides casefold, so the National Park features
+    survive the filter.
+    """
+    import geopandas as gpd
+
+    features = [
+        _polygon_feature("Everglades NP", designation="National Park", wdpaid=1),
+        _polygon_feature(
+            "Big Cypress National Preserve",
+            designation="National Preserve",
+            wdpaid=2,
+        ),
+        _polygon_feature("Biscayne NP", designation="National Park", wdpaid=4),
+    ]
+    fake_gcs = FakeStorageClient()
+
+    with patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas._wdpa_query_one_page",
+        return_value=_wdpa_response(features, exceeded=False),
+    ), patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_wdpa_protected_areas(
+            bbox=_EVERGLADES_BBOX,
+            designation_filter=["national park"],  # lowercase / plural / abbrev
+        )
+
+    fgb_bytes = next(iter(fake_gcs.store.values()))
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tf:
+        path = tf.name
+        tf.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        assert len(gdf) == 2, f"expected 2 National Park features, got {len(gdf)}"
+        names = sorted(gdf["name_eng"].tolist())
+        assert names == ["Biscayne NP", "Everglades NP"]
+        # The label flows from the canonical token, not the lowercase input.
+        assert "National Park" in result.name
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_abbreviation_filter_matches_through_public_tool():
+    """designation_filter=['NP'] resolves to 'National Park' and matches."""
+    import geopandas as gpd
+
+    features = [
+        _polygon_feature("Everglades NP", designation="National Park", wdpaid=1),
+        _polygon_feature(
+            "Loxahatchee NWR",
+            designation="National Wildlife Refuge",
+            wdpaid=3,
+        ),
+    ]
+    fake_gcs = FakeStorageClient()
+
+    with patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas._wdpa_query_one_page",
+        return_value=_wdpa_response(features, exceeded=False),
+    ), patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_wdpa_protected_areas(
+            bbox=_EVERGLADES_BBOX,
+            designation_filter=["NP"],
+        )
+
+    fgb_bytes = next(iter(fake_gcs.store.values()))
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tf:
+        path = tf.name
+        tf.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        assert len(gdf) == 1
+        assert gdf["name_eng"].tolist() == ["Everglades NP"]
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_unknown_designation_filter_raises_through_public_tool():
+    """An unknown designation_filter fails LOUD before any network call."""
+    with pytest.raises(WDPADesignationError):
+        fetch_wdpa_protected_areas(
+            bbox=_EVERGLADES_BBOX,
+            designation_filter=["Marsupial Sanctuary"],
+        )
+
+
+def test_filter_matching_zero_of_many_raises_with_present_designations():
+    """A valid filter that eliminates every fetched feature fails LOUD.
+
+    Honest-degrade (data-source-fallback norm): instead of a silent
+    0-feature FlatGeobuf, list the designations actually present so the
+    caller can correct the filter.
+    """
+    features = [
+        _polygon_feature("Big Cypress", designation="National Preserve", wdpaid=2),
+        _polygon_feature(
+            "Loxahatchee NWR",
+            designation="National Wildlife Refuge",
+            wdpaid=3,
+        ),
+    ]
+    fake_gcs = FakeStorageClient()
+
+    with patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas._wdpa_query_one_page",
+        return_value=_wdpa_response(features, exceeded=False),
+    ), patch(
+        "grace2_agent.tools.fetch_wdpa_protected_areas.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        with pytest.raises(WDPADesignationError) as exc:
+            fetch_wdpa_protected_areas(
+                bbox=_EVERGLADES_BBOX,
+                designation_filter=["National Park"],
+            )
+
+    msg = str(exc.value)
+    # Must surface the designations actually present in the bbox.
+    assert "National Preserve" in msg
+    assert "National Wildlife Refuge" in msg
 
 
 # ---------------------------------------------------------------------------

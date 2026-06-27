@@ -7,10 +7,18 @@ COG to the FR-DC cache (``dynamic-1h``, ``source_class="goes_satellite"``).
 
 Source S3 buckets (public, no auth, unauthenticated HTTPS listing):
 
-    s3://noaa-goes16/  (GOES-16 / GOES-East — operational east of ~75°W)
-    s3://noaa-goes17/  (GOES-17 — historical west; replaced by GOES-18)
-    s3://noaa-goes18/  (GOES-18 / GOES-West — operational west of ~137°W)
-    s3://noaa-goes19/  (GOES-19 — GOES-East replacement, operational 2025+)
+    s3://noaa-goes19/  (GOES-19 / GOES-East -- operational at 75.2W since
+                        2025-04-07; current default for fresh CONUS frames)
+    s3://noaa-goes18/  (GOES-18 / GOES-West -- operational west of ~137W)
+    s3://noaa-goes17/  (GOES-17 -- historical west; replaced by GOES-18)
+    s3://noaa-goes16/  (GOES-16 -- historical GOES-East, decommissioned
+                        2025-04-07; bucket no longer gains fresh frames)
+
+The bucket token glues the digits to "goes" with NO hyphen (noaa-goes18, not
+noaa-goes-18). All human/LLM satellite spellings ("GOES-18", "goes18", "G18",
+"GOES East", a bare "18") are normalized to the canonical token by
+``_normalize_satellite`` before any S3 path is built, so a malformed identifier
+is canonicalized or rejected LOUD (typed error) -- never a silent 404.
 
 Product: ``ABI-L2-MCMIPC`` (Multi-Channel Cloud and Moisture Imagery, CONUS
 sector). One netCDF carries all 16 ABI channels (``CMI_C01`` … ``CMI_C16``)
@@ -86,6 +94,14 @@ __all__ = [
     "_list_recent_keys",
     "_band_to_variable",
     "_band_to_units",
+    # Shared satellite-identifier normalizer + maps. Sibling GOES/VIIRS fetchers
+    # (fetch_glm_lightning, fetch_goes_archive_animation, fetch_goes_active_fire,
+    # fetch_goes_animation) carry the same "goes18 vs goes-18" hazard and MAY
+    # import _normalize_satellite to share this single canonicalization seam;
+    # the orchestrator reconciles cross-file reuse.
+    "_normalize_satellite",
+    "_SATELLITE_BUCKETS",
+    "_SATELLITE_FILENAME_CODE",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_goes_satellite")
@@ -145,13 +161,97 @@ class GOESEmptyError(GOESError):
 # ---------------------------------------------------------------------------
 
 # Supported satellites and their public S3 bucket names.
-# (GOES-17 is included for historical lookups before it was decommissioned.)
+#
+# NOTE: the AWS Open Data bucket token GLUES the digits to "goes" with NO
+# hyphen (noaa-goes18, NOT noaa-goes-18 -- the latter 404s). The dict keys are
+# the canonical lowercase-hyphenated internal token ("goes-18"); _normalize_satellite
+# below maps every human/LLM spelling (GOES-18, goes18, G18, "GOES West", ...)
+# onto these keys so a malformed identifier is normalized or rejected LOUD,
+# never silently turned into a bad bucket path.
+#
+# East/West -> bird mapping (current as of the 2025-04-07 NOAA GOES-East swap,
+# originally scheduled 2025-04-04): GOES-19 is operational GOES-East at 75.2W
+# (Gulf/Atlantic), GOES-18 is operational GOES-West (Pacific). GOES-16 was the
+# prior East and GOES-17 the prior West; both are historical/standby now and
+# their buckets stop gaining fresh frames -- kept here ONLY for archival lookups.
 _SATELLITE_BUCKETS: dict[str, str] = {
-    "goes-16": "noaa-goes16",
-    "goes-17": "noaa-goes17",
-    "goes-18": "noaa-goes18",
-    "goes-19": "noaa-goes19",
+    "goes-16": "noaa-goes16",  # GOES-East (historical, pre-2025-04-07)
+    "goes-17": "noaa-goes17",  # GOES-West (historical)
+    "goes-18": "noaa-goes18",  # GOES-West (current operational)
+    "goes-19": "noaa-goes19",  # GOES-East (current operational)
 }
+
+# Internal canonical token -> the satellite code embedded in MCMIPC FILENAMES
+# (e.g. OR_ABI-L2-MCMIPC-M6_G18_s2025...nc). Glued "G" + 2-digit number, no
+# hyphen -- the same glued-vs-hyphenated hazard as the bucket token. Exposed so
+# callers that filter keys by bird never hand-build "G-18".
+_SATELLITE_FILENAME_CODE: dict[str, str] = {
+    "goes-16": "G16",
+    "goes-17": "G17",
+    "goes-18": "G18",
+    "goes-19": "G19",
+}
+
+# Current GOES-East / GOES-West birds (see _SATELLITE_BUCKETS note). Used by the
+# directional aliases in _normalize_satellite. Update both halves together if a
+# future swap re-points East/West.
+_GOES_EAST = "goes-19"  # operational East since 2025-04-07 (was goes-16)
+_GOES_WEST = "goes-18"  # operational West (was goes-17)
+
+
+def _normalize_satellite(satellite: str) -> str:
+    """Map any accepted human/LLM satellite spelling to the canonical token.
+
+    The canonical token is the lowercase-hyphenated form ("goes-19") that keys
+    ``_SATELLITE_BUCKETS`` / ``_SATELLITE_FILENAME_CODE``. This is the fix for
+    the "goes18 vs goes-18" identifier-format bug class: the AWS bucket spelling
+    glues the digits ("noaa-goes18") while humans and LLM prompts write a zoo of
+    forms -- "GOES-18", "GOES 18", "goes18", "G18", "GOES-East", "west", or a
+    bare "18". All of those normalize here, case- and hyphen-insensitive, BEFORE
+    the allow-list check, so a recognized bird is accepted and an unrecognized
+    token fails LOUD (typed ``GOESInputError`` listing the accepted forms) --
+    never a silent 404, empty fetch, or hallucinated success.
+
+    Accepted forms (any case, hyphen/space/underscore-insensitive):
+      - canonical: ``goes-16`` .. ``goes-19``
+      - glued / spaced: ``goes18``, ``GOES 18``, ``GOES_18``
+      - filename code: ``G18`` .. ``G19``
+      - bare number: ``18``, ``19`` (assumed GOES-NN)
+      - directional: ``goes-east``/``east`` -> current East (goes-19),
+        ``goes-west``/``west`` -> current West (goes-18)
+
+    Raises:
+        ``GOESInputError``: if ``satellite`` is not a recognized form.
+    """
+    if not isinstance(satellite, str):
+        raise GOESInputError(
+            f"satellite must be a string; got {type(satellite).__name__}; "
+            f"accepted e.g. {sorted(_SATELLITE_BUCKETS)} or 'GOES-18'/'GOES East'"
+        )
+
+    # Collapse case + strip hyphens/spaces/underscores to a bare alnum token so
+    # "GOES-18", "goes 18", "G18", "goes18" all reduce to the same compare key.
+    raw = satellite.strip().lower()
+    compact = re.sub(r"[\s_\-]+", "", raw)
+
+    # Directional aliases first (goeseast / east / goeswest / west).
+    if compact in ("goeseast", "east"):
+        return _GOES_EAST
+    if compact in ("goeswest", "west"):
+        return _GOES_WEST
+
+    # "goesNN" (glued or originally hyphenated), "gNN", or bare "NN".
+    m = re.fullmatch(r"(?:goes|g)?(\d{2})", compact)
+    if m is not None:
+        candidate = f"goes-{m.group(1)}"
+        if candidate in _SATELLITE_BUCKETS:
+            return candidate
+
+    raise GOESInputError(
+        f"unknown satellite={satellite!r}; accepted forms: "
+        f"{sorted(_SATELLITE_BUCKETS)} (also 'GOES-18'/'goes18'/'G18'/'18', "
+        f"or directional 'GOES-East'/'GOES-West' -> {_GOES_EAST}/{_GOES_WEST})"
+    )
 
 # Product prefix used in S3 keys (Multi-Channel CMIP, CONUS sector).
 # Carries all 16 ABI channels in one netCDF file (~50 MB).
@@ -389,11 +489,11 @@ def _list_recent_keys(
         ``GOESUpstreamError``: if every probed hour partition fails.
         ``GOESEmptyError``: if the lookback window yields no keys.
     """
-    bucket = _SATELLITE_BUCKETS.get(satellite)
-    if bucket is None:
-        raise GOESInputError(
-            f"unknown satellite={satellite!r}; allowed: {sorted(_SATELLITE_BUCKETS)}"
-        )
+    # Normalize-then-validate (belt-and-suspenders: callers reach this helper
+    # directly in tests/animation siblings). Maps GOES-18/goes18/G18/West/18 ->
+    # canonical token; unknown -> loud GOESInputError instead of a 404 bucket.
+    satellite = _normalize_satellite(satellite)
+    bucket = _SATELLITE_BUCKETS[satellite]
 
     when = now or datetime.now(timezone.utc)
     last_upstream_error: GOESUpstreamError | None = None
@@ -679,7 +779,7 @@ def _fetch_goes_bytes(
 def fetch_goes_satellite(
     bbox: tuple[float, float, float, float],
     band: str = "visible",
-    satellite: str = "goes-16",
+    satellite: str = "goes-19",
     target_res_deg: float | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -726,10 +826,15 @@ def fetch_goes_satellite(
       0.64 µm, reflectance 0-1.5), ``"ir_window"`` (ABI band 13, 10.35 µm,
       brightness temperature in K), ``"water_vapor"`` (ABI band 8, 6.19 µm,
       brightness temperature in K).
-    - ``satellite`` (str, default ``"goes-16"``): ``"goes-16"`` (GOES-East,
-      operational for eastern CONUS), ``"goes-17"`` (historical west),
-      ``"goes-18"`` (GOES-West, operational for western CONUS / Pacific),
-      ``"goes-19"`` (new GOES-East replacement, 2025+).
+    - ``satellite`` (str, default ``"goes-19"``): which GOES-R bird to read.
+      ``"goes-19"`` (current operational GOES-East, 75.2W, since 2025-04-07 --
+      eastern CONUS / Gulf / Atlantic), ``"goes-18"`` (current operational
+      GOES-West, Pacific / western CONUS), ``"goes-16"`` (historical GOES-East,
+      decommissioned 2025-04-07 -- data distribution ended, kept for archival
+      lookups), ``"goes-17"`` (historical GOES-West). Accepts forgiving spellings
+      -- ``"GOES-18"``, ``"goes18"``, ``"G18"``, a bare ``"18"``, and directional
+      ``"GOES-East"`` / ``"GOES-West"`` (mapped to goes-19 / goes-18) -- all
+      normalized internally; an unrecognized token raises a typed input error.
 
     **Returns:** A ``LayerURI`` pointing at a float32 COG in the cache bucket
     (``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/goes_satellite/<key>.tif``).
@@ -754,10 +859,10 @@ def fetch_goes_satellite(
         raise GOESInputError(
             f"unknown band={band!r}; allowed: {sorted(_BAND_TO_VARIABLE)}"
         )
-    if satellite not in _SATELLITE_BUCKETS:
-        raise GOESInputError(
-            f"unknown satellite={satellite!r}; allowed: {sorted(_SATELLITE_BUCKETS)}"
-        )
+    # Normalize-then-validate: accept GOES-18 / goes18 / G18 / "GOES West" / 18
+    # etc. and canonicalize to the bucket-key token ("goes-18") before any S3
+    # path is built; an unrecognized token raises GOESInputError (loud, typed).
+    satellite = _normalize_satellite(satellite)
 
     q_bbox = _round_bbox(bbox)
     valid_time = _round_valid_time(datetime.now(timezone.utc))

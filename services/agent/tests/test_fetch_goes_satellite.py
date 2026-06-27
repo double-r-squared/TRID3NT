@@ -39,8 +39,10 @@ from grace2_agent.tools.fetch_goes_satellite import (
     GOESUpstreamError,
     _BAND_TO_VARIABLE,
     _SATELLITE_BUCKETS,
+    _SATELLITE_FILENAME_CODE,
     _band_to_units,
     _band_to_variable,
+    _normalize_satellite,
     _pick_most_recent_key,
     _round_bbox,
     _round_valid_time,
@@ -168,6 +170,107 @@ def test_four_satellites_are_defined():
     assert set(_SATELLITE_BUCKETS) == {"goes-16", "goes-17", "goes-18", "goes-19"}
     assert _SATELLITE_BUCKETS["goes-16"] == "noaa-goes16"
     assert _SATELLITE_BUCKETS["goes-18"] == "noaa-goes18"
+
+
+def test_bucket_token_glues_digits_no_hyphen():
+    """Regression guard for the 'goes18 vs goes-18' bug: bucket names glue the
+    digits to 'goes' with NO hyphen (noaa-goes18, never noaa-goes-18)."""
+    for token, bucket in _SATELLITE_BUCKETS.items():
+        # token is the hyphenated internal form; bucket is the glued AWS form.
+        digits = token.split("-")[1]
+        assert bucket == f"noaa-goes{digits}"
+        assert "goes-" not in bucket, f"{bucket!r} must NOT contain 'goes-' (404 hazard)"
+
+
+def test_filename_code_map_matches_buckets():
+    """Each satellite carries a glued 'GNN' filename code (G18, never G-18)."""
+    assert set(_SATELLITE_FILENAME_CODE) == set(_SATELLITE_BUCKETS)
+    assert _SATELLITE_FILENAME_CODE["goes-18"] == "G18"
+    assert _SATELLITE_FILENAME_CODE["goes-19"] == "G19"
+    for token, code in _SATELLITE_FILENAME_CODE.items():
+        digits = token.split("-")[1]
+        assert code == f"G{digits}"
+        assert "-" not in code
+
+
+# ---------------------------------------------------------------------------
+# Satellite-identifier normalization (the "goes18 vs goes-18" bug class).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,canonical",
+    [
+        # Canonical form passes through.
+        ("goes-18", "goes-18"),
+        ("goes-19", "goes-19"),
+        # Glued bucket spelling (the literal AWS form humans copy).
+        ("goes18", "goes-18"),
+        ("goes19", "goes-19"),
+        # Upper / mixed case + spacing.
+        ("GOES-18", "goes-18"),
+        ("GOES 18", "goes-18"),
+        ("GOES_19", "goes-19"),
+        ("  goes-19  ", "goes-19"),
+        # Filename satellite code.
+        ("G18", "goes-18"),
+        ("g19", "goes-19"),
+        # Bare two-digit number.
+        ("18", "goes-18"),
+        ("19", "goes-19"),
+        # Directional aliases -> current East/West birds (2025-04-07 mapping).
+        ("GOES-East", "goes-19"),
+        ("east", "goes-19"),
+        ("GOES West", "goes-18"),
+        ("west", "goes-18"),
+        # Historical birds still resolvable for archival lookups.
+        ("goes16", "goes-16"),
+        ("G17", "goes-17"),
+    ],
+)
+def test_normalize_satellite_accepts_human_spellings(raw, canonical):
+    """Every accepted human/LLM spelling maps to the exact canonical token."""
+    assert _normalize_satellite(raw) == canonical
+    # And the canonical token keys a real bucket whose digits are glued.
+    bucket = _SATELLITE_BUCKETS[_normalize_satellite(raw)]
+    assert bucket == "noaa-goes" + canonical.split("-")[1]
+
+
+def test_normalize_satellite_directional_matches_current_birds():
+    """GOES-East -> goes-19 and GOES-West -> goes-18 per the 2025-04-07 swap."""
+    assert _normalize_satellite("GOES-East") == "goes-19"
+    assert _normalize_satellite("GOES-West") == "goes-18"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["himawari-9", "goes-99", "99", "G99", "goes", "northeast", "", "goes-1"],
+)
+def test_normalize_satellite_unknown_raises_loud_typed_error(bad):
+    """A genuinely unknown token fails LOUD (typed GOESInputError listing the
+    accepted forms) -- never a silent bad-bucket path or empty fetch."""
+    with pytest.raises(GOESInputError, match="unknown satellite"):
+        _normalize_satellite(bad)
+
+
+def test_normalize_satellite_error_lists_accepted_forms():
+    """The reject message names the accepted spellings so the agent can recover."""
+    try:
+        _normalize_satellite("himawari-9")
+    except GOESInputError as exc:
+        msg = str(exc)
+        assert "goes-18" in msg
+        assert "GOES-East" in msg or "goes-east" in msg.lower()
+        assert exc.error_code == "GOES_INPUT_INVALID"
+        assert exc.retryable is False
+    else:
+        pytest.fail("Expected GOESInputError")
+
+
+def test_normalize_satellite_non_string_raises_typed_error():
+    """A non-string satellite raises GOESInputError, not a TypeError leak."""
+    with pytest.raises(GOESInputError):
+        _normalize_satellite(18)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +492,64 @@ def test_different_satellites_produce_different_cache_keys():
         r_18 = fetch_goes_satellite(bbox=_FL_BBOX, satellite="goes-18")
 
     assert r_16.uri != r_18.uri, "goes-16 vs goes-18 must hash to different keys"
+
+
+def test_forgiving_satellite_spelling_routes_to_same_layer():
+    """``satellite="GOES-18"`` (and "goes18", "G18", "GOES West") must produce
+    the SAME cache key / LayerURI as canonical ``"goes-18"`` -- the normalize
+    layer means a human/LLM spelling no longer dies on input validation."""
+    fake_gcs = FakeStorageClient()
+    seen_satellites: list[str] = []
+
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
+        seen_satellites.append(satellite)
+        return _fake_cog_bytes(f"SAT_{satellite}")
+
+    with patch(
+        "grace2_agent.tools.fetch_goes_satellite._fetch_goes_bytes",
+        side_effect=fake_fetch,
+    ), patch(
+        "grace2_agent.tools.fetch_goes_satellite.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        canonical = fetch_goes_satellite(bbox=_FL_BBOX, satellite="goes-18")
+        for spelling in ("GOES-18", "goes18", "G18", "GOES West"):
+            r = fetch_goes_satellite(bbox=_FL_BBOX, satellite=spelling)
+            assert r.uri == canonical.uri, (
+                f"{spelling!r} must hash to the same key as 'goes-18'"
+            )
+            assert r.layer_id == canonical.layer_id
+
+    # The inner fetch only ever sees the canonical token, never a raw spelling,
+    # so the S3 bucket/key is always built from the glued form (goes18).
+    assert set(seen_satellites) == {"goes-18"}
+
+
+def test_default_satellite_is_current_operational_east():
+    """Calling with no satellite arg fetches GOES-19 (current operational East,
+    since 2025-04-07) -- NOT the decommissioned goes-16 whose bucket is stale."""
+    fake_gcs = FakeStorageClient()
+    seen_satellites: list[str] = []
+
+    def fake_fetch(bbox, band, satellite, res_deg=0.02):
+        seen_satellites.append(satellite)
+        return _fake_cog_bytes(f"SAT_{satellite}")
+
+    with patch(
+        "grace2_agent.tools.fetch_goes_satellite._fetch_goes_bytes",
+        side_effect=fake_fetch,
+    ), patch(
+        "grace2_agent.tools.fetch_goes_satellite.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r_default = fetch_goes_satellite(bbox=_FL_BBOX)
+        r_g19 = fetch_goes_satellite(bbox=_FL_BBOX, satellite="goes-19")
+
+    # The default and explicit goes-19 share a cache key (second call is a hit,
+    # so the inner fetch runs once) -- both proving the default IS goes-19.
+    assert seen_satellites == ["goes-19"]
+    assert r_default.uri == r_g19.uri, "default must equal explicit goes-19"
+    assert "goes-19" in r_default.layer_id and "goes-16" not in r_default.layer_id
 
 
 def test_different_bboxes_produce_different_cache_keys():

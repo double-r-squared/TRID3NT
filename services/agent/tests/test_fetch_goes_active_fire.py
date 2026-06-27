@@ -28,6 +28,7 @@ from grace2_agent.tools.fetch_goes_archive_animation import (
     GOESArchiveEmptyError,
     GOESArchiveInputError,
 )
+from grace2_agent.tools.fetch_goes_satellite import GOESInputError
 
 _UT_BBOX = (-114.05, 37.0, -109.04, 42.0)
 
@@ -92,8 +93,51 @@ def test_bbox_none_raises():
 
 
 def test_unknown_satellite_raises():
-    with pytest.raises(GOESArchiveInputError):
+    """A genuinely-unknown bird fails LOUD via the shared satellite normalizer
+    (typed GOESInputError listing accepted forms) -- never a silent 404 / empty."""
+    with pytest.raises(GOESInputError):
+        fetch_goes_active_fire(bbox=_UT_BBOX, satellite="GOES-99")
+    with pytest.raises(GOESInputError):
         fetch_goes_active_fire(bbox=_UT_BBOX, satellite="himawari-9")
+
+
+def test_valid_but_unsupported_satellite_raises_tool_error():
+    """A REAL GOES bird this tool does not serve (goes-17, absent from
+    GOES_ARCHIVE_SATELLITES) normalizes fine then raises THIS tool's own
+    GOESArchiveInputError -- the base normalizer error type is not leaked here."""
+    with pytest.raises(GOESArchiveInputError):
+        fetch_goes_active_fire(bbox=_UT_BBOX, satellite="goes-17")
+
+
+@pytest.mark.parametrize("spelling", ["GOES-18", "goes18", "GOES West", "G18", "18"])
+def test_accepts_satellite_spelling_variants(monkeypatch, spelling):
+    """Forgiving satellite spellings (GOES-18 / goes18 / GOES West / G18 / 18) all
+    normalize to the canonical goes-18 bird and the tool proceeds, rather than
+    being rejected by the allow-list membership check."""
+    times = [datetime(2026, 6, 23, 19, 20, tzinfo=timezone.utc)]
+    pairs = [(t, _mk_key(t)) for t in times]
+    monkeypatch.setattr(afmod, "_list_archive_keys_in_window", lambda *a, **k: list(pairs))
+
+    seen = {}
+
+    def _fake_read_through(metadata, params, ext, fetch_fn):
+        # The normalized canonical token must reach the cache-key params (and thus
+        # every downstream bucket/key/path), not the raw spelling.
+        seen["satellite"] = params["satellite"]
+        return _FakeReadResult(uri=f"s3://fake/{params['ts_start']}.tif")
+
+    monkeypatch.setattr(afmod, "read_through", _fake_read_through)
+
+    layers = fetch_goes_active_fire(
+        bbox=_UT_BBOX,
+        satellite=spelling,
+        start_utc="2026-06-23T19:15:00Z",
+        end_utc="2026-06-23T19:30:00Z",
+    )
+    assert len(layers) == 1
+    assert seen["satellite"] == "goes-18"
+    # The canonical bird flows into the emitted layer label too.
+    assert layers[0].name.endswith("(GOES-18)")
 
 
 def test_start_after_end_raises():

@@ -62,6 +62,7 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
 from .cache import read_through
+from .fetch_goes_satellite import _normalize_satellite
 from ._satellite_slider import (
     SliderEmptyError,
     SliderError,
@@ -487,6 +488,12 @@ def fetch_goes_animation(
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     product = _band_to_slider_product(band)
+    # Normalize-then-validate: accept GOES-18 / goes18 / G18 / "GOES West" / 18
+    # etc. and canonicalize to the hyphenated token ("goes-18") BEFORE it is used
+    # to build any SLIDER index path, cache key, or LayerURI label. A truly-
+    # unknown bird raises loud (typed GOESInputError listing accepted forms); a
+    # valid bird this tool does not serve is still caught by the allow-list below.
+    satellite = _normalize_satellite(satellite)
     if satellite not in GOES_ANIM_SATELLITES:
         raise GOESAnimInputError(
             f"unknown satellite={satellite!r}; allowed: {list(GOES_ANIM_SATELLITES)}"
@@ -683,6 +690,12 @@ def fetch_goes_blend_animation(
     - Driven by: ``run_model_satellite_fire_animation`` (the GOES default path).
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
+    # Normalize-then-validate: accept GOES-18 / goes18 / G18 / "GOES West" / 18
+    # etc. and canonicalize to the hyphenated token ("goes-18") BEFORE it is used
+    # to build any SLIDER index path, cache key, or LayerURI label. A truly-
+    # unknown bird raises loud (typed GOESInputError listing accepted forms); a
+    # valid bird this tool does not serve is still caught by the allow-list below.
+    satellite = _normalize_satellite(satellite)
     if satellite not in GOES_ANIM_SATELLITES:
         raise GOESAnimInputError(
             f"unknown satellite={satellite!r}; allowed: {list(GOES_ANIM_SATELLITES)}"
