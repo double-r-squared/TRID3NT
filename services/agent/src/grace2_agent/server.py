@@ -7010,10 +7010,18 @@ def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
                 state.session_id,
             )
 
+    async def _chart_persist(payload: dict) -> None:
+        # task-198: composer-side chart persistence goes through the SAME
+        # _persist_chart_record the tool-result chart path uses, so a
+        # composer-emitted chart replays on Case rehydration exactly like a
+        # generate_histogram chart. Best-effort inside _persist_chart_record.
+        await _persist_chart_record(state, payload)
+
     state.emitter = PipelineEmitter(
         session_id=state.session_id,
         sink=_sink,
         chat_history=state.chat_history,
+        chart_persist=_chart_persist,
     )
 
 
