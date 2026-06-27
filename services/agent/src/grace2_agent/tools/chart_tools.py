@@ -84,6 +84,14 @@ __all__ = [
     "ChartToolError",
     "build_chart_payload",
     "is_chart_emission_result",
+    # Engine-output chart builders (task-198): turn the ALREADY-parsed
+    # non-raster engine quantities into chart-emission payloads the composer
+    # side-emits. They never read a layer / never call an LLM - they accept the
+    # in-memory numbers the engine postprocess already computed.
+    "build_hazard_curve_chart",
+    "build_uhs_chart",
+    "build_budget_partition_chart",
+    "build_head_decline_chart",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.chart_tools")
@@ -343,6 +351,294 @@ def is_chart_emission_result(result: Any) -> bool:
         and result.get("envelope_type") == "chart-emission"
         and isinstance(result.get("vega_lite_spec"), dict)
         and isinstance(result.get("chart_id"), str)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Engine-output chart builders (task-198: wire non-raster engine values).
+#
+# These differ from the four LLM-facing tools above: they do NOT read a layer
+# URI and are NOT registered tools. A composer that has the already-parsed
+# engine quantities in hand (the OpenQuake hazard-curve / UHS arrays, the
+# MODFLOW budget partition dict, the MODFLOW head-decline series) calls one of
+# these to build a chart-emission payload, then side-emits it through the live
+# pipeline emitter. Every number is a real parsed engine output - never
+# synthesized. When the required series is absent / empty each builder returns
+# ``None`` (the honesty floor: emit NO chart rather than invent one).
+# ---------------------------------------------------------------------------
+
+
+def build_hazard_curve_chart(
+    *,
+    imls_g: list[float],
+    mean_poe: list[float],
+    imt: str,
+    investigation_time_years: float,
+    n_sites: int | None = None,
+    target_poe: float | None = None,
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a log-log hazard-curve (PoE vs IML) chart from parsed OQ arrays.
+
+    ``imls_g`` is the IML ladder (PGA/SA in g, the x axis); ``mean_poe`` is the
+    mean probability-of-exceedance across PSHA sites at each IML (the y axis,
+    over the investigation time). Both come from
+    ``postprocess_openquake.parse_hazard_curve_csv`` - no LLM, no re-read.
+
+    A horizontal rule is drawn at ``target_poe`` (default 0.1) labeled
+    "10% in <inv_time>yr" - the canonical design hazard level. Returns ``None``
+    when the arrays are empty / mismatched / carry no positive points (a flat
+    all-zero curve has nothing to plot on a log axis).
+    """
+    if not imls_g or not mean_poe or len(imls_g) != len(mean_poe):
+        return None
+    rows = [
+        {"iml": float(x), "poe": float(p)}
+        for x, p in zip(imls_g, mean_poe)
+        # log scales reject <= 0; keep only the positive, plottable points.
+        if float(x) > 0.0 and float(p) > 0.0
+    ]
+    if not rows:
+        return None
+
+    poe_level = float(target_poe) if target_poe is not None else 0.1
+    inv_label = (
+        f"{int(round(investigation_time_years))}yr"
+        if investigation_time_years and investigation_time_years > 0
+        else "the investigation time"
+    )
+    pct_label = f"{poe_level * 100:g}% in {inv_label}"
+
+    line_layer = {
+        "data": {"values": rows},
+        "mark": {"type": "line", "point": True, "tooltip": True},
+        "encoding": {
+            "x": {
+                "field": "iml",
+                "type": "quantitative",
+                "scale": {"type": "log"},
+                "title": f"{imt} (g)",
+            },
+            "y": {
+                "field": "poe",
+                "type": "quantitative",
+                "scale": {"type": "log"},
+                "title": f"Mean PoE in {inv_label}",
+            },
+        },
+    }
+    rule_layer = {
+        "data": {"values": [{"poe_level": poe_level, "label": pct_label}]},
+        "mark": {"type": "rule", "strokeDash": [4, 4], "color": "#c1121f"},
+        "encoding": {"y": {"field": "poe_level", "type": "quantitative"}},
+    }
+    spec = {
+        "title": f"Seismic hazard curve - {imt}",
+        "layer": [line_layer, rule_layer],
+        "width": "container",
+    }
+    sites_txt = f" · {int(n_sites):,} sites" if n_sites else ""
+    caption = (
+        f"Mean {imt} hazard curve over {inv_label}; dashed line = {pct_label} "
+        f"design level · {len(rows)} IML points{sites_txt}"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title=f"Seismic hazard curve - {imt}",
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
+    )
+
+
+def build_uhs_chart(
+    *,
+    periods_s: list[float],
+    mean_sa_g: list[float],
+    poe: float | None = None,
+    n_sites: int | None = None,
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a uniform-hazard-spectrum (SA vs period) line chart from OQ arrays.
+
+    ``periods_s`` is the spectral-period ladder (s, x axis; 0.0 = PGA);
+    ``mean_sa_g`` is the mean spectral acceleration across sites at each period
+    (g, y axis). Both come from ``postprocess_openquake.parse_uhs_csv``. Returns
+    ``None`` when the arrays are empty / mismatched.
+    """
+    if not periods_s or not mean_sa_g or len(periods_s) != len(mean_sa_g):
+        return None
+    rows = [
+        {"period": float(t), "sa": float(s)}
+        for t, s in zip(periods_s, mean_sa_g)
+    ]
+    # Sort by period so the spectrum reads left-to-right (PGA at 0.0 first).
+    rows.sort(key=lambda r: r["period"])
+    if not rows:
+        return None
+
+    poe_txt = f" (PoE {poe:g})" if poe is not None else ""
+    spec = {
+        "title": f"Uniform hazard spectrum{poe_txt}",
+        "data": {"values": rows},
+        "mark": {"type": "line", "point": True, "tooltip": True},
+        "encoding": {
+            "x": {
+                "field": "period",
+                "type": "quantitative",
+                "title": "Spectral period (s)",
+            },
+            "y": {
+                "field": "sa",
+                "type": "quantitative",
+                "title": "Mean SA (g)",
+            },
+        },
+        "width": "container",
+    }
+    sites_txt = f" · {int(n_sites):,} sites" if n_sites else ""
+    caption = (
+        f"Uniform hazard spectrum{poe_txt}: mean spectral acceleration vs "
+        f"period · {len(rows)} periods{sites_txt}"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title="Uniform hazard spectrum",
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
+    )
+
+
+def build_budget_partition_chart(
+    *,
+    budget_partition_m3_day: dict[str, float],
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a signed inflow/outflow bar chart from a MODFLOW CBC partition.
+
+    ``budget_partition_m3_day`` maps each CBC budget term (zone/source/sink) to
+    its signed flow rate (m^3/day, MF6 sign: positive = INTO the aquifer/zone,
+    negative = OUT - an extraction WEL reads negative). This is the typed
+    ``BudgetPartitionLayerURI.budget_partition_m3_day`` dict the postprocess
+    already built (FLOW-JA-FACE is already excluded from the headline upstream).
+    Bars are colored by sign (inflow vs outflow). Returns ``None`` when the
+    partition is empty.
+    """
+    if not budget_partition_m3_day:
+        return None
+    rows: list[dict[str, Any]] = []
+    for term, value in budget_partition_m3_day.items():
+        q = float(value)
+        rows.append(
+            {
+                "term": str(term),
+                "flow_m3_day": q,
+                "direction": "inflow" if q >= 0 else "outflow",
+            }
+        )
+    if not rows:
+        return None
+    # Order largest-inflow -> largest-outflow for a readable budget.
+    rows.sort(key=lambda r: r["flow_m3_day"], reverse=True)
+
+    spec = {
+        "title": "Groundwater budget partition",
+        "data": {"values": rows},
+        "mark": {"type": "bar", "tooltip": True},
+        "encoding": {
+            "x": {
+                "field": "term",
+                "type": "nominal",
+                "title": "budget term",
+                "sort": [r["term"] for r in rows],
+            },
+            "y": {
+                "field": "flow_m3_day",
+                "type": "quantitative",
+                "title": "flow (m^3/day, + = into aquifer)",
+            },
+            "color": {
+                "field": "direction",
+                "type": "nominal",
+                "scale": {
+                    "domain": ["inflow", "outflow"],
+                    "range": ["#1d6fb8", "#c1121f"],
+                },
+                "title": "direction",
+            },
+        },
+        "width": "container",
+    }
+    total_in = sum(r["flow_m3_day"] for r in rows if r["flow_m3_day"] >= 0)
+    total_out = sum(-r["flow_m3_day"] for r in rows if r["flow_m3_day"] < 0)
+    caption = (
+        f"{len(rows)} budget terms · inflow {total_in:,.3g} m^3/day · "
+        f"outflow {total_out:,.3g} m^3/day (+ = into the aquifer)"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title="Groundwater budget partition",
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
+    )
+
+
+def build_head_decline_chart(
+    *,
+    head_decline_timeseries: list[float],
+    days_per_step: float | None = None,
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a head-decline (drawdown vs time) line chart from a MODFLOW series.
+
+    ``head_decline_timeseries`` is the per-step head decline at the well (m),
+    the typed ``DrawdownLayerURI.head_decline_timeseries`` the postprocess
+    computed. The x axis is the timestep index, or elapsed days when
+    ``days_per_step`` is supplied. Returns ``None`` when the series is absent or
+    has fewer than 2 points (a single point is not a trend line).
+    """
+    if not head_decline_timeseries or len(head_decline_timeseries) < 2:
+        return None
+    use_days = days_per_step is not None and days_per_step > 0
+    rows = [
+        {
+            "x": (float(i) * float(days_per_step)) if use_days else int(i),
+            "decline_m": float(v),
+        }
+        for i, v in enumerate(head_decline_timeseries)
+    ]
+    x_title = "elapsed days" if use_days else "timestep"
+    spec = {
+        "title": "Head decline at well over time",
+        "data": {"values": rows},
+        "mark": {"type": "line", "point": True, "tooltip": True},
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative", "title": x_title},
+            "y": {
+                "field": "decline_m",
+                "type": "quantitative",
+                "title": "head decline (m)",
+            },
+        },
+        "width": "container",
+    }
+    peak = max(float(v) for v in head_decline_timeseries)
+    caption = (
+        f"{len(rows)} steps · peak decline {peak:.3g} m at the well "
+        "(drawdown cone deepening over the transient run)"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title="Head decline at well over time",
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
     )
 
 

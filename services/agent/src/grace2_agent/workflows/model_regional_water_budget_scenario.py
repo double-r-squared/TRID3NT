@@ -44,7 +44,11 @@ from grace2_contracts.modflow_contracts import (
 )
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
-from ..pipeline_emitter import begin_substeps, current_emitter
+from ..pipeline_emitter import (
+    begin_substeps,
+    current_emitter,
+    emit_chart_payloads,
+)
 from ..tools import register_tool
 from .model_sustainable_yield_scenario import (
     _coerce_optional_latlon,
@@ -187,6 +191,18 @@ async def model_regional_water_budget_scenario(
         error_code="REGIONAL_WATER_BUDGET_RUN_FAILED",
         scenario_error=RegionalWaterBudgetScenarioError,
     )
+
+    # task-198: wire the CBC budget partition to a signed inflow/outflow bar
+    # chart. Real solver terms (BudgetPartitionLayerURI.budget_partition_m3_day,
+    # FLOW-JA-FACE already excluded upstream) - the builder emits nothing when
+    # the partition is empty (the honesty floor).
+    from ..tools.chart_tools import build_budget_partition_chart
+
+    _budget_chart = build_budget_partition_chart(
+        budget_partition_m3_day=dict(layer.budget_partition_m3_day),
+        source_layer_uri=getattr(layer, "uri", None),
+    )
+    await emit_chart_payloads(_budget_chart)
 
     derived = {
         "location_name": location_name,

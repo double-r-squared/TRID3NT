@@ -53,7 +53,12 @@ from grace2_contracts.modflow_contracts import (
 )
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
-from ..pipeline_emitter import begin_substeps, current_emitter, substep
+from ..pipeline_emitter import (
+    begin_substeps,
+    current_emitter,
+    emit_chart_payloads,
+    substep,
+)
 from ..tools import TOOL_REGISTRY, register_tool
 
 logger = logging.getLogger(
@@ -281,6 +286,11 @@ async def model_sustainable_yield_scenario(
         scenario_error=SustainableYieldScenarioError,
     )
 
+    # task-198: wire the at-well head-decline series to a value-vs-time line
+    # chart. Real parsed engine output (DrawdownLayerURI.head_decline_timeseries)
+    # - the builder returns None (emits nothing) when the series is absent.
+    await _emit_head_decline_chart(layer, sim_years=sim_years, n_periods=n_periods)
+
     derived = {
         "location_name": location_name,
         "aoi_latlon": [lat, lon],
@@ -313,6 +323,44 @@ async def model_sustainable_yield_scenario(
     return SustainableYieldResult(
         drawdown_layer=layer, derived_params=derived, summary=summary
     )
+
+
+# --------------------------------------------------------------------------- #
+# Engine-output chart (task-198): head-decline value-vs-time line
+# --------------------------------------------------------------------------- #
+
+
+async def _emit_head_decline_chart(
+    layer: DrawdownLayerURI,
+    *,
+    sim_years: float | None,
+    n_periods: int | None,
+) -> None:
+    """Side-emit the at-well head-decline line chart (best-effort, no-op safe).
+
+    Builds a value-vs-time line from the typed
+    ``DrawdownLayerURI.head_decline_timeseries`` (real solver output) and emits
+    it through the live pipeline emitter. The honesty floor holds in the
+    builder: an absent / single-point series yields no chart. The x axis is in
+    elapsed days when ``sim_years`` + ``n_periods`` give a per-step day count,
+    else the bare timestep index."""
+    from ..tools.chart_tools import build_head_decline_chart
+
+    series = getattr(layer, "head_decline_timeseries", None)
+    if not series:
+        return
+    days_per_step: float | None = None
+    if sim_years and n_periods and n_periods > 0:
+        try:
+            days_per_step = (float(sim_years) * 365.25) / float(n_periods)
+        except (TypeError, ValueError, ZeroDivisionError):
+            days_per_step = None
+    chart = build_head_decline_chart(
+        head_decline_timeseries=list(series),
+        days_per_step=days_per_step,
+        source_layer_uri=getattr(layer, "uri", None),
+    )
+    await emit_chart_payloads(chart)
 
 
 # --------------------------------------------------------------------------- #

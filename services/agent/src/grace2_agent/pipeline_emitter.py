@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import os
 import re
@@ -93,6 +94,8 @@ __all__ = [
     "current_emitter",
     "substep",
     "begin_substeps",
+    "emit_chart_payloads",
+    "ChartPersistHook",
     "bind_turn_case",
     "current_turn_case",
     "mint_dispatch_and_sim_cards",
@@ -198,6 +201,35 @@ def begin_substeps(emitter: "PipelineEmitter | None", total: int | None) -> None
     if emitter is None:
         return
     emitter.begin_substeps(total)
+
+
+async def emit_chart_payloads(payloads: Any) -> None:
+    """Side-emit one or more chart-emission payloads via the current emitter.
+
+    The single call shape a composer body uses to wire an engine quantity to a
+    chart (task-198):
+
+        from grace2_agent.pipeline_emitter import emit_chart_payloads
+        from grace2_agent.tools.chart_tools import build_budget_partition_chart
+        chart = build_budget_partition_chart(budget_partition_m3_day=part)
+        await emit_chart_payloads(chart)
+
+    Resolves ``current_emitter()`` and forwards each non-None payload to
+    ``PipelineEmitter.emit_chart`` (send + persist). ``payloads`` may be a
+    single payload dict, a list/tuple (None entries skipped - a builder returns
+    None when the series is absent, the honesty floor), or None. No-op when no
+    emitter is bound (direct/verify/CI path), so the composer body is identical
+    whether or not the timeline is being surfaced."""
+    emitter = current_emitter()
+    if emitter is None:
+        return
+    if isinstance(payloads, (list, tuple)):
+        items = list(payloads)
+    else:
+        items = [payloads]
+    for payload in items:
+        if isinstance(payload, dict) and payload:
+            await emitter.emit_chart(payload)
 
 
 logger = logging.getLogger("grace2_agent.pipeline_emitter")
@@ -499,6 +531,12 @@ class StepNotFoundError(EmitterError):
 #: ``async`` so the emitter can await ``websocket.send``; tests pass a sync
 #: capture closure wrapped in an async lambda.
 EmissionSink = Callable[[str], Awaitable[None]]
+
+#: task-198: type of the optional chart-persistence hook ``server`` wires into
+#: the emitter so a composer-side ``emit_chart`` persists a SessionChartRecord
+#: through the SAME ``server._persist_chart_record(state, payload)`` the tool
+#: path uses (the hook closes over ``state``; the emitter does not hold it).
+ChartPersistHook = Callable[[dict], Awaitable[None]]
 
 
 # --------------------------------------------------------------------------- #
@@ -836,9 +874,17 @@ class PipelineEmitter:
         chat_history: list[dict] | None = None,
         pipeline_history: list[dict] | None = None,
         map_view: dict | None = None,
+        chart_persist: "ChartPersistHook | None" = None,
     ) -> None:
         self.session_id = session_id
         self._sink = sink
+
+        #: task-198: optional async hook ``server`` wires at construction so a
+        #: composer-side ``emit_chart`` persists a ``SessionChartRecord`` exactly
+        #: like the tool-result chart path (``_maybe_emit_chart`` ->
+        #: ``_persist_chart_record``), keeping the persist logic in ONE place.
+        #: ``None`` on the verify/CI/direct-call paths (send-only, no persist).
+        self._chart_persist: "ChartPersistHook | None" = chart_persist
 
         #: Current pipeline id; ``None`` when no pipeline is running.
         self._pipeline_id: str | None = None
@@ -1708,6 +1754,66 @@ class PipelineEmitter:
             logger.warning("emit_solve_progress: bad payload dropped: %s", exc)
             return
         await self._send("solve-progress", payload)
+
+    async def emit_chart(self, chart_payload: dict) -> None:
+        """Emit a ``chart-emission`` envelope from a workflow body (task-198).
+
+        The composer-side complement of the tool-result chart path
+        (``server._maybe_emit_chart``): a composer that built a chart-emission
+        payload (via ``chart_tools.build_*_chart`` -> ``build_chart_payload``)
+        calls this to (1) send the FULL Vega-Lite spec to the web client and
+        (2) persist a ``SessionChartRecord`` so the chart replays on Case
+        rehydration - byte-identical wire + persistence to the tool path.
+
+        The ``created_turn_id`` is stamped here from the per-turn pipeline id
+        when the caller left it unset, so charts emitted in one turn group into
+        a single client stack (mirrors ``_maybe_emit_chart``).
+
+        Best-effort: a serialization / wire / persistence failure is logged and
+        dropped - a side-channel chart must never break the composer's control
+        flow (mirrors ``emit_solve_progress`` / ``_maybe_emit_chart``)."""
+        if not isinstance(chart_payload, dict) or not chart_payload:
+            return
+        payload = dict(chart_payload)
+        if not payload.get("created_turn_id"):
+            payload["created_turn_id"] = self._pipeline_id or self.session_id
+        # The chart wire frame is a hand-built dict (NOT the typed ``Envelope`` -
+        # ``Envelope.payload`` is a pydantic model with extra="forbid", so a raw
+        # ChartEmissionPayload dict would be rejected). This is byte-identical to
+        # ``server._maybe_emit_chart``'s send, plus the owning-Case tag.
+        frame = {
+            "type": "chart-emission",
+            "session_id": self.session_id,
+            "case_id": current_turn_case(),
+            "payload": payload,
+        }
+        try:
+            await self._sink(json.dumps(frame))
+            logger.info(
+                "chart-emission emitted (composer) session=%s chart_id=%s title=%r",
+                self.session_id,
+                payload.get("chart_id"),
+                payload.get("title"),
+            )
+        except Exception:  # noqa: BLE001 - side effect, never bubble up
+            logger.warning(
+                "composer chart-emission send failed session=%s chart_id=%s",
+                self.session_id,
+                payload.get("chart_id"),
+                exc_info=True,
+            )
+        # Persist (best-effort) via the server-wired hook so the chart replays
+        # on Case rehydration - the SAME _persist_chart_record the tool path uses.
+        if self._chart_persist is not None:
+            try:
+                await self._chart_persist(payload)
+            except Exception:  # noqa: BLE001 - persistence must not break the loop
+                logger.warning(
+                    "composer chart persistence failed session=%s chart_id=%s",
+                    self.session_id,
+                    payload.get("chart_id"),
+                    exc_info=True,
+                )
 
     async def emit_tool_io(
         self,

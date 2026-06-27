@@ -44,9 +44,16 @@ from grace2_contracts.openquake_contracts import (
     SeismicHazardLayerURI,
 )
 
-from ..pipeline_emitter import begin_substeps, current_emitter, substep
+from ..pipeline_emitter import (
+    begin_substeps,
+    current_emitter,
+    emit_chart_payloads,
+    substep,
+)
 from .postprocess_openquake import (
     PostprocessOpenQuakeError,
+    parse_hazard_curve_csv,
+    parse_uhs_csv,
     postprocess_openquake,
 )
 
@@ -280,6 +287,119 @@ def _download_batch_hazard_csv(run_result: Any, run_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# task-198: download the NON-RASTER curve products (hazard CURVE + UHS) for the
+# chart producers. Best-effort: these are charts, not the headline layer - a
+# missing/unreadable curve CSV yields no chart (NOT a workflow failure).
+# --------------------------------------------------------------------------- #
+def _pick_csv_by_token(output_uris: list[str], *tokens: str) -> str | None:
+    """Pick the first CSV whose basename contains ANY of ``tokens`` (lowercased).
+
+    OpenQuake exports ``hazard_curve-mean-<IMT>_*.csv`` and (when UHS is on)
+    ``hazard_uhs-mean_*.csv`` alongside the map CSV; we select by filename token.
+    """
+    for u in output_uris:
+        base = u.rsplit("/", 1)[-1].lower()
+        if base.endswith(".csv") and any(t in base for t in tokens):
+            return u
+    return None
+
+
+def _download_batch_curve_csvs(
+    run_id: str,
+) -> tuple[str | None, str | None]:
+    """Download the hazard-CURVE + UHS CSV TEXT from the Batch run (best-effort).
+
+    Re-reads completion.json's ``output_uris`` (the same manifest
+    ``_download_batch_hazard_csv`` reads), selects the curve / UHS CSVs by
+    filename token, and downloads them via the SAME boto3 client. Returns
+    ``(hazard_curve_text|None, uhs_text|None)`` - a None entry means the product
+    was not exported / not readable (no chart for it). NEVER raises: a curve
+    download wobble must not fail the hazard run (the map layer already landed)."""
+    try:
+        from ..tools.solver import (
+            _get_runs_bucket,
+            _get_s3_client,
+            _split_object_uri,
+            _try_get_completion_s3,
+        )
+
+        runs_bucket = _get_runs_bucket()
+        s3 = _get_s3_client()
+        manifest = _try_get_completion_s3(runs_bucket, run_id)
+        if not isinstance(manifest, dict):
+            return None, None
+        output_uris = [str(u) for u in (manifest.get("output_uris") or [])]
+        curve_uri = _pick_csv_by_token(output_uris, "hazard_curve", "hazard-curve")
+        uhs_uri = _pick_csv_by_token(output_uris, "hazard_uhs", "hazard-uhs", "_uhs")
+
+        def _get_text(uri: str | None) -> str | None:
+            if not uri:
+                return None
+            try:
+                _scheme, _bucket, key = _split_object_uri(uri)
+                resp = s3.get_object(Bucket=runs_bucket, Key=key)
+                return resp["Body"].read().decode("utf-8")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("curve CSV download failed %s: %s", uri, exc)
+                return None
+
+        return _get_text(curve_uri), _get_text(uhs_uri)
+    except Exception as exc:  # noqa: BLE001 - charts are non-fatal
+        logger.warning("curve/UHS CSV resolution failed run_id=%s: %s", run_id, exc)
+        return None, None
+
+
+async def _emit_oq_curve_charts(
+    run_id: str,
+    *,
+    imt: str,
+    poe: float,
+    investigation_time_years: float,
+    source_layer_uri: str | None,
+) -> None:
+    """Build + side-emit the hazard-curve (and UHS) charts (best-effort, no-op safe).
+
+    Downloads the curve / UHS CSVs off the loop, parses them with the EXISTING
+    ``parse_hazard_curve_csv`` / ``parse_uhs_csv`` (real engine output, no LLM),
+    builds Vega-Lite line charts via ``chart_tools``, and emits them through the
+    live pipeline emitter. Each builder returns None (emits nothing) when its
+    series is absent - so a classical-only run (no UHS) emits only the curve."""
+    from ..tools.chart_tools import build_hazard_curve_chart, build_uhs_chart
+
+    curve_text, uhs_text = await asyncio.to_thread(
+        _download_batch_curve_csvs, run_id
+    )
+
+    charts: list[dict[str, Any]] = []
+    if curve_text:
+        curve = parse_hazard_curve_csv(curve_text)
+        chart = build_hazard_curve_chart(
+            imls_g=curve.get("hazard_curve_imls_g") or [],
+            mean_poe=curve.get("hazard_curve_mean_poe") or [],
+            imt=imt,
+            investigation_time_years=investigation_time_years,
+            n_sites=curve.get("hazard_curve_n_sites"),
+            source_layer_uri=source_layer_uri,
+        )
+        if chart is not None:
+            charts.append(chart)
+    if uhs_text:
+        uhs = parse_uhs_csv(uhs_text)
+        chart = build_uhs_chart(
+            periods_s=uhs.get("uhs_periods_s") or [],
+            mean_sa_g=uhs.get("uhs_mean_sa_g") or [],
+            poe=poe,
+            n_sites=uhs.get("uhs_n_sites"),
+            source_layer_uri=source_layer_uri,
+        )
+        if chart is not None:
+            charts.append(chart)
+
+    if charts:
+        await emit_chart_payloads(charts)
+
+
+# --------------------------------------------------------------------------- #
 # Composer.
 # --------------------------------------------------------------------------- #
 async def model_seismic_hazard_scenario(
@@ -388,6 +508,18 @@ async def model_seismic_hazard_scenario(
             message=str(exc),
             details={"run_id": batch_run_id, **getattr(exc, "details", {})},
         ) from exc
+
+    # task-198: wire the NON-RASTER PSHA products (hazard CURVE + UHS) to charts.
+    # The documented FOLLOW-UP (postprocess_openquake.py:524-531): the chart
+    # producers consume the parsed curve arrays, not a layer URI. Best-effort -
+    # a missing curve emits no chart (the honesty floor); never fails the run.
+    await _emit_oq_curve_charts(
+        batch_run_id,
+        imt=run_args.imt,
+        poe=float(run_args.poe),
+        investigation_time_years=float(run_args.investigation_time_years),
+        source_layer_uri=layer.uri,
+    )
 
     logger.info(
         "model_seismic_hazard_scenario complete run_id=%s layer_id=%s "
