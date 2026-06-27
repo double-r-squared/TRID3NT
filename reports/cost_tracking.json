@@ -2797,5 +2797,26 @@
     "model": "opus-4.8",
     "subagent_tokens": 0,
     "description": "Deploy Waves 2-5 (agent-side) to the box via grace2-runshell SSM. Found + fixed a deploy-mechanism gap: the bundle did not ship services/workers/modflow/gwt_adapter.py (the agent imports it for local mf6 runs), so the box ran a stale gwt_adapter -> archetypes raised unknown-archetype. Extended deploy_agent_{bundle,onbox}.sh to ship/swap it (commit 5a7c957). Verified all 11 archetypes + flopy 3.10 resolve on box; mf6 6.5.0. No subagents (dev-plane bash). NATE prod-tests via Haiku."
+  },
+  {
+    "job_id": "fetcher-identifier-resolution-audit",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 1338899,
+    "description": "Workflow wf_2bd05f59 (10 agents): audit ALL agent fetchers for identifier-format hazards (goes18 vs goes-18 class) + map-fetch resolution handling, then fix. Found 10 hazards; fixed 5 fetchers (GOES satellite normalize + stale goes-16->goes-19 default, WorldPop vintage range, WDPA designation, GBIF EXACT-match, AK antimeridian) with normalize-then-fail-loud + tests. Resolution: dem/topobathy have the #154/#189 clamp+gate. Commit d45d841."
+  },
+  {
+    "job_id": "goes-sibling-normalizer-migration",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 590688,
+    "description": "Workflow wf_5537e31a (6 agents): migrate the 4 GOES sibling fetchers (GLM/animation/archive-animation/active-fire) onto the shared _normalize_satellite seam so every GOES tool accepts GOES-18/goes18/GOES West. 455 fetcher tests green; acyclic import. Commit d45d841."
+  },
+  {
+    "job_id": "web-scrubber-legend-overlap",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 193351,
+    "description": "Workflow wf_518c6875 (3 agents): desktop-only fix lifting the legend docked strip above the active scrubber footprint (76px). Mobile byte-for-byte unchanged. Commit 94c449e, Vercel auto-deploy."
   }
 ]
