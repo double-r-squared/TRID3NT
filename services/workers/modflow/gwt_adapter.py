@@ -698,7 +698,12 @@ def _build_gwf_only_archetype_deck(
             cell = (row, col)
         well_row, well_col = cell
         well_lat, well_lon = wlat, wlon
-        pump_rate = float(pumping_rate_m3_day)
+        # The contract carries pumping_rate_m3_day as a POSITIVE extraction
+        # magnitude (sustainable_yield is always an extraction question); apply the
+        # MF6 sign internally (negative WEL q = discharge/extraction). Without the
+        # -abs the well injected and drawdown read as zero (caught by the real-mf6
+        # proof gate).
+        pump_rate = -abs(float(pumping_rate_m3_day))
         # WEL is active in EVERY transient period (sustained pumping). The
         # steady-state spin-up (period 0) runs WITHOUT the well so the drawdown
         # is measured against the undisturbed regional head.
@@ -775,7 +780,8 @@ def _build_gwf_only_archetype_deck(
             crow = sum(r for (r, _c) in pit_cells) // len(pit_cells)
             ccol = sum(c for (_r, c) in pit_cells) // len(pit_cells)
             ccol = max(1, min(ncol - 2, ccol))  # keep off the CHD columns
-            pump_rate = float(well_pumping_rate_m3_day)
+            # positive magnitude -> negative MF6 discharge (sump always extracts).
+            pump_rate = -abs(float(well_pumping_rate_m3_day))
             flopy.mf6.ModflowGwfwel(
                 gwf,
                 stress_period_data={i: [[(0, crow, ccol), pump_rate]] for i in range(n_stress_periods)},

@@ -160,9 +160,10 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
         --- sustainable_yield (pumping-well drawdown) ---
         well_location_latlon: pumping-well point as ``(lat, lon)`` EPSG:4326
             (lat-first, same convention as ``spill_location_latlon``).
-        pumping_rate_m3_day: well discharge, m^3/day. NEGATIVE = extraction
-            (MF6 WEL sign convention: q < 0 removes water from the cell); a
-            positive value is injection.
+        pumping_rate_m3_day: sustained extraction rate as a POSITIVE magnitude,
+            m^3/day (sustainable_yield is always an extraction question). The
+            adapter applies the MF6 WEL sign internally (a negative discharge
+            removes water from the cell), so the user passes a positive number.
         aquifer_sy: specific yield (drainable porosity) for the GwfSto transient
             storage term, dimensionless. Demo default ``DEFAULT_AQUIFER_SY`` (0.2).
         aquifer_ss: specific storage (1/m) for the GwfSto transient term. Demo
@@ -181,16 +182,18 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             datum) applied to every pit cell. Water above this elevation drains out.
         drain_conductance_m2_day: per-cell DRN conductance (m^2/day) controlling the
             head-dependent drain flux Q = C*(h - drain_elev) for h > drain_elev.
-        well_pumping_rate_m3_day: OPTIONAL supplemental WEL extraction (m^3/day,
-            negative = extraction) combined with the drains (a pit can be dewatered
-            by drains plus pumping wells). None = drains only.
+        well_pumping_rate_m3_day: OPTIONAL supplemental sump-WEL extraction as a
+            POSITIVE magnitude (m^3/day; the adapter applies the negative MF6 sign)
+            combined with the drains (a pit can be dewatered by drains plus pumping
+            wells). None = drains only.
 
-        --- regional_water_budget (zonal flow-budget partition) ---
-        zone_partition: how to split the domain for the cell-budget zonal
-            accounting, e.g. ``"upgradient_downgradient"`` (a simple two-zone split
-            across the regional CHD gradient). None = no partition (whole-domain
-            budget only); a free string lets the adapter map a named partition
-            scheme.
+        --- regional_water_budget (flow-budget partition) ---
+        zone_partition: RESERVED (Wave-2). regional_water_budget currently returns
+            the WHOLE-DOMAIN volumetric budget partition (per-term IN/OUT from the
+            real CBC: WEL/RCH/RCHA/CHD/STO/DRN, FLOW-JA-FACE excluded from the
+            headline). Per-zone (e.g. upgradient/downgradient) partitioning is not
+            yet wired agent-side; this field is accepted but does not change the
+            output until then. Leave None.
     """
 
     schema_version: Literal["v1", "v2"] = "v2"
