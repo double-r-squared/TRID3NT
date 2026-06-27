@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from grace2_contracts import (
     ASRLayerURI,
     BudgetPartitionLayerURI,
+    CaptureZoneLayerURI,
     DewaterLayerURI,
     DrawdownLayerURI,
     HydroperiodLayerURI,
@@ -1164,3 +1165,235 @@ def test_unknown_archetype_still_rejected_with_multi_species_added() -> None:
     """Adding multi_species does not open the literal to arbitrary values."""
     with pytest.raises(ValidationError):
         _spill_args(archetype="not_an_archetype")
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-4: capture_zone + wellhead_protection via MF6 PRT backward
+# particle tracking (ADDITIVE / DEFAULTED - all prior paths byte-identical)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("archetype", ["capture_zone", "wellhead_protection"])
+def test_wave4_archetypes_accepted_by_literal(archetype: str) -> None:
+    """The two Wave-4 PRT archetype literals validate (additive on Wave-1/2/3)."""
+    args = _spill_args(archetype=archetype)
+    assert args.archetype == archetype
+
+
+def test_prt_fields_default_off_on_spill_path() -> None:
+    """All Wave-4 PRT fields default off; the existing spill/seepage path is
+    byte-identical when none of them are set (additive growth guarantee)."""
+    args = _spill_args()
+    assert args.capture_zone_travel_time_years is None
+    assert args.n_particles == 16
+    assert args.prt_max_tracking_years is None
+
+
+def test_capture_zone_archetype_roundtrip() -> None:
+    """capture_zone with explicit PRT fields round-trips through JSON."""
+    args = _spill_args(
+        archetype="capture_zone",
+        well_location_latlon=(40.0, -100.0),
+        capture_zone_travel_time_years=[1.0, 5.0, 10.0],
+        n_particles=32,
+        prt_max_tracking_years=15.0,
+    )
+    assert args.archetype == "capture_zone"
+    assert args.well_location_latlon == (40.0, -100.0)
+    assert args.capture_zone_travel_time_years == [1.0, 5.0, 10.0]
+    assert args.n_particles == 32
+    assert args.prt_max_tracking_years == 15.0
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert a["capture_zone_travel_time_years"] == [1.0, 5.0, 10.0]
+
+
+def test_wellhead_protection_archetype_roundtrip() -> None:
+    """wellhead_protection with EPA-style tiers round-trips through JSON."""
+    args = _spill_args(
+        archetype="wellhead_protection",
+        well_location_latlon=(26.5, -81.7),
+        capture_zone_travel_time_years=[2.0, 5.0, 10.0],
+        n_particles=16,
+    )
+    assert args.archetype == "wellhead_protection"
+    assert args.capture_zone_travel_time_years == [2.0, 5.0, 10.0]
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+
+
+@pytest.mark.parametrize("n", [3, 0, -1])
+def test_n_particles_below_minimum_rejected(n: int) -> None:
+    """n_particles must be >= 4; values below the bound are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="capture_zone", n_particles=n)
+
+
+def test_n_particles_above_maximum_rejected() -> None:
+    """n_particles must be <= 256; values above the bound are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="capture_zone", n_particles=257)
+
+
+def test_n_particles_boundary_values_allowed() -> None:
+    """n_particles boundary values 4 and 256 are valid."""
+    assert _spill_args(archetype="capture_zone", n_particles=4).n_particles == 4
+    assert _spill_args(archetype="capture_zone", n_particles=256).n_particles == 256
+
+
+def test_prt_max_tracking_years_must_be_positive() -> None:
+    """prt_max_tracking_years must be > 0 when supplied."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="capture_zone", prt_max_tracking_years=0.0)
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="capture_zone", prt_max_tracking_years=-1.0)
+
+
+def test_wave4_unknown_archetype_still_rejected() -> None:
+    """Adding capture_zone/wellhead_protection does not open the literal."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="zone_of_contribution")
+
+
+# --------------------------------------------------------------------------- #
+# CaptureZoneLayerURI - the first vector MODFLOW LayerURI (Wave-4)
+# --------------------------------------------------------------------------- #
+
+
+def _capture_zone(**overrides: object) -> CaptureZoneLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-capture-zone",
+        name="Capture zone - 1/5/10-year isochrones",
+        layer_type="vector",
+        uri="s3://grace-2/runs/01HX/capture_zone.fgb",
+        style_preset="capture_zone",
+        capture_zone_area_km2=1.4,
+        travel_time_years=[1.0, 5.0, 10.0],
+        isochrone_areas_km2={"1": 0.05, "5": 0.35, "10": 1.4},
+        particle_count=16,
+    )
+    base.update(overrides)
+    return CaptureZoneLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_capture_zone_layer_uri_is_a_layer_uri() -> None:
+    """CaptureZoneLayerURI extends LayerURI - substitutable as a LayerURI."""
+    layer = _capture_zone()
+    assert isinstance(layer, LayerURI)
+    assert layer.layer_id == "run-01HX-capture-zone"
+    assert layer.layer_type == "vector"
+    assert layer.role == "primary"  # inherited default
+    assert layer.temporal is None  # inherited default
+
+
+def test_capture_zone_layer_type_defaults_to_vector() -> None:
+    """layer_type defaults to 'vector' (NOT raster - the first vector MODFLOW layer)."""
+    # Explicitly set to vector (consistent with default).
+    layer = _capture_zone()
+    assert layer.layer_type == "vector"
+    # Also verify the class-level default field is 'vector'.
+    assert CaptureZoneLayerURI.model_fields["layer_type"].default == "vector"
+
+
+def test_capture_zone_layer_uri_roundtrips() -> None:
+    """CaptureZoneLayerURI round-trips through JSON serialization."""
+    layer = _capture_zone(
+        bbox=(-100.2, 39.8, -99.7, 40.3),
+        units="km^2",
+    )
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = CaptureZoneLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # The isochrone dict survives the round-trip.
+    assert a["isochrone_areas_km2"] == {"1": 0.05, "5": 0.35, "10": 1.4}
+    assert a["travel_time_years"] == [1.0, 5.0, 10.0]
+    assert a["particle_count"] == 16
+
+
+def test_capture_zone_added_fields_not_on_base_layer_uri() -> None:
+    """The four added scalars are on CaptureZoneLayerURI, not on the base LayerURI."""
+    for field in (
+        "capture_zone_area_km2",
+        "travel_time_years",
+        "isochrone_areas_km2",
+        "particle_count",
+    ):
+        assert field not in LayerURI.model_fields, f"{field!r} should not be on LayerURI"
+        assert field in CaptureZoneLayerURI.model_fields, f"{field!r} missing from CaptureZoneLayerURI"
+
+
+def test_capture_zone_area_must_be_non_negative() -> None:
+    """capture_zone_area_km2 is >= 0; negative values are rejected."""
+    with pytest.raises(ValidationError):
+        _capture_zone(capture_zone_area_km2=-0.1)
+
+
+def test_capture_zone_particle_count_must_be_non_negative() -> None:
+    """particle_count is >= 0; a negative count is rejected."""
+    with pytest.raises(ValidationError):
+        _capture_zone(particle_count=-1)
+
+
+def test_capture_zone_travel_time_years_requires_at_least_one_tier() -> None:
+    """travel_time_years must have at least one tier (min_length=1)."""
+    with pytest.raises(ValidationError):
+        _capture_zone(travel_time_years=[])
+
+
+def test_capture_zone_isochrone_areas_km2_dict_structure() -> None:
+    """isochrone_areas_km2 accepts an arbitrary string-keyed float dict."""
+    layer = _capture_zone(
+        isochrone_areas_km2={"2": 0.12, "5": 0.44, "10": 1.8},
+        travel_time_years=[2.0, 5.0, 10.0],
+    )
+    assert layer.isochrone_areas_km2["5"] == 0.44
+    a = layer.model_dump(mode="json")
+    assert a["isochrone_areas_km2"] == {"2": 0.12, "5": 0.44, "10": 1.8}
+
+
+def test_capture_zone_requires_all_added_scalars() -> None:
+    """All four added scalars are required (no defaults for the key ones)."""
+    # Missing capture_zone_area_km2.
+    with pytest.raises(ValidationError):
+        CaptureZoneLayerURI(
+            layer_id="run-01HX-capture-zone",
+            name="Capture zone",
+            layer_type="vector",
+            uri="s3://grace-2/runs/01HX/capture_zone.fgb",
+            style_preset="capture_zone",
+            travel_time_years=[1.0, 5.0],
+            isochrone_areas_km2={"1": 0.05, "5": 0.35},
+            particle_count=16,
+            # missing capture_zone_area_km2
+        )
+    # Missing travel_time_years.
+    with pytest.raises(ValidationError):
+        CaptureZoneLayerURI(
+            layer_id="run-01HX-capture-zone",
+            name="Capture zone",
+            layer_type="vector",
+            uri="s3://grace-2/runs/01HX/capture_zone.fgb",
+            style_preset="capture_zone",
+            capture_zone_area_km2=1.4,
+            isochrone_areas_km2={"1": 0.05, "5": 0.35},
+            particle_count=16,
+            # missing travel_time_years
+        )
+
+
+def test_capture_zone_forbids_extra_fields() -> None:
+    """Inherited GraceModel extra='forbid' still applies on CaptureZoneLayerURI."""
+    with pytest.raises(ValidationError):
+        _capture_zone(some_unknown_field=1.0)
+
+
+def test_capture_zone_exported_from_package_top_level() -> None:
+    """CaptureZoneLayerURI is importable from the grace2_contracts top level."""
+    from grace2_contracts import CaptureZoneLayerURI as CZL  # noqa: F401
+
+    assert CZL is CaptureZoneLayerURI

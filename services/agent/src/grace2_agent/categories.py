@@ -288,6 +288,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_mar_scenario": "hazard_modeling",
     "run_model_asr_scenario": "hazard_modeling",
     "run_model_wetland_hydroperiod_scenario": "hazard_modeling",
+    "run_model_multi_species_scenario": "hazard_modeling",
     # SWAN Phase 1: standalone spectral nearshore wave-field engine (the additive
     # comparison engine vs SFINCS+SnapWave). Filed as a hazard engine; also
     # cross-listed under coastal (SECONDARY_CATEGORIES) since it is a coastal/wave

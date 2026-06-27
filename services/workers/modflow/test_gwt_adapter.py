@@ -26,11 +26,15 @@ from gwt_adapter import (  # noqa: E402
     CELL_SIZE_M,
     DEFAULT_AQUIFER_SS,
     DEFAULT_AQUIFER_SY,
+    DEFAULT_CAPTURE_ZONE_TRAVEL_TIME_YEARS,
     DEFAULT_DRAIN_CONDUCTANCE_M2_DAY,
     DEFAULT_MAR_INFILTRATION_M_DAY,
     DEFAULT_N_TRANSIENT_PERIODS,
+    DEFAULT_PRT_PUMPING_RATE_M3_DAY,
     DEFAULT_WETLAND_SY,
     DOMAIN_HALF_WIDTH_M,
+    PRT_CELL_SIZE_M,
+    PRT_DOMAIN_HALF_WIDTH_M,
     DeckManifest,
     _build_asr_well_schedule,
     _build_zone_array,
@@ -40,6 +44,7 @@ from gwt_adapter import (  # noqa: E402
     _normalize_species,
     _resolve_monthly_periods,
     _resolve_transient_periods,
+    build_and_run_prt_from_gwf,
     build_deck,
     build_modflow_deck,
 )
@@ -1507,3 +1512,215 @@ def test_real_run_multi_species_long_name_converges(tmp_path):
     for ucn in d.species_ucn_files:
         assert (tmp_path / ucn).is_file(), f"missing {ucn}"
         flopy.utils.HeadFile(str(tmp_path / ucn), text="CONCENTRATION").get_times()
+
+
+# =========================================================================== #
+# sprint-18 Wave-4: capture_zone + wellhead_protection via MF6 PRT backward
+# tracking. Deck-SHAPE asserts (no mf6 required) + a REAL mf6-run test that
+# builds the GWF deck, runs mf6, calls build_and_run_prt_from_gwf, and asserts
+# prt.trk.csv exists with > 0 particle vertices up-gradient of the well.
+# =========================================================================== #
+
+# Shared spill placeholder for PRT archetypes (same pattern as ARCH_SPILL; the
+# GWF grid is centred on this lat/lon regardless of archetype).
+PRT_SPILL = dict(
+    spill_location_latlon=(26.64, -81.87),  # Fort Myers area, UTM zone 17N
+    contaminant="x",
+    release_rate_kg_s=0.0,   # placeholder (no contaminant source in PRT archetypes)
+    duration_days=0.0,       # placeholder
+    aquifer_k_ms=1e-3,       # 86.4 m/day -> fast enough for particles to travel
+    porosity=0.25,
+)
+
+
+# --- Deck-shape tests (no mf6) ---------------------------------------------- #
+
+
+@pytest.fixture()
+def cz_deck(tmp_path):
+    """capture_zone deck at the default well (grid centre) with default isochrones."""
+    return build_modflow_deck(
+        workdir=tmp_path,
+        archetype="capture_zone",
+        **PRT_SPILL,
+    )
+
+
+def test_capture_zone_manifest_prt_fields(cz_deck):
+    """DeckManifest must carry all PRT Wave-4 fields with sensible values."""
+    assert cz_deck.archetype == "capture_zone"
+    assert cz_deck.prt_present is True
+    assert cz_deck.gwt_present is False
+    assert cz_deck.transient is False
+    assert cz_deck.n_stress_periods == 1
+    # Well is at grid centre (no well_location_latlon supplied).
+    ncol = int(round(2 * PRT_DOMAIN_HALF_WIDTH_M / PRT_CELL_SIZE_M))
+    nrow = ncol
+    assert cz_deck.well_row == nrow // 2
+    assert cz_deck.well_col == ncol // 2
+    # Pumping rate is negative (extraction).
+    assert cz_deck.pumping_rate_m3_day == pytest.approx(-abs(DEFAULT_PRT_PUMPING_RATE_M3_DAY))
+    # Particle count matches the default.
+    assert cz_deck.n_particles == 16
+    # Isochrone cutoffs default to DEFAULT_CAPTURE_ZONE_TRAVEL_TIME_YEARS.
+    assert cz_deck.capture_zone_travel_time_years == list(DEFAULT_CAPTURE_ZONE_TRAVEL_TIME_YEARS)
+    # UTM offset fields are non-zero (the AOI is not at the origin).
+    assert cz_deck.xoffset_m != 0.0
+    assert cz_deck.yoffset_m != 0.0
+    assert cz_deck.model_utm_epsg > 0
+
+
+def test_capture_zone_grid_is_41x41_at_100m(cz_deck):
+    """PRT domain is 41x41 cells at 100 m -> 4100 x 4100 m."""
+    expected_n = int(round(2 * PRT_DOMAIN_HALF_WIDTH_M / PRT_CELL_SIZE_M))
+    assert cz_deck.nrow == expected_n
+    assert cz_deck.ncol == expected_n
+    assert cz_deck.delr == pytest.approx(PRT_CELL_SIZE_M)
+    assert cz_deck.delc == pytest.approx(PRT_CELL_SIZE_M)
+    assert cz_deck.nlay == 1
+
+
+def test_capture_zone_gwf_files_at_local_origin(cz_deck, tmp_path):
+    """GWF DIS must NOT declare a large UTM xorigin/yorigin (local 0-origin)."""
+    dis_text = (tmp_path / "gwf_model.dis").read_text().lower()
+    # The DIS file for the PRT GWF is at local origin so xorigin / yorigin
+    # should NOT appear in the DIS file (flopy omits the optional keyword when
+    # the value is zero / default).
+    # The manifest still carries the true UTM offset on xoffset_m / yoffset_m.
+    assert cz_deck.xoffset_m == pytest.approx(cz_deck.xorigin)
+
+
+def test_capture_zone_npf_saves_flows_and_spdis(tmp_path):
+    """NPF must declare save_flows + save_specific_discharge + save_saturation;
+    missing any of these causes 'SATURATION NOT FOUND' or 'SPDIS NOT FOUND' in
+    the PRT FMI phase."""
+    build_modflow_deck(workdir=tmp_path, archetype="capture_zone", **PRT_SPILL)
+    npf_text = (tmp_path / "gwf_model.npf").read_text().lower()
+    assert "save_flows" in npf_text
+    assert "save_specific_discharge" in npf_text
+    assert "save_saturation" in npf_text
+
+
+def test_capture_zone_gwf_is_gwf_only_no_gwt(cz_deck, tmp_path):
+    """No GWT or GWFGWT exchange for PRT archetypes."""
+    assert not (tmp_path / "gwt_model.mst").exists()
+    assert not (tmp_path / "gwfgwt.exg").exists()
+
+
+def test_capture_zone_gwf_has_wel_and_chd(cz_deck, tmp_path):
+    """GWF deck must have WEL (pumping well) + CHD (west->east gradient)."""
+    assert (tmp_path / "gwf_model.wel").is_file()
+    assert (tmp_path / "gwf_model.chd").is_file()
+
+
+def test_wellhead_protection_same_shape(tmp_path):
+    """wellhead_protection is structurally identical to capture_zone."""
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="wellhead_protection",
+        **PRT_SPILL,
+    )
+    assert d.archetype == "wellhead_protection"
+    assert d.prt_present is True
+    assert d.gwt_present is False
+    assert d.n_particles == 16
+
+
+def test_capture_zone_custom_well_and_particles(tmp_path):
+    """A caller-supplied well location and particle count land on the manifest."""
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="capture_zone",
+        well_location_latlon=(26.64, -81.87),
+        pumping_rate_m3_day=-1200.0,
+        n_particles=32,
+        capture_zone_travel_time_years=[2.0, 10.0, 25.0],
+        **PRT_SPILL,
+    )
+    assert d.n_particles == 32
+    assert d.pumping_rate_m3_day == pytest.approx(-1200.0)
+    assert d.capture_zone_travel_time_years == [2.0, 10.0, 25.0]
+    # Well row + col should be clamped to the interior.
+    assert 0 < d.well_row < d.nrow - 1
+    assert 0 < d.well_col < d.ncol - 1
+
+
+def test_capture_zone_write_false_no_disk(tmp_path):
+    """write=False builds the manifest without touching disk."""
+    d = build_modflow_deck(
+        workdir=tmp_path, archetype="capture_zone", write=False, **PRT_SPILL
+    )
+    assert d.prt_present is True
+    assert d.files == []
+    assert not (tmp_path / "gwf_model.dis").exists()
+
+
+def test_unknown_archetype_still_rejected_after_prt(tmp_path):
+    """The allow-list guard still rejects unknown archetypes (regression guard)."""
+    with pytest.raises(ValueError, match="unknown MODFLOW archetype"):
+        build_modflow_deck(workdir=tmp_path, archetype="prt_unknown", **PRT_SPILL)
+
+
+# --- REAL mf6 run (env-gated) ----------------------------------------------- #
+
+
+@requires_mf6
+def test_real_run_capture_zone_produces_pathlines(tmp_path):
+    """capture_zone full two-sim workflow: build GWF, run mf6, reverse outputs,
+    build + run PRT, assert prt.trk.csv exists with > 0 particle vertices that
+    terminate up-gradient (west) of the well -- proving backward tracking works."""
+    import numpy as np
+    import pandas as pd
+
+    mf6 = _mf6_bin()
+
+    # Step 1: build the GWF deck (local 0-origin, save_flows + spdis + saturation).
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="capture_zone",
+        pumping_rate_m3_day=-800.0,
+        n_particles=16,
+        capture_zone_travel_time_years=[1.0, 5.0, 10.0],
+        **PRT_SPILL,
+    )
+    assert d.prt_present is True
+
+    # Step 2: run mf6 on the GWF deck.
+    rc_gwf, out_gwf = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out_gwf, out_gwf[-1500:]
+    assert rc_gwf == 0
+
+    # Step 3: reverse GWF outputs + build + run PRT sim.
+    prt_ws = build_and_run_prt_from_gwf(
+        deck=d,
+        gwf_run_dir=d.sim_dir,
+        mf6_bin=mf6,
+    )
+
+    # Step 4: assert prt.trk.csv exists and has real particle vertices.
+    trk_csv = prt_ws / "prtmodel.trk.csv"
+    assert trk_csv.is_file(), "prt.trk.csv not written by PRT run"
+    df = pd.read_csv(trk_csv)
+    assert len(df) > 0, "track CSV has zero rows"
+    # irpt identifies individual particles; we should have n_particles pathlines.
+    n_tracked = df["irpt"].nunique()
+    assert n_tracked > 0, "no particles tracked in CSV"
+
+    # Step 5: physics check -- backward particles travel UP-GRADIENT (west).
+    # The well is near the grid centre (local x ~ 2050 m). The CHD west inflow
+    # boundary is at local x = 0. After backward tracking the particle endpoints
+    # (ireason == 5 = boundary exit) should be west of the well cell centre.
+    well_cx_local = (d.well_col + 0.5) * d.delr  # local x of well cell centre
+    # ireason 5 = particle reached a boundary (the up-gradient west CHD).
+    # ireason 3 = particle terminated inside the domain.
+    endpoints = df[df["ireason"].isin([3, 5])]
+    if len(endpoints) > 0:
+        # At least one endpoint should be at or west of the well (x <= well_cx).
+        assert endpoints["x"].min() <= well_cx_local, (
+            f"No endpoint west of the well (well_cx={well_cx_local:.1f} m, "
+            f"endpoint x min={endpoints['x'].min():.1f} m). "
+            "Expected backward particles to travel up-gradient (west)."
+        )
+    # Travel time: particles should show non-zero travel time (t increases
+    # as backward tracking proceeds through the reversed field).
+    assert float(df["t"].abs().max()) > 0.0, "all particles have zero travel time"

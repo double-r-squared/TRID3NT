@@ -38,10 +38,13 @@ from __future__ import annotations
 
 import hashlib
 import math
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import flopy
+import numpy as np
+from flopy.utils import CellBudgetFile, HeadFile
 from pyproj import CRS, Transformer
 
 # ---------------------------------------------------------------------------
@@ -213,6 +216,58 @@ DEFAULT_WETLAND_RECHARGE_WET_M_DAY = 0.003
 DEFAULT_WETLAND_RECHARGE_DRY_M_DAY = 0.0005
 
 
+# ---------------------------------------------------------------------------
+# Wave-4 PRT capture-zone defaults (sprint-18 Wave-4). Both capture_zone and
+# wellhead_protection archetypes run a steady GWF at LOCAL (0,0) origin, then a
+# separate PRT sim reading the REVERSED GWF output (the canonical MF6 example
+# ex-prt-mp7-p02 backward-tracking approach). The grid is the SAME 40x40x50 m
+# UTM grid as all other archetypes; only the NPF save flags + the PRT block differ.
+# ---------------------------------------------------------------------------
+
+#: PRT capture-zone domain: larger than the spill 2 km domain so particle
+#: pathlines have room to reach the recharge boundary. The grid tracks back to
+#: a CHD west-inflow boundary at a realistic travel-time scale.
+PRT_DOMAIN_HALF_WIDTH_M = 2050.0  # 41 cells of 100 m -> 4100 x 4100 m domain
+PRT_CELL_SIZE_M = 100.0           # 100 m cells match the proven script
+
+#: Aquifer geometry for the PRT grid. Single confined layer (flat datum, local).
+PRT_AQUIFER_TOP_M = 50.0    # match the proven script (top = 50 m, bottom = 0 m)
+PRT_AQUIFER_BOTTOM_M = 0.0
+
+#: Default particle release ring radius (m). Must be inside the well cell so
+#: every release point maps to the well cell. 30 % of PRT_CELL_SIZE_M = 30 m.
+DEFAULT_PRT_RING_RADIUS_M = 0.30 * PRT_CELL_SIZE_M
+
+#: PRT aquifer porosity when the caller does not supply one (controls travel time).
+DEFAULT_PRT_POROSITY = 0.25
+
+#: Default extraction rate (m^3/day) for the PRT well when the caller does not
+#: supply ``pumping_rate_m3_day``. A moderate municipal supply well.
+DEFAULT_PRT_PUMPING_RATE_M3_DAY = 800.0
+
+#: Default travel-time isochrone cutoffs (years) when the caller does not supply
+#: ``capture_zone_travel_time_years``.  ``capture_zone`` is the general
+#: zone-of-contribution ([1, 5, 10] yr); ``wellhead_protection`` uses the EPA WHPA
+#: fixed-travel-time tiers ([2, 5, 10] yr -- the 2-year IMMEDIATE zone).  The
+#: composer normally threads explicit tiers, so these defaults only fire on a
+#: direct adapter call with no tiers.
+DEFAULT_CAPTURE_ZONE_TRAVEL_TIME_YEARS: list[float] = [1.0, 5.0, 10.0]
+DEFAULT_WELLHEAD_PROTECTION_TRAVEL_TIME_YEARS: list[float] = [2.0, 5.0, 10.0]
+
+
+def _default_travel_time_years(archetype: str) -> list[float]:
+    """Archetype-specific default isochrone tiers (years) when none supplied."""
+    if archetype == "wellhead_protection":
+        return list(DEFAULT_WELLHEAD_PROTECTION_TRAVEL_TIME_YEARS)
+    return list(DEFAULT_CAPTURE_ZONE_TRAVEL_TIME_YEARS)
+
+#: Default PRT max tracking time (years). Particles are tracked until they hit a
+#: boundary or this time cap. 50 years is long enough for a 2 km domain at
+#: typical aquifer velocities (K ~ 10 m/day, gradient ~ 0.002, ne ~ 0.25 ->
+#: seepage velocity ~0.08 m/day -> 2000 m / 0.08 m/day ~ 25000 days ~ 68 years).
+DEFAULT_PRT_MAX_TRACKING_YEARS = 75.0
+
+
 @dataclass
 class DeckManifest:
     """Typed description of a written MODFLOW 6 deck.
@@ -314,6 +369,23 @@ class DeckManifest:
     n_gwtgwt_exchanges: int = 0  # number of ModflowGwtGwt species-coupling exchanges (decay chain)
     species_with_parent: list[str] = field(default_factory=list)  # daughter species (parent set)
     decay_chain_coupled: bool = False  # True iff any parent->daughter GwtGwt exchange was written
+    # --- Wave-4 PRT capture-zone (sprint-18 Wave-4; ADDITIVE) -------------------- #
+    # ``archetype in ('capture_zone', 'wellhead_protection')``: TWO separate sims --
+    # a steady GWF built at LOCAL (0,0) origin + a PRT sim that reads the REVERSED
+    # GWF output and forward-tracks a ring of particles released at the well
+    # (backward capture-zone delineation). Every field below stays at its default for
+    # all other archetypes (byte-identical manifests for the existing 7 archetypes).
+    prt_present: bool = False  # True iff a PRT sim was written alongside the GWF
+    # PRT grid is built at local (0,0); the true UTM origin is stored separately so
+    # postprocess can translate the particle pathlines back to real coordinates.
+    xoffset_m: float = 0.0     # true UTM easting of the PRT grid lower-left corner (m)
+    yoffset_m: float = 0.0     # true UTM northing of the PRT grid lower-left corner (m)
+    model_utm_epsg: int = 0    # integer EPSG code of the model UTM CRS (e.g. 32617)
+    # Well cell (PRT grid, 0-based row/col). Re-uses the existing well_row/well_col
+    # fields from the sustainable_yield archetype; they default to -1 (no well).
+    # Well easting/northing/lat/lon are the REAL coordinates (NOT local-origin).
+    n_particles: int = 0       # number of particles in the PRT release ring
+    capture_zone_travel_time_years: list[float] = field(default_factory=list)
     # Files written (relative to sim_dir), for manifest/upload assembly:
     files: list[str] = field(default_factory=list)
 
@@ -1848,6 +1920,501 @@ def _build_multi_species_deck(
     return manifest
 
 
+def _build_prt_capture_zone_deck(
+    *,
+    archetype: str,
+    lat: float,
+    lon: float,
+    crs,
+    to_utm,
+    k_m_per_day: float,
+    aquifer_k_ms: float,
+    porosity: float,
+    sim_dir: Path,
+    sim_name: str,
+    gwf_name: str,
+    write: bool,
+    well_location_latlon: tuple[float, float] | None,
+    pumping_rate_m3_day: float | None,
+    n_particles: int,
+    capture_zone_travel_time_years: list[float] | None,
+) -> DeckManifest:
+    """Assemble the STEADY GWF deck for a PRT capture-zone or wellhead-protection run.
+
+    This function builds and optionally writes the GWF-only part of the two-sim
+    PRT backward-tracking workflow.  The GWF model is built at LOCAL (0,0) origin
+    to avoid the mf6 6.7.0 eager-coordinate-check float-precision bug with large
+    UTM origins, and because ``CellBudgetFile.reverse()`` drops the grid origin
+    so particle coordinates come out in local space anyway. The true UTM origin
+    (``xoffset_m``, ``yoffset_m``) is stored in the manifest so the postprocess
+    step can translate back to real coordinates at polygon-export time.
+
+    The grid uses ``PRT_CELL_SIZE_M`` (100 m) cells and ``PRT_DOMAIN_HALF_WIDTH_M``
+    (2050 m) half-width -> a 41 x 41 cell, 4100 x 4100 m domain, matching the
+    proven script at ``/tmp/prt_capture_zone/run_prt_capture.py``.
+
+    NPF MUST declare ``save_flows=True, save_specific_discharge=True,
+    save_saturation=True`` -- all three are required for ``ModflowPrtfmi`` to find
+    the SPDIS and SATURATION terms in the .cbc when it reads the reversed budget.
+
+    The well WEL extraction is placed at the grid centre (or the caller-supplied
+    ``well_location_latlon`` snapped to the nearest in-grid cell) and is active in
+    the single steady period.
+
+    Args:
+        archetype:   ``'capture_zone'`` or ``'wellhead_protection'``.
+        lat, lon:    AOI centre (EPSG:4326).
+        crs:         pyproj CRS of the model UTM zone.
+        to_utm:      pyproj Transformer EPSG:4326 -> ``crs`` (always_xy=True).
+        k_m_per_day: hydraulic conductivity in m/day (already converted from
+                     ``aquifer_k_ms``).
+        aquifer_k_ms: raw K in m/s (for manifest).
+        porosity:    effective porosity (controls PRT travel time).
+        sim_dir:     absolute path where the GWF deck is written.
+        sim_name:    MF6 simulation name (``mfsim`` by default).
+        gwf_name:    GWF model name (``gwf_model``).
+        write:       if True, call ``sim.write_simulation()``.
+        well_location_latlon: optional (lat, lon) of the pumping well. When None
+                     the well is placed at the grid centre (AOI point).
+        pumping_rate_m3_day: POSITIVE extraction magnitude (m^3/day). The adapter
+                     applies the MF6 WEL sign internally (negative = extraction).
+                     Defaults to ``DEFAULT_PRT_PUMPING_RATE_M3_DAY`` when None.
+        n_particles: number of particles in the release ring.
+        capture_zone_travel_time_years: isochrone cutoff times (years). When None,
+                     defaults are archetype-specific (``_default_travel_time_years``):
+                     ``capture_zone`` -> [1, 5, 10]; ``wellhead_protection`` ->
+                     [2, 5, 10] (EPA WHPA tiers).
+
+    Returns:
+        DeckManifest with ``prt_present=True``, ``well_row``, ``well_col``,
+        ``n_particles``, ``capture_zone_travel_time_years``, ``xoffset_m``,
+        ``yoffset_m``, and ``model_utm_epsg`` populated. All other manifest
+        fields are at their defaults (byte-identical to the existing archetypes
+        for callers that read only those fields).
+    """
+    # ---------------------------------------------------------------------- #
+    # Grid sizing: 41x41 cells at 100 m -> 4100 x 4100 m domain (local origin).
+    # PRT_DOMAIN_HALF_WIDTH_M is 2050 m so the well at grid centre has a full
+    # 2050 m radius to the CHD boundary in every direction.
+    # ---------------------------------------------------------------------- #
+    ncol = int(round(2 * PRT_DOMAIN_HALF_WIDTH_M / PRT_CELL_SIZE_M))  # 41
+    nrow = ncol
+    delr = PRT_CELL_SIZE_M
+    delc = PRT_CELL_SIZE_M
+
+    # True UTM coordinates of the AOI centre (the well target).
+    aoi_east, aoi_north = to_utm.transform(lon, lat)
+
+    # The GWF grid is built at LOCAL (0,0) origin. The true UTM lower-left
+    # corner of the grid is (aoi_east - half, aoi_north - half). We store it
+    # on the manifest so postprocess can translate particle tracks back to UTM.
+    xoffset_m = aoi_east - PRT_DOMAIN_HALF_WIDTH_M
+    yoffset_m = aoi_north - PRT_DOMAIN_HALF_WIDTH_M
+    model_utm_epsg = crs.to_epsg()
+
+    # ---------------------------------------------------------------------- #
+    # Well cell: snap the caller-supplied lat/lon to the LOCAL grid, or use the
+    # grid centre when no well location is given.
+    # ---------------------------------------------------------------------- #
+    pump_rate = -abs(float(pumping_rate_m3_day)) if pumping_rate_m3_day is not None \
+        else -abs(DEFAULT_PRT_PUMPING_RATE_M3_DAY)
+
+    if well_location_latlon is not None:
+        wlat, wlon = float(well_location_latlon[0]), float(well_location_latlon[1])
+        if not (-90.0 <= wlat <= 90.0) or not (-180.0 <= wlon <= 180.0):
+            raise ValueError(
+                f"well_location_latlon out of range for capture_zone: {(wlat, wlon)!r}"
+            )
+        well_east_true, well_north_true = to_utm.transform(wlon, wlat)
+        # Convert to LOCAL grid coordinates (0-origin) for the cell index.
+        well_east_local = well_east_true - xoffset_m
+        well_north_local = well_north_true - yoffset_m
+        col = int(well_east_local // delr)
+        north_top_local = nrow * delc  # local grid top (no yorigin offset)
+        row = int((north_top_local - well_north_local) // delc)
+        # Clamp to interior cells (never the CHD boundary columns).
+        well_row = max(1, min(nrow - 2, row))
+        well_col = max(1, min(ncol - 2, col))
+        well_lat, well_lon_val = wlat, wlon
+    else:
+        # Centre of the 41x41 local grid.
+        well_row = nrow // 2  # 20 for a 41-cell grid
+        well_col = ncol // 2
+        well_lat, well_lon_val = lat, lon
+
+    # True UTM coordinates of the chosen well cell centre (for manifest).
+    # cell_centre_local_x = (well_col + 0.5) * delr
+    # cell_centre_local_y = (nrow - well_row - 0.5) * delc (flopy row-0 = north)
+    well_east_m = xoffset_m + (well_col + 0.5) * delr
+    well_north_m = yoffset_m + (nrow - well_row - 0.5) * delc
+
+    back_to_4326 = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    _wlon, _wlat = back_to_4326.transform(well_east_m, well_north_m)
+    well_lat, well_lon_val = _wlat, _wlon
+
+    # ---------------------------------------------------------------------- #
+    # PRT/isochrone parameters.
+    # ---------------------------------------------------------------------- #
+    tz_years = (
+        list(capture_zone_travel_time_years)
+        if capture_zone_travel_time_years
+        else _default_travel_time_years(archetype)
+    )
+
+    # ---------------------------------------------------------------------- #
+    # GWF simulation (STEADY, single period of 1 day -> one time step).
+    # ---------------------------------------------------------------------- #
+    sim = flopy.mf6.MFSimulation(
+        sim_name=sim_name,
+        sim_ws=str(sim_dir),
+        exe_name="mf6",
+        version="mf6",
+    )
+    flopy.mf6.ModflowTdis(
+        sim,
+        time_units=TIME_UNITS,
+        nper=1,
+        perioddata=[(1.0, 1, 1.0)],
+    )
+    ims = flopy.mf6.ModflowIms(
+        sim,
+        filename=f"{gwf_name}.ims",
+        complexity="SIMPLE",
+        outer_dvclose=1e-8,
+        inner_dvclose=1e-9,
+        linear_acceleration="CG",
+    )
+    gwf = flopy.mf6.ModflowGwf(
+        sim,
+        modelname=gwf_name,
+        model_nam_file=f"{gwf_name}.nam",
+        save_flows=True,
+    )
+    sim.register_ims_package(ims, [gwf_name])
+
+    # DIS: local (0,0) origin -- do NOT pass xorigin/yorigin.
+    flopy.mf6.ModflowGwfdis(
+        gwf,
+        length_units=LENGTH_UNITS,
+        nlay=N_LAYERS,
+        nrow=nrow,
+        ncol=ncol,
+        delr=delr,
+        delc=delc,
+        top=PRT_AQUIFER_TOP_M,
+        botm=PRT_AQUIFER_BOTTOM_M,
+        filename=f"{gwf_name}.dis",
+    )
+
+    # IC: initial head = aquifer top (hydrostatic start, overridden by CHD).
+    flopy.mf6.ModflowGwfic(gwf, strt=PRT_AQUIFER_TOP_M, filename=f"{gwf_name}.ic")
+
+    # NPF: MUST set save_flows + save_specific_discharge + save_saturation.
+    # Missing save_saturation -> FMI 'SATURATION NOT FOUND' error in PRT.
+    flopy.mf6.ModflowGwfnpf(
+        gwf,
+        save_flows=True,
+        save_specific_discharge=True,
+        save_saturation=True,
+        icelltype=0,  # confined: T = K * thickness (independent of head)
+        k=k_m_per_day,
+        filename=f"{gwf_name}.npf",
+    )
+
+    # CHD: west->east regional gradient (high head west, low head east).
+    # Use the same REGIONAL_GRADIENT as all other archetypes; domain_width in
+    # local coords is ncol * delr = 4100 m -> head drop = 0.002 * 4100 = 8.2 m.
+    domain_width_m = ncol * delr
+    head_west = PRT_AQUIFER_TOP_M + REGIONAL_GRADIENT * domain_width_m
+    head_east = PRT_AQUIFER_TOP_M
+    chd_records = []
+    for r in range(nrow):
+        chd_records.append([(0, r, 0), head_west])          # west boundary
+        chd_records.append([(0, r, ncol - 1), head_east])   # east boundary
+    flopy.mf6.ModflowGwfchd(
+        gwf,
+        stress_period_data={0: chd_records},
+        filename=f"{gwf_name}.chd",
+    )
+
+    # WEL: pumping extraction at the well cell (active in the single period).
+    flopy.mf6.ModflowGwfwel(
+        gwf,
+        stress_period_data={0: [[(0, well_row, well_col), pump_rate]]},
+        save_flows=True,
+        filename=f"{gwf_name}.wel",
+        pname="wel-0",
+    )
+
+    # OC: save HEAD + BUDGET (ALL) -- required for CellBudgetFile.reverse().
+    budget_filerecord = f"{gwf_name}.cbc"
+    head_filerecord = f"{gwf_name}.hds"
+    flopy.mf6.ModflowGwfoc(
+        gwf,
+        budget_filerecord=budget_filerecord,
+        head_filerecord=head_filerecord,
+        saverecord=[("HEAD", "ALL"), ("BUDGET", "ALL")],
+        filename=f"{gwf_name}.oc",
+    )
+
+    manifest = DeckManifest(
+        sim_dir=str(sim_dir),
+        sim_name=sim_name,
+        gwf_name=gwf_name,
+        gwt_name="",  # no GWT block for capture_zone / wellhead_protection
+        model_crs=f"EPSG:{model_utm_epsg}",
+        xorigin=xoffset_m,  # true UTM lower-left easting (for manifest contract)
+        yorigin=yoffset_m,  # true UTM lower-left northing
+        nrow=nrow,
+        ncol=ncol,
+        nlay=N_LAYERS,
+        delr=delr,
+        delc=delc,
+        # Spill cell: re-use for the well cell so the postprocess phase has the
+        # well position in the same manifest fields as sustainable_yield.
+        spill_row=well_row,
+        spill_col=well_col,
+        spill_easting_m=well_east_m,
+        spill_northing_m=well_north_m,
+        spill_lat=well_lat,
+        spill_lon=well_lon_val,
+        mass_rate_g_per_day=0.0,  # no contaminant source
+        release_rate_kg_s=0.0,
+        duration_days=0.0,
+        n_transport_steps=0,
+        contaminant="",
+        aquifer_k_ms=aquifer_k_ms,
+        porosity=porosity,
+        # Archetype branch fields.
+        archetype=archetype,
+        gwt_present=False,
+        transient=False,
+        n_stress_periods=1,
+        n_transient_periods=0,
+        # Well info (reuse the sustainable_yield fields).
+        well_row=well_row,
+        well_col=well_col,
+        well_easting_m=well_east_m,
+        well_northing_m=well_north_m,
+        well_lat=well_lat,
+        well_lon=well_lon_val,
+        pumping_rate_m3_day=pump_rate,
+        # PRT-specific fields (Wave-4).
+        prt_present=True,
+        xoffset_m=xoffset_m,
+        yoffset_m=yoffset_m,
+        model_utm_epsg=model_utm_epsg,
+        n_particles=n_particles,
+        capture_zone_travel_time_years=tz_years,
+    )
+
+    if write:
+        sim.write_simulation()
+        manifest.files = sorted(
+            str(p.relative_to(sim_dir)) for p in sim_dir.rglob("*") if p.is_file()
+        )
+    return manifest
+
+
+def build_and_run_prt_from_gwf(
+    deck: DeckManifest,
+    gwf_run_dir: str | Path,
+    mf6_bin: str,
+) -> Path:
+    """Reverse the GWF outputs, build + write + run the PRT sim, return its directory.
+
+    This is the second half of the two-sim PRT capture-zone workflow. It is called
+    AFTER ``mf6`` has been run on the GWF deck built by ``_build_prt_capture_zone_deck``.
+    It performs four steps:
+
+    1. Reverse the GWF ``.hds`` and ``.cbc`` files via
+       ``flopy.utils.HeadFile.reverse()`` / ``CellBudgetFile.reverse()``.
+    2. Build a PRT simulation (``ModflowPrt + ModflowPrtdis + ModflowPrtmip +
+       ModflowPrtprp + ModflowPrtoc + ModflowPrtfmi + ModflowEms``) in a
+       ``prt/`` subdirectory of ``gwf_run_dir``. The PRT sim reads the reversed
+       GWF output files via ``ModflowPrtfmi`` (the MF6 Flow Model Interface
+       package), which is the canonical USGS method for backward tracking
+       (mf6 example ex-prt-mp7-p02).
+    3. Writes the PRT simulation deck (``psim.write_simulation()``).
+    4. Runs ``mf6`` (subprocess) in the PRT directory and asserts
+       ``"Normal termination of simulation"`` in stdout.
+
+    DESIGN NOTES:
+
+    * PRT is EXPLICIT (no iterative solve). Do NOT register an IMS. Instead,
+      register with ``ModflowEms`` (the explicit model solution) --
+      ``psim.register_solution_package(ems, [prt.name])``.
+    * ``ModflowPrtprp`` with a ``boundname`` column REQUIRES ``boundnames=True``.
+    * ``extend_tracking=True`` is ESSENTIAL for steady-state: without it the
+      particles stop tracking after the single stress period ends.
+    * ``ModflowPrtoc`` with only ``trackcsv_filerecord`` (no ``saverecord``)
+      avoids the spurious "BUDGET save file not specified" error.
+    * ``ModflowPrtmip`` (porosity) is REQUIRED -- it drives travel time.
+
+    Args:
+        deck:       the ``DeckManifest`` returned by ``_build_prt_capture_zone_deck``.
+                    Must have ``deck.prt_present == True``.
+        gwf_run_dir: absolute path of the directory where ``mf6`` was run for the
+                    GWF deck.  Must contain ``{gwf_name}.hds`` and
+                    ``{gwf_name}.cbc`` after the GWF run.
+        mf6_bin:    path to the ``mf6`` 6.7.0 binary.
+
+    Returns:
+        ``Path`` to the PRT working directory (``gwf_run_dir / 'prt'``). The
+        directory contains ``{prt_name}.trk.csv`` (the particle track CSV), the
+        binary track file, and all PRT input files.
+
+    Raises:
+        FileNotFoundError: if the required GWF output files are missing.
+        RuntimeError:      if ``mf6`` does not emit ``"Normal termination"``.
+    """
+    if not deck.prt_present:
+        raise ValueError("build_and_run_prt_from_gwf: deck.prt_present is False")
+
+    gwf_dir = Path(gwf_run_dir)
+    gwf_name = deck.gwf_name
+    prt_name = "prtmodel"
+    prt_ws = gwf_dir / "prt"
+    prt_ws.mkdir(parents=True, exist_ok=True)
+
+    # GWF output paths (in the GWF run directory).
+    hds_path = gwf_dir / f"{gwf_name}.hds"
+    cbc_path = gwf_dir / f"{gwf_name}.cbc"
+    for p in (hds_path, cbc_path):
+        if not p.exists():
+            raise FileNotFoundError(
+                f"build_and_run_prt_from_gwf: GWF output not found: {p}"
+            )
+
+    # Step 1: REVERSE the GWF head + budget files for backward tracking.
+    # The canonical MF6 backward-tracking pattern (ex-prt-mp7-p02): forward GWF
+    # run, then temporally reverse its outputs, then forward-track through the
+    # reversed field -> particles propagate up-gradient (backward in physical time).
+    hds_rev_path = gwf_dir / f"{gwf_name}.hds.rev"
+    cbc_rev_path = gwf_dir / f"{gwf_name}.cbc.rev"
+
+    # Load with tdis so the reversal gets the correct time discretisation.
+    # We re-load the GWF sim from disk to obtain the tdis object.
+    gsim_reload = flopy.mf6.MFSimulation.load(
+        sim_ws=str(gwf_dir),
+        sim_name=deck.sim_name,
+        exe_name=mf6_bin,
+    )
+    cbb = CellBudgetFile(str(cbc_path), tdis=gsim_reload.tdis)
+    cbb.reverse(str(cbc_rev_path))
+    hds_obj = HeadFile(str(hds_path), tdis=gsim_reload.tdis)
+    hds_obj.reverse(str(hds_rev_path))
+
+    # Step 2: build the PRT simulation (separate sim, reads reversed GWF via FMI).
+    psim = flopy.mf6.MFSimulation(
+        sim_name="prt",
+        sim_ws=str(prt_ws),
+        exe_name=mf6_bin,
+        version="mf6",
+    )
+    # TDIS: mirror the GWF (1 period, 1 step, 1 day). The PRT sim steps through
+    # the REVERSED flow field, which has the same time discretisation.
+    flopy.mf6.ModflowTdis(
+        psim,
+        time_units=TIME_UNITS,
+        nper=1,
+        perioddata=[(1.0, 1, 1.0)],
+    )
+
+    # Create the PRT model.
+    prt = flopy.mf6.ModflowPrt(psim, modelname=prt_name)
+
+    # DIS: must mirror the GWF grid exactly (same dimensions + local-origin geometry).
+    flopy.mf6.ModflowPrtdis(
+        prt,
+        nlay=deck.nlay,
+        nrow=deck.nrow,
+        ncol=deck.ncol,
+        delr=deck.delr,
+        delc=deck.delc,
+        top=PRT_AQUIFER_TOP_M,
+        botm=PRT_AQUIFER_BOTTOM_M,
+        length_units=LENGTH_UNITS,
+        filename=f"{prt_name}.dis",
+    )
+
+    # MIP: porosity REQUIRED -- drives travel-time calculation.
+    flopy.mf6.ModflowPrtmip(prt, porosity=deck.porosity, filename=f"{prt_name}.mip")
+
+    # Build the particle release ring at the well cell (local coordinates).
+    # The GWF grid is at local (0,0) so cell centres are in local space.
+    # local grid: row 0 = northernmost row; ycellcenter for row r = (nrow-r-0.5)*delc.
+    wi = deck.well_row
+    wj = deck.well_col
+    cx = (wj + 0.5) * deck.delr              # local x of well cell centre
+    cy = (deck.nrow - wi - 0.5) * deck.delc  # local y of well cell centre
+    n_ring = deck.n_particles
+    angles = np.linspace(0, 2 * np.pi, n_ring, endpoint=False)
+    radius = DEFAULT_PRT_RING_RADIUS_M  # 30 m (inside the 100 m cell)
+    zrpt = (PRT_AQUIFER_TOP_M + PRT_AQUIFER_BOTTOM_M) / 2.0  # mid-aquifer depth
+
+    releasepts = []
+    for n, a in enumerate(angles):
+        xrpt = cx + radius * np.cos(a)
+        yrpt = cy + radius * np.sin(a)
+        # PRP packagedata tuple: (irptno, (k,i,j), x, y, z, boundname)
+        releasepts.append((n, (0, wi, wj), xrpt, yrpt, zrpt, f"p{n}"))
+
+    trackbin = f"{prt_name}.trk"
+    trackcsv = f"{prt_name}.trk.csv"
+
+    flopy.mf6.ModflowPrtprp(
+        prt,
+        pname="prp1",
+        nreleasepts=len(releasepts),
+        packagedata=releasepts,
+        boundnames=True,             # REQUIRED: packagedata has a boundname column
+        perioddata={0: ["FIRST"]},   # release once at start of the (reversed) period
+        extend_tracking=True,        # ESSENTIAL for steady state: keep tracking
+        exit_solve_tolerance=1e-5,
+        filename=f"{prt_name}.prp",
+    )
+
+    # OC: track binary + CSV. Do NOT pass saverecord to avoid the
+    # "BUDGET save file not specified" error (no budget_filerecord set).
+    flopy.mf6.ModflowPrtoc(
+        prt,
+        track_filerecord=trackbin,
+        trackcsv_filerecord=trackcsv,
+        filename=f"{prt_name}.oc",
+    )
+
+    # FMI: point PRT at the REVERSED GWF head + budget files (absolute paths).
+    pd = [
+        ("GWFHEAD", str(hds_rev_path.resolve())),
+        ("GWFBUDGET", str(cbc_rev_path.resolve())),
+    ]
+    flopy.mf6.ModflowPrtfmi(prt, packagedata=pd, filename=f"{prt_name}.fmi")
+
+    # PRT is EXPLICIT: register with ModflowEms, NOT IMS.
+    ems = flopy.mf6.ModflowEms(psim, filename=f"{prt_name}.ems")
+    psim.register_solution_package(ems, [prt.name])
+
+    # Step 3: write the PRT deck.
+    psim.write_simulation()
+
+    # Step 4: run mf6 and assert normal termination.
+    proc = subprocess.run(
+        [mf6_bin],
+        cwd=str(prt_ws),
+        capture_output=True,
+        text=True,
+    )
+    stdout = proc.stdout or ""
+    if "Normal termination of simulation" not in stdout:
+        raise RuntimeError(
+            f"PRT mf6 run did not terminate normally (returncode={proc.returncode}):\n"
+            + stdout[-2000:]
+        )
+
+    return prt_ws
+
+
 def build_modflow_deck(
     spill_location_latlon: tuple[float, float],
     contaminant: str,
@@ -1909,6 +2476,15 @@ def build_modflow_deck(
     # .parent attributes) OR plain dicts with those keys. ``species is None`` =>
     # the byte-identical single-contaminant spill deck.
     species: list | None = None,
+    # --- Wave-4 PRT capture-zone / wellhead_protection (ADDITIVE, optional) - #
+    # ``archetype in ('capture_zone', 'wellhead_protection')``: build ONLY the
+    # GWF deck here (the caller runs mf6 on it, then calls
+    # ``build_and_run_prt_from_gwf`` to reverse + run the PRT sim).
+    # ``n_particles`` and ``capture_zone_travel_time_years`` control the release
+    # ring size and the isochrone cutoffs written into the manifest.
+    n_particles: int = 16,
+    capture_zone_travel_time_years: list[float] | None = None,
+    prt_max_tracking_years: float | None = None,
     # --- advanced-physics overrides (levers STEP 3; ADDITIVE, optional) ----- #
     advanced_physics: dict | None = None,
     save_concentration_all_steps: bool = True,
@@ -2096,8 +2672,33 @@ def build_modflow_deck(
             "ASR",
             "wetland_hydroperiod",
             "multi_species",
+            "capture_zone",
+            "wellhead_protection",
         ):
             raise ValueError(f"unknown MODFLOW archetype: {archetype!r}")
+        # Wave-4 PRT archetypes: a two-sim workflow (GWF built here; the caller
+        # runs mf6 on it then calls build_and_run_prt_from_gwf for the PRT phase).
+        # The GWF grid is built at LOCAL (0,0) origin inside the helper (the true
+        # UTM offset is stored on the manifest as xoffset_m / yoffset_m).
+        if archetype in ("capture_zone", "wellhead_protection"):
+            return _build_prt_capture_zone_deck(
+                archetype=archetype,
+                lat=lat,
+                lon=lon,
+                crs=crs,
+                to_utm=to_utm,
+                k_m_per_day=k_m_per_day,
+                aquifer_k_ms=aquifer_k_ms,
+                porosity=porosity,
+                sim_dir=sim_dir,
+                sim_name=sim_name,
+                gwf_name=gwf_name,
+                write=write,
+                well_location_latlon=well_location_latlon,
+                pumping_rate_m3_day=pumping_rate_m3_day,
+                n_particles=n_particles,
+                capture_zone_travel_time_years=capture_zone_travel_time_years,
+            )
         # multi_species is a GWF+GWT deck (ONE shared GWF + N transport models),
         # NOT a GWF-only archetype, so it dispatches to its own builder.
         if archetype == "multi_species":

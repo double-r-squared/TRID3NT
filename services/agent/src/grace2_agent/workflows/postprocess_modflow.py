@@ -40,6 +40,7 @@ from typing import Any
 from grace2_contracts.modflow_contracts import (
     ASRLayerURI,
     BudgetPartitionLayerURI,
+    CaptureZoneLayerURI,
     DewaterLayerURI,
     DrawdownLayerURI,
     HydroperiodLayerURI,
@@ -65,6 +66,7 @@ __all__ = [
     "postprocess_mounding",
     "postprocess_asr",
     "postprocess_wetland_hydroperiod",
+    "postprocess_capture_zone",
     "publish_modflow_quantities",
     "compute_plume_metrics",
     "compute_seepage_metrics",
@@ -84,6 +86,7 @@ __all__ = [
     "MOUNDING_STYLE_PRESET",
     "ASR_STYLE_PRESET",
     "HYDROPERIOD_STYLE_PRESET",
+    "CAPTURE_ZONE_STYLE_PRESET",
     "GWF_CBC_FILENAME",
     "GWF_HDS_FILENAME",
     "RUNS_BUCKET_DEFAULT",
@@ -150,6 +153,20 @@ ASR_STYLE_PRESET: str = "continuous_head_m"
 #: over the transient periods); its dedicated key is registered in
 #: publish_layer._TITILER_STYLE_REGISTRY and matches OUTPUT_QUANTITIES.
 HYDROPERIOD_STYLE_PRESET: str = "continuous_hydroperiod_m"
+
+#: Vector style preset for the PRT backward-particle-tracking capture-zone polygon
+#: (Wave-4). The capture zone is a FlatGeobuf polygon; the client's vector renderer
+#: applies ``presetColorFor("capture_zone")`` -> violet so it reads as a protection
+#: boundary, distinct from the blue water, red alert, and amber roads layers.
+#: ``publish_layer`` is RASTER-ONLY and must NOT be called for this vector; the
+#: inline-GeoJSON path (``pipeline_emitter.add_loaded_layer`` via
+#: ``_read_vector_uri_as_geojson``) renders it over WS.
+CAPTURE_ZONE_STYLE_PRESET: str = "capture_zone"
+
+#: PRT track CSV filename written by the MF6 PRT sim (``ModflowPrtoc`` +
+#: ``trackcsv_filerecord``). The model name the adapter uses for the PRT model is
+#: ``"prtmodel"``, so the CSV is always ``prtmodel.trk.csv``.
+PRT_TRACK_CSV_FILENAME: str = "prtmodel.trk.csv"
 
 #: CBC budget terms the generalized cell-by-cell reader scatters onto a grid.
 #: Each is a head-dependent / source-sink package whose budget record carries a
@@ -2647,4 +2664,539 @@ def postprocess_wetland_hydroperiod(
         bbox=bbox_4326,
         seasonal_head_range_m=seasonal_head_range_m,
         head_timeseries=head_timeseries,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# PRT capture-zone postprocess (Wave-4)
+#
+# MF6 PRT backward-particle-tracking produces a ``prtmodel.trk.csv`` under the
+# PRT working directory.  ``build_and_run_prt_from_gwf`` (in gwt_adapter) builds
+# and runs the two-sim sequence (GWF -> reverse outputs -> PRT) and returns the
+# PRT working directory, which the tool phase passes as ``run_outputs_uri`` here.
+#
+# The GWF deck was built at LOCAL origin (0,0) to sidestep the mf6 6.7.0
+# coordinate-check float-precision bug at large UTM origins.
+# ``CellBudgetFile.reverse()`` also drops the grid origin, so PRT track coords
+# come out in local (0-origin) coordinates.  The true UTM origin is recovered
+# from the DECK georegistration (``_grid_georegistration_from_deck(deck_dir)``
+# returns ``xorigin`` / ``yorigin`` -- these are set to the true UTM lower-left
+# easting/northing by ``_build_prt_capture_zone_deck`` for contract compatibility
+# with this postprocess step).  The EPSG code is parsed from ``model_crs``
+# (e.g. "EPSG:32617" -> 32617) and applied to the polygon before reprojecting to
+# EPSG:4326 for the FlatGeobuf artifact.
+#
+# Vector publish:
+#   publish_layer is RASTER-ONLY.  DO NOT call it here.  Vectors reach the client
+#   through the inline-GeoJSON path: the tool emitter calls
+#   ``add_loaded_layer`` which calls ``_read_vector_uri_as_geojson`` on the
+#   FlatGeobuf URI and ships the GeoJSON FeatureCollection over the WS.  The
+#   client renders the polygon via the ``presetColorFor("capture_zone")``
+#   color branch in vector_rendering.ts.
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_prt_track_csv(run_outputs_uri: str) -> Path:
+    """Locate ``prtmodel.trk.csv`` in a local PRT output directory.
+
+    ``build_and_run_prt_from_gwf`` places the PRT sim inside
+    ``<gwf_run_dir>/prt/`` and runs it there; ``ModflowPrtoc`` writes
+    ``prtmodel.trk.csv`` alongside the other PRT output files.  The caller
+    passes that directory as ``run_outputs_uri``.
+
+    Raises:
+        PostprocessMODFLOWError: (``CAPTURE_ZONE_OUTPUT_READ_FAILED``) when no
+            ``prtmodel.trk.csv`` is found under ``run_outputs_uri``.
+    """
+    p = Path(run_outputs_uri.replace("file://", ""))
+    if p.is_file() and p.name.endswith(".csv"):
+        return p
+    if p.is_dir():
+        hits = sorted(
+            glob.glob(str(p / "**" / PRT_TRACK_CSV_FILENAME), recursive=True)
+        )
+        if hits:
+            return Path(hits[0])
+    raise PostprocessMODFLOWError(
+        "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+        message=(
+            f"no {PRT_TRACK_CSV_FILENAME} found under {run_outputs_uri!r}; "
+            "build_and_run_prt_from_gwf must have run successfully and placed "
+            "the PRT working directory there."
+        ),
+        details={"run_outputs_uri": run_outputs_uri},
+    )
+
+
+def _read_prt_track_df(csv_path: Path) -> Any:
+    """Read the PRT track CSV into a pandas DataFrame and validate it.
+
+    The CSV carries one row per particle-tracking event with columns:
+    ``kper``, ``kstp``, ``imdl``, ``iprp``, ``irpt``, ``ilay``, ``icell``,
+    ``izone``, ``istatus``, ``ireason``, ``trelease``, ``t``, ``x``, ``y``,
+    ``z``, ``name``.
+
+    Raises:
+        PostprocessMODFLOWError: (``CAPTURE_ZONE_OUTPUT_READ_FAILED``) when
+            pandas is unavailable, the file cannot be parsed, or the required
+            ``x`` / ``y`` / ``t`` columns are absent / entirely NaN.
+    """
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=f"pandas not importable for PRT track CSV: {exc}",
+            details={"csv_path": str(csv_path)},
+        ) from exc
+
+    try:
+        df = pd.read_csv(str(csv_path))
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=f"could not read PRT track CSV {csv_path}: {exc}",
+            details={"csv_path": str(csv_path)},
+        ) from exc
+
+    for col in ("x", "y", "t"):
+        if col not in df.columns:
+            raise PostprocessMODFLOWError(
+                "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+                message=(
+                    f"PRT track CSV {csv_path} is missing required column {col!r}; "
+                    f"columns present: {list(df.columns)}"
+                ),
+                details={"csv_path": str(csv_path), "columns": list(df.columns)},
+            )
+
+    # Drop rows where x or y is NaN (e.g. release-event rows with no position).
+    import pandas as pd  # already imported above; local re-ref for the filter
+
+    df = df.dropna(subset=["x", "y"])
+    if df.empty:
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=(
+                f"PRT track CSV {csv_path} has no rows with finite x/y coordinates; "
+                "the PRT run may have produced no tracked pathlines."
+            ),
+            details={"csv_path": str(csv_path)},
+        )
+    return df
+
+
+def _upload_fgb(
+    local_fgb: Path,
+    run_id: str,
+    runs_bucket: str | None,
+    *,
+    fgb_filename: str = "capture_zone_4326.fgb",
+) -> str:
+    """Upload a FlatGeobuf to ``{scheme}://<runs_bucket>/<run_id>/<fgb_filename>``.
+
+    Mirrors ``_upload_cog`` but uses ``application/octet-stream`` as the MIME
+    type (FlatGeobuf has no registered IANA type).  The inline-GeoJSON vector
+    path reads this artifact server-side via ``_read_vector_uri_as_geojson``
+    (geopandas + pyogrio) and ships the FeatureCollection over the WS; the
+    client does NOT fetch the FGB directly, so CORS is not a concern here.
+
+    Raises:
+        PostprocessMODFLOWError: (``CAPTURE_ZONE_WRITE_FAILED``) on any upload
+            failure.
+    """
+    try:
+        return cog_io.upload_cog(
+            local_fgb,
+            run_id,
+            runs_bucket,
+            dest_filename=fgb_filename,
+            content_type="application/octet-stream",
+            gs_backend="fsspec",
+            gs_fallback_to_file=True,
+            runs_bucket_default=RUNS_BUCKET_DEFAULT,
+            log_label="capture zone FGB",
+        )
+    except CogIoError as exc:
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_WRITE_FAILED",
+            message=f"could not upload capture-zone FlatGeobuf: {exc.message}",
+            details=exc.details,
+        ) from exc
+
+
+def postprocess_capture_zone(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    xoffset_m: float | None = None,
+    yoffset_m: float | None = None,
+    model_utm_epsg: int | None = None,
+    tier_years: list[float] | None = None,
+) -> CaptureZoneLayerURI:
+    """Convert MF6 PRT backward-tracking output into a ``CaptureZoneLayerURI``.
+
+    Reads ``prtmodel.trk.csv`` from the PRT working directory (``run_outputs_uri``),
+    builds the outer capture-zone polygon as the convex hull of ALL backtracked
+    pathline vertices, and builds nested travel-time isochrone polygons for each
+    requested tier.  Travel time is computed as ``abs(t) / 365.25`` (days to
+    years; the GWF TDIS uses DAYS as the time unit, so ``t`` in the CSV is in
+    days).  All polygon areas are computed in the model UTM CRS (m^2 -> km^2)
+    before reprojection.
+
+    The result is written as a FlatGeobuf in EPSG:4326 (a FeatureCollection with
+    one polygon feature per isochrone tier plus the outer envelope, each carrying
+    a ``travel_time_years`` property), uploaded to the runs bucket, and returned
+    as a ``CaptureZoneLayerURI``.  ``publish_layer`` is NOT called (it is
+    raster-only; vectors render via the inline-GeoJSON path over WS).
+
+    Example usage (module-level docstring smoke test)::
+
+        from grace2_agent.workflows.postprocess_modflow import postprocess_capture_zone
+
+        # The PRT working directory must contain prtmodel.trk.csv:
+        # result = postprocess_capture_zone(
+        #     "/tmp/prt_capture_zone/ws/gwf/prt",
+        #     run_id="demo-001",
+        #     model_crs="EPSG:32617",
+        #     deck_dir="/tmp/prt_capture_zone/ws/gwf",
+        # )
+        # -> CaptureZoneLayerURI(
+        #        layer_type='vector',
+        #        style_preset='capture_zone',
+        #        capture_zone_area_km2=...,
+        #        travel_time_years=[1.0, 5.0, 10.0],
+        #        isochrone_areas_km2={'1': ..., '5': ..., '10': ...},
+        #        particle_count=16,
+        #    )
+
+    Args:
+        run_outputs_uri: the PRT output directory (local path / ``file://``)
+            that ``build_and_run_prt_from_gwf`` produced; must contain
+            ``prtmodel.trk.csv``.
+        run_id: run identifier; the FlatGeobuf artifact is uploaded to
+            ``<runs_bucket>/<run_id>/capture_zone_4326.fgb``.
+        model_crs: the GWF deck's projected CRS string (e.g. ``"EPSG:32617"``).
+            Used to derive the integer EPSG code for area computation and the
+            reprojection from model UTM to EPSG:4326.
+        deck_dir: optional path to the GWF deck directory.  FALLBACK ONLY for
+            the UTM origin: the PRT GWF DIS is built at LOCAL (0,0) origin (to
+            dodge the mf6 6.7.0 coordinate-check float-precision bug), so a
+            reloaded modelgrid reports xoffset=yoffset=0.0 -- it CANNOT recover
+            the true origin.  The production call site therefore passes the true
+            origin explicitly via ``xoffset_m`` / ``yoffset_m`` (below); the
+            ``deck_dir`` reload is kept only as a last resort.
+        runs_bucket: optional override for the S3 / GCS runs bucket name.
+            ``None`` -> ``GRACE2_RUNS_BUCKET`` env var / ``RUNS_BUCKET_DEFAULT``.
+        xoffset_m: the TRUE UTM easting of the (local-origin) PRT grid lower-left,
+            from ``DeckManifest.xoffset_m``.  The local-origin track coordinates
+            are shifted by this before reprojection so the polygon lands at the
+            real well location.  REQUIRED for a correctly georeferenced result;
+            omitting it (and a real UTM ``model_utm_epsg``) raises rather than
+            ship a polygon at the equator (Invariant-1 honesty guard).
+        yoffset_m: the TRUE UTM northing of the PRT grid lower-left, from
+            ``DeckManifest.yoffset_m``.  Paired with ``xoffset_m``.
+        model_utm_epsg: integer EPSG code of the model UTM CRS (e.g. ``32617``),
+            from ``DeckManifest.model_utm_epsg``.  Preferred over parsing
+            ``model_crs``; drives the area computation and the 4326 reprojection.
+        tier_years: the travel-time isochrone tiers the user/composer requested
+            (``MODFLOWRunArgs.capture_zone_travel_time_years``, e.g. ``[1, 5, 10]``
+            for capture_zone or ``[2, 5, 10]`` for wellhead_protection).  Used
+            DIRECTLY so the narrated tiers equal the requested ones (Invariant-1).
+            Only when ``None`` does the function derive data-driven tiers as a
+            last resort.
+
+    Returns:
+        ``CaptureZoneLayerURI`` with:
+          - ``layer_type='vector'``
+          - ``style_preset='capture_zone'``
+          - ``uri``: FlatGeobuf object-store URI (or ``file://`` in offline mode)
+          - ``bbox``: EPSG:4326 ``(min_lon, min_lat, max_lon, max_lat)``
+          - ``capture_zone_area_km2``: area of the outer isochrone envelope
+          - ``travel_time_years``: isochrone tiers actually computed
+          - ``isochrone_areas_km2``: per-tier nested area (keys = tier as str)
+          - ``particle_count``: number of released particles in the track CSV
+
+    Raises:
+        PostprocessMODFLOWError:
+          - ``CAPTURE_ZONE_OUTPUT_READ_FAILED`` -- CSV not found / unreadable /
+            empty.
+          - ``CAPTURE_ZONE_WRITE_FAILED`` -- FlatGeobuf write or upload failed.
+    """
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import shapely.affinity  # type: ignore[import-not-found]
+        import shapely.ops  # type: ignore[import-not-found]
+        from shapely.geometry import MultiPoint, mapping  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=f"shapely / numpy not importable for capture-zone postprocess: {exc}",
+        ) from exc
+
+    # --- Step 1: locate + read the PRT track CSV ----------------------------
+    csv_path = _resolve_prt_track_csv(run_outputs_uri)
+    df = _read_prt_track_df(csv_path)
+
+    particle_count = int(df[["iprp", "irpt"]].drop_duplicates().shape[0])
+    logger.info(
+        "postprocess_capture_zone run_id=%s csv=%s rows=%d particles=%d",
+        run_id, csv_path, len(df), particle_count,
+    )
+
+    # --- Step 2: recover the UTM offset (true grid lower-left) --------------
+    # The GWF DIS was built at local origin (0,0) to avoid the mf6 6.7.0
+    # coordinate-check float-precision bug.  CellBudgetFile.reverse() also drops
+    # the origin, so PRT track x/y come out in LOCAL (0-origin) coordinates and
+    # must be shifted by the TRUE UTM lower-left before reprojection.
+    #
+    # A reloaded modelgrid CANNOT recover this (a local-origin DIS reports
+    # xoffset=yoffset=0.0), so the production call site passes the true origin
+    # explicitly from the in-memory DeckManifest (xoffset_m/yoffset_m).  The
+    # deck-dir reload is a last-resort fallback only.
+    if xoffset_m is not None and yoffset_m is not None:
+        x_off = float(xoffset_m)
+        y_off = float(yoffset_m)
+    else:
+        geo = _grid_georegistration_from_deck(deck_dir)
+        x_off = float(geo["xorigin"]) if geo is not None else 0.0
+        y_off = float(geo["yorigin"]) if geo is not None else 0.0
+        if geo is None:
+            logger.warning(
+                "postprocess_capture_zone: no explicit offset and no deck "
+                "georegistration from %s; assuming track coordinates are already "
+                "georeferenced (testing only)",
+                deck_dir,
+            )
+
+    # EPSG code: prefer the explicit manifest value, else parse model_crs.
+    if model_utm_epsg is not None and int(model_utm_epsg) > 0:
+        utm_epsg = int(model_utm_epsg)
+    else:
+        try:
+            utm_epsg = int(str(model_crs).split(":")[-1])
+        except Exception:  # noqa: BLE001
+            utm_epsg = 0
+            logger.warning(
+                "postprocess_capture_zone: could not parse EPSG code from "
+                "model_crs=%r; reprojection from UTM to EPSG:4326 will fall back "
+                "to identity",
+                model_crs,
+            )
+
+    # Honesty guard (Invariant-1): a real UTM model with a (0,0) offset would
+    # reproject the local-origin polygon to ~lat 0 -- a capture zone ~thousands
+    # of km from the well that still passes the translation-invariant area floor.
+    # Refuse to emit it; an explicit error is honest, a mislocated polygon is not.
+    if utm_epsg not in (0, 4326) and x_off == 0.0 and y_off == 0.0:
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=(
+                "capture-zone georegistration is missing: model CRS is "
+                f"EPSG:{utm_epsg} (a projected UTM zone) but the grid offset is "
+                "(0, 0).  The true UTM origin (DeckManifest.xoffset_m/yoffset_m) "
+                "was not threaded to postprocess; refusing to emit a polygon at "
+                "the equator."
+            ),
+            details={"model_utm_epsg": utm_epsg, "xoffset_m": x_off, "yoffset_m": y_off},
+        )
+
+    # --- Step 3: travel time in years ----------------------------------------
+    # PRT timestamps each vertex with model time ``t`` (in DAYS; the GWF TDIS
+    # time_units are DAYS).  Backward tracking yields INCREASING abs(t) as
+    # particles travel up-gradient from the well.  The release event (ireason=1)
+    # has t=0.  Use abs(t) as the elapsed travel time.
+    df = df.copy()
+    df["ttravel_years"] = df["t"].abs() / 365.25
+
+    # --- Step 4: isochrone tiers ---------------------------------------------
+    # The user/composer-requested tiers (MODFLOWRunArgs.capture_zone_travel_time_years)
+    # are threaded in explicitly via ``tier_years`` (the call site holds the
+    # in-memory DeckManifest + run_args).  Use them DIRECTLY so the narrated
+    # tiers equal the requested ones (Invariant-1).  These manifest-only values
+    # are NOT recoverable from any on-disk MF6 file, so there is no deck-reload
+    # path -- only a data-driven last resort when no tiers were supplied.
+    requested_tiers = [float(t) for t in (tier_years or []) if float(t) > 0.0]
+    if requested_tiers:
+        tiers: list[float] = sorted(requested_tiers)
+    else:
+        # Data-driven fallback (only when the caller supplied no tiers): three
+        # evenly-spaced tiers at 10%, 50%, 100% of the maximum observed travel
+        # time (minimum 1 year to avoid sub-year tiers that produce a degenerate
+        # hull on a coarse 100 m grid).
+        t_max = float(df["ttravel_years"].max())
+        if t_max >= 3.0:
+            tiers = [
+                round(t_max * 0.10, 2),
+                round(t_max * 0.50, 2),
+                round(t_max, 2),
+            ]
+            tiers = [max(1.0, t) for t in tiers]
+        else:
+            tiers = [max(1.0, t_max)]
+
+    logger.info(
+        "postprocess_capture_zone run_id=%s requested_tiers=%s tiers=%s t_max_years=%.2f",
+        run_id, requested_tiers or None, tiers, float(df["ttravel_years"].max()),
+    )
+
+    # --- Step 5: build polygons in LOCAL UTM coords --------------------------
+    # All shapely geometry is first built in LOCAL coordinates (0-origin),
+    # then shifted by (xoffset_m, yoffset_m) to get true UTM coords, then
+    # reprojected to EPSG:4326 for the FlatGeobuf.  Area is measured in true
+    # UTM (after offset) so the km^2 scalars are correct.
+
+    x_local = df["x"].values
+    y_local = df["y"].values
+
+    if len(x_local) < 3:
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_OUTPUT_READ_FAILED",
+            message=(
+                f"PRT track CSV {csv_path} has only {len(x_local)} vertices with "
+                "finite x/y; need >= 3 to build a convex hull."
+            ),
+            details={"csv_path": str(csv_path), "n_vertices": len(x_local)},
+        )
+
+    # Outer capture envelope = convex hull of ALL pathline vertices.
+    outer_hull_local = MultiPoint(list(zip(x_local, y_local))).convex_hull
+
+    # Nested isochrone hulls for each requested tier.  Only compute a tier if
+    # there are >= 3 vertices within that travel-time window; shorter tiers on
+    # a 100 m grid may have too few points for a meaningful polygon.
+    iso_hulls_local: dict[str, Any] = {}
+    actual_tiers: list[float] = []
+    for T in tiers:  # already sorted ascending
+        sub = df[df["ttravel_years"] <= T]
+        if len(sub) >= 3:
+            h = MultiPoint(list(zip(sub["x"].values, sub["y"].values))).convex_hull
+            key = str(int(T)) if T == int(T) else str(T)
+            iso_hulls_local[key] = h
+            actual_tiers.append(T)
+        else:
+            logger.info(
+                "postprocess_capture_zone: tier %.2f yr has only %d vertices; skipped",
+                T, len(sub),
+            )
+
+    if not actual_tiers:
+        # The outer hull still spans all time; provide it as the single tier.
+        key = str(int(tiers[-1])) if tiers[-1] == int(tiers[-1]) else str(tiers[-1])
+        iso_hulls_local[key] = outer_hull_local
+        actual_tiers = [tiers[-1]]
+
+    # --- Step 6: shift to true UTM, measure areas, then reproject -----------
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        import pandas as pd  # type: ignore[import-not-found]
+        from shapely.geometry import shape  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_WRITE_FAILED",
+            message=f"geopandas / pandas not importable for FlatGeobuf write: {exc}",
+        ) from exc
+
+    def _shift_and_reproject(geom: Any) -> Any:
+        """Translate local-origin geometry to true UTM then reproject to 4326."""
+        if x_off != 0.0 or y_off != 0.0:
+            geom = shapely.affinity.translate(geom, xoff=x_off, yoff=y_off)
+        if utm_epsg and utm_epsg != 4326:
+            src_crs = f"EPSG:{utm_epsg}"
+            gdf_tmp = gpd.GeoDataFrame(geometry=[geom], crs=src_crs)
+            gdf_tmp = gdf_tmp.to_crs("EPSG:4326")
+            return gdf_tmp.geometry.iloc[0]
+        return geom
+
+    def _area_km2(geom_local: Any) -> float:
+        """Area of a local-UTM geometry in km^2 (after shift to true UTM)."""
+        if x_off != 0.0 or y_off != 0.0:
+            g = shapely.affinity.translate(geom_local, xoff=x_off, yoff=y_off)
+        else:
+            g = geom_local
+        return float(g.area) / 1_000_000.0
+
+    # Outer envelope area (in true UTM before 4326 reproject).
+    outer_area_km2 = _area_km2(outer_hull_local)
+
+    # Per-tier isochrone areas and reprojected geometries for the FlatGeobuf.
+    isochrone_areas_km2: dict[str, float] = {}
+    features_geom: list[Any] = []
+    features_props: list[dict[str, Any]] = []
+
+    # Outer envelope feature (travel_time_years = None signals the outer hull).
+    outer_4326 = _shift_and_reproject(outer_hull_local)
+    features_geom.append(outer_4326)
+    features_props.append({
+        "feature_type": "outer_envelope",
+        "travel_time_years": None,
+        "area_km2": outer_area_km2,
+    })
+
+    for key, iso_local in iso_hulls_local.items():
+        area = _area_km2(iso_local)
+        isochrone_areas_km2[key] = area
+        iso_4326 = _shift_and_reproject(iso_local)
+        try:
+            t_val = float(key)
+        except ValueError:
+            t_val = None
+        features_geom.append(iso_4326)
+        features_props.append({
+            "feature_type": "isochrone",
+            "travel_time_years": t_val,
+            "area_km2": area,
+        })
+
+    # --- Step 7: write FlatGeobuf in EPSG:4326 --------------------------------
+    gdf = gpd.GeoDataFrame(features_props, geometry=features_geom, crs="EPSG:4326")
+
+    try:
+        fgb_path = Path(
+            tempfile.NamedTemporaryFile(
+                suffix="_capture_zone_4326.fgb", delete=False
+            ).name
+        )
+        gdf.to_file(str(fgb_path), driver="FlatGeobuf", engine="pyogrio")
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "CAPTURE_ZONE_WRITE_FAILED",
+            message=f"could not write capture-zone FlatGeobuf: {exc}",
+            details={"run_id": run_id},
+        ) from exc
+
+    # Derive the EPSG:4326 bounding box from the outer envelope polygon.
+    bbox_4326: tuple[float, float, float, float] | None = None
+    try:
+        b = outer_4326.bounds  # (min_lon, min_lat, max_lon, max_lat) in EPSG:4326
+        bbox_4326 = (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+    except Exception:  # noqa: BLE001
+        bbox_4326 = None
+
+    # --- Step 8: upload to runs bucket ---------------------------------------
+    fgb_uri = _upload_fgb(fgb_path, run_id, runs_bucket)
+
+    logger.info(
+        "postprocess_capture_zone run_id=%s outer_area_km2=%.4g "
+        "tiers=%s iso_areas=%s particles=%d uri=%s",
+        run_id, outer_area_km2, actual_tiers, isochrone_areas_km2,
+        particle_count, fgb_uri,
+    )
+
+    layer_id = f"capture-zone-{run_id}"
+    return CaptureZoneLayerURI(
+        layer_id=layer_id,
+        name="Wellhead Capture Zone (backward particle tracking)",
+        layer_type="vector",
+        uri=fgb_uri,
+        style_preset=CAPTURE_ZONE_STYLE_PRESET,
+        role="primary",
+        bbox=bbox_4326,
+        capture_zone_area_km2=outer_area_km2,
+        travel_time_years=actual_tiers,
+        isochrone_areas_km2=isochrone_areas_km2,
+        particle_count=particle_count,
     )

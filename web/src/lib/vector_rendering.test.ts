@@ -456,3 +456,44 @@ describe("isMeshGridLayer + MESH_FILL_OPACITY — wireframe polygon gating (NATE
     expect(MESH_FILL_OPACITY).toBeLessThan(0.2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// sprint-18 Wave-4 - MODFLOW PRT capture-zone / wellhead-protection violet
+// ---------------------------------------------------------------------------
+
+describe("presetColorFor - capture_zone / wellhead_protection (sprint-18 Wave-4)", () => {
+  it("maps capture_zone -> violet #9B59B6", () => {
+    expect(presetColorFor("capture_zone")).toBe("#9B59B6");
+  });
+
+  it("maps wellhead_protection -> violet #9B59B6", () => {
+    expect(presetColorFor("wellhead_protection")).toBe("#9B59B6");
+  });
+
+  it("is case-insensitive (CAPTURE_ZONE / WELLHEAD_PROTECTION)", () => {
+    expect(presetColorFor("CAPTURE_ZONE")).toBe("#9B59B6");
+    expect(presetColorFor("WELLHEAD_PROTECTION")).toBe("#9B59B6");
+  });
+
+  it("resolveVectorColor picks the violet preset for capture_zone layers", () => {
+    expect(resolveVectorColor("cz-layer-01", "capture_zone", "polygon")).toBe("#9B59B6");
+    expect(resolveVectorColor("whp-layer-01", "wellhead_protection", "polygon")).toBe("#9B59B6");
+  });
+
+  it("is DISTINCT from rivers-blue, mesh-cyan, and roads-amber", () => {
+    const cz = presetColorFor("capture_zone")!;
+    const river = presetColorFor("osm_waterways")!;
+    const mesh = presetColorFor("mesh_grid")!;
+    const road = presetColorFor("osm_roads")!;
+    expect(cz).not.toBe(river);
+    expect(cz).not.toBe(mesh);
+    expect(cz).not.toBe(road);
+  });
+
+  it("does not disturb existing preset colours (regression guard)", () => {
+    expect(presetColorFor("osm_waterways")).toBe("#4477FF");
+    expect(presetColorFor("mesh_grid")).toBe("#5BC0DE");
+    expect(presetColorFor("osm_roads")).toBe("#FFD700");
+    expect(presetColorFor("pelicun_damage")).toBe(PELICUN_DAMAGE_PRESET);
+  });
+});

@@ -319,6 +319,10 @@ export function presetColorFor(stylePreset: string | null | undefined): string |
   }
   // Pelicun damage: sentinel — caller must use choropleth expression
   if (key === PELICUN_DAMAGE_PRESET) return PELICUN_DAMAGE_PRESET;
+  // MODFLOW Wave-4 PRT capture-zone and wellhead-protection polygon layers
+  // (sprint-18 Wave-4). Violet protection-zone colour so these planning-level
+  // envelopes read visually distinct from hydro-blue rivers and mesh-cyan grids.
+  if (key === "capture_zone" || key === "wellhead_protection") return "#9B59B6";
   return undefined;
 }
 

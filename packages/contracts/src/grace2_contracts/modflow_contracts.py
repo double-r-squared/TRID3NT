@@ -68,6 +68,7 @@ __all__ = [
     "MoundingLayerURI",
     "ASRLayerURI",
     "HydroperiodLayerURI",
+    "CaptureZoneLayerURI",
     "DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY",
     "DEFAULT_STREAMBED_THICKNESS_M",
     "DEFAULT_AQUIFER_SY",
@@ -329,10 +330,11 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
     river_dem_uri: str | None = None
     along_river_source: bool = False
 
-    # --- Archetype selector (sprint-18 Wave-1 + Wave-2; ADDITIVE, optional) -- #
-    # None = the EXISTING spill/seepage path (deck byte-identical). The three
-    # Wave-2 values ("MAR", "ASR", "wetland_hydroperiod") are additive on top of
-    # the Wave-1 three.
+    # --- Archetype selector (sprint-18 Wave-1 + Wave-2 + Wave-4; ADDITIVE, optional) -- #
+    # None = the EXISTING spill/seepage path (deck byte-identical). Wave-4 adds
+    # "capture_zone" (zone-of-contribution via MF6 PRT backward particle tracking)
+    # and "wellhead_protection" (EPA-style fixed-travel-time tiers via the same PRT
+    # mechanism). Both are LOCAL-ONLY runs (PRT is fast; no Batch submit).
     archetype: (
         Literal[
             "sustainable_yield",
@@ -342,6 +344,8 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             "ASR",
             "wetland_hydroperiod",
             "multi_species",
+            "capture_zone",
+            "wellhead_protection",
         ]
         | None
     ) = None
@@ -407,6 +411,54 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
     et_max_rate_m_day: float | None = Field(default=None, gt=0.0)
     et_extinction_depth_m: float | None = Field(default=None, gt=0.0)
     specific_yield: float = Field(default=DEFAULT_WETLAND_SY, gt=0.0, le=1.0)
+
+    # --- capture_zone / wellhead_protection: MF6 PRT backward particle tracking #
+    # Both archetypes run the same two-simulation sequence: a GWF flow solve
+    # (reusing ``well_location_latlon`` for the pumping well) followed by a PRT
+    # backward-particle-tracking solve that releases particles around the well
+    # screen and tracks them back to their capture origin. The difference is only
+    # in framing and default travel-time tiers:
+    #   capture_zone       - general zone-of-contribution (tiers: [1, 5, 10] years)
+    #   wellhead_protection - EPA-style fixed-travel-time tiers (tiers: [2, 5, 10] years)
+    # The adapter applies default tiers when ``capture_zone_travel_time_years`` is
+    # None. Both archetypes are LOCAL-ONLY (PRT is fast; Batch is NOT used). All
+    # optional/defaulted -> additive; ``None`` => byte-identical to other paths.
+    capture_zone_travel_time_years: list[float] | None = Field(
+        default=None,
+        description=(
+            "Travel-time isochrone tiers for the backward-particle-tracking capture "
+            "zone, years. Each value defines one isochrone boundary: particles that "
+            "reach the well within this time bound delineate the zone for that tier. "
+            "When None the adapter uses archetype-specific defaults: [1, 5, 10] for "
+            "capture_zone and [2, 5, 10] for wellhead_protection. Supplied values "
+            "must be > 0; the adapter sorts them ascending before building the deck."
+        ),
+    )
+    n_particles: int = Field(
+        default=16,
+        ge=4,
+        le=256,
+        description=(
+            "Number of particles released around the pumping-well screen per "
+            "backward-tracking solve. Particles are placed on a ring around the "
+            "well cell at the start of the PRT simulation. More particles produce "
+            "a denser pathline fan and a more representative capture-zone convex "
+            "hull, at the cost of slightly longer PRT runtime. Default 16 is "
+            "adequate for a demo; 32-64 improves shape fidelity for irregular "
+            "flow fields. Bounds: [4, 256]."
+        ),
+    )
+    prt_max_tracking_years: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Maximum total backward-tracking time for the PRT simulation, years. "
+            "When None the adapter derives a safe limit from the longest requested "
+            "travel-time tier (e.g. max(capture_zone_travel_time_years) * 1.5). "
+            "Set explicitly to override the auto-derived limit (e.g. to cap runtime "
+            "for a large domain). Must be > 0."
+        ),
+    )
 
     @field_validator("spill_location_latlon")
     @classmethod
@@ -680,3 +732,95 @@ class HydroperiodLayerURI(LayerURI):
 
     seasonal_head_range_m: float = Field(ge=0.0)
     head_timeseries: list[float] | None = None
+
+
+class CaptureZoneLayerURI(LayerURI):
+    """A ``LayerURI`` for a MODFLOW PRT backward-particle-tracking capture zone
+    (Wave-4 - ADDITIVE).
+
+    The headline output of the ``"capture_zone"`` and ``"wellhead_protection"``
+    archetypes. Both run a two-simulation sequence: a GWF groundwater-flow solve
+    followed by an MF6 PRT backward-particle-tracking solve. PRT releases
+    ``n_particles`` particles around the pumping-well screen and tracks them
+    backward in time; the convex hull of all backtracked pathlines at each
+    requested travel-time threshold is the capture zone isochrone for that tier.
+
+    IMPORTANT PRECISION CAVEAT -- this is the FIRST vector MODFLOW ``LayerURI``
+    (``layer_type='vector'``). The polygon is the CONVEX HULL of discrete
+    backtracked pathlines on a structured rectilinear grid with demo aquifer
+    parameters, NOT a calibrated regulatory wellhead protection area. Treat it as
+    a qualitative planning envelope, not a legally defensible delineation. The
+    agent must narrate this caveat when presenting the layer to the user
+    (invariant 1, FR-AS-7).
+
+    The difference between the two archetypes is framing and default travel-time
+    tiers only; both produce the same carrier:
+        capture_zone       - general zone-of-contribution framing.
+        wellhead_protection - EPA-style fixed-travel-time framing (typical
+            tiers: 2 / 5 / 10 years; EPA wellhead protection program under SDWA
+            Section 1428, delineation per EPA 440/6-87-010).
+
+    Extends ``LayerURI`` field-for-field so it still maps onto
+    ``map-command load-layer`` with no translation (same as every other layer).
+    Adds the structured numbers the agent narrates so the LLM cites typed fields,
+    never invents them (invariant 1, FR-AS-7):
+
+        capture_zone_area_km2: area of the outer isochrone envelope (the hull of
+            all pathlines regardless of tier), km^2 (>= 0). This is the broadest
+            extent of the capture zone - useful as a headline scalar.
+        travel_time_years: the isochrone travel-time tiers actually computed, years
+            (e.g. [1, 5, 10] for capture_zone or [2, 5, 10] for
+            wellhead_protection). One tier may be dropped if no particles reached
+            that distance within the tracking window; the agent narrates gaps.
+        isochrone_areas_km2: per-tier nested area, km^2 (>= 0 for each value).
+            Keys are the tier durations as strings (e.g. ``{"1": 0.05, "5": 0.32,
+            "10": 1.4}``); the value is the area of the convex hull for particles
+            captured within that travel-time threshold. Narrated tier-by-tier.
+        particle_count: number of particles actually released in the PRT solve
+            (matches ``MODFLOWRunArgs.n_particles`` unless the well cell was on
+            the domain boundary and some release positions were clipped). >= 0.
+
+    ``layer_type`` defaults to ``'vector'`` (a FlatGeobuf polygon carrying the
+    isochrone tiers as feature attributes); the base contract's format vocabulary
+    is inherited unchanged. This is the first vector MODFLOW layer -- all prior
+    MODFLOW LayerURI subclasses are ``'raster'``.
+    """
+
+    layer_type: Literal["raster", "vector"] = "vector"
+
+    capture_zone_area_km2: float = Field(
+        ge=0.0,
+        description=(
+            "Area of the outer capture-zone isochrone envelope (convex hull of ALL "
+            "backtracked pathlines at the longest requested travel-time tier), km^2. "
+            "This is the broadest headline extent. The polygon is a planning-level "
+            "envelope; see the class docstring precision caveat."
+        ),
+    )
+    travel_time_years: list[float] = Field(
+        min_length=1,
+        description=(
+            "Travel-time isochrone tiers actually computed, years (one float per "
+            "tier). Matches ``MODFLOWRunArgs.capture_zone_travel_time_years`` after "
+            "applying defaults; a tier may be absent if no particles reached that "
+            "distance within the PRT tracking window."
+        ),
+    )
+    isochrone_areas_km2: dict[str, float] = Field(
+        description=(
+            "Per-tier nested isochrone area, km^2. Keys are tier durations as "
+            "strings (e.g. '1', '5', '10'); values are the convex-hull area of "
+            "backtracked pathlines captured within that travel-time threshold. "
+            "All values >= 0. The agent narrates each tier so the user understands "
+            "the zone-of-contribution at each time scale."
+        ),
+    )
+    particle_count: int = Field(
+        ge=0,
+        description=(
+            "Number of particles actually released in the PRT backward-tracking "
+            "solve. Normally equals ``MODFLOWRunArgs.n_particles``; may be slightly "
+            "lower if the well cell was near the domain boundary and some release "
+            "positions were clipped to valid grid cells."
+        ),
+    )

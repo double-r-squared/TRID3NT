@@ -73,6 +73,7 @@ from .geoclaw_contracts import GeoClawDepthLayerURI, GeoClawRunArgs
 from .modflow_contracts import (
     ASRLayerURI,
     BudgetPartitionLayerURI,
+    CaptureZoneLayerURI,
     DewaterLayerURI,
     DrawdownLayerURI,
     HydroperiodLayerURI,
@@ -148,6 +149,8 @@ __all__ = [
     "MoundingLayerURI",
     "ASRLayerURI",
     "HydroperiodLayerURI",
+    # MODFLOW Wave-4 PRT capture-zone vector layer (capture_zone / wellhead_protection)
+    "CaptureZoneLayerURI",
     # SWMM quasi-2D urban-flood contracts (sprint-16 P1)
     "SWMMRunArgs",
     "SWMMDepthLayerURI",
