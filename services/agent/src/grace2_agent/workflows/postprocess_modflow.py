@@ -36,7 +36,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from grace2_contracts.modflow_contracts import PlumeLayerURI, SeepageLayerURI
+from grace2_contracts.modflow_contracts import (
+    BudgetPartitionLayerURI,
+    DewaterLayerURI,
+    DrawdownLayerURI,
+    PlumeLayerURI,
+    SeepageLayerURI,
+)
 
 from . import cog_io
 from .cog_io import CogIoError
@@ -47,13 +53,21 @@ __all__ = [
     "PostprocessMODFLOWError",
     "postprocess_modflow",
     "postprocess_river_seepage",
+    "postprocess_drawdown",
+    "postprocess_dewatering",
+    "postprocess_budget_partition",
     "publish_modflow_quantities",
     "compute_plume_metrics",
     "compute_seepage_metrics",
+    "compute_drawdown_metrics",
+    "compute_cbc_term_metrics",
+    "compute_budget_partition",
     "PLUME_DETECTION_FLOOR_MGL",
     "PLUME_STYLE_PRESET",
     "SEEPAGE_STYLE_PRESET",
     "HEAD_STYLE_PRESET",
+    "DRAWDOWN_STYLE_PRESET",
+    "DEWATERING_STYLE_PRESET",
     "GWF_CBC_FILENAME",
     "GWF_HDS_FILENAME",
     "RUNS_BUCKET_DEFAULT",
@@ -84,6 +98,25 @@ GWF_CBC_FILENAME: str = "gwf_model.cbc"
 #: (sprint-17 J9). Registered in publish_layer._TITILER_STYLE_REGISTRY by the
 #: orchestrator's shared-appends merge as ("-2,2", "rdbu").
 SEEPAGE_STYLE_PRESET: str = "diverging_river_seepage"
+
+#: TiTiler style preset for the sustainable-yield drawdown (head-decline) COG
+#: (sprint-18 Wave-1). Matches the output_quantities registry "drawdown" spec.
+DRAWDOWN_STYLE_PRESET: str = "continuous_drawdown_m"
+
+#: TiTiler style preset for the mine-dewatering DRN-outflow COG (sprint-18
+#: Wave-1). Matches the output_quantities registry "dewatering-rate" spec.
+DEWATERING_STYLE_PRESET: str = "continuous_dewatering_rate"
+
+#: CBC budget terms the generalized cell-by-cell reader scatters onto a grid.
+#: Each is a head-dependent / source-sink package whose budget record carries a
+#: per-cell signed flow (m^3/day, MF6 sign: positive = INTO the cell/aquifer).
+_CBC_GRID_TERMS: frozenset[str] = frozenset(
+    {"DRN", "EVT", "RCH", "WEL", "RCHA", "RIV", "GHB", "CHD"}
+)
+
+#: Budget partition headline EXCLUDES the inter-cell flow term (it is internal
+#: bookkeeping, not a source/sink boundary the user narrates).
+_BUDGET_EXCLUDE_FROM_HEADLINE: frozenset[str] = frozenset({"FLOW-JA-FACE"})
 
 
 class PostprocessMODFLOWError(RuntimeError):
@@ -140,7 +173,7 @@ def compute_plume_metrics(
         dispersion artifact never narrates as a negative concentration);
         ``area`` is ``(#cells > floor) * cell_area_m2 / 1e6``.
     """
-    import numpy as np  # local — caller vouched for the import path
+    import numpy as np  # local - caller vouched for the import path
 
     arr = np.asarray(final_grid, dtype="float64")
     if arr.size == 0:
@@ -174,7 +207,7 @@ def compute_seepage_metrics(
           * losing_m3_day: total MAGNITUDE of positive (losing) flux, >= 0.
           * river_cell_count: number of finite (reach) cells.
     """
-    import numpy as np  # local — caller vouched for the import path
+    import numpy as np  # local - caller vouched for the import path
 
     arr = np.asarray(seepage_grid, dtype="float64")
     if arr.size == 0:
@@ -186,6 +219,280 @@ def compute_seepage_metrics(
     losing = float(np.sum(finite[finite > 0.0]))  # river -> aquifer
     gaining = float(-np.sum(finite[finite < 0.0]))  # aquifer -> river (magnitude)
     return total, gaining, losing, int(finite.size)
+
+
+def compute_drawdown_metrics(
+    decline_grid: Any,
+) -> float:
+    """Compute the peak head DECLINE (>= 0) from a 2D drawdown grid.
+
+    Pure arithmetic over the per-cell head-decline grid (m; pre-pumping head
+    minus pumped head, so a positive value is a drawdown and a negative value is
+    a mounding/recovery artifact). The headline is the maximum decline anywhere
+    in the domain, clamped at 0 so a tiny numerical mounding never narrates as a
+    negative drawdown.
+
+    Args:
+        decline_grid: 2D array (rows x cols) of head decline in m (NaN off-grid).
+
+    Returns:
+        ``max_drawdown_m`` (>= 0): the largest positive head decline.
+    """
+    import numpy as np  # local - caller vouched for the import path
+
+    arr = np.asarray(decline_grid, dtype="float64")
+    if arr.size == 0:
+        return 0.0
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return 0.0
+    return max(0.0, float(np.max(finite)))
+
+
+def compute_cbc_term_metrics(
+    term_grid: Any,
+) -> tuple[float, int]:
+    """Compute (total_outflow_magnitude_m3_day, active_cell_count) from a CBC grid.
+
+    Pure arithmetic over a per-cell signed CBC budget grid (m^3/day, NaN where
+    the term is absent). MF6 budget sign: a positive ``q`` is flow INTO the cell
+    from the boundary; a negative ``q`` is flow OUT of the cell to the boundary.
+    For a DRAIN (mine_dewatering) the drain removes water, so the per-cell flux
+    is NEGATIVE and the dewatering RATE is the magnitude of that outflow.
+
+    Returns:
+        ``(total_magnitude_m3_day, active_cell_count)``:
+          * total_magnitude_m3_day: sum of |q| over every finite (active) cell,
+            >= 0 - the pump-to-dewater rate for a DRN term.
+          * active_cell_count: number of finite cells the term touched.
+    """
+    import numpy as np  # local - caller vouched for the import path
+
+    arr = np.asarray(term_grid, dtype="float64")
+    if arr.size == 0:
+        return 0.0, 0
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return 0.0, 0
+    total_mag = float(np.sum(np.abs(finite)))
+    return total_mag, int(finite.size)
+
+
+def compute_budget_partition(
+    term_totals: dict[str, float],
+) -> dict[str, float]:
+    """Build the narration-ready budget partition from per-term CBC sums.
+
+    Pure dict transform over the raw per-term signed budget sums (m^3/day, MF6
+    sign: positive = into the aquifer/zone). EXCLUDES the internal inter-cell
+    ``FLOW-JA-FACE`` term from the headline partition (it is bookkeeping, not a
+    source/sink the user narrates) and drops a term whose magnitude rounds to
+    zero. Honest signs are preserved verbatim: an extraction WEL reads negative,
+    a recharge reads positive. Never free-generated - every value comes from a
+    real CBC record sum the caller measured.
+
+    Args:
+        term_totals: mapping of CBC record name -> signed sum over all cells.
+
+    Returns:
+        ``budget_partition_m3_day``: the filtered/normalized partition dict.
+    """
+    partition: dict[str, float] = {}
+    for raw_name, value in term_totals.items():
+        name = str(raw_name).strip().upper()
+        if name in _BUDGET_EXCLUDE_FROM_HEADLINE:
+            continue
+        q = float(value)
+        if abs(q) < 1e-9:
+            continue
+        partition[name.lower()] = q
+    return partition
+
+
+def _normalize_cbc_record_names(cbc: Any) -> dict[str, str]:
+    """Return a {UPPER label -> exact record name} map for a CBC file.
+
+    flopy's ``get_unique_record_names(decode=True)`` returns the record names
+    (str or bytes, padded). We strip + decode each and key by the UPPER label so
+    a term lookup (``"DRN"``, ``"FLOW-JA-FACE"``) resolves to the exact name the
+    ``get_data(text=...)`` call needs. The first record matching a label wins.
+    """
+    out: dict[str, str] = {}
+    for r in cbc.get_unique_record_names(decode=True):
+        name = (r.strip() if isinstance(r, str) else r.strip().decode())
+        key = name.upper()
+        out.setdefault(key, name)
+    return out
+
+
+def _scatter_cbc_term_grid(
+    cbc: Any, record_name: str, nrow: int, ncol: int
+) -> Any:
+    """Scatter the LAST-timestep CBC ``record_name`` budget onto a 2D grid.
+
+    Reads the per-cell signed flux for ONE CBC term (DRN / WEL / RIV / RCH /
+    ...) and scatters the last-timestep ``q`` values onto an (nrow, ncol) grid
+    (NaN where the term is absent). Multi-layer cells accumulate onto the same
+    2D cell (collapse the layer axis). The ``node`` field is a 1-based flat
+    structured-grid index = lay*nrow*ncol + row*ncol + col + 1.
+
+    Returns the 2D grid, or an all-NaN grid when the term carries no records.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    grid = np.full((nrow, ncol), np.nan, dtype="float64")
+    data = cbc.get_data(text=record_name)
+    if not data:
+        return grid
+    last = data[-1]
+    try:
+        nodes = np.asarray(last["node"], dtype="int64")
+        qvals = np.asarray(last["q"], dtype="float64")
+    except Exception:  # noqa: BLE001 - list-style budget (older formats)
+        nodes = np.asarray([int(r["node"]) for r in last], dtype="int64")
+        qvals = np.asarray([float(r["q"]) for r in last], dtype="float64")
+    cells_per_layer = nrow * ncol
+    for node, q in zip(nodes, qvals):
+        local = (int(node) - 1) % cells_per_layer
+        row = local // ncol
+        col = local % ncol
+        if 0 <= row < nrow and 0 <= col < ncol:
+            grid[row, col] = q if np.isnan(grid[row, col]) else grid[row, col] + q
+    return grid
+
+
+def _read_cbc_term_grid(
+    cbc_path: Path, term: str, nrow: int, ncol: int
+) -> Any:
+    """Read ONE CBC budget term (e.g. DRN / WEL / RCH) into a 2D signed grid.
+
+    Generalization of ``_read_riv_seepage_grid`` for the sprint-18 archetypes:
+    the mine-dewatering DRN term, an RCH/EVT recharge term, etc. Resolves the
+    term name case-insensitively against the file's unique record names and
+    scatters the last-timestep flux onto the grid.
+
+    Raises ``PostprocessMODFLOWError("DEWATER_OUTPUT_EMPTY")`` when the requested
+    term is absent from the budget (a DRN run that wrote no DRN term is a real
+    failure, not a silent empty layer).
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "DEWATER_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"cbc_path": str(cbc_path), "term": term},
+        ) from exc
+
+    try:
+        cbc = flopy.utils.CellBudgetFile(str(cbc_path))
+        names = _normalize_cbc_record_names(cbc)
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "DEWATER_OUTPUT_READ_FAILED",
+            message=f"could not open CBC {cbc_path}: {exc}",
+            details={"cbc_path": str(cbc_path), "term": term},
+        ) from exc
+
+    want = term.strip().upper()
+    match = next((exact for key, exact in names.items() if want in key), None)
+    if match is None:
+        raise PostprocessMODFLOWError(
+            "DEWATER_OUTPUT_EMPTY",
+            message=(
+                f"no {want} budget record in {cbc_path}; "
+                f"records present: {sorted(names)}"
+            ),
+            details={"cbc_path": str(cbc_path), "term": term},
+        )
+    try:
+        return _scatter_cbc_term_grid(cbc, match, nrow, ncol)
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "DEWATER_OUTPUT_READ_FAILED",
+            message=f"could not read {want} budget from {cbc_path}: {exc}",
+            details={"cbc_path": str(cbc_path), "term": term},
+        ) from exc
+
+
+def _read_cbc_budget_partition(cbc_path: Path) -> dict[str, float]:
+    """Read every CBC term and sum its per-cell flux -> a per-term total dict.
+
+    Iterates the file's unique record names and sums the LAST-timestep ``q``
+    over all cells for each term. The result feeds ``compute_budget_partition``
+    (which drops FLOW-JA-FACE + near-zero terms). Honest signs preserved: each
+    sum is the signed MF6 budget total (positive = into the aquifer).
+
+    Raises ``PostprocessMODFLOWError("BUDGET_OUTPUT_EMPTY")`` when the file has
+    no budget records at all.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "BUDGET_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"cbc_path": str(cbc_path)},
+        ) from exc
+
+    try:
+        cbc = flopy.utils.CellBudgetFile(str(cbc_path))
+        names = _normalize_cbc_record_names(cbc)
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "BUDGET_OUTPUT_READ_FAILED",
+            message=f"could not open CBC {cbc_path}: {exc}",
+            details={"cbc_path": str(cbc_path)},
+        ) from exc
+
+    if not names:
+        raise PostprocessMODFLOWError(
+            "BUDGET_OUTPUT_EMPTY",
+            message=f"no budget records in {cbc_path}",
+            details={"cbc_path": str(cbc_path)},
+        )
+
+    totals: dict[str, float] = {}
+    for key, exact in names.items():
+        if key in _BUDGET_EXCLUDE_FROM_HEADLINE:
+            # Skip the internal inter-cell term entirely (also dropped later, but
+            # its per-cell array is large + uninformative for the partition).
+            continue
+        try:
+            data = cbc.get_data(text=exact)
+        except Exception:  # noqa: BLE001 - skip an unreadable term, not fatal
+            continue
+        if not data:
+            continue
+        last = data[-1]
+        try:
+            arr = np.asarray(last["q"], dtype="float64")
+        except Exception:  # noqa: BLE001
+            try:
+                # full-grid arrays come back as a plain ndarray; sum to one total.
+                totals[key] = totals.get(key, 0.0) + float(
+                    np.nansum(np.asarray(last, dtype="float64"))
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            continue
+        # Split a head-dependent / source-sink term into IN (q>0, into the
+        # aquifer) and OUT (q<0, out of the aquifer) so a balanced boundary like
+        # the regional CHD gradient narrates as separate inflow + outflow legs
+        # rather than collapsing to a net ~0 that hides the throughflow. Honest
+        # MF6 signs preserved (in positive, out negative).
+        in_sum = float(np.nansum(arr[arr > 0.0]))
+        out_sum = float(np.nansum(arr[arr < 0.0]))
+        if abs(in_sum) > 0.0:
+            totals[f"{key}_IN"] = totals.get(f"{key}_IN", 0.0) + in_sum
+        if abs(out_sum) > 0.0:
+            totals[f"{key}_OUT"] = totals.get(f"{key}_OUT", 0.0) + out_sum
+        if abs(in_sum) == 0.0 and abs(out_sum) == 0.0:
+            # A genuinely-zero term still records its net (0) so the absence is
+            # explicit rather than silently dropped before compute_budget_partition.
+            totals[key] = totals.get(key, 0.0) + float(np.nansum(arr))
+    return totals
 
 
 def _read_riv_seepage_grid(
@@ -247,7 +554,7 @@ def _read_riv_seepage_grid(
     try:
         nodes = np.asarray(last["node"], dtype="int64")
         qvals = np.asarray(last["q"], dtype="float64")
-    except Exception:  # noqa: BLE001 — list-style budget (older formats)
+    except Exception:  # noqa: BLE001 - list-style budget (older formats)
         # Fall back to attribute access on a list of records.
         nodes = np.asarray([int(r["node"]) for r in last], dtype="int64")
         qvals = np.asarray([float(r["q"]) for r in last], dtype="float64")
@@ -402,10 +709,16 @@ def _read_final_concentration(ucn_path: Path) -> Any:
 def _grid_georegistration_from_deck(deck_dir: str | None) -> dict[str, Any] | None:
     """Read grid origin + cell size from the deck via flopy (for the COG transform).
 
-    The deck dir holds the GWT DIS package; flopy's modelgrid gives the
-    lower-left origin (xorigin/yorigin) + cell widths (delr/delc). Returns None
-    if the deck cannot be loaded (the caller then falls back to identity, which
-    still yields valid metrics — only the geo-placement degrades).
+    The deck dir holds the GWT (or, for a GWF-only Wave-1 archetype deck, the
+    GWF) DIS package; flopy's modelgrid gives the lower-left origin
+    (xorigin/yorigin) + cell widths (delr/delc). Returns None if the deck cannot
+    be loaded (the caller then falls back to identity, which still yields valid
+    metrics - only the geo-placement degrades).
+
+    The two model halves share the SAME georegistered grid (the GWFGWT exchange
+    requires it), so either works; we PREFER the GWT model (the spill/seepage
+    deck's transport grid) and fall back to the GWF model (a GWF-only archetype
+    deck has no GWT model). Any model with a structured modelgrid is acceptable.
     """
     if not deck_dir:
         return None
@@ -413,14 +726,21 @@ def _grid_georegistration_from_deck(deck_dir: str | None) -> dict[str, Any] | No
         import flopy  # type: ignore[import-not-found]
 
         sim = flopy.mf6.MFSimulation.load(sim_ws=str(deck_dir), verbosity_level=0)
-        gwt = None
-        for mname in sim.model_names:
-            if mname.startswith("gwt"):
-                gwt = sim.get_model(mname)
+        model = None
+        # Prefer GWT (transport grid); fall back to GWF (GWF-only archetypes); then
+        # any model in the sim (defensive). Same grid either way.
+        for prefix in ("gwt", "gwf"):
+            for mname in sim.model_names:
+                if mname.startswith(prefix):
+                    model = sim.get_model(mname)
+                    break
+            if model is not None:
                 break
-        if gwt is None:
+        if model is None and sim.model_names:
+            model = sim.get_model(sim.model_names[0])
+        if model is None:
             return None
-        mg = gwt.modelgrid
+        mg = model.modelgrid
         return {
             "xorigin": float(mg.xoffset),
             "yorigin": float(mg.yoffset),
@@ -1036,6 +1356,81 @@ def _read_head_grid(hds_path: Path) -> Any:
     return grid
 
 
+def _read_head_decline_grid(
+    hds_path: Path, *, invert: bool = False
+) -> tuple[Any, list[float] | None]:
+    """Read the head DECLINE grid head(t0) - head(t_last) + a well timeseries.
+
+    For a transient sustainable-yield run the FIRST saved head step is the
+    pre-pumping steady spin-up and the LAST is the fully-pumped state, so the
+    per-cell DECLINE = head(t0) - head(t_last) is the drawdown cone (positive
+    where the well drew the water table down). The max-over-layers head is used
+    at each step (the water-table head). For a recharge/MOUNDING variant
+    ``invert=True`` returns head(t_last) - head(t0) (the mound rise, positive
+    where recharge raised the head).
+
+    Returns ``(decline_grid_2d, head_decline_timeseries)`` where the timeseries
+    is the per-step decline AT THE CELL OF PEAK FINAL DECLINE (one value per
+    saved step, t0..t_last), or None when only a single step was saved.
+
+    Raises ``PostprocessMODFLOWError("DRAWDOWN_OUTPUT_*")`` on read failure.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "DRAWDOWN_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+
+    def _to2d(data: Any) -> Any:
+        a = np.asarray(data, dtype="float64")
+        if a.ndim == 3:
+            a2 = np.nanmax(a, axis=0)
+        elif a.ndim == 2:
+            a2 = a
+        else:
+            a2 = np.squeeze(a)
+        return np.where(np.abs(a2) > _MF6_DRY_SENTINEL, np.nan, a2)
+
+    try:
+        hobj = flopy.utils.HeadFile(str(hds_path))
+        times = hobj.get_times()
+        if not times:
+            raise PostprocessMODFLOWError(
+                "DRAWDOWN_OUTPUT_EMPTY",
+                message=f"{hds_path} carries no head timesteps",
+                details={"hds_path": str(hds_path)},
+            )
+        steps = [_to2d(hobj.get_data(totim=t)) for t in times]
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "DRAWDOWN_OUTPUT_READ_FAILED",
+            message=f"could not read head steps from {hds_path}: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+
+    first, last = steps[0], steps[-1]
+    decline = (last - first) if invert else (first - last)
+
+    # Per-step decline at the cell of peak FINAL decline (the well neighbourhood).
+    ts: list[float] | None = None
+    if len(steps) > 1:
+        finite = decline[np.isfinite(decline)]
+        if finite.size:
+            flat_idx = int(np.nanargmax(np.where(np.isfinite(decline), decline, -np.inf)))
+            r, c = np.unravel_index(flat_idx, decline.shape)
+            ts = []
+            for step in steps:
+                val = (step[r, c] - first[r, c]) if invert else (first[r, c] - step[r, c])
+                ts.append(float(val) if np.isfinite(val) else 0.0)
+    return decline, ts
+
+
 def _read_concentration_steps(ucn_path: Path) -> tuple[list[Any], Any]:
     """Read ALL saved transport steps -> (per-step 2D grids, final/peak grid).
 
@@ -1204,4 +1599,235 @@ def publish_modflow_quantities(
         register_manifest_layers=register_manifest_layers,
         specs=specs,
         bbox=bbox,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-1 archetype postprocess (GWF-only: head + cbc readers).
+#
+# Each reuses the EXISTING resolve/write/upload/publish seams above and the new
+# pure metric math. drawdown reads the transient .hds head decline; dewatering
+# reads the .cbc DRN term; budget-partition reads ALL .cbc terms. Every narrated
+# scalar is a typed field measured from the real run output (Invariant 1).
+# --------------------------------------------------------------------------- #
+
+
+def postprocess_drawdown(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+    mounding: bool = False,
+) -> DrawdownLayerURI:
+    """Convert a transient GWF run's head into a drawdown ``DrawdownLayerURI``.
+
+    Reads the GWF head file (``gwf_model.hds``), computes the per-cell head
+    DECLINE = head(t0) - head(t_last) (the cone of depression a pumping well
+    draws down), reprojects it to an EPSG:4326 COG, computes the peak drawdown
+    + the at-well head-decline timeseries, uploads + (optionally) publishes the
+    COG, and returns the typed drawdown layer.
+
+    When ``mounding=True`` the sign is inverted (head(t_last) - head(t0)) so a
+    recharge run renders the mound rise instead of a drawdown cone (same reader,
+    inverse sign).
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+
+    decline, ts = _read_head_decline_grid(hds_path, invert=mounding)
+    max_drawdown_m = compute_drawdown_metrics(decline)
+    logger.info(
+        "postprocess_drawdown run_id=%s mounding=%s max_drawdown_m=%.6g steps_ts=%s",
+        run_id,
+        mounding,
+        max_drawdown_m,
+        len(ts) if ts is not None else 0,
+    )
+
+    # The decline grid is already NaN off-grid; write AS-IS (mask_below_floor
+    # False) so negative recovery cells survive (do not get floored away).
+    cog_path = _write_reprojected_cog(decline, model_crs, geo, mask_below_floor=False)
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path, run_id, runs_bucket, cog_filename="drawdown_4326.tif"
+    )
+
+    name = "Recharge Mounding (head rise)" if mounding else "Pumping Drawdown (head decline)"
+    layer_id = f"{'mounding' if mounding else 'drawdown'}-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=DRAWDOWN_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return DrawdownLayerURI(
+        layer_id=layer_id,
+        name=name,
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=DRAWDOWN_STYLE_PRESET,
+        role="primary",
+        units="m",
+        bbox=bbox_4326,
+        max_drawdown_m=max_drawdown_m,
+        head_decline_timeseries=ts,
+    )
+
+
+def postprocess_dewatering(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+    term: str = "DRN",
+) -> DewaterLayerURI:
+    """Convert a mine-dewatering GWF run's DRN budget into a ``DewaterLayerURI``.
+
+    Reads the GWF cell-by-cell budget (``gwf_model.cbc``) ``term`` (default DRN)
+    into a per-cell signed outflow grid, reprojects it to an EPSG:4326 COG,
+    computes the total dewatering rate (sum of |q| over the drain cells) + the
+    drain-cell count, uploads + (optionally) publishes the COG, and returns the
+    typed dewatering layer. The DRN sum IS the pump-to-dewater rate.
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    cbc_path = _resolve_gwf_cbc_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+    nrow = int(geo["nrow"]) if geo is not None else None
+    ncol = int(geo["ncol"]) if geo is not None else None
+    if nrow is None or ncol is None:
+        nrow, ncol = _infer_grid_shape_from_cbc(cbc_path)
+
+    term_grid = _read_cbc_term_grid(cbc_path, term, nrow, ncol)
+    dewatering_rate_m3_day, drain_cell_count = compute_cbc_term_metrics(term_grid)
+    logger.info(
+        "postprocess_dewatering run_id=%s term=%s dewatering_rate_m3_day=%.6g cells=%d",
+        run_id,
+        term,
+        dewatering_rate_m3_day,
+        drain_cell_count,
+    )
+
+    # The drain outflow is negative per MF6 sign; render its MAGNITUDE so the
+    # COG reads as a positive pump-to-dewater rate. Off-grid is already NaN.
+    import numpy as np  # type: ignore[import-not-found]
+
+    magnitude_grid = np.abs(np.asarray(term_grid, dtype="float64"))
+    cog_path = _write_reprojected_cog(
+        magnitude_grid, model_crs, geo, mask_below_floor=False
+    )
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path, run_id, runs_bucket, cog_filename="dewatering_rate_4326.tif"
+    )
+
+    layer_id = f"dewatering-rate-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=DEWATERING_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return DewaterLayerURI(
+        layer_id=layer_id,
+        name="Mine Dewatering Rate",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=DEWATERING_STYLE_PRESET,
+        role="primary",
+        units="m^3/day",
+        bbox=bbox_4326,
+        dewatering_rate_m3_day=dewatering_rate_m3_day,
+        drain_cell_count=drain_cell_count,
+    )
+
+
+def postprocess_budget_partition(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+) -> BudgetPartitionLayerURI:
+    """Convert a regional GWF run's cbc into a ``BudgetPartitionLayerURI``.
+
+    Reads the GWF cell-by-cell budget (``gwf_model.cbc``), sums each term's
+    per-cell flux into a per-term total (signs preserved), drops FLOW-JA-FACE +
+    near-zero terms, and returns the typed partition. The deliverable is the
+    SCALAR budget dict; the layer is rendered as the water-table head COG so the
+    user sees the regional flow field the partition summarizes (the head is the
+    spatial carrier; the partition is the narrated numbers - never free-generated).
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    cbc_path = _resolve_gwf_cbc_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+
+    term_totals = _read_cbc_budget_partition(cbc_path)
+    partition = compute_budget_partition(term_totals)
+    logger.info(
+        "postprocess_budget_partition run_id=%s terms=%s",
+        run_id,
+        {k: round(v, 3) for k, v in partition.items()},
+    )
+
+    # Spatial carrier = the water-table head COG (continuous head ramp). Best-
+    # effort: if the head file is absent the partition is still the deliverable.
+    bbox_4326: tuple[float, float, float, float] | None = None
+    final_uri: str
+    try:
+        hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+        head_grid = _read_head_grid(hds_path)
+        cog_path = _write_reprojected_cog(
+            head_grid, model_crs, geo, mask_below_floor=False
+        )
+        bbox_4326 = _cog_bbox_4326(cog_path)
+        final_uri = _upload_cog(
+            cog_path, run_id, runs_bucket, cog_filename="water_table_4326.tif"
+        )
+        layer_id = f"budget-partition-{run_id}"
+        if publish:
+            wms_url = _dispatch_publish_layer(
+                final_uri, layer_id, style_preset=HEAD_STYLE_PRESET
+            )
+            if wms_url:
+                final_uri = wms_url
+    except PostprocessMODFLOWError as exc:
+        logger.warning(
+            "budget-partition head COG unavailable (partition still returned): %s",
+            exc,
+        )
+        final_uri = run_outputs_uri
+        layer_id = f"budget-partition-{run_id}"
+
+    return BudgetPartitionLayerURI(
+        layer_id=layer_id,
+        name="Regional Water Budget (zonal partition)",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=HEAD_STYLE_PRESET,
+        role="primary",
+        units="m^3/day",
+        bbox=bbox_4326,
+        budget_partition_m3_day=partition,
     )

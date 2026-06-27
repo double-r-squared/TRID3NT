@@ -325,6 +325,15 @@ from . import compute_overtopping  # noqa: E402,F401 -- registers compute_overto
 # this composer as never-registered — this import is the fix.
 from ..workflows import model_river_seepage_scenario as _model_river_seepage_scenario  # noqa: E402,F401 — sprint-17: registers run_model_river_seepage_scenario (LLM-facing river-seepage composer)
 
+# sprint-18 Wave-1 MODFLOW archetypes (GWF-only): the three new composers each
+# carry their OWN @register_tool (LLM-facing run_model_*_scenario) and dispatch
+# to the shared run_modflow_archetype_job engine surface. Importing them seeds
+# TOOL_REGISTRY at startup (mirrors the river-seepage composer import above). The
+# archetype run-tool itself is NOT @register_tool'd (the composers are the surface).
+from ..workflows import model_sustainable_yield_scenario as _model_sustainable_yield_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_sustainable_yield_scenario (MODFLOW pumping-drawdown composer)
+from ..workflows import model_mine_dewatering_scenario as _model_mine_dewatering_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_mine_dewatering_scenario (MODFLOW pit-dewatering composer)
+from ..workflows import model_regional_water_budget_scenario as _model_regional_water_budget_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_regional_water_budget_scenario (MODFLOW zonal-budget composer)
+
 # fire-animation demos S5/J5: the satellite fire-animation composer carries its
 # OWN @register_tool (run_model_satellite_fire_animation); import it so the
 # review-gated GOES/JPSS animation workflow is in TOOL_REGISTRY at startup.

@@ -621,6 +621,14 @@ class DeckStaging:
     # wrapper then runs postprocess_river_seepage in addition to the plume).
     river_coupled: bool = False
     river_cell_count: int = 0
+    # sprint-18 Wave-1 archetype: None = the spill/seepage GWF+GWT deck; the
+    # three GWF-only archetypes carry their name + the field the archetype tool
+    # reads to pick the right postprocess (drawdown / dewatering / budget).
+    archetype: str | None = None
+    gwt_present: bool = True
+    drain_cell_count: int = 0
+    well_lat: float = 0.0
+    well_lon: float = 0.0
 
 
 def _compose_manifest(
@@ -710,6 +718,34 @@ def build_and_stage_modflow_deck(
             along_river_source=bool(getattr(run_args, "along_river_source", False)),
         )
 
+    # --- 1a'. Archetype branch (sprint-18 Wave-1): thread the per-archetype
+    # forcing into the adapter's GWF-only archetype dispatch. ``archetype is
+    # None`` => the kwargs stay empty and the spill/seepage deck is byte-
+    # identical. The adapter raises a ValueError when a required per-archetype
+    # field is missing (e.g. a sustainable_yield run with no well) -- the
+    # composer-level honesty gate is the FIRST line, this is the engine backstop.
+    archetype_kwargs: dict[str, Any] = {}
+    archetype = getattr(run_args, "archetype", None)
+    if archetype is not None:
+        archetype_kwargs = dict(
+            archetype=archetype,
+            well_location_latlon=getattr(run_args, "well_location_latlon", None),
+            pumping_rate_m3_day=getattr(run_args, "pumping_rate_m3_day", None),
+            aquifer_sy=getattr(run_args, "aquifer_sy", None),
+            aquifer_ss=getattr(run_args, "aquifer_ss", None),
+            sim_years=getattr(run_args, "sim_years", None),
+            n_periods=getattr(run_args, "n_periods", None),
+            pit_footprint_lonlat=getattr(run_args, "pit_footprint_lonlat", None),
+            drain_elevation_m=getattr(run_args, "drain_elevation_m", None),
+            drain_conductance_m2_day=getattr(
+                run_args, "drain_conductance_m2_day", None
+            ),
+            well_pumping_rate_m3_day=getattr(
+                run_args, "well_pumping_rate_m3_day", None
+            ),
+            zone_partition=getattr(run_args, "zone_partition", None),
+        )
+
     # --- 1b. advanced-physics overrides (levers STEP 3) ---------------------
     # Validate + resolve the run_args.advanced_physics dict against the per-engine
     # PHYSICS_REGISTRY. None => {} (byte-identical conservative-tracer deck). A
@@ -752,6 +788,7 @@ def build_and_stage_modflow_deck(
             write=True,
             advanced_physics=resolved_physics or None,
             **river_kwargs,
+            **archetype_kwargs,
         )
     except MODFLOWWorkflowError:
         raise
@@ -767,8 +804,17 @@ def build_and_stage_modflow_deck(
     gwt_name = manifest_obj.gwt_name
     river_coupled = bool(getattr(manifest_obj, "river_coupled", False))
     river_cell_count = int(getattr(manifest_obj, "river_cell_count", 0))
+    # sprint-18 Wave-1: a GWF-only archetype deck (sustainable_yield /
+    # mine_dewatering / regional_water_budget) carries no GWT model (gwt_name="")
+    # and writes head + cbc only (no UCN concentration).
+    archetype = getattr(manifest_obj, "archetype", None)
+    gwt_present = bool(getattr(manifest_obj, "gwt_present", True))
 
     # --- 2. Reorganise FLAT -> gwf/ + gwt/ subdir layout --------------------
+    # A GWF-only archetype deck has no gwt model namefile; the reorg's gwt6/ims
+    # rewrites no-op on its empty gwt_name, so the same reorg is reused (the gwt/
+    # subdir stays empty). The flat FloPy GWF-only deck references package files
+    # relative to CWD exactly like the GWF half of the spill deck.
     try:
         dest_rel = _reorganize_into_subdirs(flat_dir, deck_dir, gwf_name, gwt_name)
     except Exception as exc:  # noqa: BLE001
@@ -781,12 +827,16 @@ def build_and_stage_modflow_deck(
     # --- 3. Compose the manifest --------------------------------------------
     # Outputs land at the scratch ROOT (OC FILEOUT bare filenames resolve to
     # CWD), but a recursive ``**`` net is belt-and-suspenders in case a future
-    # adapter writes them under a subdir. Always capture the list files +
-    # concentration + head + cbc.
+    # adapter writes them under a subdir. The GWF head + cbc are written by
+    # EVERY archetype (the GWF-only archetypes have no UCN; the UCN glob simply
+    # matches nothing for them, which is harmless). Always capture the list
+    # files + head + cbc; the UCN glob covers the spill/seepage path.
     output_globs = [
         GWT_UCN_FILENAME,
         f"{gwf_name}.hds",
+        f"{gwf_name}.cbc",
         "*.cbc",
+        "*.hds",
         "*.lst",
         "mfsim.lst",
         f"**/{GWT_UCN_FILENAME}",
@@ -877,6 +927,11 @@ def build_and_stage_modflow_deck(
         manifest_inputs=manifest_inputs,
         river_coupled=river_coupled,
         river_cell_count=river_cell_count,
+        archetype=archetype,
+        gwt_present=gwt_present,
+        drain_cell_count=int(getattr(manifest_obj, "drain_cell_count", 0)),
+        well_lat=float(getattr(manifest_obj, "well_lat", 0.0)),
+        well_lon=float(getattr(manifest_obj, "well_lon", 0.0)),
     )
 
 
