@@ -4,15 +4,15 @@ Sprint-13 Stage 1 (MOD), job-0221. Owner: engine.
 
 This module assembles a *complete* MODFLOW 6 simulation deck for a
 groundwater-contamination ("spill") scenario via FloPy. A single MF6 binary
-(`mf6`, version-pinned 6.5.0 in the solver container — see
+(`mf6`, version-pinned 6.5.0 in the solver container - see
 `reports/inflight/sprint-13-mod-1-modflow-container-design-20260609/design.md`
 section 2) executes *both* model types from one simulation namefile:
 
-  * **GWF** (Groundwater Flow) — steady-state saturated flow. A west→east
+  * **GWF** (Groundwater Flow) - steady-state saturated flow. A west→east
     constant-head gradient drives a uniform regional flow field that advects
     the plume. This is the hydraulic head field that the transport model
     reads.
-  * **GWT** (Groundwater Transport) — transient advection-dispersion of a
+  * **GWT** (Groundwater Transport) - transient advection-dispersion of a
     conservative tracer. A mass-loading source (`SRC` package) injects the
     contaminant at the spill cell; advection (`ADV`) and dispersion (`DSP`)
     spread it; output control (`OC`) saves the concentration array.
@@ -20,18 +20,18 @@ section 2) executes *both* model types from one simulation namefile:
 The two models are coupled by a GWF-GWT exchange (`GWFGWT`) plus the transport
 source-sink mixing package (`SSM`) so the flow field built by GWF drives
 transport. Reaction kinetics (sorption, biodegradation) are intentionally
-**out of scope for v0.1** — the demo contaminant is a conservative tracer
+**out of scope for v0.1** - the demo contaminant is a conservative tracer
 (design.md section 2).
 
 Determinism boundary (engine invariant 1/2): this is pure deterministic
-Python — NO LLM call anywhere in this module. It composes FloPy package
+Python - NO LLM call anywhere in this module. It composes FloPy package
 constructors in a fixed, tested sequence and returns a typed deck manifest
 whose fields carry every number a downstream tool would narrate.
 
 Contract note: `build_modflow_deck` takes plain keyword arguments whose names
 match the `MODFLOWRunArgs` Pydantic contract (authored in parallel by
 job-0222 and bound in Stage 2 / job-0227). This module deliberately does NOT
-import from `grace2_contracts` — the binding happens upstream.
+import from `grace2_contracts` - the binding happens upstream.
 """
 
 from __future__ import annotations
@@ -151,12 +151,73 @@ DEFAULT_DRAIN_CONDUCTANCE_M2_DAY = 100.0
 DEFAULT_DRAIN_DEPTH_BELOW_TOP_M = 10.0
 
 
+# ---------------------------------------------------------------------------
+# Wave-2 archetype demo defaults (sprint-18 Wave-2). The three new MODFLOW
+# archetypes (MAR / ASR / wetland_hydroperiod) reuse the SAME 40x40x50 m UTM grid
+# + west->east REGIONAL_GRADIENT CHD as the Wave-1 decks; only the stress packages
+# (RCH / seasonal WEL / RCH+EVT) + temporal cycling differ. Each default is a v0.1
+# demo simplification, narrated as a demo value exactly like the OQ-3 aquifer K /
+# porosity and the Wave-1 STO/DRN defaults. A real model supplies these.
+# ---------------------------------------------------------------------------
+
+#: Days per "month" for the MAR/ASR seasonal cadence (``recharge_months`` /
+#: ``injection_months`` / ``recovery_months`` -> period lengths in days). A flat
+#: 30-day month keeps the seasonal schedule deterministic and easy to narrate.
+DEFAULT_DAYS_PER_MONTH = 30.0
+
+#: Specific yield for the MAR mounding water-table response when the caller gives
+#: none (an unconfined NPF icelltype=1 + STO sy controls how high the mound rises).
+DEFAULT_MAR_SY = 0.2
+
+#: Wetland-soil specific yield for the wetland_hydroperiod unconfined seasonal
+#: water-table response when the caller supplies none. Mirrors the contract's
+#: ``DEFAULT_WETLAND_SY`` (kept local: this module does NOT import grace2_contracts).
+DEFAULT_WETLAND_SY = 0.2
+
+#: Infiltration-basin recharge rate (m/day) for the MAR archetype when the caller
+#: supplies none. A managed spreading basin adds ~0.01 m/day of net recharge to the
+#: water table over the basin footprint -- enough to raise a several-metre mound
+#: over the demo's 30 m aquifer (K ~ 8.6 m/day) without flooding the cells. A higher
+#: caller-supplied rate mounds proportionally higher.
+DEFAULT_MAR_INFILTRATION_M_DAY = 0.01
+
+#: Number of recharge "months" the MAR basin floods when neither ``recharge_months``
+#: nor ``n_periods`` is supplied (one flooding season).
+DEFAULT_MAR_RECHARGE_MONTHS = 4
+
+#: ASR injection / recovery "months" per half-cycle when the caller supplies none
+#: (inject through the wet half-year, recover through the dry half-year).
+DEFAULT_ASR_INJECTION_MONTHS = 3
+DEFAULT_ASR_RECOVERY_MONTHS = 3
+
+#: Number of ASR inject/recover cycles when the caller supplies none (one full
+#: seasonal cycle = inject then recover).
+DEFAULT_ASR_N_CYCLES = 1
+
+#: ASR injection / recovery rates (m^3/day, POSITIVE magnitudes) when the caller
+#: supplies none. The adapter applies the MF6 WEL sign (inject = +, recover = -).
+DEFAULT_ASR_INJECTION_RATE_M3_DAY = 1000.0
+DEFAULT_ASR_RECOVERY_RATE_M3_DAY = 1000.0
+
+#: Wetland-hydroperiod EVT defaults when the caller supplies none. The ET surface
+#: sits at the local aquifer datum (AQUIFER_TOP_M); ET draws water down at a peak
+#: rate that decays linearly to zero at the extinction depth below the surface.
+DEFAULT_WETLAND_ET_MAX_RATE_M_DAY = 0.004  # ~1.5 m/yr peak PET, demo value
+DEFAULT_WETLAND_ET_EXTINCTION_DEPTH_M = 2.0  # ET ceases ~2 m below the wetland surface
+
+#: Per-period wetland recharge schedule (m/day) when the caller supplies none. A
+#: simple wet/dry seasonal alternation over ``DEFAULT_N_TRANSIENT_PERIODS`` periods
+#: so the seasonal head range (the hydroperiod) is non-degenerate.
+DEFAULT_WETLAND_RECHARGE_WET_M_DAY = 0.003
+DEFAULT_WETLAND_RECHARGE_DRY_M_DAY = 0.0005
+
+
 @dataclass
 class DeckManifest:
     """Typed description of a written MODFLOW 6 deck.
 
     Every field carries a number a downstream tool (postprocess /
-    `run_modflow_job`, job-0227) reads — never prose. `model_crs` (an EPSG
+    `run_modflow_job`, job-0227) reads - never prose. `model_crs` (an EPSG
     code, e.g. "EPSG:32617") is the key OQ-MOD-3 field the postprocess step
     needs to reproject the concentration COG back to EPSG:4326.
     """
@@ -165,7 +226,7 @@ class DeckManifest:
     sim_name: str
     gwf_name: str
     gwt_name: str
-    model_crs: str  # e.g. "EPSG:32617" — projected metric CRS of the grid
+    model_crs: str  # e.g. "EPSG:32617" - projected metric CRS of the grid
     # Grid georegistration (so postprocess can build the affine transform):
     xorigin: float  # projected easting of grid lower-left corner (m)
     yorigin: float  # projected northing of grid lower-left corner (m)
@@ -222,6 +283,23 @@ class DeckManifest:
     # regional_water_budget (zonal CBC partition):
     zone_partition: str | None = None  # zone-split scheme written (None = whole-domain)
     n_zones: int = 0  # number of zones in the written ZONE array (0 = none)
+    # --- Wave-2 archetypes (sprint-18 Wave-2; ADDITIVE) --------------------------
+    # MAR (RCH groundwater mounding) -- recharge basin draped over the grid.
+    recharge_cell_count: int = 0  # number of RCH cells (basin footprint cells)
+    infiltration_rate_m_day: float = 0.0  # POSITIVE recharge flux written (m/day)
+    recharge_active_periods: int = 0  # transient periods over which RCH is active
+    # ASR (seasonal WEL inject/recover) -- the sign-flipping schedule scalars.
+    injection_rate_m3_day: float = 0.0  # POSITIVE injection magnitude written
+    recovery_rate_m3_day: float = 0.0  # POSITIVE recovery magnitude written
+    n_cycles: int = 0  # number of inject/recover cycles written
+    injection_periods: int = 0  # count of positive-q (injection) stress periods
+    recovery_periods: int = 0  # count of negative-q (recovery) stress periods
+    # wetland_hydroperiod (RCH-schedule + EVT seasonal water-table range).
+    wetland_cell_count: int = 0  # number of RCH/EVT cells (wetland footprint cells)
+    et_surface_m: float = 0.0  # EVT surface elevation written (deck datum m)
+    et_max_rate_m_day: float = 0.0  # EVT max ET rate written (m/day)
+    et_extinction_depth_m: float = 0.0  # EVT extinction depth written (m)
+    newton_under_relaxation: bool = False  # True iff IMS used NEWTON + BICGSTAB
     # Files written (relative to sim_dir), for manifest/upload assembly:
     files: list[str] = field(default_factory=list)
 
@@ -245,7 +323,7 @@ def _utm_crs_for_lonlat(lon: float, lat: float) -> CRS:
 
 
 # ---------------------------------------------------------------------------
-# River-draping geometry (PURE — no flopy, no network; unit-testable on a
+# River-draping geometry (PURE - no flopy, no network; unit-testable on a
 # synthetic grid + river). The river polyline is projected to the deck's UTM
 # grid, then rasterized into the set of (row, col) cells it traverses, with the
 # in-cell reach length per cell so conductance can scale with reach length.
@@ -378,7 +456,7 @@ def build_riv_records(
 
     Each record is ``[(lay, row, col), stage, cond, rbot]`` (layer 0). Cells
     that fall on a CHD boundary column (the west/east constant-head columns) are
-    SKIPPED — a cell cannot be both a constant-head boundary and a RIV boundary
+    SKIPPED - a cell cannot be both a constant-head boundary and a RIV boundary
     in this single-layer demo (the spike skips boundary columns for the same
     reason).
 
@@ -442,6 +520,50 @@ def _resolve_transient_periods(
         nper = DEFAULT_N_TRANSIENT_PERIODS
         perlen = DEFAULT_TRANSIENT_PERIOD_DAYS
     return [(float(perlen), DEFAULT_STEPS_PER_TRANSIENT_PERIOD, 1.0) for _ in range(nper)]
+
+
+def _resolve_monthly_periods(
+    *,
+    n_months: int,
+    days_per_month: float = DEFAULT_DAYS_PER_MONTH,
+) -> list[tuple[float, int, float]]:
+    """Resolve ``n_months`` equal transient stress periods, one per "month".
+
+    The MAR and ASR archetypes step the recharge/inject/recover schedule on a
+    monthly cadence (a flat ``DEFAULT_DAYS_PER_MONTH``-day month). Returns the
+    per-period ``(perlen_days, nstp, tsmult)`` rows for the TRANSIENT periods ONLY
+    (the steady spin-up period 0 is prepended by ``_add_transient_sto_tdis``). Pure
+    + deterministic (no flopy, no I/O).
+    """
+    nper = max(1, int(n_months))
+    return [
+        (float(days_per_month), DEFAULT_STEPS_PER_TRANSIENT_PERIOD, 1.0)
+        for _ in range(nper)
+    ]
+
+
+def _build_asr_well_schedule(
+    *,
+    injection_periods: int,
+    recovery_periods: int,
+    n_cycles: int,
+) -> list[str]:
+    """Build the per-transient-period inject/recover label cycle for the ASR well.
+
+    Returns one label per TRANSIENT period (index 0 = first transient period after
+    the steady spin-up): a run of ``"inject"`` then ``"recover"``, repeated
+    ``n_cycles`` times. The adapter maps ``"inject"`` -> +injection_rate and
+    ``"recover"`` -> -recovery_rate when writing the WEL stress_period_data. Pure +
+    deterministic (no flopy, no I/O).
+    """
+    inj = max(1, int(injection_periods))
+    rec = max(1, int(recovery_periods))
+    cycles = max(1, int(n_cycles))
+    schedule: list[str] = []
+    for _ in range(cycles):
+        schedule.extend(["inject"] * inj)
+        schedule.extend(["recover"] * rec)
+    return schedule
 
 
 def _add_transient_sto_tdis(
@@ -530,6 +652,23 @@ def _build_gwf_only_archetype_deck(
     well_pumping_rate_m3_day: float | None,
     # regional_water_budget
     zone_partition: str | None,
+    # MAR (managed aquifer recharge -> RCH mounding)
+    basin_footprint_lonlat: list[tuple[float, float]] | None = None,
+    infiltration_rate_m_day: float | None = None,
+    recharge_months: int | None = None,
+    # ASR (aquifer storage & recovery -> seasonal WEL inject/recover)
+    injection_rate_m3_day: float | None = None,
+    recovery_rate_m3_day: float | None = None,
+    injection_months: int | None = None,
+    recovery_months: int | None = None,
+    n_cycles: int | None = None,
+    # wetland_hydroperiod (seasonal water-table range under a wetland)
+    wetland_footprint_lonlat: list[tuple[float, float]] | None = None,
+    recharge_schedule_m_day: list[float] | None = None,
+    et_surface_m: float | None = None,
+    et_max_rate_m_day: float | None = None,
+    et_extinction_depth_m: float | None = None,
+    specific_yield: float | None = None,
 ) -> DeckManifest:
     """Assemble a GWF-ONLY archetype deck (no GWT block, no GWFGWT exchange).
 
@@ -556,16 +695,24 @@ def _build_gwf_only_archetype_deck(
         version="mf6",
     )
 
+    # wetland_hydroperiod solves an UNCONFINED + EVT (head-dependent sink) system
+    # whose Picard/linear-CG iteration diverges; MF6's NEWTON formulation +
+    # BICGSTAB is required for a robust solve. The other archetypes keep the
+    # standard MODERATE/BICGSTAB linear solve. NEWTON is declared on the GWF model
+    # (newtonoptions) AND the IMS linear_acceleration is forced to BICGSTAB.
+    use_newton = archetype == "wetland_hydroperiod"
+
     gwf = flopy.mf6.ModflowGwf(
         sim,
         modelname=gwf_name,
         model_nam_file=f"{gwf_name}.nam",
         save_flows=True,
+        newtonoptions="NEWTON" if use_newton else None,
     )
     ims_gwf = flopy.mf6.ModflowIms(
         sim,
         filename=f"{gwf_name}.ims",
-        complexity="MODERATE",
+        complexity="MODERATE" if not use_newton else "COMPLEX",
         outer_dvclose=1e-6,
         inner_dvclose=1e-6,
         linear_acceleration="BICGSTAB",
@@ -573,13 +720,60 @@ def _build_gwf_only_archetype_deck(
     sim.register_ims_package(ims_gwf, [gwf_name])
 
     # --- Temporal mode + storage --------------------------------------------- #
-    transient = archetype == "sustainable_yield"
+    # Transient archetypes: sustainable_yield (multi-period drawdown), MAR (monthly
+    # recharge mounding), ASR (seasonal inject/recover cycles), wetland_hydroperiod
+    # (per-period recharge schedule + EVT). mine_dewatering / regional_water_budget
+    # stay STEADY.
+    transient = archetype in (
+        "sustainable_yield",
+        "MAR",
+        "ASR",
+        "wetland_hydroperiod",
+    )
     sy = float(aquifer_sy) if aquifer_sy is not None else DEFAULT_AQUIFER_SY
     ss = float(aquifer_ss) if aquifer_ss is not None else DEFAULT_AQUIFER_SS
-    if transient:
+    # MAR/ASR/wetland override sy with their own demo defaults (water-table response).
+    if archetype == "MAR" and aquifer_sy is None:
+        sy = DEFAULT_MAR_SY
+    elif archetype == "wetland_hydroperiod":
+        sy = float(specific_yield) if specific_yield is not None else DEFAULT_WETLAND_SY
+
+    # Resolve the per-archetype transient schedule (transient periods only; the
+    # steady spin-up period 0 is prepended by _add_transient_sto_tdis).
+    asr_schedule: list[str] = []
+    if archetype == "MAR":
+        n_months = (
+            int(recharge_months)
+            if recharge_months
+            else (int(n_periods) if n_periods else DEFAULT_MAR_RECHARGE_MONTHS)
+        )
+        transient_periods = _resolve_monthly_periods(n_months=n_months)
+    elif archetype == "ASR":
+        inj_m = int(injection_months) if injection_months else DEFAULT_ASR_INJECTION_MONTHS
+        rec_m = int(recovery_months) if recovery_months else DEFAULT_ASR_RECOVERY_MONTHS
+        n_cyc = int(n_cycles) if n_cycles else DEFAULT_ASR_N_CYCLES
+        asr_schedule = _build_asr_well_schedule(
+            injection_periods=inj_m, recovery_periods=rec_m, n_cycles=n_cyc
+        )
+        transient_periods = _resolve_monthly_periods(n_months=len(asr_schedule))
+    elif archetype == "wetland_hydroperiod":
+        # One transient period per scheduled recharge rate; default to a wet/dry
+        # alternation over DEFAULT_N_TRANSIENT_PERIODS when no schedule is given.
+        if recharge_schedule_m_day:
+            n_wp = len(recharge_schedule_m_day)
+        elif n_periods:
+            n_wp = int(n_periods)
+        else:
+            n_wp = DEFAULT_N_TRANSIENT_PERIODS
+        transient_periods = _resolve_monthly_periods(n_months=n_wp)
+    elif archetype == "sustainable_yield":
         transient_periods = _resolve_transient_periods(
             sim_years=sim_years, n_periods=n_periods
         )
+    else:
+        transient_periods = []
+
+    if transient:
         n_stress_periods = 1 + len(transient_periods)
         n_transient_periods = len(transient_periods)
     else:
@@ -619,9 +813,17 @@ def _build_gwf_only_archetype_deck(
     head_east = AQUIFER_TOP_M
     flopy.mf6.ModflowGwfic(gwf, strt=head_west, filename=f"{gwf_name}.ic")
 
-    # mine_dewatering uses an UNCONFINED water table (icelltype=1) so the drained
-    # cells can de-saturate; the other archetypes stay confined (icelltype=0).
-    npf_icelltype = 1 if archetype == "mine_dewatering" else 0
+    # Unconfined water table (icelltype=1) is required where the head response IS
+    # the answer and the cells must be allowed to rise/fall: mine_dewatering (cells
+    # de-saturate at the drain), MAR (the recharge MOUND rises above the confined
+    # head), wetland_hydroperiod (the seasonal water-table range + the EVT
+    # head-dependent sink). sustainable_yield / ASR / regional_water_budget stay
+    # confined (icelltype=0).
+    npf_icelltype = (
+        1
+        if archetype in ("mine_dewatering", "MAR", "wetland_hydroperiod")
+        else 0
+    )
     flopy.mf6.ModflowGwfnpf(
         gwf,
         save_flows=True,
@@ -664,6 +866,19 @@ def _build_gwf_only_archetype_deck(
     drain_cond_written = 0.0
     zone_partition_written: str | None = None
     n_zones = 0
+    # Wave-2 accumulators (default to the no-package value for every archetype).
+    recharge_cell_count = 0
+    infiltration_rate_written = 0.0
+    recharge_active_periods = 0
+    injection_rate_written = 0.0
+    recovery_rate_written = 0.0
+    asr_n_cycles_written = 0
+    asr_injection_periods = 0
+    asr_recovery_periods = 0
+    wetland_cell_count = 0
+    et_surface_written = 0.0
+    et_max_rate_written = 0.0
+    et_extinction_written = 0.0
 
     if archetype == "sustainable_yield":
         if well_location_latlon is None:
@@ -806,6 +1021,211 @@ def _build_gwf_only_archetype_deck(
                 lines = [",".join(str(int(v)) for v in row) for row in zone_array]
                 zpath.write_text("\n".join(lines) + "\n")
 
+    elif archetype == "MAR":
+        # Managed aquifer recharge: an infiltration basin floods a footprint with a
+        # POSITIVE recharge flux over the recharge periods; the RCH package raises
+        # the (unconfined, icelltype=1) water table -> the mounding head field. The
+        # basin is draped onto the grid as a list-based RCH (one record per basin
+        # cell) when a footprint is supplied, else a uniform RCHA over the whole
+        # domain. Recharge is OFF in the steady spin-up (period 0) so the mound is
+        # measured against the undisturbed regional head.
+        infiltration_rate_written = (
+            float(infiltration_rate_m_day)
+            if infiltration_rate_m_day is not None
+            else DEFAULT_MAR_INFILTRATION_M_DAY
+        )
+        recharge_active_periods = n_transient_periods
+        if basin_footprint_lonlat:
+            basin_cells = _drape_footprint_to_cells(
+                basin_footprint_lonlat,
+                to_utm=to_utm,
+                xorigin=xorigin,
+                yorigin=yorigin,
+                delr=delr,
+                delc=delc,
+                nrow=nrow,
+                ncol=ncol,
+                skip_cols={0, ncol - 1},  # a CHD cell cannot also be RCH
+            )
+            if not basin_cells:
+                raise ValueError(
+                    "MAR basin_footprint_lonlat draped to zero in-grid recharge "
+                    "cells (footprint outside the model grid?)"
+                )
+            rch_record = [
+                [(0, r, c), infiltration_rate_written] for (r, c) in basin_cells
+            ]
+            # OFF in the steady spin-up; ON in every transient period.
+            rch_spd = {0: []}
+            for i in range(1, n_stress_periods):
+                rch_spd[i] = rch_record
+            flopy.mf6.ModflowGwfrch(
+                gwf,
+                stress_period_data=rch_spd,
+                save_flows=True,
+                filename=f"{gwf_name}.rch",
+                pname="rch-0",
+            )
+            recharge_cell_count = len(rch_record)
+        else:
+            # No basin footprint -> a uniform array recharge (RCHA) over the domain.
+            recharge_array = {0: 0.0}
+            for i in range(1, n_stress_periods):
+                recharge_array[i] = infiltration_rate_written
+            flopy.mf6.ModflowGwfrcha(
+                gwf,
+                recharge=recharge_array,
+                save_flows=True,
+                filename=f"{gwf_name}.rcha",
+            )
+            recharge_cell_count = nrow * ncol
+
+    elif archetype == "ASR":
+        # Aquifer storage & recovery: ONE well at well_location_latlon INJECTS at a
+        # positive q for the injection periods then RECOVERS (extracts) at a
+        # negative q for the recovery periods, cycled n_cycles. The seasonal
+        # stress_period_data flips the WEL sign per the asr_schedule resolved above.
+        if well_location_latlon is None:
+            raise ValueError("ASR archetype requires well_location_latlon")
+        injection_rate_written = (
+            float(injection_rate_m3_day)
+            if injection_rate_m3_day is not None
+            else DEFAULT_ASR_INJECTION_RATE_M3_DAY
+        )
+        recovery_rate_written = (
+            float(recovery_rate_m3_day)
+            if recovery_rate_m3_day is not None
+            else DEFAULT_ASR_RECOVERY_RATE_M3_DAY
+        )
+        wlat, wlon = float(well_location_latlon[0]), float(well_location_latlon[1])
+        if not (-90.0 <= wlat <= 90.0) or not (-180.0 <= wlon <= 180.0):
+            raise ValueError(f"well_location_latlon out of range: {(wlat, wlon)!r}")
+        well_east, well_north = to_utm.transform(wlon, wlat)
+        cell = _easting_northing_to_cell(
+            well_east,
+            well_north,
+            xorigin=xorigin,
+            yorigin=yorigin,
+            delr=delr,
+            delc=delc,
+            nrow=nrow,
+            ncol=ncol,
+        )
+        if cell is None:
+            col = max(1, min(ncol - 2, int((well_east - xorigin) // delr)))
+            row = max(
+                0,
+                min(nrow - 1, int(((yorigin + nrow * delc) - well_north) // delc)),
+            )
+            cell = (row, col)
+        well_row, well_col = cell
+        # Keep the ASR well off the CHD boundary columns (a cell cannot be both).
+        well_col = max(1, min(ncol - 2, well_col))
+        well_lat, well_lon = wlat, wlon
+        inject_q = abs(injection_rate_written)
+        recover_q = -abs(recovery_rate_written)
+        # Period 0 = steady spin-up (NO well). Periods 1..N follow asr_schedule.
+        wel_spd = {0: []}
+        for i, label in enumerate(asr_schedule, start=1):
+            q = inject_q if label == "inject" else recover_q
+            wel_spd[i] = [[(0, well_row, well_col), q]]
+        flopy.mf6.ModflowGwfwel(
+            gwf,
+            stress_period_data=wel_spd,
+            save_flows=True,
+            filename=f"{gwf_name}.wel",
+            pname="wel-0",
+        )
+        # The headline recovery rate carried into the manifest as pump_rate (the
+        # extraction magnitude the agent narrates). aquifer_sy/ss are written below.
+        pump_rate = recover_q
+        asr_n_cycles_written = int(n_cycles) if n_cycles else DEFAULT_ASR_N_CYCLES
+        asr_injection_periods = sum(1 for s in asr_schedule if s == "inject")
+        asr_recovery_periods = sum(1 for s in asr_schedule if s == "recover")
+
+    elif archetype == "wetland_hydroperiod":
+        # Seasonal water-table range under a wetland: a per-period RCH schedule
+        # (wet/dry recharge) drives the unconfined (icelltype=1, NEWTON) water table
+        # up and down while an EVT head-dependent sink draws it back at the surface.
+        # The seasonal head range over the wetland IS the hydroperiod. flopy carries
+        # the last stress-period block forward, but we emit EVERY period explicitly
+        # so each scheduled recharge rate is unambiguous.
+        if not wetland_footprint_lonlat:
+            raise ValueError(
+                "wetland_hydroperiod archetype requires a wetland_footprint_lonlat"
+            )
+        wetland_cells = _drape_footprint_to_cells(
+            wetland_footprint_lonlat,
+            to_utm=to_utm,
+            xorigin=xorigin,
+            yorigin=yorigin,
+            delr=delr,
+            delc=delc,
+            nrow=nrow,
+            ncol=ncol,
+            skip_cols={0, ncol - 1},  # a CHD cell cannot also be RCH/EVT
+        )
+        if not wetland_cells:
+            raise ValueError(
+                "wetland_hydroperiod wetland_footprint_lonlat draped to zero "
+                "in-grid cells (footprint outside the model grid?)"
+            )
+        wetland_cell_count = len(wetland_cells)
+        # Resolve the per-transient-period recharge schedule. When the caller gives
+        # a schedule use it (one rate per transient period, last value forward-filled
+        # if short); else alternate a wet/dry default.
+        if recharge_schedule_m_day:
+            sched = [float(v) for v in recharge_schedule_m_day]
+        else:
+            sched = [
+                DEFAULT_WETLAND_RECHARGE_WET_M_DAY
+                if (p % 2 == 0)
+                else DEFAULT_WETLAND_RECHARGE_DRY_M_DAY
+                for p in range(n_transient_periods)
+            ]
+        # RCH: period 0 (steady spin-up) = 0; periods 1..N from the schedule
+        # (forward-fill the last value if the schedule is shorter than N periods).
+        rch_spd = {0: []}
+        for i in range(1, n_stress_periods):
+            rate = sched[min(i - 1, len(sched) - 1)] if sched else 0.0
+            rch_spd[i] = [[(0, r, c), float(rate)] for (r, c) in wetland_cells]
+        flopy.mf6.ModflowGwfrch(
+            gwf,
+            stress_period_data=rch_spd,
+            save_flows=True,
+            filename=f"{gwf_name}.rch",
+            pname="rch-0",
+        )
+        # EVT: a head-dependent ET sink over the wetland footprint, active in every
+        # period (ET happens during the spin-up too -- it is a standing climate
+        # flux, not a transient stress). surface = et_surface_m, max rate at the
+        # surface, linearly decaying to zero at the extinction depth below it.
+        et_surface_written = (
+            float(et_surface_m) if et_surface_m is not None else AQUIFER_TOP_M
+        )
+        et_max_rate_written = (
+            float(et_max_rate_m_day)
+            if et_max_rate_m_day is not None
+            else DEFAULT_WETLAND_ET_MAX_RATE_M_DAY
+        )
+        et_extinction_written = (
+            float(et_extinction_depth_m)
+            if et_extinction_depth_m is not None
+            else DEFAULT_WETLAND_ET_EXTINCTION_DEPTH_M
+        )
+        evt_record = [
+            [(0, r, c), et_surface_written, et_max_rate_written, et_extinction_written]
+            for (r, c) in wetland_cells
+        ]
+        evt_spd = {i: evt_record for i in range(n_stress_periods)}
+        flopy.mf6.ModflowGwfevt(
+            gwf,
+            stress_period_data=evt_spd,
+            save_flows=True,
+            filename=f"{gwf_name}.evt",
+            pname="evt-0",
+        )
+
     # --- OC: save HEAD + BUDGET ALL ------------------------------------------ #
     flopy.mf6.ModflowGwfoc(
         gwf,
@@ -863,6 +1283,20 @@ def _build_gwf_only_archetype_deck(
         npf_icelltype=npf_icelltype,
         zone_partition=zone_partition_written,
         n_zones=n_zones,
+        # --- Wave-2 archetypes ---------------------------------------------- #
+        recharge_cell_count=recharge_cell_count,
+        infiltration_rate_m_day=infiltration_rate_written,
+        recharge_active_periods=recharge_active_periods,
+        injection_rate_m3_day=injection_rate_written,
+        recovery_rate_m3_day=recovery_rate_written,
+        n_cycles=asr_n_cycles_written,
+        injection_periods=asr_injection_periods,
+        recovery_periods=asr_recovery_periods,
+        wetland_cell_count=wetland_cell_count,
+        et_surface_m=et_surface_written,
+        et_max_rate_m_day=et_max_rate_written,
+        et_extinction_depth_m=et_extinction_written,
+        newton_under_relaxation=use_newton,
     )
 
     if write:
@@ -900,6 +1334,46 @@ def _fill_polygon_cells(
             if 0 <= r < nrow and 0 <= c < ncol:
                 filled.add((r, c))
     return sorted(filled)
+
+
+def _drape_footprint_to_cells(
+    footprint_lonlat: list[tuple[float, float]],
+    *,
+    to_utm,
+    xorigin: float,
+    yorigin: float,
+    delr: float,
+    delc: float,
+    nrow: int,
+    ncol: int,
+    skip_cols: set[int] | None = None,
+) -> list[tuple[int, int]]:
+    """Drape a (lon, lat) polygon footprint onto the filled set of in-grid cells.
+
+    Shared by the MAR recharge-basin and wetland footprints (the same ring-close +
+    boundary-drape + interior-fill the mine_dewatering pit uses). Projects the
+    footprint to the deck's UTM grid, drapes its (closed) boundary onto cells,
+    fills the interior, then drops any ``skip_cols`` (the CHD boundary columns).
+    Returns the sorted ``(row, col)`` list. Pure (uses ``to_utm`` only).
+    """
+    verts_en = [to_utm.transform(plon, plat) for (plon, plat) in footprint_lonlat]
+    ring = list(verts_en)
+    if len(ring) >= 3 and ring[0] != ring[-1]:
+        ring.append(ring[0])  # close the ring so the boundary is continuous
+    draped = _drape_polyline_onto_grid(
+        ring,
+        xorigin=xorigin,
+        yorigin=yorigin,
+        delr=delr,
+        delc=delc,
+        nrow=nrow,
+        ncol=ncol,
+    )
+    cells = _fill_polygon_cells(
+        [(r, c) for (r, c, _l) in draped], nrow=nrow, ncol=ncol
+    )
+    skip = skip_cols or set()
+    return [(r, c) for (r, c) in cells if c not in skip]
 
 
 def _build_zone_array(
@@ -956,6 +1430,24 @@ def build_modflow_deck(
     drain_conductance_m2_day: float | None = None,
     well_pumping_rate_m3_day: float | None = None,
     zone_partition: str | None = None,
+    # --- Wave-2 archetypes (sprint-18 Wave-2; ADDITIVE, all optional) ------- #
+    # MAR (managed aquifer recharge -> RCH/RCHA mounding)
+    basin_footprint_lonlat: list[tuple[float, float]] | None = None,
+    infiltration_rate_m_day: float | None = None,
+    recharge_months: int | None = None,
+    # ASR (aquifer storage & recovery -> seasonal WEL inject/recover)
+    injection_rate_m3_day: float | None = None,
+    recovery_rate_m3_day: float | None = None,
+    injection_months: int | None = None,
+    recovery_months: int | None = None,
+    n_cycles: int | None = None,
+    # wetland_hydroperiod (RCH-schedule + EVT seasonal water-table range)
+    wetland_footprint_lonlat: list[tuple[float, float]] | None = None,
+    recharge_schedule_m_day: list[float] | None = None,
+    et_surface_m: float | None = None,
+    et_max_rate_m_day: float | None = None,
+    et_extinction_depth_m: float | None = None,
+    specific_yield: float | None = None,
     # --- advanced-physics overrides (levers STEP 3; ADDITIVE, optional) ----- #
     advanced_physics: dict | None = None,
     save_concentration_all_steps: bool = True,
@@ -978,7 +1470,7 @@ def build_modflow_deck(
     Do NOT use this for:
         surface-water / inundation flooding (use `build_sfincs_model`);
         reactive transport with sorption or biodegradation (out of scope for
-        v0.1 — this builds a conservative-tracer model only); or any case
+        v0.1 - this builds a conservative-tracer model only); or any case
         requiring real hydrogeologic layering (this is a single-layer demo
         grid centred on the spill point).
 
@@ -1112,6 +1604,9 @@ def build_modflow_deck(
             "sustainable_yield",
             "mine_dewatering",
             "regional_water_budget",
+            "MAR",
+            "ASR",
+            "wetland_hydroperiod",
         ):
             raise ValueError(f"unknown MODFLOW archetype: {archetype!r}")
         return _build_gwf_only_archetype_deck(
@@ -1144,6 +1639,20 @@ def build_modflow_deck(
             drain_conductance_m2_day=drain_conductance_m2_day,
             well_pumping_rate_m3_day=well_pumping_rate_m3_day,
             zone_partition=zone_partition,
+            basin_footprint_lonlat=basin_footprint_lonlat,
+            infiltration_rate_m_day=infiltration_rate_m_day,
+            recharge_months=recharge_months,
+            injection_rate_m3_day=injection_rate_m3_day,
+            recovery_rate_m3_day=recovery_rate_m3_day,
+            injection_months=injection_months,
+            recovery_months=recovery_months,
+            n_cycles=n_cycles,
+            wetland_footprint_lonlat=wetland_footprint_lonlat,
+            recharge_schedule_m_day=recharge_schedule_m_day,
+            et_surface_m=et_surface_m,
+            et_max_rate_m_day=et_max_rate_m_day,
+            et_extinction_depth_m=et_extinction_depth_m,
+            specific_yield=specific_yield,
         )
 
     # Transport time stepping: aim for ~daily resolution but cap step count so
@@ -1172,7 +1681,7 @@ def build_modflow_deck(
         ],
     )
 
-    # Iterative model solution — one for flow, one for transport (separate IMS
+    # Iterative model solution - one for flow, one for transport (separate IMS
     # is the MF6-recommended pattern for GWF+GWT so the nonlinear transport
     # solve does not destabilise the linear flow solve).
     ims_gwf = flopy.mf6.ModflowIms(
@@ -1403,7 +1912,7 @@ def build_modflow_deck(
     flopy.mf6.ModflowGwtmst(gwt, **mst_kwargs)
 
     # Mass-loading source. SRC injects mass/time directly (g/day here)
-    # regardless of local concentration — the spill-loading model. The source
+    # regardless of local concentration - the spill-loading model. The source
     # is active ONLY in the transient transport period (period 1, 0-based), NOT
     # the steady-state flow spin-up (period 0). This keeps the released-mass
     # yardstick exact: total injected = mass_rate x duration, not mass_rate x
@@ -1411,7 +1920,7 @@ def build_modflow_deck(
     #
     # sprint-17 J9: when along_river_source is True AND a river was draped, the
     # source is distributed ALONG the RIV reach cells (the contaminant enters
-    # where the river leaks into the aquifer — the river-seepage plume), with
+    # where the river leaks into the aquifer - the river-seepage plume), with
     # the SAME total mass rate (split evenly across the reach cells) so the
     # released-mass yardstick is preserved. Otherwise it stays at the spill cell.
     source_along_river = bool(along_river_source and river_coupled and riv_records)
@@ -1430,7 +1939,7 @@ def build_modflow_deck(
     # Source-sink mixing is required by GWT whenever the flow model has any
     # boundary package (CHD here). With no AUXMIXED concentrations declared,
     # inflow across the west constant-head boundary carries zero concentration
-    # (clean regional recharge) — the physically correct default for a tracer
+    # (clean regional recharge) - the physically correct default for a tracer
     # entering from up-gradient. An empty SSM (sources=None) is the MF6 idiom.
     flopy.mf6.ModflowGwtssm(
         gwt,

@@ -54,9 +54,12 @@ from . import register_tool
 from ..pipeline_emitter import current_emitter
 from ..workflows.postprocess_modflow import (
     PostprocessMODFLOWError,
+    postprocess_asr,
     postprocess_budget_partition,
     postprocess_dewatering,
     postprocess_drawdown,
+    postprocess_mounding,
+    postprocess_wetland_hydroperiod,
 )
 from ..workflows.run_modflow import (
     MODFLOWWorkflowError,
@@ -86,12 +89,28 @@ class RunMODFLOWArchetypeError(RuntimeError):
 
 #: archetype -> (postprocess callable, headline-scalar attr the logger reads).
 #: The callable signature is uniform (run_outputs_uri, *, run_id, model_crs,
-#: deck_dir) so the dispatch below is one branchless lookup.
+#: deck_dir) so the dispatch below is one branchless lookup. The Wave-2 trio
+#: (MAR / ASR / wetland_hydroperiod) extends it additively.
 ARCHETYPE_POSTPROCESS: dict[str, Any] = {
     "sustainable_yield": (postprocess_drawdown, "max_drawdown_m"),
     "mine_dewatering": (postprocess_dewatering, "dewatering_rate_m3_day"),
     "regional_water_budget": (postprocess_budget_partition, "budget_partition_m3_day"),
+    "MAR": (postprocess_mounding, "max_mounding_m"),
+    "ASR": (postprocess_asr, "head_timeseries"),
+    "wetland_hydroperiod": (
+        postprocess_wetland_hydroperiod,
+        "seasonal_head_range_m",
+    ),
 }
+
+#: Archetypes whose headline deliverable is a SERIES / dict (truthy-when-present)
+#: rather than a positive scalar. The empty-result honesty floor checks these for
+#: presence (a non-empty list/dict) instead of ``float(headline) > 0``: the ASR
+#: deliverable is the well-head sawtooth series (recovery_efficiency may legitimately
+#: be None on a single cycle), and the budget partition is a dict.
+_NON_SCALAR_HEADLINES: frozenset[str] = frozenset(
+    {"regional_water_budget", "ASR"}
+)
 
 
 def _runs_prefix() -> str:
@@ -210,8 +229,8 @@ async def run_modflow_archetype_job(
         # the CBC had no non-trivial source/sink term; drawdown is zero when the
         # well drew nothing; dewatering is zero when the drains removed nothing.
         headline = getattr(layer, headline_attr, None)
-        if archetype == "regional_water_budget":
-            empty = not headline  # an empty partition dict
+        if archetype in _NON_SCALAR_HEADLINES:
+            empty = not headline  # an empty partition dict / empty head series
         else:
             empty = not headline or float(headline) <= 0.0
         if empty:

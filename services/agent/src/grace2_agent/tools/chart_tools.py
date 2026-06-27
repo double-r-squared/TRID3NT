@@ -26,10 +26,10 @@ analysis layer (memory ``project_conversational_data_analysis_layer``):
 Contract boundary (job-0223)
 ----------------------------
 Each tool computes chart **data** deterministically (rasterio / geopandas /
-numpy — never an LLM call, Invariant 2), builds a Vega-Lite v5 JSON spec with
+numpy - never an LLM call, Invariant 2), builds a Vega-Lite v5 JSON spec with
 the data **inline** (``spec["data"]["values"]``, capped at ``_MAX_ROWS`` rows),
 wraps it in a :class:`grace2_contracts.chart_contracts.ChartEmissionPayload`
-(which structurally validates the spec — ``$schema`` present, see
+(which structurally validates the spec - ``$schema`` present, see
 ``is_structurally_valid_vega_lite_spec``), and returns
 ``payload.model_dump(mode="json")`` as the tool result.
 
@@ -92,6 +92,7 @@ __all__ = [
     "build_uhs_chart",
     "build_budget_partition_chart",
     "build_head_decline_chart",
+    "build_head_series_chart",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.chart_tools")
@@ -115,7 +116,7 @@ _RASTER_SAMPLE_CAP = 500_000
 #: Number of histogram bins (matches analytical_qa's 10-bin convention).
 _HIST_BINS = 10
 
-#: Vega-Lite v5 schema URL — declaring it makes the spec pass the contract's
+#: Vega-Lite v5 schema URL - declaring it makes the spec pass the contract's
 #: structural sanity check (``is_structurally_valid_vega_lite_spec``).
 _VEGA_LITE_V5_SCHEMA = "https://vega.github.io/schema/vega-lite/v5.json"
 
@@ -125,7 +126,7 @@ _SAMPLE_SEED = 1730000000
 _RASTER_EXTS = {".tif", ".tiff", ".img", ".vrt", ".nc"}
 _VECTOR_EXTS = {".fgb", ".geojson", ".gpkg", ".shp", ".json", ".gml", ".kml"}
 
-# Pelicun DS labels (mirrors postprocess_pelicun._DS_LABELS — the canonical
+# Pelicun DS labels (mirrors postprocess_pelicun._DS_LABELS - the canonical
 # DamageStateKey ordering). ds_mean is binned int(round(ds_mean)).clip(0,4).
 _DS_LABELS: tuple[str, ...] = (
     "DS0_none",
@@ -154,13 +155,13 @@ class ChartToolError(RuntimeError):
     ``error_code`` carries a SCREAMING_SNAKE_CASE code consumed by
     ``summarize_tool_result`` (FR-AS-11 retry surface):
 
-    - ``LAYER_OPEN_FAILED``  — raster/vector layer could not be opened.
-    - ``DOWNLOAD_FAILED``    — GCS download for a gs:// URI failed.
-    - ``PROPERTY_NOT_FOUND`` — the named property/attribute is absent.
-    - ``NO_NUMERIC_PROPERTY``— no numeric attribute available to chart.
-    - ``NO_TIME_DIMENSION``  — generate_time_series on a non-temporal layer.
-    - ``NO_DATA``            — layer has zero valid cells / features.
-    - ``MISSING_DAMAGE_COLUMN`` — damage FGB lacks the ``ds_mean`` column.
+    - ``LAYER_OPEN_FAILED``  - raster/vector layer could not be opened.
+    - ``DOWNLOAD_FAILED``    - GCS download for a gs:// URI failed.
+    - ``PROPERTY_NOT_FOUND`` - the named property/attribute is absent.
+    - ``NO_NUMERIC_PROPERTY``- no numeric attribute available to chart.
+    - ``NO_TIME_DIMENSION``  - generate_time_series on a non-temporal layer.
+    - ``NO_DATA``            - layer has zero valid cells / features.
+    - ``MISSING_DAMAGE_COLUMN`` - damage FGB lacks the ``ds_mean`` column.
     """
 
     def __init__(self, error_code: str, message: str, *, retryable: bool = False) -> None:
@@ -215,9 +216,9 @@ def _download_uri_bytes(uri: str, storage_client: object | None = None) -> bytes
     ``storage_client`` is retained for backward-compatible call signatures
     but is ignored.
     """
-    del storage_client  # GCP decommissioned — S3/local only.
+    del storage_client  # GCP decommissioned - S3/local only.
     # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
-    # (NOT s3fs — instance-role lesson, job-0289).
+    # (NOT s3fs - instance-role lesson, job-0289).
     if uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
 
@@ -292,7 +293,7 @@ def _now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Shared payload builder — single place every tool constructs the contract.
+# Shared payload builder - single place every tool constructs the contract.
 # ---------------------------------------------------------------------------
 
 
@@ -308,7 +309,7 @@ def build_chart_payload(
 
     Guarantees the spec carries the v5 ``$schema`` (so it passes the contract's
     structural check) and caps the inline ``data.values`` at ``_MAX_ROWS`` rows.
-    Returns ``payload.model_dump(mode="json")`` — the exact dict shape the agent
+    Returns ``payload.model_dump(mode="json")`` - the exact dict shape the agent
     loop detects and emits.
     """
     spec = dict(vega_lite_spec)
@@ -344,7 +345,7 @@ def is_chart_emission_result(result: Any) -> bool:
     The agent loop (server.py) calls this to decide whether to emit a
     ``chart-emission`` WS envelope + persist a ``SessionChartRecord``. The
     signal is the ``envelope_type == "chart-emission"`` discriminator plus a
-    dict ``vega_lite_spec`` — i.e. the literal output of ``build_chart_payload``.
+    dict ``vega_lite_spec`` - i.e. the literal output of ``build_chart_payload``.
     """
     return (
         isinstance(result, dict)
@@ -642,6 +643,77 @@ def build_head_decline_chart(
     )
 
 
+def build_head_series_chart(
+    *,
+    head_timeseries: list[float],
+    title: str,
+    y_title: str,
+    caption_label: str,
+    days_per_step: float | None = None,
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a head-vs-time line chart from a MODFLOW transient head series.
+
+    The general sibling of ``build_head_decline_chart`` for the Wave-2 MODFLOW
+    archetypes: the MAR mounding-vs-time (head rise at the basin), the ASR
+    inject/recover sawtooth (well head over the cycle), and the wetland
+    hydroperiod seasonal rise/fall (water table under the wetland). Each is a
+    typed engine-parsed series (``MoundingLayerURI`` head series /
+    ``ASRLayerURI.head_timeseries`` / ``HydroperiodLayerURI.head_timeseries``),
+    never synthesized. The x axis is the timestep index, or elapsed days when
+    ``days_per_step`` is supplied. Returns ``None`` when the series is absent or
+    has fewer than 2 points (a single point is not a trend line).
+
+    Args:
+        head_timeseries: per-step head (m) the postprocess computed.
+        title: the chart + payload title (archetype-specific).
+        y_title: the y-axis label (e.g. "head rise (m)", "well head (m)").
+        caption_label: the trailing caption phrase describing the series.
+        days_per_step: optional elapsed-days-per-step for the x axis.
+    """
+    if not head_timeseries or len(head_timeseries) < 2:
+        return None
+    use_days = days_per_step is not None and days_per_step > 0
+    rows = [
+        {
+            "x": (float(i) * float(days_per_step)) if use_days else int(i),
+            "head_m": float(v),
+        }
+        for i, v in enumerate(head_timeseries)
+    ]
+    x_title = "elapsed days" if use_days else "timestep"
+    spec = {
+        "title": title,
+        "data": {"values": rows},
+        "mark": {"type": "line", "point": True, "tooltip": True},
+        "encoding": {
+            "x": {"field": "x", "type": "quantitative", "title": x_title},
+            "y": {
+                "field": "head_m",
+                "type": "quantitative",
+                "title": y_title,
+                "scale": {"zero": False},
+            },
+        },
+        "width": "container",
+    }
+    vmin = min(float(v) for v in head_timeseries)
+    vmax = max(float(v) for v in head_timeseries)
+    swing = vmax - vmin
+    caption = (
+        f"{len(rows)} steps · {caption_label} · range {swing:.3g} m "
+        f"(min {vmin:.3g} -> max {vmax:.3g})"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title=title,
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Raster / vector data-extraction helpers
 # ---------------------------------------------------------------------------
@@ -723,7 +795,7 @@ def _histogram_bins(values: np.ndarray, bins: int = _HIST_BINS) -> list[dict[str
         {
             "bin_start": float(edges[i]),
             "bin_end": float(edges[i + 1]),
-            "bin_label": f"{edges[i]:.3g}–{edges[i + 1]:.3g}",
+            "bin_label": f"{edges[i]:.3g}-{edges[i + 1]:.3g}",
             "count": int(counts[i]),
         }
         for i in range(len(counts))
@@ -761,7 +833,7 @@ def generate_histogram(
     histograms a numeric attribute (``property``, or the first numeric column
     if omitted).
 
-    Do NOT use this for: a numeric answer ("how many / how much" — use
+    Do NOT use this for: a numeric answer ("how many / how much" - use
     summarize_layer_statistics or count_features_above_threshold); a
     damage-state bar chart (use generate_damage_distribution); rendering the
     layer on the map (use publish_layer).
@@ -826,7 +898,7 @@ def generate_histogram(
     )
     return build_chart_payload(
         vega_lite_spec=spec,
-        title=f"Histogram — {prop_label}",
+        title=f"Histogram - {prop_label}",
         caption=caption,
         source_layer_uri=uri,
         created_turn_id=_created_turn_id,
@@ -860,7 +932,7 @@ def generate_choropleth_legend(
     many features fall in each class", "show me the legend distribution".
 
     Computes quantile class breaks (5 classes) over a numeric property and
-    counts the features in each class — the bar chart mirrors what a choropleth
+    counts the features in each class - the bar chart mirrors what a choropleth
     legend communicates: which value-ranges hold how much of the data.
 
     Do NOT use this for: a raw value histogram (use generate_histogram); a
@@ -906,7 +978,7 @@ def generate_choropleth_legend(
     # Quantile class breaks (the standard choropleth "quantile" classification).
     quantiles = np.linspace(0.0, 1.0, n_classes + 1)
     edges = np.unique(np.quantile(values, quantiles))
-    # Guard degenerate (all-equal) data — fall back to a single class.
+    # Guard degenerate (all-equal) data - fall back to a single class.
     if edges.size < 2:
         edges = np.array([float(values.min()), float(values.max()) + 1.0])
 
@@ -920,7 +992,7 @@ def generate_choropleth_legend(
         rows.append(
             {
                 "class_index": i,
-                "class_label": f"{lo:.3g}–{hi:.3g}",
+                "class_label": f"{lo:.3g}-{hi:.3g}",
                 "break_low": lo,
                 "break_high": hi,
                 "count": int(in_class.sum()),
@@ -928,7 +1000,7 @@ def generate_choropleth_legend(
         )
 
     spec = {
-        "title": f"Choropleth classes — {prop_label}",
+        "title": f"Choropleth classes - {prop_label}",
         "data": {"values": rows},
         "mark": {"type": "bar", "tooltip": True},
         "encoding": {
@@ -954,7 +1026,7 @@ def generate_choropleth_legend(
     )
     return build_chart_payload(
         vega_lite_spec=spec,
-        title=f"Choropleth legend — {prop_label}",
+        title=f"Choropleth legend - {prop_label}",
         caption=caption,
         source_layer_uri=uri,
         created_turn_id=_created_turn_id,
@@ -1077,7 +1149,7 @@ def generate_time_series(
     column). The raster series is the per-band spatial mean; the vector series
     is the numeric column ordered by the time column.
 
-    Do NOT use this for: a static (single-timestep) layer — it returns a
+    Do NOT use this for: a static (single-timestep) layer - it returns a
     NO_TIME_DIMENSION error envelope so the agent narrates honestly that the
     layer has no time dimension. For a value distribution use
     generate_histogram.
@@ -1091,7 +1163,7 @@ def generate_time_series(
 
     Raises:
         ChartToolError: NO_TIME_DIMENSION when the layer carries no time
-            dimension (this is the clean, expected "wrong tool" envelope — the
+            dimension (this is the clean, expected "wrong tool" envelope - the
             agent loop feeds it back so Gemini picks a different chart);
             LAYER_OPEN_FAILED / DOWNLOAD_FAILED on read failure.
     """
@@ -1124,7 +1196,7 @@ def generate_time_series(
             # Sort by time for a sane line chart.
             try:
                 sub = sub.sort_values(time_col)
-            except Exception:  # noqa: BLE001 — unsortable time; keep insertion order
+            except Exception:  # noqa: BLE001 - unsortable time; keep insertion order
                 pass
             rows = [
                 {"time": str(t), "value": float(v)}

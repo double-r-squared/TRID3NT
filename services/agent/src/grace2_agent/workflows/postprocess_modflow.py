@@ -13,14 +13,14 @@ This is the MODFLOW analogue of ``postprocess_flood`` (job-0042). Differences:
   * The source is a UCN concentration array, not a SFINCS NetCDF depth field.
   * The grid georegistration (origin / cell size / CRS) is read from the
     DECK manifest's ``model_crs`` (the OQ-MOD-3 handoff field) + the flopy grid
-    object — not from a CRS variable inside the output file. MF6 binary output
+    object - not from a CRS variable inside the output file. MF6 binary output
     carries NO CRS; the deck's ``model_crs`` is authoritative.
   * The output is reprojected to EPSG:4326 so the plume COG aligns with the
     web client's MapLibre basemap exactly like every other published raster.
 
 Determinism boundary (Invariant 1 / Decision H / FR-AS-7): ``PlumeLayerURI``
 carries ``max_concentration_mgl`` + ``plume_area_km2`` as typed numbers the
-agent narrates — never free-generated. This module computes them from the
+agent narrates - never free-generated. This module computes them from the
 concentration array with plain arithmetic; no LLM anywhere.
 
 Tier separation (Invariant 5): the COG lands in the runs bucket; the agent does
@@ -37,9 +37,12 @@ from pathlib import Path
 from typing import Any
 
 from grace2_contracts.modflow_contracts import (
+    ASRLayerURI,
     BudgetPartitionLayerURI,
     DewaterLayerURI,
     DrawdownLayerURI,
+    HydroperiodLayerURI,
+    MoundingLayerURI,
     PlumeLayerURI,
     SeepageLayerURI,
 )
@@ -56,18 +59,28 @@ __all__ = [
     "postprocess_drawdown",
     "postprocess_dewatering",
     "postprocess_budget_partition",
+    "postprocess_mounding",
+    "postprocess_asr",
+    "postprocess_wetland_hydroperiod",
     "publish_modflow_quantities",
     "compute_plume_metrics",
     "compute_seepage_metrics",
     "compute_drawdown_metrics",
     "compute_cbc_term_metrics",
     "compute_budget_partition",
+    "compute_mounding_metrics",
+    "compute_recharged_volume_m3",
+    "compute_seasonal_head_range_m",
+    "compute_recovery_efficiency",
     "PLUME_DETECTION_FLOOR_MGL",
     "PLUME_STYLE_PRESET",
     "SEEPAGE_STYLE_PRESET",
     "HEAD_STYLE_PRESET",
     "DRAWDOWN_STYLE_PRESET",
     "DEWATERING_STYLE_PRESET",
+    "MOUNDING_STYLE_PRESET",
+    "ASR_STYLE_PRESET",
+    "HYDROPERIOD_STYLE_PRESET",
     "GWF_CBC_FILENAME",
     "GWF_HDS_FILENAME",
     "RUNS_BUCKET_DEFAULT",
@@ -107,6 +120,23 @@ DRAWDOWN_STYLE_PRESET: str = "continuous_drawdown_m"
 #: Wave-1). Matches the output_quantities registry "dewatering-rate" spec.
 DEWATERING_STYLE_PRESET: str = "continuous_dewatering_rate"
 
+#: TiTiler style preset for the MAR groundwater-mounding (head-RISE) COG
+#: (sprint-18 Wave-2). Mounding renders on a distinct BLUE (rising-water) ramp so
+#: it never reads like the red drawdown (declining-water) layer; the key is
+#: registered in publish_layer._TITILER_STYLE_REGISTRY and matches OUTPUT_QUANTITIES.
+MOUNDING_STYLE_PRESET: str = "continuous_mounding_m"
+
+#: TiTiler style preset for the ASR representative-head COG (sprint-18 Wave-2).
+#: The ASR layer carries the well-head sawtooth as the deliverable; the spatial
+#: carrier is the final-step water-table head (continuous head ramp).
+ASR_STYLE_PRESET: str = "continuous_head_m"
+
+#: TiTiler style preset for the wetland-hydroperiod seasonal-head-range COG
+#: (sprint-18 Wave-2). The range is a non-negative magnitude (max minus min head
+#: over the transient periods); its dedicated key is registered in
+#: publish_layer._TITILER_STYLE_REGISTRY and matches OUTPUT_QUANTITIES.
+HYDROPERIOD_STYLE_PRESET: str = "continuous_hydroperiod_m"
+
 #: CBC budget terms the generalized cell-by-cell reader scatters onto a grid.
 #: Each is a head-dependent / source-sink package whose budget record carries a
 #: per-cell signed flow (m^3/day, MF6 sign: positive = INTO the cell/aquifer).
@@ -124,11 +154,11 @@ class PostprocessMODFLOWError(RuntimeError):
 
     Open-set A.6 ``error_code`` values:
 
-    - ``PLUME_OUTPUT_READ_FAILED`` — could not locate / read ``gwt_model.ucn``.
-    - ``PLUME_OUTPUT_EMPTY`` — the concentration array has no timesteps / cells.
-    - ``PLUME_REPROJECT_FAILED`` — the UTM → EPSG:4326 warp failed.
-    - ``PLUME_COG_WRITE_FAILED`` — rasterio could not write the COG.
-    - ``PLUME_COG_UPLOAD_FAILED`` — the GCS upload of the COG failed.
+    - ``PLUME_OUTPUT_READ_FAILED`` - could not locate / read ``gwt_model.ucn``.
+    - ``PLUME_OUTPUT_EMPTY`` - the concentration array has no timesteps / cells.
+    - ``PLUME_REPROJECT_FAILED`` - the UTM → EPSG:4326 warp failed.
+    - ``PLUME_COG_WRITE_FAILED`` - rasterio could not write the COG.
+    - ``PLUME_COG_UPLOAD_FAILED`` - the GCS upload of the COG failed.
     """
 
     error_code: str = "POSTPROCESS_MODFLOW_FAILED"
@@ -276,6 +306,148 @@ def compute_cbc_term_metrics(
         return 0.0, 0
     total_mag = float(np.sum(np.abs(finite)))
     return total_mag, int(finite.size)
+
+
+def compute_mounding_metrics(
+    rise_grid: Any,
+) -> float:
+    """Compute the peak head RISE (mounding, >= 0) from a 2D mound grid.
+
+    Pure arithmetic over the per-cell head-RISE grid (m; pumped/recharged head
+    minus pre-recharge head = head(t_last) - head(t0) under a MAR basin, so a
+    positive value is a mound and a negative value is a draw-down artifact). The
+    headline is the maximum rise anywhere in the domain, clamped at 0 so a tiny
+    numerical dip never narrates as a negative mounding. This is the sign-flipped
+    twin of ``compute_drawdown_metrics`` (which takes head(t0) - head(t_last)).
+
+    Args:
+        rise_grid: 2D array (rows x cols) of head rise in m (NaN off-grid).
+
+    Returns:
+        ``max_mounding_m`` (>= 0): the largest positive head rise.
+    """
+    import numpy as np  # local - caller vouched for the import path
+
+    arr = np.asarray(rise_grid, dtype="float64")
+    if arr.size == 0:
+        return 0.0
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return 0.0
+    return max(0.0, float(np.max(finite)))
+
+
+def compute_recharged_volume_m3(
+    rch_total_m3_day: float,
+    duration_days: float,
+) -> float | None:
+    """Compute the total recharged volume (m^3, >= 0) from the RCH budget integral.
+
+    Pure arithmetic: the MAR basin's recharge enters the aquifer at a per-day
+    rate (the RCH/RCHA budget IN-sum over all basin cells, m^3/day, MF6 sign:
+    positive = into the aquifer). Multiplied by the transient duration in days it
+    gives the cumulative recharged volume. Returns ``None`` when either input is
+    non-positive / unavailable (the honesty floor: never narrate a volume the
+    budget did not measure).
+
+    Args:
+        rch_total_m3_day: the summed positive RCH/RCHA flux into the aquifer,
+            m^3/day (the recharge-IN budget term).
+        duration_days: the transient simulation duration in days.
+
+    Returns:
+        ``recharged_volume_m3`` (>= 0), or None when not computable.
+    """
+    if rch_total_m3_day is None or duration_days is None:
+        return None
+    rate = float(rch_total_m3_day)
+    days = float(duration_days)
+    if rate <= 0.0 or days <= 0.0:
+        return None
+    return rate * days
+
+
+def compute_seasonal_head_range_m(
+    head_steps: list[Any],
+    cells: Any | None = None,
+) -> tuple[float, list[float] | None]:
+    """Compute the seasonal head RANGE (max-min, >= 0) + the at-cell head series.
+
+    Pure arithmetic over the per-step max-over-layers head grids (m). The seasonal
+    water-table swing IS the hydroperiod: at every cell take max-over-time minus
+    min-over-time, then take the PEAK swing anywhere in the domain (the wetland
+    cell where the table moves most). The returned timeseries is the per-step head
+    AT THAT PEAK-SWING CELL (one value per saved step) so the chart traces the
+    actual seasonal rise/fall.
+
+    Args:
+        head_steps: list of 2D head grids (NaN off-grid), one per saved step.
+        cells: UNUSED placeholder (kept for signature symmetry); the peak-swing
+            cell is found from the data, needing no footprint lookup.
+
+    Returns:
+        ``(seasonal_head_range_m, head_timeseries)``: the peak swing (>= 0) and
+        the per-step head at the peak-swing cell (None when < 2 steps).
+    """
+    import numpy as np  # local - caller vouched for the import path
+
+    del cells  # peak-swing cell is found from the data, not a footprint
+    if not head_steps:
+        return 0.0, None
+    stack = np.stack([np.asarray(s, dtype="float64") for s in head_steps], axis=0)
+    if stack.size == 0:
+        return 0.0, None
+    # Per-cell swing = max-over-time minus min-over-time (NaN-safe).
+    with np.errstate(invalid="ignore"):
+        cell_max = np.nanmax(stack, axis=0)
+        cell_min = np.nanmin(stack, axis=0)
+    swing = cell_max - cell_min
+    finite = swing[np.isfinite(swing)]
+    if finite.size == 0:
+        return 0.0, None
+    peak_range = max(0.0, float(np.nanmax(swing)))
+    ts: list[float] | None = None
+    if stack.shape[0] > 1:
+        flat_idx = int(np.nanargmax(np.where(np.isfinite(swing), swing, -np.inf)))
+        r, c = np.unravel_index(flat_idx, swing.shape)
+        ts = [
+            float(stack[i, r, c]) if np.isfinite(stack[i, r, c]) else 0.0
+            for i in range(stack.shape[0])
+        ]
+    return peak_range, ts
+
+
+def compute_recovery_efficiency(
+    injected_volume_m3: float,
+    recovered_volume_m3: float,
+) -> float | None:
+    """Compute the ASR recovery efficiency (recovered / injected), clamped [0, 1].
+
+    Pure arithmetic: the fraction of injected water the ASR well recovers over
+    the cycle(s). Both volumes are non-negative magnitudes (the WEL inject-IN and
+    recover-OUT budget integrals). Returns ``None`` when nothing was injected (no
+    efficiency is defined). The result is clamped to [0, 1] so a numerical
+    over-recovery never narrates above 100%.
+
+    Args:
+        injected_volume_m3: total injected water magnitude, m^3 (>= 0).
+        recovered_volume_m3: total recovered (extracted) water magnitude, m^3.
+
+    Returns:
+        ``recovery_efficiency`` in [0, 1], or None when injected <= 0.
+    """
+    if injected_volume_m3 is None or recovered_volume_m3 is None:
+        return None
+    inj = float(injected_volume_m3)
+    rec = float(recovered_volume_m3)
+    if inj <= 0.0:
+        return None
+    eff = rec / inj
+    if eff < 0.0:
+        return 0.0
+    if eff > 1.0:
+        return 1.0
+    return eff
 
 
 def compute_budget_partition(
@@ -583,7 +755,7 @@ def _resolve_ucn_path(run_outputs_uri: str) -> Path:
 
     Local (``file://`` or a bare path): search the dir tree for the UCN file.
     gs:// : fetch via fsspec into a temp dir (mirrors postprocess_flood).
-    s3:// (job-0292b — the local-backend runs prefix): fetch via **boto3**
+    s3:// (job-0292b - the local-backend runs prefix): fetch via **boto3**
     through the solver module's shared S3 client seam (job-0289 lesson). The
     local-mode live-evidence path always passes a local dir.
     """
@@ -799,11 +971,11 @@ def _write_reprojected_cog(
     guard, byte-identical to the pre-dedupe writer).
 
     Args:
-        mask_below_floor: when True (the plume default — BYTE-IDENTICAL to the
+        mask_below_floor: when True (the plume default - BYTE-IDENTICAL to the
             pre-J9 behavior), cells at/below ``PLUME_DETECTION_FLOOR_MGL`` are
             masked to NaN so the COG renders only the plume. When False (the J9
             river-seepage diverging layer), the array is written AS-IS (already
-            NaN off the reach) so negative gaining values survive — masking by a
+            NaN off the reach) so negative gaining values survive - masking by a
             positive floor would wrongly drop every gaining (negative) reach
             cell. Passed to cog_io as the declared ``mask`` callable.
     """
@@ -903,13 +1075,13 @@ def _dispatch_publish_layer(
     COG URI so the rest of the envelope is usable. Skips publish entirely for
     non-object-store URIs (local mode has nothing for a tile server to read).
 
-    job-0292b: ``s3://`` COGs pass through too — on the AWS deployment
+    job-0292b: ``s3://`` COGs pass through too - on the AWS deployment
     ``publish_layer`` returns a TiTiler XYZ tile TEMPLATE for them (the
     job-0290 ``GRACE2_TILE_SERVER_BASE`` path), which closes the job-0254
     PlumeLayerURI rendering gap on AWS the same way flood-depth COGs publish.
     """
     if not (cog_uri.startswith("gs://") or cog_uri.startswith("s3://")):
-        # job-0241: loud, not silent — a non-object-store URI here means the
+        # job-0241: loud, not silent - a non-object-store URI here means the
         # upload fell back (stale venv / auth / network) and the plume will
         # NOT appear on the map. The Case 2 live gate (job-0235) burned on
         # exactly this as a debug-invisible skip.
@@ -961,7 +1133,7 @@ def postprocess_modflow(
         run_outputs_uri: the run output location (local dir / ``file://`` for the
             local path, ``gs://`` for the cloud path; finds ``gwt_model.ucn``).
         run_id: the run identifier the COG is keyed under in the runs bucket.
-        model_crs: the deck's projected CRS (e.g. ``"EPSG:32617"``) — the
+        model_crs: the deck's projected CRS (e.g. ``"EPSG:32617"``) - the
             OQ-MOD-3 handoff field the reprojection needs.
         deck_dir: optional on-disk deck dir for grid georegistration (origin +
             cell size). When ``None``, the COG uses an identity transform
@@ -1025,7 +1197,7 @@ def postprocess_modflow(
 
 
 # --------------------------------------------------------------------------- #
-# River-seepage postprocess (sprint-17 J9) — GWF cbc RIV budget -> seepage COG
+# River-seepage postprocess (sprint-17 J9) - GWF cbc RIV budget -> seepage COG
 # --------------------------------------------------------------------------- #
 
 
@@ -1431,6 +1603,119 @@ def _read_head_decline_grid(
     return decline, ts
 
 
+def _read_head_steps(hds_path: Path) -> list[Any]:
+    """Read EVERY saved head step into a list of 2D max-over-layers head grids.
+
+    GWF head output is a binary HEADFILE-format array. For each saved totim we
+    take the max-over-layers head (the water table) and mask the MF6 dry/inactive
+    sentinel to NaN. Used by the wetland-hydroperiod seasonal-range reader + the
+    ASR well-head series.
+
+    Raises ``PostprocessMODFLOWError("HEAD_OUTPUT_*")`` on read failure.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+
+    def _to2d(data: Any) -> Any:
+        a = np.asarray(data, dtype="float64")
+        if a.ndim == 3:
+            a2 = np.nanmax(a, axis=0)
+        elif a.ndim == 2:
+            a2 = a
+        else:
+            a2 = np.squeeze(a)
+        return np.where(np.abs(a2) > _MF6_DRY_SENTINEL, np.nan, a2)
+
+    try:
+        hobj = flopy.utils.HeadFile(str(hds_path))
+        times = hobj.get_times()
+        if not times:
+            raise PostprocessMODFLOWError(
+                "HEAD_OUTPUT_EMPTY",
+                message=f"{hds_path} carries no head timesteps",
+                details={"hds_path": str(hds_path)},
+            )
+        return [_to2d(hobj.get_data(totim=t)) for t in times]
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"could not read head steps from {hds_path}: {exc}",
+            details={"hds_path": str(hds_path)},
+        ) from exc
+
+
+def _read_cbc_term_signed_totals(
+    cbc_path: Path, term: str
+) -> tuple[float, float, float]:
+    """Sum a CBC ``term`` (e.g. RCH / RCHA / WEL) into (net, in_mag, out_mag).
+
+    Integrates the per-cell signed ``q`` over EVERY saved timestep for the named
+    term (MF6 sign: positive = INTO the aquifer). Returns:
+      * net: signed sum over all cells + all steps (m^3/day-steps; the caller
+        multiplies by the per-step day count for a volume, or treats the steady
+        single-step total as a rate).
+      * in_mag: magnitude of the positive (into-aquifer) flux summed over all
+        cells + steps (>= 0) -- the recharge / injection leg.
+      * out_mag: magnitude of the negative (out-of-aquifer) flux (>= 0) -- the
+        extraction / recovery leg.
+
+    Resolves the term name case-insensitively. Returns (0, 0, 0) when the term is
+    absent (the caller decides whether that is a failure or a defensible zero).
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"cbc_path": str(cbc_path), "term": term},
+        ) from exc
+
+    try:
+        cbc = flopy.utils.CellBudgetFile(str(cbc_path))
+        names = _normalize_cbc_record_names(cbc)
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "HEAD_OUTPUT_READ_FAILED",
+            message=f"could not open CBC {cbc_path}: {exc}",
+            details={"cbc_path": str(cbc_path), "term": term},
+        ) from exc
+
+    want = term.strip().upper()
+    match = next((exact for key, exact in names.items() if want in key), None)
+    if match is None:
+        return 0.0, 0.0, 0.0
+    try:
+        data = cbc.get_data(text=match)
+    except Exception:  # noqa: BLE001
+        return 0.0, 0.0, 0.0
+    net = 0.0
+    in_mag = 0.0
+    out_mag = 0.0
+    for rec in data:
+        try:
+            q = np.asarray(rec["q"], dtype="float64")
+        except Exception:  # noqa: BLE001 - full-grid ndarray
+            q = np.asarray(rec, dtype="float64").ravel()
+        q = q[np.isfinite(q)]
+        if q.size == 0:
+            continue
+        net += float(np.sum(q))
+        in_mag += float(np.sum(q[q > 0.0]))
+        out_mag += float(-np.sum(q[q < 0.0]))
+    return net, in_mag, out_mag
+
+
 def _read_concentration_steps(ucn_path: Path) -> tuple[list[Any], Any]:
     """Read ALL saved transport steps -> (per-step 2D grids, final/peak grid).
 
@@ -1830,4 +2115,288 @@ def postprocess_budget_partition(
         units="m^3/day",
         bbox=bbox_4326,
         budget_partition_m3_day=partition,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-2 archetype postprocess (GWF-only: head + cbc readers).
+#
+# MAR (RCH mounding), ASR (seasonal WEL inject/recover), wetland_hydroperiod
+# (RCH-schedule + EVT seasonal water-table range). Each reuses the EXISTING
+# resolve/write/upload/publish seams + the new pure metric math. Every narrated
+# scalar is a typed field measured from the real run output (Invariant 1); an
+# absent series resolves to None rather than a fabricated number.
+# --------------------------------------------------------------------------- #
+
+
+def _head_total_duration_days(hds_path: Path) -> float | None:
+    """Return the last cumulative totim (= total simulation duration, days).
+
+    MF6 ``HeadFile.get_times()`` returns the cumulative simulation time at each
+    saved step (in the deck's TIME_UNITS = days). The last value is the total
+    duration. Returns None when unavailable.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+
+        times = flopy.utils.HeadFile(str(hds_path)).get_times()
+        return float(times[-1]) if times else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not read total duration from %s: %s", hds_path, exc)
+        return None
+
+
+def postprocess_mounding(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+) -> MoundingLayerURI:
+    """Convert a MAR transient GWF run's head into a ``MoundingLayerURI``.
+
+    Reads the GWF head file (``gwf_model.hds``), computes the per-cell head RISE
+    = head(t_last) - head(t0) (the groundwater mound the infiltration basin
+    raises -- the sign-flipped twin of the drawdown reader, reusing
+    ``_read_head_decline_grid(invert=True)``), reprojects it to an EPSG:4326 COG,
+    computes the peak mounding, integrates the RCH/RCHA budget into the recharged
+    volume, uploads + (optionally) publishes the COG, and returns the typed
+    mounding layer.
+
+    The recharged volume is the per-day RCH/RCHA IN-rate (the standing recharge
+    measured from the budget) multiplied by the total simulation duration read
+    from the head file's cumulative totim -- never a passed-in / fabricated value.
+    When the budget carries no recharge or the duration is unavailable the volume
+    is None (the honesty floor).
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+
+    # invert=True -> head(t_last) - head(t0) = the mound rise (positive up).
+    rise, ts = _read_head_decline_grid(hds_path, invert=True)
+    max_mounding_m = compute_mounding_metrics(rise)
+
+    # Recharged volume from the RCH/RCHA budget IN-sum integral (best-effort).
+    # The CBC IN-sum integrates EVERY saved step's per-day rate; divide by the
+    # step count to recover the standing per-day recharge rate, then multiply by
+    # the real total duration (read from the head file's cumulative totim).
+    recharged_volume_m3: float | None = None
+    try:
+        duration_days = _head_total_duration_days(hds_path)
+        cbc_path = _resolve_gwf_cbc_path(run_outputs_uri)
+        rch_in = 0.0
+        n_terms = 0
+        for term in ("RCHA", "RCH"):
+            _net, in_mag, _out = _read_cbc_term_signed_totals(cbc_path, term)
+            if in_mag > 0.0:
+                rch_in += in_mag
+                n_terms += 1
+        n_steps = len(ts) if ts is not None else 0
+        if duration_days and rch_in > 0.0 and n_steps > 1:
+            standing_rate = rch_in / float(n_steps)
+            recharged_volume_m3 = compute_recharged_volume_m3(
+                standing_rate, duration_days
+            )
+        elif duration_days and rch_in > 0.0:
+            recharged_volume_m3 = compute_recharged_volume_m3(rch_in, duration_days)
+    except PostprocessMODFLOWError as exc:
+        logger.warning("MAR recharged-volume integral unavailable: %s", exc)
+
+    logger.info(
+        "postprocess_mounding run_id=%s max_mounding_m=%.6g recharged_volume_m3=%s",
+        run_id,
+        max_mounding_m,
+        recharged_volume_m3,
+    )
+
+    # The rise grid is already NaN off-grid; write AS-IS so negative dip cells
+    # survive (do not get floored away).
+    cog_path = _write_reprojected_cog(rise, model_crs, geo, mask_below_floor=False)
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path, run_id, runs_bucket, cog_filename="mounding_4326.tif"
+    )
+
+    layer_id = f"mounding-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=MOUNDING_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return MoundingLayerURI(
+        layer_id=layer_id,
+        name="Recharge Mounding (water-table rise)",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=MOUNDING_STYLE_PRESET,
+        role="primary",
+        units="m",
+        bbox=bbox_4326,
+        max_mounding_m=max_mounding_m,
+        recharged_volume_m3=recharged_volume_m3,
+    )
+
+
+def postprocess_asr(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+) -> ASRLayerURI:
+    """Convert an ASR transient GWF run's head + WEL budget into an ``ASRLayerURI``.
+
+    Reads the GWF head file (``gwf_model.hds``) at the ASR well (the cell whose
+    head swings most -- the inject-rise / recover-fall sawtooth), reads the GWF
+    WEL budget to split injected vs recovered volume into the recovery efficiency,
+    renders the final-step water-table head as the spatial carrier COG, uploads +
+    (optionally) publishes it, and returns the typed ASR layer.
+
+    The head series is found from the data (the peak-swing cell) so no well
+    lat/lon re-derivation is needed -- the ASR well is, by construction, the cell
+    where the cyclic inject/recover drives the largest head swing.
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+
+    head_steps = _read_head_steps(hds_path)
+    # The well-head sawtooth = the per-step head at the peak-swing cell.
+    _swing, head_timeseries = compute_seasonal_head_range_m(head_steps)
+
+    # Recovery efficiency from the WEL inject-IN / recover-OUT budget integrals.
+    recovery_efficiency: float | None = None
+    try:
+        cbc_path = _resolve_gwf_cbc_path(run_outputs_uri)
+        _net, injected, recovered = _read_cbc_term_signed_totals(cbc_path, "WEL")
+        recovery_efficiency = compute_recovery_efficiency(injected, recovered)
+    except PostprocessMODFLOWError as exc:
+        logger.warning("ASR recovery-efficiency integral unavailable: %s", exc)
+
+    logger.info(
+        "postprocess_asr run_id=%s recovery_efficiency=%s head_steps=%d",
+        run_id,
+        recovery_efficiency,
+        len(head_timeseries) if head_timeseries is not None else 0,
+    )
+
+    # Spatial carrier = the final-step water-table head COG (continuous head ramp).
+    head_grid = head_steps[-1]
+    cog_path = _write_reprojected_cog(
+        head_grid, model_crs, geo, mask_below_floor=False
+    )
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path, run_id, runs_bucket, cog_filename="asr_head_4326.tif"
+    )
+
+    layer_id = f"asr-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=ASR_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return ASRLayerURI(
+        layer_id=layer_id,
+        name="Aquifer Storage & Recovery (well head + recovery)",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=ASR_STYLE_PRESET,
+        role="primary",
+        units="m",
+        bbox=bbox_4326,
+        recovery_efficiency=recovery_efficiency,
+        head_timeseries=head_timeseries,
+    )
+
+
+def postprocess_wetland_hydroperiod(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+) -> HydroperiodLayerURI:
+    """Convert a wetland transient GWF run's head into a ``HydroperiodLayerURI``.
+
+    Reads EVERY saved GWF head step (``gwf_model.hds``), computes the per-cell
+    seasonal head RANGE (max-over-time minus min-over-time), takes the PEAK swing
+    as the hydroperiod headline + the per-step head at that peak-swing cell as the
+    series, renders the per-cell seasonal-range grid as the COG, uploads +
+    (optionally) publishes it, and returns the typed hydroperiod layer.
+
+    The peak-swing cell IS the wetland cell with the largest seasonal water-table
+    movement, found from the data -- no footprint lat/lon re-derivation needed.
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    hds_path = _resolve_gwf_hds_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+
+    head_steps = _read_head_steps(hds_path)
+    seasonal_head_range_m, head_timeseries = compute_seasonal_head_range_m(head_steps)
+    logger.info(
+        "postprocess_wetland_hydroperiod run_id=%s seasonal_head_range_m=%.6g "
+        "head_steps=%d",
+        run_id,
+        seasonal_head_range_m,
+        len(head_timeseries) if head_timeseries is not None else 0,
+    )
+
+    # The COG renders the per-cell seasonal RANGE (max-over-time minus min). NaN
+    # off-grid (a never-active cell stays NaN); already non-negative.
+    stack = np.stack([np.asarray(s, dtype="float64") for s in head_steps], axis=0)
+    with np.errstate(invalid="ignore"):
+        range_grid = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
+    cog_path = _write_reprojected_cog(
+        range_grid, model_crs, geo, mask_below_floor=False
+    )
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path, run_id, runs_bucket, cog_filename="hydroperiod_range_4326.tif"
+    )
+
+    layer_id = f"hydroperiod-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=HYDROPERIOD_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return HydroperiodLayerURI(
+        layer_id=layer_id,
+        name="Wetland Hydroperiod (seasonal water-table range)",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=HYDROPERIOD_STYLE_PRESET,
+        role="primary",
+        units="m",
+        bbox=bbox_4326,
+        seasonal_head_range_m=seasonal_head_range_m,
+        head_timeseries=head_timeseries,
     )

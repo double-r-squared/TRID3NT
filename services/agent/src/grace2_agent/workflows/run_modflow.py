@@ -16,8 +16,8 @@ things for the groundwater-contamination ("spill") engine:
      decommissioned. Two gated lanes: the GENERIC AWS Batch seam (the shared
      ``tools.solver.run_solver(solver='modflow', ...)`` per-job autoscaled
      submit) when ``is_batch_mode()`` (``GRACE2_SOLVER_BACKEND=aws-batch`` + a
-     resolvable ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW``); otherwise — the DEFAULT,
-     inert-until-flipped fallback — the shared local-exec solver backend
+     resolvable ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW``); otherwise - the DEFAULT,
+     inert-until-flipped fallback - the shared local-exec solver backend
      (``tools.solver.launch_local_solver``) with the MODFLOW local-exec spec
      (the ``mf6`` binary on the box). Either way returns the schema-owned
      ``ExecutionHandle`` whose ``workflow_name`` pins the backend
@@ -36,7 +36,7 @@ CRITICAL handoff fixes (Stage-1 Open Questions, resolved here):
 
   * **gwf/ + gwt/ subdir layout.** FloPy writes the deck FLAT (all files in the
     sim root) and references package files (``gwf_model.dis``) relative to the
-    simulation CWD — NOT relative to the model namefile. So simply moving model
+    simulation CWD - NOT relative to the model namefile. So simply moving model
     namefiles into ``gwf/``/``gwt/`` and rewriting only the ``mfsim.nam`` model
     references is INSUFFICIENT: mf6 then can't find ``gwf_model.dis`` in the
     root. ``_reorganize_into_subdirs`` therefore (a) moves ``gwf_model.*`` →
@@ -46,7 +46,7 @@ CRITICAL handoff fixes (Stage-1 Open Questions, resolved here):
     ``mfsim.tdis``, ``gwfgwt.exg``) stay flat. Verified against mf6 6.5.0:
     Normal termination of simulation. OUTPUT files (``gwt_model.ucn``,
     ``gwf_model.hds``, ``*.cbc``) land at the scratch ROOT because the OC
-    ``FILEOUT`` records use bare filenames resolved against CWD — so the
+    ``FILEOUT`` records use bare filenames resolved against CWD - so the
     manifest ``outputs`` globs reference root paths + a recursive ``**`` net.
 
   * **model_crs in the manifest.** The entrypoint echoes ``manifest["model_crs"]``
@@ -59,11 +59,11 @@ Determinism boundary (Invariant 1 / 2): no LLM call anywhere in this module.
 Deck build is deterministic FloPy; submission is a thin Cloud Workflows call;
 the local path is a subprocess run of the mf6 binary. Progress emission goes
 through the active ``PipelineEmitter`` (job-0035 seam) exactly like the SFINCS
-path — a wall-clock-keyed ramp, never an estimate.
+path - a wall-clock-keyed ramp, never an estimate.
 
 Cancellation (Invariant 8): the cloud path returns an ``ExecutionHandle`` whose
 ``workflows_execution_id`` ``wait_for_completion`` (tools/solver.py) cancels on
-the WS ``cancel`` chain. The local path is a foreground subprocess — cancel
+the WS ``cancel`` chain. The local path is a foreground subprocess - cancel
 terminates the process group.
 
 AWS local backend (job-0292b, sprint-14-aws)
@@ -77,12 +77,12 @@ through the solver module's shared local machinery instead of Cloud Workflows:
     ``s3://$GRACE2_CACHE_BUCKET/modflow/<run_id>/`` via **boto3** (the
     job-0289 s3fs-anonymous lesson; shared ``tools.solver`` S3 client seam).
     The manifest keeps the LEGACY ``gs_uri`` field NAME with ``s3://`` VALUES
-    — staging resolves by scheme (job-0291 convention). The default ``gs://``
+    - staging resolves by scheme (job-0291 convention). The default ``gs://``
     fsspec path is byte-identical.
   * ``submit_modflow_run`` dispatches to ``tools.solver.launch_local_solver``
     with a MODFLOW ``LocalSolverSpec``: stage the deck back down from S3 into
     ``$GRACE2_RUNS_DIR/<run_id>/``, launch the **mf6 binary directly**
-    (``exec_kind="exec"`` — no public MODFLOW image exists; the instance
+    (``exec_kind="exec"`` - no public MODFLOW image exists; the instance
     carries the same SHA-pinned USGS 6.5.0 static binary the GCP Dockerfile
     installs, resolved via ``$GRACE2_MF6_BIN``), supervisor uploads outputs +
     the EXACT ``services/workers/modflow/entrypoint.py`` completion.json
@@ -94,7 +94,7 @@ through the solver module's shared local machinery instead of Cloud Workflows:
     process-group kill ≤30 s (Invariant 8).
 
 ``GRACE2_MODFLOW_LOCAL`` (the foreground dev seam) is independent and must
-stay UNSET on the AWS deployment — the backend seam, not local mode, owns the
+stay UNSET on the AWS deployment - the backend seam, not local mode, owns the
 AWS path.
 """
 
@@ -148,7 +148,7 @@ __all__ = [
 MODFLOW_WORKFLOW_NAME: str = "grace-2-modflow-orchestrator"
 
 #: The registry key + ``ExecutionHandle.solver`` tag for the groundwater engine.
-#: Mirrors ``run_swmm.SWMM_SOLVER_NAME`` — its PRESENCE in
+#: Mirrors ``run_swmm.SWMM_SOLVER_NAME`` - its PRESENCE in
 #: ``tools.solver.SOLVER_WORKFLOW_REGISTRY`` is what gates ``run_solver(
 #: solver='modflow', ...)`` dispatch (an absent key raises
 #: ``SolverNotRegisteredError``). Registered at import via
@@ -164,7 +164,7 @@ PLUME_FLOOR_MGL: float = 0.001
 #: registers ``gwt_model.ucn``). Recursive glob captures it wherever it lands.
 GWT_UCN_FILENAME: str = "gwt_model.ucn"
 
-#: Convergence markers — IDENTICAL to the entrypoint's authoritative signal so
+#: Convergence markers - IDENTICAL to the entrypoint's authoritative signal so
 #: the local path classifies a run the same way the container does.
 CONVERGENCE_FAILURE_MARKER = "FAILED TO MEET SOLVER CONVERGENCE CRITERIA"
 NORMAL_TERMINATION_MARKER = "Normal termination of simulation"
@@ -177,7 +177,7 @@ NORMAL_TERMINATION_MARKER = "Normal termination of simulation"
 # ``gwt_adapter`` lives in ``services/workers/modflow/`` which is NOT an
 # importable package (no ``__init__`` on ``services/workers/``). We add the
 # modflow worker dir to ``sys.path`` lazily so the agent service boots even in
-# environments where flopy is absent — the import only resolves when a MODFLOW
+# environments where flopy is absent - the import only resolves when a MODFLOW
 # tool is actually invoked. This mirrors the SFINCS pattern of containing the
 # heavy geoscience deps behind the tool body rather than at module import.
 
@@ -231,13 +231,13 @@ class MODFLOWWorkflowError(RuntimeError):
     Carries an open-set A.6 ``error_code`` so the agent emitter renders a
     typed error frame. Codes:
 
-    - ``MODFLOW_ADAPTER_IMPORT_FAILED`` — gwt_adapter / flopy not importable.
-    - ``MODFLOW_DECK_BUILD_FAILED`` — the FloPy deck build raised.
-    - ``MODFLOW_DECK_STAGE_FAILED`` — subdir reorg / manifest / upload failed.
-    - ``MODFLOW_DISPATCH_FAILED`` — the local-exec solver dispatch failed.
-    - ``MODFLOW_LOCAL_RUN_FAILED`` — local mf6 subprocess failed to launch or
+    - ``MODFLOW_ADAPTER_IMPORT_FAILED`` - gwt_adapter / flopy not importable.
+    - ``MODFLOW_DECK_BUILD_FAILED`` - the FloPy deck build raised.
+    - ``MODFLOW_DECK_STAGE_FAILED`` - subdir reorg / manifest / upload failed.
+    - ``MODFLOW_DISPATCH_FAILED`` - the local-exec solver dispatch failed.
+    - ``MODFLOW_LOCAL_RUN_FAILED`` - local mf6 subprocess failed to launch or
       the binary could not be located.
-    - ``MODFLOW_SOLVER_DIVERGED`` — mf6 ran but the list file reports a
+    - ``MODFLOW_SOLVER_DIVERGED`` - mf6 ran but the list file reports a
       convergence failure (or no normal-termination marker).
     """
 
@@ -319,12 +319,12 @@ def is_local_mode() -> bool:
 def is_batch_mode() -> bool:
     """True when the GENERIC AWS Batch seam should drive the MODFLOW solve.
 
-    The Batch path is INERT by default — it only activates when BOTH:
+    The Batch path is INERT by default - it only activates when BOTH:
 
-      1. the shared solver backend is ``aws-batch`` (``solver_backend()`` —
+      1. the shared solver backend is ``aws-batch`` (``solver_backend()`` -
          i.e. ``GRACE2_SOLVER_BACKEND`` is unset or ``aws-batch``; NOT
          ``local-docker``), AND
-      2. a MODFLOW-SPECIFIC Batch job-definition is resolvable — the per-solver
+      2. a MODFLOW-SPECIFIC Batch job-definition is resolvable - the per-solver
          env ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` (the knob NATE flips after
          ``tofu apply``) or an in-code ``SOLVER_BATCH_JOBDEF_REGISTRY['modflow']``
          default.
@@ -334,7 +334,7 @@ def is_batch_mode() -> bool:
     (the SFINCS image's job-def, see infra/aws-batch/RUNBOOK.md), so honoring the
     generic fallback would cross-route a MODFLOW run to the SFINCS container. The
     gate requires the MODFLOW-OWN job-def so MODFLOW stays on the local-exec path
-    until NATE provisions + sets ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` — ZERO
+    until NATE provisions + sets ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` - ZERO
     regression on the current deployment. (The actual ``run_solver`` submit still
     re-resolves via ``_resolve_batch_job_def`` once this gate opens, so the wired
     MODFLOW job-def is what's submitted.)
@@ -348,12 +348,12 @@ def is_batch_mode() -> bool:
             SOLVER_BATCH_JOBDEF_REGISTRY,
             solver_backend,
         )
-    except Exception:  # noqa: BLE001 — solver module unavailable -> stay local
+    except Exception:  # noqa: BLE001 - solver module unavailable -> stay local
         return False
     if solver_backend() != SOLVER_BACKEND_AWS_BATCH:
         return False
     # Mirror _resolve_batch_job_def's per-solver-env key derivation, but ONLY
-    # the MODFLOW-specific tiers (per-solver env + in-code registry) — NOT the
+    # the MODFLOW-specific tiers (per-solver env + in-code registry) - NOT the
     # generic GRACE2_AWS_BATCH_JOB_DEF fallback (which points at the SFINCS
     # image on the live box).
     key = "".join(
@@ -377,8 +377,8 @@ def register_modflow_solver() -> None:
     ``SolverNotRegisteredError``). The backend seam then routes the run to the
     AWS Batch submit (default ``aws-batch``) or the local launcher. We seed the
     ``LOCAL_EXEC_WORKFLOW_NAME`` sentinel as the value (exactly what SWMM seeds)
-    — the value is only a default tag; the per-call handle pins the real backend.
-    Idempotent (``setdefault``) — safe to call at import.
+    - the value is only a default tag; the per-call handle pins the real backend.
+    Idempotent (``setdefault``) - safe to call at import.
     """
     from ..tools.solver import LOCAL_EXEC_WORKFLOW_NAME, SOLVER_WORKFLOW_REGISTRY
 
@@ -386,7 +386,7 @@ def register_modflow_solver() -> None:
 
 
 # Register at import so ``run_solver(solver='modflow')`` is wired wherever this
-# module is imported (the composer + the tool wrapper both import it) — exactly
+# module is imported (the composer + the tool wrapper both import it) - exactly
 # mirroring run_swmm's import-time ``register_swmm_solver()`` call.
 register_modflow_solver()
 
@@ -430,7 +430,7 @@ def _reorganize_into_subdirs(
         elif fname.startswith(f"{gwt_name}."):
             rel = f"{gwt_sub}/{fname}"
         else:
-            # mfsim.nam, mfsim.tdis, gwfgwt.exg — stay at root.
+            # mfsim.nam, mfsim.tdis, gwfgwt.exg - stay at root.
             rel = fname
         shutil.copy2(src, dest_dir / rel)
         dest_rel.append(rel)
@@ -480,7 +480,7 @@ def _reorganize_into_subdirs(
 
 
 # --------------------------------------------------------------------------- #
-# River-geometry resolution (sprint-17 J9) — FGB/GeoJSON URI -> lon/lat vertices
+# River-geometry resolution (sprint-17 J9) - FGB/GeoJSON URI -> lon/lat vertices
 # --------------------------------------------------------------------------- #
 
 
@@ -572,7 +572,7 @@ def resolve_river_polyline_lonlat(
             longest = max(merged.geoms, key=lambda ln: ln.length)
         else:
             longest = merged
-    except Exception:  # noqa: BLE001 — fall back to the single longest raw line
+    except Exception:  # noqa: BLE001 - fall back to the single longest raw line
         longest = max(lines, key=lambda ln: ln.length)
 
     coords = [(float(x), float(y)) for (x, y) in longest.coords]
@@ -603,14 +603,14 @@ class DeckStaging:
 
     Carries the staging URIs the cloud submit path needs plus the local deck
     dir + model_crs the local-run + postprocess paths read. Every field is a
-    typed value a downstream step consumes — no prose-for-number.
+    typed value a downstream step consumes - no prose-for-number.
     """
 
     run_id: str
     manifest_uri: str  # gs://.../modflow/<run_id>/manifest.json (cloud)
     deck_base_uri: str  # gs://.../modflow/<run_id>/   (deck files prefix)
     local_deck_dir: str  # the on-disk subdir-organised deck (local run reads this)
-    model_crs: str  # e.g. "EPSG:32617" — postprocess reprojection key (OQ-MOD-3)
+    model_crs: str  # e.g. "EPSG:32617" - postprocess reprojection key (OQ-MOD-3)
     gwf_name: str
     gwt_name: str
     spill_lat: float
@@ -642,7 +642,7 @@ def _compose_manifest(
     Schema (entrypoint.py docstring):
         {"inputs": [{"gs_uri", "dest"}, ...],
          "mf6_args": [],
-         "model_crs": "EPSG:...",      # OQ-MOD-3 — REQUIRED here
+         "model_crs": "EPSG:...",      # OQ-MOD-3 - REQUIRED here
          "outputs": ["gwt_model.ucn", "*.lst", "**/*.lst", ...]}
     """
     inputs: list[dict[str, str]] = []
@@ -667,9 +667,9 @@ def build_and_stage_modflow_deck(
     """Build the MF6 GWF+GWT deck and stage it for the solver entrypoint.
 
     Steps:
-      1. ``build_modflow_deck(...)`` (engine adapter) — FLAT FloPy deck.
-      2. ``_reorganize_into_subdirs`` — gwf/ + gwt/ layout + path rewrites.
-      3. ``_compose_manifest`` — worker-contract manifest.json incl. model_crs.
+      1. ``build_modflow_deck(...)`` (engine adapter) - FLAT FloPy deck.
+      2. ``_reorganize_into_subdirs`` - gwf/ + gwt/ layout + path rewrites.
+      3. ``_compose_manifest`` - worker-contract manifest.json incl. model_crs.
       4. (cloud) upload deck + manifest to the cache bucket via fsspec[gcs];
          (local / GCS unavailable) keep the on-disk deck + a local manifest.
 
@@ -690,7 +690,7 @@ def build_and_stage_modflow_deck(
     # The base dir for both the FLAT build and the subdir-organised deck. We
     # keep it OUTSIDE a TemporaryDirectory context so the local-run path can
     # read it after this function returns; cleanup is the caller's (the tool
-    # wrapper) responsibility — it deletes the dir after postprocess.
+    # wrapper) responsibility - it deletes the dir after postprocess.
     base = Path(workdir) if workdir is not None else Path(
         tempfile.mkdtemp(prefix=f"modflow-{rid}-")
     )
@@ -744,6 +744,28 @@ def build_and_stage_modflow_deck(
                 run_args, "well_pumping_rate_m3_day", None
             ),
             zone_partition=getattr(run_args, "zone_partition", None),
+            # --- Wave-2 archetype fields (sprint-18 Wave-2) ---
+            # MAR (managed aquifer recharge -> RCH mounding)
+            basin_footprint_lonlat=getattr(run_args, "basin_footprint_lonlat", None),
+            infiltration_rate_m_day=getattr(run_args, "infiltration_rate_m_day", None),
+            recharge_months=getattr(run_args, "recharge_months", None),
+            # ASR (aquifer storage & recovery)
+            injection_rate_m3_day=getattr(run_args, "injection_rate_m3_day", None),
+            recovery_rate_m3_day=getattr(run_args, "recovery_rate_m3_day", None),
+            injection_months=getattr(run_args, "injection_months", None),
+            recovery_months=getattr(run_args, "recovery_months", None),
+            n_cycles=getattr(run_args, "n_cycles", None),
+            # wetland_hydroperiod (RCH-schedule + EVT seasonal water-table range)
+            wetland_footprint_lonlat=getattr(
+                run_args, "wetland_footprint_lonlat", None
+            ),
+            recharge_schedule_m_day=getattr(
+                run_args, "recharge_schedule_m_day", None
+            ),
+            et_surface_m=getattr(run_args, "et_surface_m", None),
+            et_max_rate_m_day=getattr(run_args, "et_max_rate_m_day", None),
+            et_extinction_depth_m=getattr(run_args, "et_extinction_depth_m", None),
+            specific_yield=getattr(run_args, "specific_yield", None),
         )
 
     # --- 1b. advanced-physics overrides (levers STEP 3) ---------------------
@@ -844,7 +866,7 @@ def build_and_stage_modflow_deck(
     ]
     # job-0292b: scheme-aware deck prefix. ``cache.storage_scheme()`` returns
     # ``"gs"`` by default (byte-identical pre-job-0292b URI) and ``"s3"``
-    # under GRACE2_STORAGE_BACKEND=s3 — the manifest's input VALUES then carry
+    # under GRACE2_STORAGE_BACKEND=s3 - the manifest's input VALUES then carry
     # s3:// so the local-backend staging resolves them by scheme (the field
     # NAME stays the legacy ``gs_uri``, job-0291 convention).
     from ..tools.cache import storage_scheme
@@ -860,7 +882,7 @@ def build_and_stage_modflow_deck(
     # --- 4. Stage to the object store (cloud / AWS-local-backend path) ------
     if stage_to_gcs and not is_local_mode():
         if deck_base_uri.startswith("s3://"):
-            # job-0292b: boto3 (NOT fsspec/s3fs — the job-0289 anonymous-
+            # job-0292b: boto3 (NOT fsspec/s3fs - the job-0289 anonymous-
             # credentials lesson) through the solver module's shared S3
             # client seam, mirroring sfincs_builder's deck upload.
             try:
@@ -936,20 +958,20 @@ def build_and_stage_modflow_deck(
 
 
 # --------------------------------------------------------------------------- #
-# Solver dispatch (mirror of tools/solver.run_solver — local-exec backend)
+# Solver dispatch (mirror of tools/solver.run_solver - local-exec backend)
 # --------------------------------------------------------------------------- #
 
 
 def _modflow_local_spec(staging: DeckStaging) -> Any:
     """Build the MODFLOW ``LocalSolverSpec`` for the shared local backend.
 
-    job-0292b solver-binary decision: **image-less local-exec** — there is no
+    job-0292b solver-binary decision: **image-less local-exec** - there is no
     maintained public MODFLOW docker image (the GCP Dockerfile itself built
     from python:3.11-slim + the SHA-pinned USGS 6.5.0 static binary), so the
     simplest contract-preserving path runs the same pinned ``mf6`` binary
     directly on the instance (``$GRACE2_MF6_BIN``, the existing env
     convention). ``classify_exit`` reproduces the MODFLOW entrypoint's
-    exit-code resolution verbatim (list file authoritative — design doc § 8)
+    exit-code resolution verbatim (list file authoritative - design doc § 8)
     and supplies the entrypoint-schema ``converged`` + ``model_crs``
     completion fields.
     """
@@ -1001,10 +1023,10 @@ def submit_modflow_run(
     Two dispatch lanes, gated so the Batch path is INERT until NATE flips the
     env (zero regression by default):
 
-      * **GENERIC AWS Batch seam** (``is_batch_mode()`` — ``GRACE2_SOLVER_BACKEND``
+      * **GENERIC AWS Batch seam** (``is_batch_mode()`` - ``GRACE2_SOLVER_BACKEND``
         ``aws-batch`` + a resolvable ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW``). Routes
         through the SHARED ``tools.solver.run_solver(solver='modflow',
-        model_setup_uri=staging.manifest_uri, compute_class=...)`` — the same
+        model_setup_uri=staging.manifest_uri, compute_class=...)`` - the same
         per-job autoscaled Batch submit SFINCS/SWMM use. The Batch container runs
         the SAME ``services/workers/modflow/entrypoint.py`` (now scheme-aware)
         and writes the SAME ``completion.json`` to
@@ -1021,7 +1043,7 @@ def submit_modflow_run(
         ``workflow_name="local-exec"`` pins the backend for ``wait_for_completion``.
 
     Both handles feed the SFINCS-shared ``wait_for_completion`` (the Invariant-8
-    cancellation seam) — ``run_modflow_tool.py`` is unchanged.
+    cancellation seam) - ``run_modflow_tool.py`` is unchanged.
 
     Raises:
         MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the dispatch (Batch
@@ -1034,7 +1056,7 @@ def submit_modflow_run(
     )
 
     if is_batch_mode():
-        # GENERIC AWS Batch seam — shared run_solver dispatch. The manifest was
+        # GENERIC AWS Batch seam - shared run_solver dispatch. The manifest was
         # staged to s3:// by build_and_stage_modflow_deck (storage_scheme()=='s3'
         # under GRACE2_STORAGE_BACKEND=s3), so model_setup_uri is the s3:// the
         # Batch backend requires.
@@ -1072,7 +1094,7 @@ def submit_modflow_run(
 
 
 def _check_convergence(scratch: Path) -> tuple[bool, str | None]:
-    """Parse ``mfsim.lst`` for the convergence marker — entrypoint-identical."""
+    """Parse ``mfsim.lst`` for the convergence marker - entrypoint-identical."""
     lst = scratch / "mfsim.lst"
     if not lst.exists():
         return False, "mfsim.lst absent (mf6 produced no list file)"
@@ -1200,7 +1222,7 @@ async def emit_modflow_progress(percent: int) -> None:
     progress update on the emitter's most-recent step (the one the bracketing
     ``emit_tool_call`` created for the ``run_modflow_job`` invocation). Outside
     an ``emit_tool_call`` scope (direct call / smoke / unit test) the emitter is
-    ``None`` and we skip — progress is a UX nice-to-have, not a correctness
+    ``None`` and we skip - progress is a UX nice-to-have, not a correctness
     gate. Mirrors ``tools/solver.wait_for_completion``'s progress emission,
     which is the SFINCS analog; the difference is the SFINCS path holds an
     explicit ``EmitterBinding`` while we read the most-recent step off the

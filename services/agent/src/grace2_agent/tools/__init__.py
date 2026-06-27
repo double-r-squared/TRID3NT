@@ -71,10 +71,10 @@ class RegisteredTool:
     """A tool entry in ``TOOL_REGISTRY``.
 
     Fields:
-    - ``metadata`` — the validated ``AtomicToolMetadata`` for the tool.
-    - ``fn`` — the original (undecorated) callable. The registry deliberately
+    - ``metadata`` - the validated ``AtomicToolMetadata`` for the tool.
+    - ``fn`` - the original (undecorated) callable. The registry deliberately
       does NOT wrap it; tests call the function directly via this attribute.
-    - ``module`` — the ``__module__`` attribute at registration time, useful
+    - ``module`` - the ``__module__`` attribute at registration time, useful
       for diagnostics (`"grace2_agent.tools.passthroughs"` etc.).
     """
 
@@ -124,7 +124,7 @@ def register_tool(
         def fetch_dem(bbox): ...
 
     All kwargs default to ``None`` meaning "use whatever the metadata
-    already declares" — the kwarg path is a convenience for tool authors
+    already declares" - the kwarg path is a convenience for tool authors
     who want the decorator site to be the single visible declaration of
     the flag. Backward-compatible: existing tools that pre-date the
     kwargs continue to work; the metadata defaults
@@ -218,101 +218,101 @@ def clear_registry_for_tests() -> None:
 # references them. Keep this list narrow: only submodules whose tools should
 # always be available at startup belong here.
 # ---------------------------------------------------------------------------
-from . import passthroughs  # noqa: E402,F401 — registers qgis_process
-from . import compute_colored_relief  # noqa: E402,F401 — job-0080: registers compute_colored_relief
-from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_slope
-from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect
-from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
-from . import analyze_affected_fields  # noqa: E402,F401 — ftw-affected-fields demo: registers analyze_affected_fields (which farm fields a MODFLOW plume reaches; intersects the plume COG against FTW/fiboa field polygons via compute_zonal_statistics, joins crop_name, splits affected vs untouched at the plume detection threshold, ranks + headlines; honesty-floor 0-affected result)
-from . import compute_layer_bounds  # noqa: E402,F401 — NATE 2026-06-17: registers compute_layer_bounds (fast layer-extent + fit-the-map; replaces sandbox bbox math + drives zoom-to)
-from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
-from . import clip_raster_to_polygon  # noqa: E402,F401 — job-0106: registers clip_raster_to_polygon
-from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries
-from . import compute_hillshade  # noqa: E402,F401 — job-0079: registers compute_hillshade
-from . import compute_blended_composite  # noqa: E402,F401 — job-0319: registers compute_blended_composite (server-side raster multiply-blend → one shaded COG; MapLibre can't multiply on the client)
-from . import enhance_satellite_image  # noqa: E402,F401 — NATE 2026-06-23: registers enhance_satellite_image (OPTIONAL polish pass on ANY RGB image COG — dark-object haze/Rayleigh de-haze + gray-world white-balance + unsharp-mask + Lanczos upscale -> closer to CIRA GeoColor; pure numpy+PIL, no scipy/skimage; multiband RGB publish passthrough, no new style)
-from . import compute_contours  # noqa: E402,F401 — F35: registers compute_contours (elevation contour LINES from a DEM via GDAL gdal_contour; vector LineStrings with an 'elev' attr → inline-GeoJSON line layer; pairs with fetch_dem + compute_hillshade)
-from . import fetch_wdpa_protected_areas  # noqa: E402,F401 — job-0089: registers fetch_wdpa_protected_areas
-from . import fetch_gbif_occurrences  # noqa: E402,F401 — job-0087: registers fetch_gbif_occurrences
-from . import fetch_inaturalist_observations  # noqa: E402,F401 — job-0088: registers fetch_inaturalist_observations
-from . import web_fetch  # noqa: E402,F401 — job-0092: registers web_fetch
-from . import fetch_storm_events_db  # noqa: E402,F401 — job-0091: registers fetch_storm_events_db
-from . import fetch_nws_event  # noqa: E402,F401 — job-0090: registers fetch_nws_event
-from . import fetch_nws_alerts_conus  # noqa: E402,F401 — job-0105: registers fetch_nws_alerts_conus (CONUS-wide companion to fetch_nws_event)
-from . import aggregate_claims_across_sources  # noqa: E402,F401 — job-0093: registers aggregate_claims_across_sources
-from . import extract_landcover_class  # noqa: E402,F401 — job-0094: registers extract_landcover_class
-from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: registers compute_impervious_surface
-from . import compute_building_density  # noqa: E402,F401 — job-0096: registers compute_building_density
-from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_roads_osm
-from . import fetch_field_boundaries  # noqa: E402,F401 — NATE 2026-06-17: registers fetch_field_boundaries (agricultural field-boundary vectors from Fields of The World / fiboa published GeoParquet on Source Cooperative; CRS-aware bbox pushdown over HTTP range requests; inline-GeoJSON vector like roads/WDPA; FIELDS_NO_COVERAGE outside benchmark regions; on-demand global inference is a future tool)
-from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
-from . import postprocess_pelicun  # noqa: E402,F401 — Wave 4.11 P2: registers postprocess_pelicun (aggregates Pelicun per-asset FGB → ImpactEnvelope)
-from ..workflows import compute_impact_envelope as _compute_impact_envelope_workflow  # noqa: E402,F401 — Wave 4.11 P3: registers compute_impact_envelope (composes NSI/MS → Pelicun → postprocess into one envelope tool)
-from . import clip_vector_to_polygon  # noqa: E402,F401 — job-0107: registers clip_vector_to_polygon
-from . import fetch_goes_satellite  # noqa: E402,F401 — job-0104: registers fetch_goes_satellite (GOES-16/17/18/19 satellite imagery)
-from . import fetch_nexrad_reflectivity  # noqa: E402,F401 — job-0102: registers fetch_nexrad_reflectivity (Iowa Mesonet NEXRAD WMS passthrough)
-from . import fetch_mrms_qpe  # noqa: E402,F401 — job-0103: registers fetch_mrms_qpe (NOAA MRMS gauge-corrected QPE)
-from . import fetch_hrsl_population  # noqa: E402,F401 — job-0112: registers fetch_hrsl_population (Meta + CIESIN HRSL persons/cell, COG via global VRT)
-from . import fetch_firms_active_fire  # noqa: E402,F401 — job-0108: registers fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections)
-from . import fetch_landfire_fuels  # noqa: E402,F401 — job-0111: registers fetch_landfire_fuels (LANDFIRE LF2022 fuels & canopy rasters)
-from . import fetch_gcn250_curve_numbers  # noqa: E402,F401 — job-0113: registers fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers, Figshare AMC-I/II/III)
-from . import fetch_mtbs_burn_severity  # noqa: E402,F401 — job-0109: registers fetch_mtbs_burn_severity (MTBS burn-severity polygons)
-from . import fetch_nifc_fire_perimeters  # noqa: E402,F401 — job-0110: registers fetch_nifc_fire_perimeters (NIFC active wildfire perimeters)
+from . import passthroughs  # noqa: E402,F401 - registers qgis_process
+from . import compute_colored_relief  # noqa: E402,F401 - job-0080: registers compute_colored_relief
+from . import compute_slope  # noqa: E402,F401 - job-0081: registers compute_slope
+from . import compute_aspect  # noqa: E402,F401 - job-0082: registers compute_aspect
+from . import compute_zonal_statistics  # noqa: E402,F401 - job-0083: registers compute_zonal_statistics
+from . import analyze_affected_fields  # noqa: E402,F401 - ftw-affected-fields demo: registers analyze_affected_fields (which farm fields a MODFLOW plume reaches; intersects the plume COG against FTW/fiboa field polygons via compute_zonal_statistics, joins crop_name, splits affected vs untouched at the plume detection threshold, ranks + headlines; honesty-floor 0-affected result)
+from . import compute_layer_bounds  # noqa: E402,F401 - NATE 2026-06-17: registers compute_layer_bounds (fast layer-extent + fit-the-map; replaces sandbox bbox math + drives zoom-to)
+from . import clip_raster_to_bbox  # noqa: E402,F401 - job-0085: registers clip_raster_to_bbox
+from . import clip_raster_to_polygon  # noqa: E402,F401 - job-0106: registers clip_raster_to_polygon
+from . import fetch_administrative_boundaries  # noqa: E402,F401 - job-0084: registers fetch_administrative_boundaries
+from . import compute_hillshade  # noqa: E402,F401 - job-0079: registers compute_hillshade
+from . import compute_blended_composite  # noqa: E402,F401 - job-0319: registers compute_blended_composite (server-side raster multiply-blend → one shaded COG; MapLibre can't multiply on the client)
+from . import enhance_satellite_image  # noqa: E402,F401 - NATE 2026-06-23: registers enhance_satellite_image (OPTIONAL polish pass on ANY RGB image COG - dark-object haze/Rayleigh de-haze + gray-world white-balance + unsharp-mask + Lanczos upscale -> closer to CIRA GeoColor; pure numpy+PIL, no scipy/skimage; multiband RGB publish passthrough, no new style)
+from . import compute_contours  # noqa: E402,F401 - F35: registers compute_contours (elevation contour LINES from a DEM via GDAL gdal_contour; vector LineStrings with an 'elev' attr → inline-GeoJSON line layer; pairs with fetch_dem + compute_hillshade)
+from . import fetch_wdpa_protected_areas  # noqa: E402,F401 - job-0089: registers fetch_wdpa_protected_areas
+from . import fetch_gbif_occurrences  # noqa: E402,F401 - job-0087: registers fetch_gbif_occurrences
+from . import fetch_inaturalist_observations  # noqa: E402,F401 - job-0088: registers fetch_inaturalist_observations
+from . import web_fetch  # noqa: E402,F401 - job-0092: registers web_fetch
+from . import fetch_storm_events_db  # noqa: E402,F401 - job-0091: registers fetch_storm_events_db
+from . import fetch_nws_event  # noqa: E402,F401 - job-0090: registers fetch_nws_event
+from . import fetch_nws_alerts_conus  # noqa: E402,F401 - job-0105: registers fetch_nws_alerts_conus (CONUS-wide companion to fetch_nws_event)
+from . import aggregate_claims_across_sources  # noqa: E402,F401 - job-0093: registers aggregate_claims_across_sources
+from . import extract_landcover_class  # noqa: E402,F401 - job-0094: registers extract_landcover_class
+from . import compute_impervious_surface  # noqa: E402,F401 - job-0095: registers compute_impervious_surface
+from . import compute_building_density  # noqa: E402,F401 - job-0096: registers compute_building_density
+from . import fetch_roads_osm  # noqa: E402,F401 - job-0097: registers fetch_roads_osm
+from . import fetch_field_boundaries  # noqa: E402,F401 - NATE 2026-06-17: registers fetch_field_boundaries (agricultural field-boundary vectors from Fields of The World / fiboa published GeoParquet on Source Cooperative; CRS-aware bbox pushdown over HTTP range requests; inline-GeoJSON vector like roads/WDPA; FIELDS_NO_COVERAGE outside benchmark regions; on-demand global inference is a future tool)
+from . import run_pelicun_damage_assessment  # noqa: E402,F401 - job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
+from . import postprocess_pelicun  # noqa: E402,F401 - Wave 4.11 P2: registers postprocess_pelicun (aggregates Pelicun per-asset FGB → ImpactEnvelope)
+from ..workflows import compute_impact_envelope as _compute_impact_envelope_workflow  # noqa: E402,F401 - Wave 4.11 P3: registers compute_impact_envelope (composes NSI/MS → Pelicun → postprocess into one envelope tool)
+from . import clip_vector_to_polygon  # noqa: E402,F401 - job-0107: registers clip_vector_to_polygon
+from . import fetch_goes_satellite  # noqa: E402,F401 - job-0104: registers fetch_goes_satellite (GOES-16/17/18/19 satellite imagery)
+from . import fetch_nexrad_reflectivity  # noqa: E402,F401 - job-0102: registers fetch_nexrad_reflectivity (Iowa Mesonet NEXRAD WMS passthrough)
+from . import fetch_mrms_qpe  # noqa: E402,F401 - job-0103: registers fetch_mrms_qpe (NOAA MRMS gauge-corrected QPE)
+from . import fetch_hrsl_population  # noqa: E402,F401 - job-0112: registers fetch_hrsl_population (Meta + CIESIN HRSL persons/cell, COG via global VRT)
+from . import fetch_firms_active_fire  # noqa: E402,F401 - job-0108: registers fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections)
+from . import fetch_landfire_fuels  # noqa: E402,F401 - job-0111: registers fetch_landfire_fuels (LANDFIRE LF2022 fuels & canopy rasters)
+from . import fetch_gcn250_curve_numbers  # noqa: E402,F401 - job-0113: registers fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers, Figshare AMC-I/II/III)
+from . import fetch_mtbs_burn_severity  # noqa: E402,F401 - job-0109: registers fetch_mtbs_burn_severity (MTBS burn-severity polygons)
+from . import fetch_nifc_fire_perimeters  # noqa: E402,F401 - job-0110: registers fetch_nifc_fire_perimeters (NIFC active wildfire perimeters)
 from . import fetch_wfigs_incident  # noqa: E402,F401 - fire-animation demo S1/J1: registers fetch_wfigs_incident (NIFC/WFIGS named-incident lookup -> authoritative point + discovery time + AOI bbox; resolves by IncidentName so offshore islands work)
 from . import fetch_goes_animation  # noqa: E402,F401 - fire-animation demo S3: registers fetch_goes_animation (GOES-18 GeoColor + Fire Temperature CIRA SLIDER multi-timestamp animation frames over a time window; ordered per-frame RGB COGs)
 from . import fetch_goes_archive_animation  # noqa: E402,F401 - fire-animation demo B+C: registers fetch_goes_archive_animation (HISTORICAL Fire Temperature animation from the RAW noaa-goes18 S3 ABI-L2-MCMIPC archive for ANY past date; composites C07/C06/C05 Fire-Temp RGB; same list[LayerURI] shape as fetch_goes_animation so Track A + the scrubber consume it unchanged)
 from . import fetch_goes_active_fire  # noqa: E402,F401 - fire-port: registers fetch_goes_active_fire (STANDALONE Matson-Dozier C07-vs-C13 split-window active-fire discriminator surfaced as its own atomic tool; reuses the archive module's shared band-read core + fire_hotspots composite; returns transparent RGBA hot-pixel overlay LayerURI(s))
 from . import fetch_glm_lightning  # noqa: E402,F401 - tools-seed: registers fetch_glm_lightning (GOES GLM optical-lightning GROUP-ENERGY-DENSITY fetcher; bins GLM-L2-LCFA group_energy onto the ABI ~2 km grid; returns a transparent purple RGBA GED overlay LayerURI, or a step <N> animation when accumulation_window_s is set)
 from . import fetch_viirs_day_fire  # noqa: E402,F401 - fire-animation demo J3: registers fetch_viirs_day_fire (JPSS/VIIRS Day Fire CIRA Polar SLIDER multi-day irregular polar-overpass animation frames; day-only; ordered per-pass RGB COGs)
-from . import fetch_ebird_observations  # noqa: E402,F401 — job-0128: registers fetch_ebird_observations (Cornell Lab eBird Tier-2 recent sightings)
-from . import fetch_iucn_red_list_range  # noqa: E402,F401 — job-0129: registers fetch_iucn_red_list_range (IUCN Red List Tier-2 species range info fetcher)
-from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories)
+from . import fetch_ebird_observations  # noqa: E402,F401 - job-0128: registers fetch_ebird_observations (Cornell Lab eBird Tier-2 recent sightings)
+from . import fetch_iucn_red_list_range  # noqa: E402,F401 - job-0129: registers fetch_iucn_red_list_range (IUCN Red List Tier-2 species range info fetcher)
+from . import fetch_movebank_tracks  # noqa: E402,F401 - job-0130: registers fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories)
 from . import compute_ndvi  # noqa: E402,F401 -- conservation micro-North-Star: registers compute_ndvi (Sentinel-2 L2A NDVI vegetation index via Microsoft Planetary Computer STAC; least-cloudy scene -> single-band float32 NDVI COG -1..1 with RdYlGn vegetation ramp)
 from . import fetch_naip  # noqa: E402,F401 -- conservation micro-North-Star: registers fetch_naip (USDA NAIP high-res aerial RGB imagery via Microsoft Planetary Computer STAC; 3-band uint8 COG multiband passthrough base layer; US-only honest no-coverage)
 from . import fetch_mobi  # noqa: E402,F401 -- conservation micro-North-Star: registers fetch_mobi (NatureServe Map of Biodiversity Importance imperiled-species richness via Microsoft Planetary Computer STAC mobi; CONUS-windowed single-band float32 COG with YlGn biodiversity ramp)
 from . import compute_canopy_height  # noqa: E402,F401 -- canopy-height ML-inference tool: registers compute_canopy_height (Meta HighResCanopyHeight ViT+DPT on CPU AWS Batch; stages a NAIP/RGB COG + dispatches the canopy worker via run_solver('canopy') + publishes a canopy-height-in-metres COG with the greens canopy_height_m ramp)
 
-from . import fetch_era5_reanalysis  # noqa: E402,F401 — job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)
-from . import fetch_gtsm_tide_surge  # noqa: E402,F401 — job-0132: registers fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary)
-from . import fetch_cama_flood_discharge  # noqa: E402,F401 — job-0133: registers fetch_cama_flood_discharge (CaMa-Flood global river discharge Tier-2 fetcher; compound-flood fluvial forcing)
-from . import fetch_usace_nsi  # noqa: E402,F401 — job-A6: registers fetch_usace_nsi (USACE National Structure Inventory; preferred Pelicun assets in CONUS)
-from . import fetch_fema_nfhl_zones  # noqa: E402,F401 — job-A1: registers fetch_fema_nfhl_zones (FEMA National Flood Hazard Layer regulatory flood-zone polygons; ArcGIS REST MapServer/28)
-from . import fetch_usace_levees  # noqa: E402,F401 — job-A4: registers fetch_usace_levees (USACE National Levee Database critical-infrastructure polygons/lines; ArcGIS REST FeatureServer)
-from . import fetch_noaa_nwm_streamflow  # noqa: E402,F401 — job-A3 (Wave 4.10): registers fetch_noaa_nwm_streamflow (NOAA National Water Model streamflow; CONUS fluvial forcing via NHDPlus reaches)
-from . import fetch_usgs_nwis_gauges  # noqa: E402,F401 — job-0332 (NATE 2026-06-17): registers fetch_usgs_nwis_gauges (REAL observed USGS NWIS/Water Services stream gauges + latest discharge/stage; the gap NATE hit when the agent fell back to MODELED NWM reach flow — distinct from fetch_noaa_nwm_streamflow; stateCd-or-bbox spatial selector with the ~25 deg^2 bBox guard; IV→Site fallback→typed error)
-from . import fetch_hrrr_forecast  # noqa: E402,F401 — job-A2 (Wave 4.10): registers fetch_hrrr_forecast (NOAA HRRR 3km hourly CONUS short-term weather forecast via U.Utah HRRR-Zarr S3 mirror)
-from . import fetch_hrrr_smoke  # noqa: E402,F401 — job-A13 (Wave 4.10): registers fetch_hrrr_smoke (NOAA HRRR-Smoke smoke/aerosol forecast via U.Utah HRRR-Zarr S3 mirror; pairs with NIFC fire perimeters for air-quality demo)
-from . import fetch_asos_metar  # noqa: E402,F401 — job-A7 (Wave 4.10): registers fetch_asos_metar (Iowa State IEM ASOS/METAR hourly surface observations; station weather obs for hazard context)
-from . import fetch_gridmet  # noqa: E402,F401 — job-A8 (Wave 4.10): registers fetch_gridmet (gridMET CONUS daily 4 km meteorology via NKN THREDDS OPeNDAP; fire-weather + drought substrate)
-from . import fetch_noaa_coops_tides  # noqa: E402,F401 — job-A9 (Wave 4.10): registers fetch_noaa_coops_tides (NOAA CO-OPS tide-station water-level observations + predictions; SFINCS coastal boundary forcing for US/territory basins)
-from . import fetch_usace_dams  # noqa: E402,F401 — job-A5 (Wave 4.10): registers fetch_usace_dams (USACE National Inventory of Dams point inventory via public ESRI Living Atlas mirror; dam-break / hazard-overlay substrate)
-from . import fetch_noaa_slr_scenarios  # noqa: E402,F401 — job-A10 (Wave 4.10): registers fetch_noaa_slr_scenarios (NOAA OCM SLR Viewer bathtub inundation polygons for 0–10 ft scenarios; CONUS coastal planning-level overlay)
-from . import fetch_usfs_canopy_fuels  # noqa: E402,F401 — job-A14 (Wave 4.10): registers fetch_usfs_canopy_fuels (USFS LANDFIRE LF2022 canopy base height + bulk density rasters; crown-fire model inputs CBH/CBD)
-from . import fetch_statsgo_soils  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_statsgo_soils (USGS STATSGO COG collection — KFFACT / THICK — via pfdf.data.usgs.statsgo; post-fire debris-flow + runoff-CN substrate)
-from . import fetch_nhdplus_nldi_navigate  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_nhdplus_nldi_navigate (USGS NLDI navigate over the NHDPlus v2.1 channel network — UM / UT / DM / DD traversal from a seed point or COMID)
-from . import fetch_raws_weather  # noqa: E402,F401 — job-A12 (Wave 4.10): registers fetch_raws_weather (Iowa Mesonet IEM RAWS fire-weather station observations; wind/RH/temp/solar for wildfire hazard context + fire-behavior model forcing)
-from . import fetch_3dep_extra  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_3dep_extra (USGS 3DEP non-default resolutions via pfdf.data.usgs.tnm.dem — 1 arc-sec / 1/9 arc-sec / 1 m / 2 arc-sec / 5 m)
-from . import fetch_topobathy  # noqa: E402,F401 — SFINCS North Star P1: registers fetch_topobathy (NOAA NCEI CUDEM 1/9 arc-sec topo-bathy tiles merged with USGS 3DEP land DEM into one seamless EPSG:32616 NAVD88 positive-up float32 COG for coastal SFINCS setup_dep; degrades to 3DEP-land-only with an honest bathymetry-absent warning when CUDEM is missing)
-from . import fetch_fault_sources  # noqa: E402,F401 — task #199 (real-fault OpenQuake): registers fetch_fault_sources (REAL active-fault traces + slip rates from the GEM Global Active Faults harmonized GeoJSON; parses the '(best,min,max)' string triples; bbox-filters worldwide faults to the AOI; honest empty-AOI degrade with a typed note; feeds the worker's render_fault_source_model_xml moment-balanced simpleFaultSource builder for fault-aligned PSHA)
-from . import discover_dataset  # noqa: E402,F401 — job-B7 (Wave 4.10 Stage 2): registers discover_dataset (hybrid BM25 + dense retrieval over audited docstrings + tool_query_corpus.yaml; routes free-text user queries to top-k atomic tools via RRF fusion; hot-set tool surfaced by B5 per-turn filter)
-from . import analytical_qa  # noqa: E402,F401 — job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
-from . import chart_tools  # noqa: E402,F401 — job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distribution
+from . import fetch_era5_reanalysis  # noqa: E402,F401 - job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)
+from . import fetch_gtsm_tide_surge  # noqa: E402,F401 - job-0132: registers fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary)
+from . import fetch_cama_flood_discharge  # noqa: E402,F401 - job-0133: registers fetch_cama_flood_discharge (CaMa-Flood global river discharge Tier-2 fetcher; compound-flood fluvial forcing)
+from . import fetch_usace_nsi  # noqa: E402,F401 - job-A6: registers fetch_usace_nsi (USACE National Structure Inventory; preferred Pelicun assets in CONUS)
+from . import fetch_fema_nfhl_zones  # noqa: E402,F401 - job-A1: registers fetch_fema_nfhl_zones (FEMA National Flood Hazard Layer regulatory flood-zone polygons; ArcGIS REST MapServer/28)
+from . import fetch_usace_levees  # noqa: E402,F401 - job-A4: registers fetch_usace_levees (USACE National Levee Database critical-infrastructure polygons/lines; ArcGIS REST FeatureServer)
+from . import fetch_noaa_nwm_streamflow  # noqa: E402,F401 - job-A3 (Wave 4.10): registers fetch_noaa_nwm_streamflow (NOAA National Water Model streamflow; CONUS fluvial forcing via NHDPlus reaches)
+from . import fetch_usgs_nwis_gauges  # noqa: E402,F401 - job-0332 (NATE 2026-06-17): registers fetch_usgs_nwis_gauges (REAL observed USGS NWIS/Water Services stream gauges + latest discharge/stage; the gap NATE hit when the agent fell back to MODELED NWM reach flow - distinct from fetch_noaa_nwm_streamflow; stateCd-or-bbox spatial selector with the ~25 deg^2 bBox guard; IV→Site fallback→typed error)
+from . import fetch_hrrr_forecast  # noqa: E402,F401 - job-A2 (Wave 4.10): registers fetch_hrrr_forecast (NOAA HRRR 3km hourly CONUS short-term weather forecast via U.Utah HRRR-Zarr S3 mirror)
+from . import fetch_hrrr_smoke  # noqa: E402,F401 - job-A13 (Wave 4.10): registers fetch_hrrr_smoke (NOAA HRRR-Smoke smoke/aerosol forecast via U.Utah HRRR-Zarr S3 mirror; pairs with NIFC fire perimeters for air-quality demo)
+from . import fetch_asos_metar  # noqa: E402,F401 - job-A7 (Wave 4.10): registers fetch_asos_metar (Iowa State IEM ASOS/METAR hourly surface observations; station weather obs for hazard context)
+from . import fetch_gridmet  # noqa: E402,F401 - job-A8 (Wave 4.10): registers fetch_gridmet (gridMET CONUS daily 4 km meteorology via NKN THREDDS OPeNDAP; fire-weather + drought substrate)
+from . import fetch_noaa_coops_tides  # noqa: E402,F401 - job-A9 (Wave 4.10): registers fetch_noaa_coops_tides (NOAA CO-OPS tide-station water-level observations + predictions; SFINCS coastal boundary forcing for US/territory basins)
+from . import fetch_usace_dams  # noqa: E402,F401 - job-A5 (Wave 4.10): registers fetch_usace_dams (USACE National Inventory of Dams point inventory via public ESRI Living Atlas mirror; dam-break / hazard-overlay substrate)
+from . import fetch_noaa_slr_scenarios  # noqa: E402,F401 - job-A10 (Wave 4.10): registers fetch_noaa_slr_scenarios (NOAA OCM SLR Viewer bathtub inundation polygons for 0-10 ft scenarios; CONUS coastal planning-level overlay)
+from . import fetch_usfs_canopy_fuels  # noqa: E402,F401 - job-A14 (Wave 4.10): registers fetch_usfs_canopy_fuels (USFS LANDFIRE LF2022 canopy base height + bulk density rasters; crown-fire model inputs CBH/CBD)
+from . import fetch_statsgo_soils  # noqa: E402,F401 - job-A11 (Wave 4.10): registers fetch_statsgo_soils (USGS STATSGO COG collection - KFFACT / THICK - via pfdf.data.usgs.statsgo; post-fire debris-flow + runoff-CN substrate)
+from . import fetch_nhdplus_nldi_navigate  # noqa: E402,F401 - job-A11 (Wave 4.10): registers fetch_nhdplus_nldi_navigate (USGS NLDI navigate over the NHDPlus v2.1 channel network - UM / UT / DM / DD traversal from a seed point or COMID)
+from . import fetch_raws_weather  # noqa: E402,F401 - job-A12 (Wave 4.10): registers fetch_raws_weather (Iowa Mesonet IEM RAWS fire-weather station observations; wind/RH/temp/solar for wildfire hazard context + fire-behavior model forcing)
+from . import fetch_3dep_extra  # noqa: E402,F401 - job-A11 (Wave 4.10): registers fetch_3dep_extra (USGS 3DEP non-default resolutions via pfdf.data.usgs.tnm.dem - 1 arc-sec / 1/9 arc-sec / 1 m / 2 arc-sec / 5 m)
+from . import fetch_topobathy  # noqa: E402,F401 - SFINCS North Star P1: registers fetch_topobathy (NOAA NCEI CUDEM 1/9 arc-sec topo-bathy tiles merged with USGS 3DEP land DEM into one seamless EPSG:32616 NAVD88 positive-up float32 COG for coastal SFINCS setup_dep; degrades to 3DEP-land-only with an honest bathymetry-absent warning when CUDEM is missing)
+from . import fetch_fault_sources  # noqa: E402,F401 - task #199 (real-fault OpenQuake): registers fetch_fault_sources (REAL active-fault traces + slip rates from the GEM Global Active Faults harmonized GeoJSON; parses the '(best,min,max)' string triples; bbox-filters worldwide faults to the AOI; honest empty-AOI degrade with a typed note; feeds the worker's render_fault_source_model_xml moment-balanced simpleFaultSource builder for fault-aligned PSHA)
+from . import discover_dataset  # noqa: E402,F401 - job-B7 (Wave 4.10 Stage 2): registers discover_dataset (hybrid BM25 + dense retrieval over audited docstrings + tool_query_corpus.yaml; routes free-text user queries to top-k atomic tools via RRF fusion; hot-set tool surfaced by B5 per-turn filter)
+from . import analytical_qa  # noqa: E402,F401 - job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
+from . import chart_tools  # noqa: E402,F401 - job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distribution
 from . import compute_cross_section  # noqa: E402,F401 - cross-section/profile tool: registers compute_cross_section (samples raster value(s) at N stations along a drawn-or-derived line -> Vega-Lite distance-vs-value line chart via the chart-emission chat-card path; multi-layer overlay on one shared distance axis; reuses chart_tools.build_chart_payload + clip_raster_to_polygon's s3-staging/CRS pattern)
 from . import merge_features  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtMerge): registers merge_features (shapely unary_union dissolve of selected features -> one feature, keeper attrs preserved)
 from . import cut_features_with_polygon  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtCutWithPolygon): registers cut_features_with_polygon (per-feature shapely difference by a cutter, in-place attr preservation, delete_emptied policy)
 from . import fill_gaps  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtFillGap): registers fill_gaps (union + interior-ring harvest -> enclosed sliver gaps as new polygons)
 from . import compute_terrain_profile  # noqa: E402,F401 - QGIS-wrapping backlog (Profile tool): registers compute_terrain_profile (rasterio DEM sampling along a line -> Vega-Lite distance-vs-elevation chart; CRS-correct station reprojection; sibling of compute_cross_section)
-from . import run_modflow_tool  # noqa: E402,F401 — job-0227 (sprint-13 Stage 2): registers run_modflow_job (MODFLOW 6 + MF6-GWT groundwater-plume engine; Cloud Workflows + local mf6 modes)
-from . import run_swmm_tool  # noqa: E402,F401 — sprint-16 P4 (Path A): registers run_swmm_urban_flood (quasi-2D PySWMM urban-flood engine; pyswmm in-process LOCAL lane — buildings/walls/flap-gates + animated overland depth)
-from . import spatial_input_tool  # noqa: E402,F401 — FR-AS-10/FR-WC-16: registers request_spatial_input (pauses the turn, opens the terra-draw surface, returns the role-split drawn geometry — AOI bbox + engine-ready barriers FeatureCollection for run_swmm_urban_flood)
-from . import code_exec_tool  # noqa: E402,F401 — job-0233 (sprint-13 Stage 2): registers code_exec_request (user-confirmed Python sandbox; conversational data-analysis escape hatch)
-from . import list_run_frames  # noqa: E402,F401 — sandbox-staging: registers list_run_frames (ordered animation-frame COG URIs from a run's publish_manifest.json -> feeds code_exec_request multi-frame layer_refs for per-frame viz snippets)
+from . import run_modflow_tool  # noqa: E402,F401 - job-0227 (sprint-13 Stage 2): registers run_modflow_job (MODFLOW 6 + MF6-GWT groundwater-plume engine; Cloud Workflows + local mf6 modes)
+from . import run_swmm_tool  # noqa: E402,F401 - sprint-16 P4 (Path A): registers run_swmm_urban_flood (quasi-2D PySWMM urban-flood engine; pyswmm in-process LOCAL lane - buildings/walls/flap-gates + animated overland depth)
+from . import spatial_input_tool  # noqa: E402,F401 - FR-AS-10/FR-WC-16: registers request_spatial_input (pauses the turn, opens the terra-draw surface, returns the role-split drawn geometry - AOI bbox + engine-ready barriers FeatureCollection for run_swmm_urban_flood)
+from . import code_exec_tool  # noqa: E402,F401 - job-0233 (sprint-13 Stage 2): registers code_exec_request (user-confirmed Python sandbox; conversational data-analysis escape hatch)
+from . import list_run_frames  # noqa: E402,F401 - sandbox-staging: registers list_run_frames (ordered animation-frame COG URIs from a run's publish_manifest.json -> feeds code_exec_request multi-frame layer_refs for per-frame viz snippets)
 
-# sprint-17 NEW engines (parallel lanes) — bridge tools wired into the surface.
-from . import run_river_seepage_tool  # noqa: E402,F401 — sprint-17: registers run_river_seepage_job (MODFLOW RIV-coupled river<->aquifer seepage + along-river plume bridge)
-from . import run_geoclaw_tool  # noqa: E402,F401 — sprint-17: registers run_geoclaw_inundation (GeoClaw dam-break / coastal inundation bridge; imports model_dambreak_geoclaw_scenario)
-from . import run_openquake_tool  # noqa: E402,F401 — sprint-17: registers run_seismic_hazard_psha (OpenQuake PSHA seismic-hazard bridge; imports model_seismic_hazard_scenario)
-from . import run_landlab_tool  # noqa: E402,F401 — sprint-17: registers run_landlab_susceptibility (Landlab landslide-probability / overland-flow bridge; imports model_landslide_scenario)
+# sprint-17 NEW engines (parallel lanes) - bridge tools wired into the surface.
+from . import run_river_seepage_tool  # noqa: E402,F401 - sprint-17: registers run_river_seepage_job (MODFLOW RIV-coupled river<->aquifer seepage + along-river plume bridge)
+from . import run_geoclaw_tool  # noqa: E402,F401 - sprint-17: registers run_geoclaw_inundation (GeoClaw dam-break / coastal inundation bridge; imports model_dambreak_geoclaw_scenario)
+from . import run_openquake_tool  # noqa: E402,F401 - sprint-17: registers run_seismic_hazard_psha (OpenQuake PSHA seismic-hazard bridge; imports model_seismic_hazard_scenario)
+from . import run_landlab_tool  # noqa: E402,F401 - sprint-17: registers run_landlab_susceptibility (Landlab landslide-probability / overland-flow bridge; imports model_landslide_scenario)
 from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_swan_waves (SWAN third-generation spectral nearshore wave-field bridge; ADDITIVE comparison engine vs SFINCS+SnapWave; imports model_wave_scenario)
 # AWS / Australian-Water-School "Making Waves: Wave Modeling with SWAN" lecture
 # (reports/references/lecture_aws_swan_making_waves): two pure-analytic coastal
@@ -323,8 +323,8 @@ from . import compute_overtopping  # noqa: E402,F401 -- registers compute_overto
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
-# this composer as never-registered — this import is the fix.
-from ..workflows import model_river_seepage_scenario as _model_river_seepage_scenario  # noqa: E402,F401 — sprint-17: registers run_model_river_seepage_scenario (LLM-facing river-seepage composer)
+# this composer as never-registered - this import is the fix.
+from ..workflows import model_river_seepage_scenario as _model_river_seepage_scenario  # noqa: E402,F401 - sprint-17: registers run_model_river_seepage_scenario (LLM-facing river-seepage composer)
 
 # sprint-18 Wave-1 MODFLOW archetypes (GWF-only): the three new composers each
 # carry their OWN @register_tool (LLM-facing run_model_*_scenario) and dispatch
@@ -334,6 +334,14 @@ from ..workflows import model_river_seepage_scenario as _model_river_seepage_sce
 from ..workflows import model_sustainable_yield_scenario as _model_sustainable_yield_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_sustainable_yield_scenario (MODFLOW pumping-drawdown composer)
 from ..workflows import model_mine_dewatering_scenario as _model_mine_dewatering_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_mine_dewatering_scenario (MODFLOW pit-dewatering composer)
 from ..workflows import model_regional_water_budget_scenario as _model_regional_water_budget_scenario  # noqa: E402,F401 - sprint-18 Wave-1: registers run_model_regional_water_budget_scenario (MODFLOW zonal-budget composer)
+
+# sprint-18 Wave-2 MODFLOW archetypes (GWF-only): three more composers each carry
+# their OWN @register_tool (LLM-facing run_model_*_scenario) + dispatch through the
+# shared run_modflow_archetype_job. Importing them seeds TOOL_REGISTRY at startup
+# (mirrors the Wave-1 imports above). The archetype run-tool is NOT @register_tool'd.
+from ..workflows import model_mar_scenario as _model_mar_scenario  # noqa: E402,F401 - sprint-18 Wave-2: registers run_model_mar_scenario (MODFLOW managed-aquifer-recharge mounding composer)
+from ..workflows import model_asr_scenario as _model_asr_scenario  # noqa: E402,F401 - sprint-18 Wave-2: registers run_model_asr_scenario (MODFLOW aquifer-storage-&-recovery composer)
+from ..workflows import model_wetland_hydroperiod_scenario as _model_wetland_hydroperiod_scenario  # noqa: E402,F401 - sprint-18 Wave-2: registers run_model_wetland_hydroperiod_scenario (MODFLOW wetland-hydroperiod composer)
 
 # fire-animation demos S5/J5: the satellite fire-animation composer carries its
 # OWN @register_tool (run_model_satellite_fire_animation); import it so the

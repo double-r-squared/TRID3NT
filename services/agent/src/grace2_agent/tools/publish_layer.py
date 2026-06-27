@@ -1,4 +1,4 @@
-"""Atomic tool ``publish_layer`` — COG → QGIS Server WMS bridge (job-0062).
+"""Atomic tool ``publish_layer`` - COG → QGIS Server WMS bridge (job-0062).
 
 This module registers one atomic tool that closes the M5→UI wiring loop:
 
@@ -27,13 +27,13 @@ This tool closes that loop by:
 
 **Dependency-injection seams** (mirrors ``tools/solver.py`` pattern):
 
-- ``_JOBS_CLIENT`` / ``set_jobs_client(client)`` — the Cloud Run v2
+- ``_JOBS_CLIENT`` / ``set_jobs_client(client)`` - the Cloud Run v2
   ``JobsClient``. Production binding at startup uses ADC; tests inject a
   mock. Lazily defaults at first use so import-time does not require ADC.
-- ``_GCP_PROJECT`` / ``set_gcp_project(project)`` — GCP project override.
-- ``_QGS_URI`` / ``set_default_qgs_uri(uri)`` — default canonical
+- ``_GCP_PROJECT`` / ``set_gcp_project(project)`` - GCP project override.
+- ``_QGS_URI`` / ``set_default_qgs_uri(uri)`` - default canonical
   ``.qgs`` URI override (useful for smoke harnesses and integration tests).
-- ``_PYQGIS_WORKER_JOB_NAME`` / ``set_pyqgis_worker_job_name(name)`` —
+- ``_PYQGIS_WORKER_JOB_NAME`` / ``set_pyqgis_worker_job_name(name)`` -
   Cloud Run Job name override (default: ``grace-2-pyqgis-worker``).
 
 **Cross-cutting principles:**
@@ -147,19 +147,19 @@ class PublishLayerError(RuntimeError):
     with corrected args can succeed.
 
     Codes:
-    - ``JOBS_CLIENT_UNAVAILABLE`` — google-cloud-run not importable / ADC missing.
-    - ``WORKER_JOB_DISPATCH_FAILED`` — ``run_job`` API call failed.
-    - ``WORKER_JOB_TIMEOUT`` — execution did not finish within ``timeout_s``.
-    - ``WORKER_JOB_FAILED`` — execution reached FAILED terminal state.
-    - ``WORKER_JOB_CANCELLED`` — execution was cancelled externally.
-    - ``QGS_URI_PARSE_ERROR`` — malformed ``project_qgs_uri``.
-    - ``LAYER_URI_NOT_FOUND`` (job-0257, retryable) — ``layer_uri`` does not
+    - ``JOBS_CLIENT_UNAVAILABLE`` - google-cloud-run not importable / ADC missing.
+    - ``WORKER_JOB_DISPATCH_FAILED`` - ``run_job`` API call failed.
+    - ``WORKER_JOB_TIMEOUT`` - execution did not finish within ``timeout_s``.
+    - ``WORKER_JOB_FAILED`` - execution reached FAILED terminal state.
+    - ``WORKER_JOB_CANCELLED`` - execution was cancelled externally.
+    - ``QGS_URI_PARSE_ERROR`` - malformed ``project_qgs_uri``.
+    - ``LAYER_URI_NOT_FOUND`` (job-0257, retryable) - ``layer_uri`` does not
       exist in GCS and no unambiguous auto-correction was found. The message
       lists the real objects under the same prefix so the LLM can retry with
       the exact URI from the producing tool's function_response.
-    - ``WORKER_PUBLISH_NOT_APPLIED`` (job-0257) — the worker execution
+    - ``WORKER_PUBLISH_NOT_APPLIED`` (job-0257) - the worker execution
       completed (exit-0-on-error policy, NFR-R-1) but the layer is absent
-      from the ``.qgs`` — i.e. the worker envelope carried ``status=error``
+      from the ``.qgs`` - i.e. the worker envelope carried ``status=error``
       (e.g. QgsRasterLayer failed to open the raster). Without this check the
       tool reported false success and the map silently showed nothing.
     """
@@ -198,7 +198,7 @@ def _get_storage_client() -> Any | None:
     """Return the bound storage client, lazily building an ADC default.
 
     Returns ``None`` (instead of raising) when google-cloud-storage is not
-    importable or ADC is missing — validation/verification then degrade to
+    importable or ADC is missing - validation/verification then degrade to
     no-ops (fail-open) so environments without GCS access keep the legacy
     behavior.
     """
@@ -213,7 +213,7 @@ def _get_storage_client() -> Any | None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "publish_layer: storage client unavailable (%s) — "
+            "publish_layer: storage client unavailable (%s) - "
             "layer_uri validation + .qgs verification skipped",
             exc,
         )
@@ -428,7 +428,7 @@ def _build_vector_wms_url(
 
 #: job-0269b: token vocabulary marking TERRAIN-family rasters. These are
 #: RGBA (colored relief) or single-band grayscale/Float32 (hillshade, slope,
-#: aspect, raw DEM) products — QGIS DEFAULT rendering visualizes them
+#: aspect, raw DEM) products - QGIS DEFAULT rendering visualizes them
 #: correctly, while the flood-depth pseudocolor ramp clamps them to a
 #: uniform/transparent tile (live 2026-06-10 "can't see the overlay").
 #: Token-boundary matching (not substring) so e.g. a layer_id like
@@ -442,7 +442,7 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     """Family-aware default style preset (job-0269b).
 
     Returns ``""`` (no preset → QGIS default rendering) for terrain-family
-    rasters, else ``"continuous_flood_depth"`` — the pre-0269b default, so
+    rasters, else ``"continuous_flood_depth"`` - the pre-0269b default, so
     flood/plume publishes that relied on it are unchanged. Tokenizes BOTH
     the resolved URI and the layer_id on non-alphanumerics and matches
     whole tokens against ``_TERRAIN_STYLE_TOKENS``.
@@ -464,7 +464,7 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
 # directly and renders a single-band float32 raster as PER-TILE-AUTOSCALED
 # GRAYSCALE unless the tile request carries an explicit ``&rescale=<lo>,<hi>``
 # and ``&colormap_name=<name>``. Before F51 only ``continuous_flood_depth`` and
-# ``continuous_plume_concentration`` got params (a 2-entry if/elif) — every
+# ``continuous_plume_concentration`` got params (a 2-entry if/elif) - every
 # OTHER continuous preset (precip / temperature / wind / drought / fuel
 # moisture / satellite) fell through to ``style_params=""`` and rendered
 # invisible / washed-out.
@@ -476,36 +476,36 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
 #   - categorical / paletted COG (NLCD land cover) -> "" (embedded GDAL color
 #     table wins, job-0324);
 #   - RGB(A) / multiband COG (colored relief, blended landcover + hillshade
-#     composite — NATE's Toutle demo) -> "" (TiTiler renders the baked colors
+#     composite - NATE's Toutle demo) -> "" (TiTiler renders the baked colors
 #     directly);
 #   - terrain-token preset/URI (continuous_dem / hillshade / slope / aspect /
 #     relief / terrain / elevation) -> "" (grayscale terrain auto-scales, RGBA
-#     terrain renders directly — exactly as it did pre-F51).
+#     terrain renders directly - exactly as it did pre-F51).
 # Only AFTER those passthroughs does it apply a typed preset->(rescale,colormap)
 # REGISTRY (exact key first, then sensible substring/prefix) to SINGLE-BAND
 # weather SCALARS, then a GENERIC band-stats percentile fallback for any
 # single-band continuous preset not in the registry, then a SAFE non-empty
 # default. Colormap names are LOWERCASE rio-tiler names (viridis, blues, ylgnbu,
-# reds, rdbu, rdylbu_r, ylgn, ylorrd, gray, gray_r, ...) — rio-tiler casing is
+# reds, rdbu, rdylbu_r, ylgn, ylorrd, gray, gray_r, ...) - rio-tiler casing is
 # lowercase (NOT matplotlib), do not change.
 # --------------------------------------------------------------------------- #
 
 #: Exact preset / variable key -> (rescale "lo,hi", colormap_name). Physically
 #: correct band + colormap per family. KEEP flood/plume byte-for-byte.
 _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
-    # Hydrology (UNCHANGED — pre-F51 behavior pinned by tests).
+    # Hydrology (UNCHANGED - pre-F51 behavior pinned by tests).
     "continuous_flood_depth": ("0,3", "ylgnbu"),
     "continuous_plume_concentration": ("0,10", "reds"),
-    # SnapWave significant wave height (m) — sprint-17 wave animation. A
+    # SnapWave significant wave height (m) - sprint-17 wave animation. A
     # CYAN/BLUE ramp (gnbu) over 0..6 m, visibly DISTINCT from depth's ylgnbu so
     # the wave layer group never looks identical to the flood-depth group on the
-    # Mexico Beach North Star. ADDITIVE — depth/plume stay byte-identical.
+    # Mexico Beach North Star. ADDITIVE - depth/plume stay byte-identical.
     "continuous_wave_height": ("0,6", "gnbu"),
     # Precipitation (mm).
     "precipitation_mm": ("0,100", "blues"),
     "gridmet_pr": ("0,100", "blues"),
     "era5_total_precipitation": ("0,100", "blues"),
-    # Temperature (Kelvin) — exact members; *temperature* prefix catches more.
+    # Temperature (Kelvin) - exact members; *temperature* prefix catches more.
     "hrrr_2m_temperature": ("250,320", "rdylbu_r"),
     "gridmet_tmmx": ("250,320", "rdylbu_r"),
     "gridmet_tmmn": ("250,320", "rdylbu_r"),
@@ -514,7 +514,7 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "wind_speed": ("0,25", "viridis"),
     "hrrr_10m_wind_speed": ("0,25", "viridis"),
     "gridmet_vs": ("0,25", "viridis"),
-    # Signed wind components (m/s) — diverging ramp centered on 0.
+    # Signed wind components (m/s) - diverging ramp centered on 0.
     "hrrr_10m_u_wind": ("-25,25", "rdbu"),
     "hrrr_10m_v_wind": ("-25,25", "rdbu"),
     "era5_10m_u_wind": ("-25,25", "rdbu"),
@@ -523,11 +523,11 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "gridmet_pdsi": ("-6,6", "rdbu"),
     "gridmet_fm100": ("0,40", "ylgn"),
     "gridmet_fm1000": ("0,40", "ylgn"),
-    # GOES satellite — visible reflectance vs brightness-temperature bands.
+    # GOES satellite - visible reflectance vs brightness-temperature bands.
     "goes_visible": ("0,1", "gray"),
     "goes_ir": ("180,330", "gray_r"),
     "goes_wv": ("180,330", "gray_r"),
-    # sprint-17 NEW engines (parallel lanes) — ADDITIVE; flood/plume/wave above
+    # sprint-17 NEW engines (parallel lanes) - ADDITIVE; flood/plume/wave above
     # stay byte-identical. River<->aquifer seepage is SIGNED (gaining vs losing
     # reach) -> a diverging rdbu ramp centered on 0; seismic PGA in [0,1] g -> a
     # perceptually-uniform magma ramp; landslide susceptibility/probability in
@@ -564,6 +564,13 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # band so the gradient reads as a potentiometric surface. (The plume
     # timeseries reuses continuous_plume_concentration above -- not a new key.)
     "continuous_head_m": ("0,50", "viridis"),
+    # MODFLOW archetype products (sprint-18 Wave-1/Wave-2): distinct semantic ramps
+    # so drawdown (water DECLINE) and mounding (water RISE) never render with the
+    # same colormap. Registered so the OUTPUT_QUANTITIES style_preset specs validate.
+    "continuous_drawdown_m": ("0,10", "reds"),  # head decline under pumping
+    "continuous_dewatering_rate": ("0,5000", "reds"),  # DRN outflow (m3/day)
+    "continuous_mounding_m": ("0,10", "blues"),  # head rise under recharge (MAR)
+    "continuous_hydroperiod_m": ("0,5", "viridis"),  # seasonal water-table range
     # Landlab discarded fields the component chain already computes. Drainage
     # area spans many orders of magnitude -> a high-contrast viridis (the
     # percentile fallback would also work, but pinning a key keeps the colormap
@@ -590,7 +597,7 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "continuous_conduit_velocity": ("0,5", "viridis"),
 }
 
-#: Safe non-empty default — never let a continuous raster fall through to an
+#: Safe non-empty default - never let a continuous raster fall through to an
 #: empty ``style_params`` (which gives stock per-tile grayscale autoscale).
 _TITILER_SAFE_DEFAULT = "&rescale=0,1&colormap_name=viridis"
 
@@ -615,7 +622,7 @@ def _registry_style_params(preset: str) -> str | None:
     # 2. hrrr_smoke_* -> generic band-stats fallback (tiny range).
     if "smoke" in key:
         return None
-    # 3. Family substring/prefix matching (order matters — most specific first).
+    # 3. Family substring/prefix matching (order matters - most specific first).
     #    (substring, (rescale, colormap))
     family_rules: tuple[tuple[str, tuple[str, str]], ...] = (
         # Signed wind components before generic "wind"/"temperature".
@@ -630,7 +637,7 @@ def _registry_style_params(preset: str) -> str | None:
     for needle, (rescale, cmap) in family_rules:
         if needle in key:
             return f"&rescale={rescale}&colormap_name={cmap}"
-    # Precipitation family — PRECISE match, NOT a loose ``precip`` substring,
+    # Precipitation family - PRECISE match, NOT a loose ``precip`` substring,
     # so ``precipitable_water`` (and other ``precip*`` look-alikes) do NOT get
     # the 0,100 mm precip ramp. Exact keys are already handled above; here we
     # accept only a guarded prefix on the conventional precip variable names.
@@ -651,7 +658,7 @@ def _band1_percentile_rescale(raster_bytes: bytes | None) -> str | None:
     Reads band 1 from the in-hand COG bytes via a rasterio ``MemoryFile``,
     masks nodata + non-finite values, and emits the 2nd/98th percentile rescale
     with a perceptually-uniform ``viridis`` ramp. Returns ``None`` when the
-    bytes are missing, unreadable, or band 1 has NO finite values — callers
+    bytes are missing, unreadable, or band 1 has NO finite values - callers
     degrade to the SAFE default. Single-value / tiny-range bands are widened so
     ``rescale`` is never a zero-width interval (which TiTiler rejects).
     """
@@ -661,7 +668,7 @@ def _band1_percentile_rescale(raster_bytes: bytes | None) -> str | None:
         import numpy as np
         import rasterio
         from rasterio.io import MemoryFile
-    except Exception as exc:  # noqa: BLE001 — deps unavailable: safe-default
+    except Exception as exc:  # noqa: BLE001 - deps unavailable: safe-default
         logger.debug("band-stats deps unavailable (%s: %s)", type(exc).__name__, exc)
         return None
     try:
@@ -673,7 +680,7 @@ def _band1_percentile_rescale(raster_bytes: bytes | None) -> str | None:
                 return None
             lo = float(np.percentile(finite, 2))
             hi = float(np.percentile(finite, 98))
-    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+    except Exception as exc:  # noqa: BLE001 - unreadable / not a raster
         logger.debug(
             "band-stats read failed (%s: %s)", type(exc).__name__, exc
         )
@@ -689,7 +696,7 @@ def _band1_percentile_rescale(raster_bytes: bytes | None) -> str | None:
 
 
 def _is_rgba_or_multiband(raster_bytes: bytes | None) -> bool:
-    """True if the COG is RGB(A)/multiband — TiTiler renders it DIRECTLY.
+    """True if the COG is RGB(A)/multiband - TiTiler renders it DIRECTLY.
 
     Reads the in-hand COG bytes via a rasterio ``MemoryFile`` and reports True
     when band count >= 3 OR any band's color interpretation is one of
@@ -706,7 +713,7 @@ def _is_rgba_or_multiband(raster_bytes: bytes | None) -> bool:
         import rasterio
         from rasterio.enums import ColorInterp
         from rasterio.io import MemoryFile
-    except Exception as exc:  # noqa: BLE001 — deps unavailable: not RGBA
+    except Exception as exc:  # noqa: BLE001 - deps unavailable: not RGBA
         logger.debug("rgba probe deps unavailable (%s: %s)", type(exc).__name__, exc)
         return False
     try:
@@ -720,7 +727,7 @@ def _is_rgba_or_multiband(raster_bytes: bytes | None) -> bool:
                 ColorInterp.alpha,
             }
             return any(ci in rgba for ci in src.colorinterp)
-    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+    except Exception as exc:  # noqa: BLE001 - unreadable / not a raster
         logger.debug("rgba probe read failed (%s: %s)", type(exc).__name__, exc)
         return False
 
@@ -751,26 +758,26 @@ def _resolve_titiler_style_params(
 
     Resolution order (F51, hardened by the terrain/RGBA regression fix):
 
-    1. CATEGORICAL GUARD — if the COG carries an embedded band-1 GDAL color
+    1. CATEGORICAL GUARD - if the COG carries an embedded band-1 GDAL color
        table (NLCD land cover etc.), return ``""`` so TiTiler colorizes from the
        EMBEDDED palette and is NEVER washed out by a rescale (job-0324).
-    2. RGBA / MULTIBAND PASSTHROUGH — if the COG is RGB(A) / >=3 bands (colored
+    2. RGBA / MULTIBAND PASSTHROUGH - if the COG is RGB(A) / >=3 bands (colored
        relief, blended landcover + hillshade composite), return ``""``: TiTiler
        renders the baked colors directly; a single-band rescale/colormap would
        CORRUPT it. This covers NATE's Toutle landcover+hillshade composite
        regardless of preset.
-    3. TERRAIN-TOKEN PASSTHROUGH — if the preset / URI tokenizes to a terrain
+    3. TERRAIN-TOKEN PASSTHROUGH - if the preset / URI tokenizes to a terrain
        token (``continuous_dem`` -> ``dem``, hillshade / slope / aspect / relief
        / terrain / elevation), return ``""``: grayscale terrain auto-scales and
        RGBA terrain renders directly, exactly as it did pre-F51.
-    4. REGISTRY — a typed preset/variable -> (rescale, colormap) lookup (exact
+    4. REGISTRY - a typed preset/variable -> (rescale, colormap) lookup (exact
        key, then family substring/prefix). Flood + plume are pinned here
        byte-for-byte; single-band weather scalars (precip / temperature / wind /
        drought / fuel-moisture / satellite) get their physically-correct band.
-    5. GENERIC FALLBACK — for any single-band continuous preset NOT in the
+    5. GENERIC FALLBACK - for any single-band continuous preset NOT in the
        registry (and for ``hrrr_smoke_*``), compute the band-1 2nd/98th
        percentile rescale with a viridis ramp from the in-hand COG bytes.
-    6. SAFE DEFAULT — if the stats read fails for ANY reason, emit
+    6. SAFE DEFAULT - if the stats read fails for ANY reason, emit
        ``&rescale=0,1&colormap_name=viridis``. NEVER returns empty for a
        single-band continuous scalar raster.
 
@@ -790,12 +797,12 @@ def _resolve_titiler_style_params(
                 if _read_band1_colormap(src) is not None:
                     logger.info(
                         "publish_layer (titiler) %s carries an embedded band-1 "
-                        "color table — leaving style_params empty so TiTiler "
+                        "color table - leaving style_params empty so TiTiler "
                         "colorizes from the palette (job-0324)",
                         layer_uri,
                     )
                     return ""
-        except Exception as exc:  # noqa: BLE001 — palette probe is best-effort
+        except Exception as exc:  # noqa: BLE001 - palette probe is best-effort
             logger.debug(
                 "palette probe skipped (%s: %s)", type(exc).__name__, exc
             )
@@ -806,7 +813,7 @@ def _resolve_titiler_style_params(
     #    these published with EMPTY style_params and rendered correctly.
     if _is_rgba_or_multiband(raster_bytes):
         logger.info(
-            "publish_layer (titiler) %s is RGB(A)/multiband — leaving "
+            "publish_layer (titiler) %s is RGB(A)/multiband - leaving "
             "style_params empty so TiTiler renders the baked colors directly "
             "(no single-band rescale/colormap)",
             layer_uri,
@@ -819,7 +826,7 @@ def _resolve_titiler_style_params(
     if _is_terrain_token_preset(style_preset, layer_uri):
         logger.info(
             "publish_layer (titiler) preset=%r uri=%s is a TERRAIN-family raster "
-            "— leaving style_params empty (grayscale/RGBA terrain renders "
+            "- leaving style_params empty (grayscale/RGBA terrain renders "
             "correctly with no rescale)",
             style_preset,
             layer_uri,
@@ -839,7 +846,7 @@ def _resolve_titiler_style_params(
 
     # 6. Safe, NEVER-empty default.
     logger.info(
-        "publish_layer (titiler) no registry/stats match for preset=%r uri=%s — "
+        "publish_layer (titiler) no registry/stats match for preset=%r uri=%s - "
         "using safe default rescale",
         style_preset,
         layer_uri,
@@ -869,9 +876,9 @@ def style_params_from_band_stats(
        directly).
     3. TERRAIN-token passthrough (preset / uri tokenizes to a terrain token) ->
        ``""``.
-    4. REGISTRY (exact key, then family substring/prefix) — flood/plume/wave +
+    4. REGISTRY (exact key, then family substring/prefix) - flood/plume/wave +
        weather scalars pinned byte-for-byte.
-    5. GENERIC fallback from ``p2``/``p98`` (NO COG read) — the manifest's
+    5. GENERIC fallback from ``p2``/``p98`` (NO COG read) - the manifest's
        precomputed substitute for ``_band1_percentile_rescale``.
     6. SAFE non-empty default.
     """
@@ -922,7 +929,7 @@ def build_titiler_tile_url(tile_base: str, cog_uri: str, style_params: str) -> s
 #: Vector artifact extensions. ``publish_layer`` is RASTER-ONLY (see the module
 #: docstring + the Wave 4.9 inline-GeoJSON path). A vector reaching this tool is
 #: ALREADY on the map via its producing fetch tool (``add_loaded_layer`` inline
-#: GeoJSON), so a publish is unnecessary — and routing it through the raster tile
+#: GeoJSON), so a publish is unnecessary - and routing it through the raster tile
 #: path mints HANGING tiles that freeze the map. Token-tail matched against the
 #: resolved URI basename.
 _VECTOR_EXTS = (
@@ -951,14 +958,14 @@ def _benign_vector_noop(layer_uri: str, layer_id: str) -> str:
     card on a layer the user can already see.
 
     F32 turns that into a benign no-op: NO raise (so ``emit_tool_call``
-    ``mark_complete``s the step — green, not red), NO tile template, NO
+    ``mark_complete``s the step - green, not red), NO tile template, NO
     ``observe_published_layer`` registration (so no hanging-tile face is minted).
-    The returned string is the function_response the LLM reads — a clear,
+    The returned string is the function_response the LLM reads - a clear,
     honest "already rendered inline; no publish needed" so it narrates calmly
     and does not retry.
     """
     logger.info(
-        "publish_layer: benign vector no-op for layer_id=%s uri=%s — vector "
+        "publish_layer: benign vector no-op for layer_id=%s uri=%s - vector "
         "already rendered inline (Wave 4.9 GeoJSON); no raster publish needed",
         layer_id,
         layer_uri,
@@ -977,7 +984,7 @@ def _benign_vector_noop(layer_uri: str, layer_id: str) -> str:
 # Vectors are produced as FlatGeobuf (``.fgb``) which the browser CANNOT read,
 # and today the agent delivers them INLINE (it reads the .fgb back, parses to
 # GeoJSON, and ships the FeatureCollection on the WS). That works ONLY while the
-# agent box is awake — the box-off cold path (signer -> S3) has no browser-
+# agent box is awake - the box-off cold path (signer -> S3) has no browser-
 # readable copy of a vector layer, so a cold-opened case paints rasters but not
 # roads/rivers/footprints/mesh.
 #
@@ -989,15 +996,15 @@ def _benign_vector_noop(layer_uri: str, layer_id: str) -> str:
 # GeoJSON asset is the DISPLAY face (the browser fetches it).
 #
 # Frozen contract (engine tracks rebase onto this):
-#   bucket : GRACE2_RUNS_BUCKET (solver._get_runs_bucket — the DURABLE runs
+#   bucket : GRACE2_RUNS_BUCKET (solver._get_runs_bucket - the DURABLE runs
 #            bucket, NOT the 30-day-TTL content-addressed cache bucket; a
 #            published layer must outlive cache eviction).
 #   key    : ``case-data/<case_id>/<layer_id>.geojson``
 #   asset  : the returned ``s3://<runs_bucket>/case-data/<case_id>/<layer_id>.geojson``
-#            URI — the DISPLAY face (resolved to a served/pre-signed URL by the
+#            URI - the DISPLAY face (resolved to a served/pre-signed URL by the
 #            cold-view path, exactly like the case-view snapshot).
 #   faces  : observe_published_layer(layer_id, gcs_uri=<s3 .fgb DATA>,
-#            wms_url=<s3 .geojson DISPLAY>) — the GeoJSON never displaces the
+#            wms_url=<s3 .geojson DISPLAY>) - the GeoJSON never displaces the
 #            data uri (mirrors the raster tile-template / WMS branches).
 # --------------------------------------------------------------------------- #
 
@@ -1019,7 +1026,7 @@ def durable_vector_geojson_key(case_id: str, layer_id: str) -> str:
 def _vector_uri_to_geojson_bytes(layer_uri: str) -> bytes | None:
     """Read a vector artifact URI and return UTF-8 GeoJSON FeatureCollection bytes.
 
-    REUSES the existing read + parse helpers — does NOT reimplement them:
+    REUSES the existing read + parse helpers - does NOT reimplement them:
       - ``.fgb`` bytes -> ``pipeline_emitter._fgb_bytes_to_geojson`` (pyogrio +
         geopandas; the same converter the inline path uses).
       - ``.geojson`` / ``.json`` -> validated FeatureCollection passed through.
@@ -1043,7 +1050,7 @@ def _vector_uri_to_geojson_bytes(layer_uri: str) -> bytes | None:
         else:
             with open(layer_uri, "rb") as f:
                 raw = f.read()
-    except Exception as exc:  # noqa: BLE001 — fail-open
+    except Exception as exc:  # noqa: BLE001 - fail-open
         logger.warning(
             "publish_layer: durable-geojson source read failed uri=%s (%s: %s)",
             layer_uri,
@@ -1077,7 +1084,7 @@ def _vector_uri_to_geojson_bytes(layer_uri: str) -> bytes | None:
             )
             return None
         return _json.dumps(obj).encode("utf-8")
-    except Exception as exc:  # noqa: BLE001 — fail-open
+    except Exception as exc:  # noqa: BLE001 - fail-open
         logger.warning(
             "publish_layer: durable-geojson parse/dump failed uri=%s (%s: %s)",
             layer_uri,
@@ -1099,7 +1106,7 @@ def _write_durable_vector_geojson(
     ``s3://`` asset URI.
 
     FAIL-OPEN: returns ``None`` on ANY read / parse / write error (the caller
-    degrades to the existing benign no-op — data-source-fallback norm). NEVER
+    degrades to the existing benign no-op - data-source-fallback norm). NEVER
     raises.
     """
     geojson_bytes = _vector_uri_to_geojson_bytes(layer_uri)
@@ -1131,10 +1138,10 @@ def _write_durable_vector_geojson(
             len(geojson_bytes),
         )
         return asset_uri
-    except Exception as exc:  # noqa: BLE001 — fail-open
+    except Exception as exc:  # noqa: BLE001 - fail-open
         logger.warning(
             "publish_layer: durable vector GeoJSON write failed layer_id=%s "
-            "case=%s (%s: %s) — falling back to benign no-op",
+            "case=%s (%s: %s) - falling back to benign no-op",
             layer_id,
             case_id,
             type(exc).__name__,
@@ -1153,16 +1160,16 @@ def _raster_has_overviews(raster_bytes: bytes) -> bool | None:
 
     Reads the bytes through a rasterio ``MemoryFile`` and inspects
     ``overviews(1)``. A non-empty list = overviews present. ``None`` is
-    returned when rasterio is unavailable or the open fails — callers treat
+    returned when rasterio is unavailable or the open fails - callers treat
     ``None`` as "cannot determine" and fail-open (publish as-is, legacy
     behavior).
     """
     try:
         import rasterio
         from rasterio.io import MemoryFile
-    except Exception as exc:  # noqa: BLE001 — rasterio not installed
+    except Exception as exc:  # noqa: BLE001 - rasterio not installed
         logger.warning(
-            "publish_layer: rasterio unavailable (%s) — cannot verify COG "
+            "publish_layer: rasterio unavailable (%s) - cannot verify COG "
             "overviews; publishing as-is",
             exc,
         )
@@ -1170,9 +1177,9 @@ def _raster_has_overviews(raster_bytes: bytes) -> bool | None:
     try:
         with MemoryFile(raster_bytes) as mem, mem.open() as src:
             return bool(src.overviews(1))
-    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+    except Exception as exc:  # noqa: BLE001 - unreadable / not a raster
         logger.warning(
-            "publish_layer: could not inspect raster overviews (%s: %s) — "
+            "publish_layer: could not inspect raster overviews (%s: %s) - "
             "publishing as-is",
             type(exc).__name__,
             exc,
@@ -1187,15 +1194,15 @@ def _read_band1_colormap(src) -> dict | None:
     palette-index COG with an EMBEDDED GDAL color table; TiTiler colorizes from
     it. The F33 overview-enforcement re-write must carry that table forward or
     the layer renders solid grey (job-0324). rasterio raises ``ValueError`` when
-    band 1 has no color table — the normal case for continuous rasters (DEM,
-    hillshade, flood depth) — and we return ``None`` so callers do NOT fabricate
+    band 1 has no color table - the normal case for continuous rasters (DEM,
+    hillshade, flood depth) - and we return ``None`` so callers do NOT fabricate
     one.
     """
     try:
         return src.colormap(1)
     except ValueError:
         return None
-    except Exception as exc:  # noqa: BLE001 — any other read failure: no-op
+    except Exception as exc:  # noqa: BLE001 - any other read failure: no-op
         logger.debug("colormap read skipped (%s: %s)", type(exc).__name__, exc)
         return None
 
@@ -1203,7 +1210,7 @@ def _read_band1_colormap(src) -> dict | None:
 def _apply_band1_colormap(dst, cmap: dict | None) -> None:
     """Stamp a preserved band-1 color table + palette colorinterp onto ``dst``.
 
-    No-op when ``cmap`` is ``None`` (non-paletted raster — never fabricate a
+    No-op when ``cmap`` is ``None`` (non-paletted raster - never fabricate a
     color table). Otherwise writes the table on band 1 and marks band 1's color
     interpretation ``palette`` so TiTiler treats the integer pixels as indices.
     """
@@ -1217,9 +1224,9 @@ def _apply_band1_colormap(dst, cmap: dict | None) -> None:
             interp = list(dst.colorinterp)
             interp[0] = ColorInterp.palette
             dst.colorinterp = tuple(interp)
-        except Exception:  # noqa: BLE001 — colorinterp set is best-effort
+        except Exception:  # noqa: BLE001 - colorinterp set is best-effort
             pass
-    except Exception as exc:  # noqa: BLE001 — colormap copy is best-effort
+    except Exception as exc:  # noqa: BLE001 - colormap copy is best-effort
         logger.warning(
             "publish_layer: colormap preservation failed (%s: %s); land-cover "
             "output may render grey",
@@ -1232,19 +1239,19 @@ def _build_cog_with_overviews(raster_bytes: bytes) -> bytes | None:
     """Translate flat raster bytes into a tiled COG WITH overviews (F33).
 
     Strategy:
-    1. PREFERRED — reuse ``compute_hillshade._translate_to_cog`` (the GDAL COG
+    1. PREFERRED - reuse ``compute_hillshade._translate_to_cog`` (the GDAL COG
        driver path the kickoff mandates: tiled + overviews in one pass). It
        resolves ``gdal_translate`` next to the ``gdaldem`` binary and falls
-       back to flat bytes when the binary is missing — so we verify the result
+       back to flat bytes when the binary is missing - so we verify the result
        actually gained overviews before trusting it.
-    2. FALLBACK — rasterio (``rio-cogeo`` if present, else a manual
+    2. FALLBACK - rasterio (``rio-cogeo`` if present, else a manual
        tiled-profile copy + ``build_overviews``) for environments without the
        GDAL CLI on PATH.
 
     Returns the new COG bytes, or ``None`` when no path could produce a real
     overview-bearing COG (caller then fails-open and publishes the original).
     """
-    # 1. GDAL CLI path (reuse, do not reimplement — kickoff mandate).
+    # 1. GDAL CLI path (reuse, do not reimplement - kickoff mandate).
     in_tmp: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as in_f:
@@ -1256,16 +1263,16 @@ def _build_cog_with_overviews(raster_bytes: bytes) -> bytes | None:
             gdaldem_bin = _get_gdaldem_bin()  # raises if unavailable
             cog_bytes = _translate_to_cog(in_tmp, gdaldem_bin)
             # _translate_to_cog degrades to flat bytes when gdal_translate is
-            # absent — verify overviews actually landed before trusting it.
+            # absent - verify overviews actually landed before trusting it.
             if _raster_has_overviews(cog_bytes):
                 return cog_bytes
             logger.info(
                 "publish_layer: GDAL _translate_to_cog produced no overviews "
-                "(binary missing?) — trying rasterio fallback",
+                "(binary missing?) - trying rasterio fallback",
             )
-        except Exception as exc:  # noqa: BLE001 — gdaldem unavailable / failed
+        except Exception as exc:  # noqa: BLE001 - gdaldem unavailable / failed
             logger.info(
-                "publish_layer: GDAL COG translate path unavailable (%s: %s) — "
+                "publish_layer: GDAL COG translate path unavailable (%s: %s) - "
                 "trying rasterio fallback",
                 type(exc).__name__,
                 exc,
@@ -1280,9 +1287,9 @@ def _build_cog_with_overviews(raster_bytes: bytes) -> bytes | None:
     # 2. rasterio fallback (rio-cogeo preferred; manual overview build else).
     try:
         return _build_cog_with_overviews_rasterio(raster_bytes)
-    except Exception as exc:  # noqa: BLE001 — fallback failed; fail-open upstream
+    except Exception as exc:  # noqa: BLE001 - fallback failed; fail-open upstream
         logger.warning(
-            "publish_layer: rasterio COG/overview rebuild failed (%s: %s) — "
+            "publish_layer: rasterio COG/overview rebuild failed (%s: %s) - "
             "publishing original (no-overview) raster as-is",
             type(exc).__name__,
             exc,
@@ -1296,8 +1303,8 @@ def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
     from rasterio.io import MemoryFile
 
     # Detect a band-1 palette color table up front. When present (NLCD land
-    # cover), SKIP the rio-cogeo path — its colormap forwarding is
-    # version-dependent — and fall through to the manual build below, which
+    # cover), SKIP the rio-cogeo path - its colormap forwarding is
+    # version-dependent - and fall through to the manual build below, which
     # explicitly re-stamps the table (job-0324). Non-paletted rasters keep the
     # rio-cogeo fast path unchanged.
     with MemoryFile(raster_bytes) as probe_mem, probe_mem.open() as probe:
@@ -1323,7 +1330,7 @@ def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
                     out = dst_mem.read()
             if _raster_has_overviews(out):
                 return out
-        except Exception:  # noqa: BLE001 — rio-cogeo absent / failed; manual below
+        except Exception:  # noqa: BLE001 - rio-cogeo absent / failed; manual below
             logger.debug(
                 "rio-cogeo path unavailable; manual overview build", exc_info=True
             )
@@ -1337,9 +1344,9 @@ def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
         data = src.read()
         # Preserve a band-1 palette color table (e.g. NLCD land cover) across
         # the overview-enforcement re-write. None for non-paletted rasters
-        # (DEM/hillshade/flood depth) — a pure no-op there (job-0324).
+        # (DEM/hillshade/flood depth) - a pure no-op there (job-0324).
         cmap = _read_band1_colormap(src)
-        # Palette rasters must downsample by NEAREST, never average — averaging
+        # Palette rasters must downsample by NEAREST, never average - averaging
         # class indices produces meaningless in-between codes that map to wrong
         # colors. Continuous rasters keep average.
         overview_resampling = Resampling.nearest if cmap else Resampling.average
@@ -1391,10 +1398,10 @@ def _read_raster_bytes(layer_uri: str) -> bytes | None:
         # local path (dev/test convenience)
         with open(layer_uri, "rb") as f:
             return f.read()
-    except Exception as exc:  # noqa: BLE001 — fail-open
+    except Exception as exc:  # noqa: BLE001 - fail-open
         logger.warning(
             "publish_layer: could not read raster bytes for overview check "
-            "(%s: %s) — publishing as-is",
+            "(%s: %s) - publishing as-is",
             type(exc).__name__,
             exc,
         )
@@ -1440,10 +1447,10 @@ def _write_overview_cog(layer_uri: str, cog_bytes: bytes) -> str | None:
         with open(new_path, "wb") as f:
             f.write(cog_bytes)
         return new_path
-    except Exception as exc:  # noqa: BLE001 — fail-open
+    except Exception as exc:  # noqa: BLE001 - fail-open
         logger.warning(
             "publish_layer: could not write auto-translated overview COG "
-            "(%s: %s) — publishing original raster as-is",
+            "(%s: %s) - publishing original raster as-is",
             type(exc).__name__,
             exc,
         )
@@ -1462,7 +1469,7 @@ def _ensure_raster_has_overviews(layer_uri: str) -> str:
 
     Fail-open at every step: an unreadable raster, a missing rasterio, a failed
     translate, or a failed write all degrade to returning ``layer_uri``
-    unchanged (legacy behavior — never blocks a publish).
+    unchanged (legacy behavior - never blocks a publish).
     """
     raster_bytes = _read_raster_bytes(layer_uri)
     if raster_bytes is None:
@@ -1474,7 +1481,7 @@ def _ensure_raster_has_overviews(layer_uri: str) -> str:
         return layer_uri
 
     logger.warning(
-        "publish_layer: raster %s has NO overviews — a no-overview COG renders "
+        "publish_layer: raster %s has NO overviews - a no-overview COG renders "
         "spotty / times out cold; auto-translating to a tiled COG with "
         "overviews before publishing (F33)",
         layer_uri,
@@ -1488,7 +1495,7 @@ def _ensure_raster_has_overviews(layer_uri: str) -> str:
         return layer_uri
 
     logger.warning(
-        "publish_layer: F33 auto-translate complete — publishing overview COG "
+        "publish_layer: F33 auto-translate complete - publishing overview COG "
         "%s in place of no-overview source %s",
         new_uri,
         layer_uri,
@@ -1499,7 +1506,7 @@ def _ensure_raster_has_overviews(layer_uri: str) -> str:
 def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
     """Server-side copy to ``gs://<publish-bucket>/published/<layer_id>-<ulid>.tif``.
 
-    job-0282 — see the call-site comment. The publish bucket defaults to the
+    job-0282 - see the call-site comment. The publish bucket defaults to the
     COG bucket (the QGIS Server SA already holds objectViewer there) and is
     overridable via ``GRACE2_PUBLISH_BUCKET``. Local paths pass through;
     any failure logs a WARNING and returns the source path unchanged so a
@@ -1521,12 +1528,12 @@ def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
 
         client = storage.Client(project=_get_gcp_project())
 
-        # job-0282b guard: the WORKER must be able to READ the destination —
+        # job-0282b guard: the WORKER must be able to READ the destination -
         # a durable copy it can't open fails the whole publish (live:
         # Seattle hillshade, worker lacked objectViewer on the cog bucket).
         # When the grant is verifiably missing, skip the copy and serve the
         # source path (pre-0282 behavior). If the IAM check itself fails
-        # (the agent identity can't read bucket policy — typical in prod
+        # (the agent identity can't read bucket policy - typical in prod
         # where infra provisions both), proceed with the copy.
         worker_sa = os.environ.get(
             "GRACE2_PYQGIS_WORKER_SA",
@@ -1549,14 +1556,14 @@ def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
             )
             if not can_read:
                 logger.warning(
-                    "publish_layer durable copy SKIPPED — worker SA %s has "
+                    "publish_layer durable copy SKIPPED - worker SA %s has "
                     "no read role on gs://%s; serving the source path. "
                     "Grant objectViewer to enable durable publish paths.",
                     worker_sa,
                     dest_bucket,
                 )
                 return layer_uri
-        except Exception:  # noqa: BLE001 — policy unreadable → assume granted
+        except Exception:  # noqa: BLE001 - policy unreadable → assume granted
             logger.debug(
                 "durable-copy IAM pre-check unavailable; proceeding",
                 exc_info=True,
@@ -1571,9 +1578,9 @@ def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
             "publish_layer durable copy %s -> %s", layer_uri, durable
         )
         return durable
-    except Exception:  # noqa: BLE001 — degrade to the source path
+    except Exception:  # noqa: BLE001 - degrade to the source path
         logger.warning(
-            "publish_layer durable copy failed for %s — serving the source "
+            "publish_layer durable copy failed for %s - serving the source "
             "path directly (TTL-eviction / path-reuse risks apply)",
             layer_uri,
             exc_info=True,
@@ -1592,7 +1599,7 @@ def _gs_to_vsigs(gs_uri: str) -> str:
     if gs_uri.startswith("/vsigs/"):
         return gs_uri
     if not gs_uri.startswith("gs://"):
-        return gs_uri  # local path — pass through unchanged
+        return gs_uri  # local path - pass through unchanged
     rest = gs_uri[len("gs://"):]
     return f"/vsigs/{rest}"
 
@@ -1652,12 +1659,12 @@ def _validate_and_correct_layer_uri(layer_uri: str) -> str:
        exact URI (job-0177 retry loop).
 
     Fail-open: storage-client construction errors / transient GCS failures log
-    a warning and return the URI unchanged (legacy behavior) — the post-publish
+    a warning and return the URI unchanged (legacy behavior) - the post-publish
     ``.qgs`` verification is the second line of defense.
     """
     parsed = _split_object_uri(layer_uri)
     if parsed is None:
-        return layer_uri  # local path / unparseable — let the worker decide
+        return layer_uri  # local path / unparseable - let the worker decide
     bucket_name, key = parsed
     client = _get_storage_client()
     if client is None:
@@ -1684,7 +1691,7 @@ def _validate_and_correct_layer_uri(layer_uri: str) -> str:
         ):
             corrected = f"gs://{bucket_name}/{scored[0][1]}"
             logger.warning(
-                "publish_layer: layer_uri %r does not exist in GCS — "
+                "publish_layer: layer_uri %r does not exist in GCS - "
                 "auto-corrected to %r (%d-char shared basename prefix; "
                 "LLM-hallucinated URI tail, job-0257)",
                 layer_uri,
@@ -1705,9 +1712,9 @@ def _validate_and_correct_layer_uri(layer_uri: str) -> str:
         )
     except PublishLayerError:
         raise
-    except Exception as exc:  # noqa: BLE001 — fail-open on transient GCS errors
+    except Exception as exc:  # noqa: BLE001 - fail-open on transient GCS errors
         logger.warning(
-            "publish_layer: layer_uri validation errored (%s: %s) — "
+            "publish_layer: layer_uri validation errored (%s: %s) - "
             "proceeding without validation",
             type(exc).__name__,
             exc,
@@ -1719,13 +1726,13 @@ def _verify_layer_in_qgs(qgs_uri: str, layer_id: str) -> bool | None:
     """Check that ``layer_id`` is actually present in the published ``.qgs``.
 
     job-0257: the PyQGIS worker exits 0 even when the publish failed (the
-    Pub/Sub envelope is the designed source of truth — NFR-R-1) and the agent
+    Pub/Sub envelope is the designed source of truth - NFR-R-1) and the agent
     does not consume that envelope yet (OQ-62-PUBSUB-COMPLETION-POLL). Reading
     the ``.qgs`` back and checking for ``<layername>{layer_id}</layername>``
     closes the false-success gap without requiring a worker image rebuild.
 
     Returns True/False on a successful check, ``None`` when verification is
-    unavailable (no storage client / non-gs URI / download error) — callers
+    unavailable (no storage client / non-gs URI / download error) - callers
     treat ``None`` as "cannot verify" and do not fail the publish.
     """
     parsed = _split_object_uri(qgs_uri)
@@ -1739,7 +1746,7 @@ def _verify_layer_in_qgs(qgs_uri: str, layer_id: str) -> bool | None:
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "publish_layer: post-publish .qgs verification download failed "
-            "(%s: %s) — skipping verification",
+            "(%s: %s) - skipping verification",
             type(exc).__name__,
             exc,
         )
@@ -1799,8 +1806,8 @@ def _poll_execution(
     while True:
         try:
             execution = jobs_client.get_execution(name=execution_name)
-        except Exception as exc:  # noqa: BLE001 — transient poll error; keep trying
-            logger.warning("get_execution(%s) raised: %s — will retry", execution_name, exc)
+        except Exception as exc:  # noqa: BLE001 - transient poll error; keep trying
+            logger.warning("get_execution(%s) raised: %s - will retry", execution_name, exc)
             execution = None
 
         if execution is not None:
@@ -1840,7 +1847,7 @@ _PUBLISH_LAYER_METADATA = AtomicToolMetadata(
     # Annotations: readOnlyHint=False (mutates the .qgs GCS project file),
     # openWorldHint=False (intra-GCP Cloud Run Job + GCS only; no public API),
     # destructiveHint=True (overwrites an existing layer entry in the shared
-    # .qgs project — the overwrite is potentially irreversible without a
+    # .qgs project - the overwrite is potentially irreversible without a
     # backup), idempotentHint=False (each call starts a new Cloud Run Job
     # execution and unconditionally mutates the .qgs).
     read_only_hint=False,
@@ -1870,7 +1877,7 @@ def publish_layer(
           ``compute_colored_relief``, ``compute_aspect``, or any other tool that
           returns a ``LayerURI`` with a ``gs://`` COG, when the user needs the
           layer displayed on the map.
-        - As the final step in any workflow that produces a raster output —
+        - As the final step in any workflow that produces a raster output -
           the COG is not visible until this tool runs.
 
     When NOT to use:
@@ -1882,7 +1889,7 @@ def publish_layer(
           shim is not invoked).
 
     Params:
-        layer_uri: the producing tool's ``layer_id`` HANDLE (PREFERRED —
+        layer_uri: the producing tool's ``layer_id`` HANDLE (PREFERRED -
             job-0263 layer-handle indirection: the server resolves it to the
             exact ``gs://`` COG it recorded), or the ``gs://`` URI copied
             VERBATIM from the producing tool's result. NEVER construct or
@@ -1896,7 +1903,7 @@ def publish_layer(
             ``"continuous_flood_depth"`` Blues ramp; terrain products
             (colored relief, hillshade, slope, aspect, raw DEM) get QGIS
             default rendering, which is correct for RGBA/grayscale rasters
-            — the flood ramp painted them invisible.
+            - the flood ramp painted them invisible.
         project_qgs_uri: ``gs://`` URI of the ``.qgs`` project to mutate.
             Defaults to ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs``
             (the v0.1 canonical project). The FR-MP-6 Case UX will eventually
@@ -1906,7 +1913,7 @@ def publish_layer(
             ``case_lifecycle.ensure_case_qgs`` BEFORE invoking this tool;
             this parameter is a transport-only carrier so the LLM-visible
             tool surface is honest about Case context. The atomic tool body
-            itself does not perform Persistence I/O — the server-side
+            itself does not perform Persistence I/O - the server-side
             wrapper does the lazy-init and substitutes the resolved URI
             into ``project_qgs_uri``. Defaults to ``None`` (single-tenant
             demo path; OQ-62-QGS-MUTATION-CONFLICT preserved verbatim).
@@ -1937,23 +1944,23 @@ def publish_layer(
 
     Cross-tool dependencies:
         Upstream (consumes):
-        - ``postprocess_flood`` (via ``run_model_flood_scenario``) — flood-depth
+        - ``postprocess_flood`` (via ``run_model_flood_scenario``) - flood-depth
           COG ``LayerURI`` is the most common ``layer_uri`` input.
         - ``compute_hillshade`` / ``compute_colored_relief`` / ``compute_slope`` /
-          ``compute_aspect`` / ``compute_impervious_surface`` — any tool that
+          ``compute_aspect`` / ``compute_impervious_surface`` - any tool that
           returns a raster ``LayerURI`` with a ``gs://`` URI.
-        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — clipped rasters
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` - clipped rasters
           passed to this tool for display-extent-scoped publication.
         Downstream (feeds):
-        - Web client MapLibre layer panel — the returned WMS URL is used
+        - Web client MapLibre layer panel - the returned WMS URL is used
           directly as a ``LayerURI.uri`` value for WMS tile rendering.
-        - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` —
+        - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` -
           call this as the final step of the workflow chain.
     """
     # sprint-14-aws (job-0290): on the AWS deployment rasters publish through
     # TiTiler (a COG XYZ tile server reading s3:// directly) instead of the
     # QGIS Server / PyQGIS worker chain. We return a ready XYZ tile TEMPLATE
-    # ({z}/{x}/{y}) — Map.tsx passes template URLs through untouched. The COG
+    # ({z}/{x}/{y}) - Map.tsx passes template URLs through untouched. The COG
     # itself is the published artifact; no .qgs mutation, no worker round-trip.
     # When the tile server is not configured, fail FAST and HONESTLY (typed,
     # terminal) instead of crashing into GCS DefaultCredentialsError below.
@@ -1967,7 +1974,7 @@ def publish_layer(
                 "Map tile publishing for raster layers is not configured on "
                 f"this AWS deployment (set GRACE2_TILE_SERVER_BASE). The raster "
                 f"artifact is stored at {layer_uri!r} and any computed metrics "
-                "remain valid — tell the user the numbers stand but the raster "
+                "remain valid - tell the user the numbers stand but the raster "
                 "overlay cannot be displayed yet. Do not retry.",
                 retryable=False,
             )
@@ -1975,13 +1982,13 @@ def publish_layer(
         # groundwater plume / flood postprocess) often publishes the layer
         # itself, recording the layer handle -> the TiTiler tile TEMPLATE. When
         # the LLM then calls publish_layer again on that handle, the server has
-        # already resolved it to the http(s) tile URL — that's "already
+        # already resolved it to the http(s) tile URL - that's "already
         # published", NOT an error. Return it as-is so the emission wrap-site
         # announces the layer to the map (live: groundwater plume showed metrics
         # but a red Publishing-layer card + no overlay because this raised).
         if layer_uri.startswith(("http://", "https://")) and "/cog/tiles/" in layer_uri:
             logger.info(
-                "publish_layer (titiler) idempotent — already-published tile "
+                "publish_layer (titiler) idempotent - already-published tile "
                 "template layer_id=%s",
                 layer_id,
             )
@@ -1993,7 +2000,7 @@ def publish_layer(
         # terminal error → a scary red "Publishing layer… failed" card on a
         # layer the user can already see, AND TiTiler cannot read a FlatGeobuf
         # as a raster so wrapping it in a /cog tile template mints HANGING tiles
-        # that freeze the map. F32: return a BENIGN, non-error result instead —
+        # that freeze the map. F32: return a BENIGN, non-error result instead -
         # no raise (the step completes GREEN), no tile template, no
         # ``observe_published_layer`` registration (no hanging-tile face), and a
         # calm function_response so the agent narrates honestly and never
@@ -2093,7 +2100,7 @@ def publish_layer(
         #     non-empty default if the stats read fails;
         #   - CATEGORICAL guard: a COG with an embedded GDAL color table (NLCD
         #     land cover) gets NO rescale so TiTiler colorizes from the palette
-        #     (job-0324) — never washed out.
+        #     (job-0324) - never washed out.
         # _infer_style_preset (the family-aware default used on the GCS path) is
         # applied here too for the auto/None case so the s3 early-return path
         # gets the same default selection.
@@ -2112,7 +2119,7 @@ def publish_layer(
             template,
         )
         # job-0304: register BOTH faces of the published layer in the session
-        # URI registry — the s3:// COG (consumable DATA uri) + the TiTiler tile
+        # URI registry - the s3:// COG (consumable DATA uri) + the TiTiler tile
         # TEMPLATE (display face). The GCS path does this at step 8 below, but
         # the AWS branch returned EARLY (here) and never reached it, so the
         # ``flood-depth-peak-<id>`` handle minted by run_model_flood_scenario
@@ -2124,7 +2131,7 @@ def publish_layer(
         return template
 
     # F32 (GCS path): vectors handed to the raster-only publish_layer are
-    # ALREADY rendered inline (Wave 4.9 GeoJSON) — return a benign no-op rather
+    # ALREADY rendered inline (Wave 4.9 GeoJSON) - return a benign no-op rather
     # than dispatching a doomed worker round-trip that would surface a red card.
     # Mirrors the s3 branch above so the calm signal is backend-independent.
     if _is_vector_uri(layer_uri):
@@ -2144,30 +2151,30 @@ def publish_layer(
     layer_uri = _validate_and_correct_layer_uri(layer_uri)
 
     # 1c. job-0269b: AUTO style selection. Hardcoding the flood-depth ramp on
-    #     every raster painted terrain products invisible — live 2026-06-10:
+    #     every raster painted terrain products invisible - live 2026-06-10:
     #     a colored relief published CONDITION_SUCCEEDED but WMS served a
     #     uniform/transparent tile because the depth pseudocolor clamped the
     #     RGBA bands. Composers pass their preset explicitly; un-presetted
     #     publishes (the LLM path) get a family-aware default, and terrain
-    #     families get NO preset — QGIS default multiband-RGBA/singleband-
+    #     families get NO preset - QGIS default multiband-RGBA/singleband-
     #     gray rendering is the correct visualization for them (the worker
     #     treats a missing QML as non-fatal by design).
     if style_preset is None or style_preset == "auto":
         style_preset = _infer_style_preset(layer_uri, layer_id)
 
     # 1d. job-0282: copy the source to a DURABLE, never-reused publish path.
-    #     Published layers must not reference 30-day-TTL cache objects — TTL
+    #     Published layers must not reference 30-day-TTL cache objects - TTL
     #     eviction (or an operator purge) breaks the layer, and because cache
     #     keys are content-addressed, regeneration reuses the SAME path,
     #     re-poisoning warm QGIS Server processes that negative-cached the
     #     missing file (live: the Seattle relief, 2026-06-11). A fresh
     #     ULID-suffixed object per publish makes the served path immutable
     #     for the layer's lifetime. Falls back to the source path when the
-    #     copy fails (old behavior — never blocks a publish).
+    #     copy fails (old behavior - never blocks a publish).
     publish_uri = _copy_to_durable_publish_uri(layer_uri, layer_id)
 
     # 1e. F33: a no-overview COG renders SPOTTY over /vsigs/ (one range request
-    #     per strip, cold-load open timeouts) — the same failure class the
+    #     per strip, cold-load open timeouts) - the same failure class the
     #     hillshade/relief saga isolated for FLAT GTiffs. Before the worker
     #     registers the layer in the .qgs, validate the durable COG has
     #     overviews; when missing, auto-translate to a tiled+overview COG
@@ -2221,7 +2228,7 @@ def publish_layer(
     # Build the RunJobRequest with overrides using the correct proto-plus API.
     # Verified against installed google-cloud-run: JobsClient.run_job() accepts
     # a ``request`` positional/keyword arg of type RunJobRequest (or dict), but
-    # does NOT accept ``name=`` + ``overrides=`` as separate keyword args —
+    # does NOT accept ``name=`` + ``overrides=`` as separate keyword args -
     # that shape raises TypeError in the installed library version.
     # (Diagnosis: help(JobsClient.run_job); fix: OQ-70-AUTO-PUBLISH-DISPATCH.)
     try:
@@ -2281,16 +2288,16 @@ def publish_layer(
 
     # 7. job-0257: verify the layer actually landed in the .qgs. The worker
     #    exits 0 even when the publish failed internally (its Pub/Sub envelope
-    #    carries status=error, but the agent does not consume it yet —
+    #    carries status=error, but the agent does not consume it yet -
     #    OQ-62-PUBSUB-COMPLETION-POLL), so CONDITION_SUCCEEDED alone proved
-    #    nothing. ``None`` means "cannot verify" (no storage access) — keep
+    #    nothing. ``None`` means "cannot verify" (no storage access) - keep
     #    the legacy trust-the-exit-code behavior in that case.
     applied = _verify_layer_in_qgs(effective_qgs_uri, layer_id)
     if applied is False:
         raise PublishLayerError(
             "WORKER_PUBLISH_NOT_APPLIED",
             f"PyQGIS worker execution completed, but layer {layer_id!r} is NOT "
-            f"present in {effective_qgs_uri} — the worker swallowed an internal "
+            f"present in {effective_qgs_uri} - the worker swallowed an internal "
             f"error (exit-0-on-error policy; most commonly QgsRasterLayer could "
             f"not open raster_uri={raster_vsigs_uri!r}). The layer was NOT "
             f"published; do not tell the user it is visible on the map.",

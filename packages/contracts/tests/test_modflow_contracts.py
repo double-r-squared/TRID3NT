@@ -17,10 +17,13 @@ import pytest
 from pydantic import ValidationError
 
 from grace2_contracts import (
+    ASRLayerURI,
     BudgetPartitionLayerURI,
     DewaterLayerURI,
     DrawdownLayerURI,
+    HydroperiodLayerURI,
     MODFLOWRunArgs,
+    MoundingLayerURI,
     PlumeLayerURI,
 )
 from grace2_contracts.execution import LayerURI
@@ -30,11 +33,12 @@ from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_SS,
     DEFAULT_AQUIFER_SY,
     DEFAULT_POROSITY,
+    DEFAULT_WETLAND_SY,
 )
 
 
 # --------------------------------------------------------------------------- #
-# MODFLOWRunArgs — defaults (OQ-3 TENTATIVE demo parameterization)
+# MODFLOWRunArgs - defaults (OQ-3 TENTATIVE demo parameterization)
 # --------------------------------------------------------------------------- #
 
 
@@ -68,7 +72,7 @@ def test_modflow_run_args_explicit_overrides_defaults() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# MODFLOWRunArgs — validation bounds
+# MODFLOWRunArgs - validation bounds
 # --------------------------------------------------------------------------- #
 
 
@@ -186,7 +190,7 @@ def test_spill_location_latlon_order_is_lat_then_lon() -> None:
 
 
 def test_modflow_run_args_forbids_extra_fields() -> None:
-    """GraceModel extra='forbid' — an unknown field is a defect."""
+    """GraceModel extra='forbid' - an unknown field is a defect."""
     with pytest.raises(ValidationError):
         MODFLOWRunArgs(
             spill_location_latlon=(26.6, -81.9),
@@ -219,7 +223,7 @@ def test_modflow_run_args_roundtrip() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# PlumeLayerURI — inheritance + round-trip
+# PlumeLayerURI - inheritance + round-trip
 # --------------------------------------------------------------------------- #
 
 
@@ -238,7 +242,7 @@ def _plume(**overrides: object) -> PlumeLayerURI:
 
 
 def test_plume_layer_uri_is_a_layer_uri() -> None:
-    """PlumeLayerURI extends LayerURI — it is substitutable as a LayerURI."""
+    """PlumeLayerURI extends LayerURI - it is substitutable as a LayerURI."""
     plume = _plume()
     assert isinstance(plume, LayerURI)
     # Inherited base fields are present and behave identically.
@@ -313,7 +317,7 @@ def test_plume_layer_uri_roundtrip() -> None:
 
 
 def test_plume_layer_uri_requires_the_added_scalars() -> None:
-    """The two plume scalars are required (no defaults) — a plume without them
+    """The two plume scalars are required (no defaults) - a plume without them
     is incomplete."""
     with pytest.raises(ValidationError):
         PlumeLayerURI(
@@ -334,7 +338,7 @@ def test_plume_layer_uri_forbids_extra_fields() -> None:
 
 # --------------------------------------------------------------------------- #
 # sprint-18 Wave-1: archetype run-args fields + new LayerURI subclasses
-# (ADDITIVE / DEFAULTED — the existing spill/seepage path stays byte-identical)
+# (ADDITIVE / DEFAULTED - the existing spill/seepage path stays byte-identical)
 # --------------------------------------------------------------------------- #
 
 
@@ -370,6 +374,24 @@ def test_additive_safety_no_new_fields_still_validates() -> None:
     assert args.well_pumping_rate_m3_day is None
     # regional_water_budget field defaults off.
     assert args.zone_partition is None
+    # --- sprint-18 Wave-2 archetype fields all default off ---
+    # MAR (managed aquifer recharge) fields.
+    assert args.basin_footprint_lonlat is None
+    assert args.infiltration_rate_m_day is None
+    assert args.recharge_months is None
+    # ASR (aquifer storage & recovery) fields.
+    assert args.injection_rate_m3_day is None
+    assert args.recovery_rate_m3_day is None
+    assert args.injection_months is None
+    assert args.recovery_months is None
+    assert args.n_cycles is None
+    # wetland_hydroperiod fields (specific_yield uses the demo default).
+    assert args.wetland_footprint_lonlat is None
+    assert args.recharge_schedule_m_day is None
+    assert args.et_surface_m is None
+    assert args.et_max_rate_m_day is None
+    assert args.et_extinction_depth_m is None
+    assert args.specific_yield == DEFAULT_WETLAND_SY == 0.2
     # schema_version UNCHANGED by the additive growth.
     assert args.schema_version == "v2"
 
@@ -486,6 +508,161 @@ def test_regional_water_budget_archetype_roundtrip() -> None:
 def test_unknown_archetype_rejected_by_literal() -> None:
     with pytest.raises(ValidationError):
         _spill_args(archetype="not_an_archetype")
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-2: MAR / ASR / wetland_hydroperiod run-args fields
+# (ADDITIVE / DEFAULTED - Wave-1 + spill/seepage paths stay byte-identical)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("archetype", ["MAR", "ASR", "wetland_hydroperiod"])
+def test_wave2_archetypes_accepted_by_literal(archetype: str) -> None:
+    """The three Wave-2 archetype literals validate (additive on the Wave-1 set)."""
+    args = _spill_args(archetype=archetype)
+    assert args.archetype == archetype
+
+
+def test_mar_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="MAR",
+        basin_footprint_lonlat=[(-100.0, 40.0), (-100.0, 40.1), (-99.9, 40.1)],
+        infiltration_rate_m_day=0.5,
+        recharge_months=6,
+        n_periods=6,
+    )
+    assert args.archetype == "MAR"
+    assert args.basin_footprint_lonlat == [
+        (-100.0, 40.0),
+        (-100.0, 40.1),
+        (-99.9, 40.1),
+    ]
+    assert args.infiltration_rate_m_day == 0.5
+    assert args.recharge_months == 6
+    assert args.n_periods == 6
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # list-of-tuples round-trips to list-of-lists in JSON and back to tuples.
+    assert a["basin_footprint_lonlat"] == [[-100.0, 40.0], [-100.0, 40.1], [-99.9, 40.1]]
+    assert MODFLOWRunArgs.model_validate(json.loads(text_a)).basin_footprint_lonlat == [
+        (-100.0, 40.0),
+        (-100.0, 40.1),
+        (-99.9, 40.1),
+    ]
+
+
+def test_mar_infiltration_rate_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="MAR", infiltration_rate_m_day=0.0)
+
+
+def test_mar_recharge_months_must_be_at_least_one() -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="MAR", recharge_months=0)
+
+
+def test_asr_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="ASR",
+        well_location_latlon=(40.0, -100.0),  # reused from sustainable_yield
+        injection_rate_m3_day=1500.0,
+        recovery_rate_m3_day=1200.0,
+        injection_months=6,
+        recovery_months=4,
+        n_cycles=3,
+    )
+    assert args.archetype == "ASR"
+    assert args.well_location_latlon == (40.0, -100.0)
+    assert args.injection_rate_m3_day == 1500.0
+    assert args.recovery_rate_m3_day == 1200.0
+    assert args.injection_months == 6
+    assert args.recovery_months == 4
+    assert args.n_cycles == 3
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # the reused well-location tuple round-trips through a JSON list back to a tuple.
+    assert a["well_location_latlon"] == [40.0, -100.0]
+    assert (
+        MODFLOWRunArgs.model_validate(json.loads(text_a)).well_location_latlon
+        == (40.0, -100.0)
+    )
+
+
+@pytest.mark.parametrize("rate", [0.0, -1.0])
+def test_asr_injection_rate_must_be_positive(rate: float) -> None:
+    """ASR injection rate is a POSITIVE magnitude (the adapter applies the sign)."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="ASR", injection_rate_m3_day=rate)
+
+
+@pytest.mark.parametrize("rate", [0.0, -1.0])
+def test_asr_recovery_rate_must_be_positive(rate: float) -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="ASR", recovery_rate_m3_day=rate)
+
+
+@pytest.mark.parametrize("n", [0, -1])
+def test_asr_n_cycles_must_be_at_least_one(n: int) -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="ASR", n_cycles=n)
+
+
+def test_wetland_hydroperiod_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="wetland_hydroperiod",
+        wetland_footprint_lonlat=[(-81.0, 26.0), (-81.0, 26.1), (-80.9, 26.1)],
+        recharge_schedule_m_day=[0.01, 0.005, 0.0, 0.002],
+        et_surface_m=2.0,
+        et_max_rate_m_day=0.004,
+        et_extinction_depth_m=1.5,
+        specific_yield=0.18,
+    )
+    assert args.archetype == "wetland_hydroperiod"
+    assert args.wetland_footprint_lonlat == [
+        (-81.0, 26.0),
+        (-81.0, 26.1),
+        (-80.9, 26.1),
+    ]
+    assert args.recharge_schedule_m_day == [0.01, 0.005, 0.0, 0.002]
+    assert args.et_surface_m == 2.0
+    assert args.et_max_rate_m_day == 0.004
+    assert args.et_extinction_depth_m == 1.5
+    assert args.specific_yield == 0.18
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert a["recharge_schedule_m_day"] == [0.01, 0.005, 0.0, 0.002]
+
+
+@pytest.mark.parametrize("sy", [0.0, -0.1, 1.5])
+def test_wetland_specific_yield_bounds(sy: float) -> None:
+    """Wetland specific yield is in (0, 1]; 0 and >1 are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="wetland_hydroperiod", specific_yield=sy)
+
+
+def test_wetland_specific_yield_defaults_to_demo_value() -> None:
+    args = _spill_args(archetype="wetland_hydroperiod")
+    assert args.specific_yield == DEFAULT_WETLAND_SY == 0.2
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("et_max_rate_m_day", 0.0),
+        ("et_max_rate_m_day", -0.1),
+        ("et_extinction_depth_m", 0.0),
+        ("et_extinction_depth_m", -1.0),
+    ],
+)
+def test_wetland_et_params_must_be_positive(field: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="wetland_hydroperiod", **{field: value})
 
 
 # --------------------------------------------------------------------------- #
@@ -635,5 +812,186 @@ def test_new_modflow_output_quantities_registered() -> None:
         assert qid in by_id, f"missing modflow output quantity {qid!r}"
         assert by_id[qid].default_on is True
     # the new quantities are ADDITIVE: the existing headline quantities still exist.
+    assert "plume-concentration" in by_id
+    assert "river-seepage" in by_id
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-2: MoundingLayerURI / ASRLayerURI / HydroperiodLayerURI
+# --------------------------------------------------------------------------- #
+
+
+def _mounding(**overrides: object) -> MoundingLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-mounding",
+        name="Recharge mounding (m)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/mounding.cog.tif",
+        style_preset="continuous_mounding_m",
+        max_mounding_m=3.4,
+    )
+    base.update(overrides)
+    return MoundingLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_mounding_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _mounding(recharged_volume_m3=125000.0, units="meters")
+    assert isinstance(layer, LayerURI)
+    assert layer.max_mounding_m == 3.4
+    assert layer.recharged_volume_m3 == 125000.0
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MoundingLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert "max_mounding_m" not in LayerURI.model_fields
+    assert "max_mounding_m" in MoundingLayerURI.model_fields
+
+
+def test_mounding_recharged_volume_optional_defaults_none() -> None:
+    layer = _mounding()
+    assert layer.recharged_volume_m3 is None  # optional, defaults None
+
+
+@pytest.mark.parametrize("m", [-0.1, -5.0])
+def test_max_mounding_must_be_non_negative(m: float) -> None:
+    with pytest.raises(ValidationError):
+        _mounding(max_mounding_m=m)
+
+
+def test_recharged_volume_must_be_non_negative() -> None:
+    with pytest.raises(ValidationError):
+        _mounding(recharged_volume_m3=-1.0)
+
+
+def _asr(**overrides: object) -> ASRLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-asr",
+        name="ASR well head (m)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/asr.cog.tif",
+        style_preset="continuous_head_m",
+    )
+    base.update(overrides)
+    return ASRLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_asr_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _asr(
+        recovery_efficiency=0.82,
+        head_timeseries=[10.0, 14.0, 11.0, 15.0, 12.0],
+        units="meters",
+    )
+    assert isinstance(layer, LayerURI)
+    assert layer.recovery_efficiency == 0.82
+    assert layer.head_timeseries == [10.0, 14.0, 11.0, 15.0, 12.0]
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = ASRLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert "recovery_efficiency" not in LayerURI.model_fields
+    assert "recovery_efficiency" in ASRLayerURI.model_fields
+
+
+def test_asr_scalars_optional_default_none() -> None:
+    layer = _asr()
+    assert layer.recovery_efficiency is None
+    assert layer.head_timeseries is None
+
+
+@pytest.mark.parametrize("eff", [-0.1, 1.5])
+def test_asr_recovery_efficiency_bounds(eff: float) -> None:
+    """Recovery efficiency is a fraction in [0, 1]; <0 and >1 are rejected."""
+    with pytest.raises(ValidationError):
+        _asr(recovery_efficiency=eff)
+
+
+def test_asr_recovery_efficiency_boundaries_allowed() -> None:
+    assert _asr(recovery_efficiency=0.0).recovery_efficiency == 0.0
+    assert _asr(recovery_efficiency=1.0).recovery_efficiency == 1.0
+
+
+def _hydroperiod(**overrides: object) -> HydroperiodLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-hydroperiod",
+        name="Wetland hydroperiod (m)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/hydroperiod.cog.tif",
+        style_preset="continuous_hydroperiod_m",
+        seasonal_head_range_m=1.2,
+    )
+    base.update(overrides)
+    return HydroperiodLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_hydroperiod_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _hydroperiod(
+        head_timeseries=[1.0, 1.6, 2.2, 1.4, 1.0],
+        units="meters",
+    )
+    assert isinstance(layer, LayerURI)
+    assert layer.seasonal_head_range_m == 1.2
+    assert layer.head_timeseries == [1.0, 1.6, 2.2, 1.4, 1.0]
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = HydroperiodLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert "seasonal_head_range_m" not in LayerURI.model_fields
+    assert "seasonal_head_range_m" in HydroperiodLayerURI.model_fields
+
+
+def test_hydroperiod_timeseries_optional_defaults_none() -> None:
+    layer = _hydroperiod()
+    assert layer.head_timeseries is None
+
+
+@pytest.mark.parametrize("r", [-0.1, -2.0])
+def test_seasonal_head_range_must_be_non_negative(r: float) -> None:
+    with pytest.raises(ValidationError):
+        _hydroperiod(seasonal_head_range_m=r)
+
+
+def test_wave2_layer_uris_require_their_added_scalar_and_forbid_extra() -> None:
+    """The required Wave-2 scalars (max_mounding_m / seasonal_head_range_m) have no
+    default; inherited GraceModel extra='forbid' still applies on every subclass."""
+    with pytest.raises(ValidationError):
+        MoundingLayerURI(
+            layer_id="run-01HX-mounding",
+            name="Mounding",
+            layer_type="raster",
+            uri="s3://grace-2/runs/01HX/mounding.cog.tif",
+            style_preset="continuous_mounding_m",
+            # missing max_mounding_m
+        )
+    with pytest.raises(ValidationError):
+        HydroperiodLayerURI(
+            layer_id="run-01HX-hydroperiod",
+            name="Hydroperiod",
+            layer_type="raster",
+            uri="s3://grace-2/runs/01HX/hydroperiod.cog.tif",
+            style_preset="continuous_hydroperiod_m",
+            # missing seasonal_head_range_m
+        )
+    with pytest.raises(ValidationError):
+        _mounding(some_unknown_field=1.0)
+    with pytest.raises(ValidationError):
+        _asr(some_unknown_field=1.0)
+    with pytest.raises(ValidationError):
+        _hydroperiod(some_unknown_field=1.0)
+
+
+def test_wave2_modflow_output_quantities_registered() -> None:
+    """mounding / recovery-efficiency / hydroperiod are registered + default-on,
+    additive on top of the Wave-1 + headline quantities."""
+    from grace2_contracts.output_quantities import get_output_registry
+
+    registry = get_output_registry("modflow")
+    by_id = {spec.quantity_id: spec for spec in registry}
+    for qid in ("mounding", "recovery-efficiency", "hydroperiod"):
+        assert qid in by_id, f"missing modflow output quantity {qid!r}"
+        assert by_id[qid].default_on is True
+    # ADDITIVE: the Wave-1 + headline quantities still exist.
+    assert "drawdown" in by_id
+    assert "dewatering-rate" in by_id
+    assert "budget-partition" in by_id
     assert "plume-concentration" in by_id
     assert "river-seepage" in by_id

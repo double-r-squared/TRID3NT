@@ -332,6 +332,39 @@ OUTPUT_QUANTITIES: dict[str, tuple[OutputQuantitySpec, ...]] = {
             default_on=True,
             doc="Per-zone cell-budget flow partition (CHD/RIV/WEL/storage) -> metrics.",
         ),
+        # NEW (sprint-18 Wave-2): MAR groundwater mounding -> head-rise COG.
+        OutputQuantitySpec(
+            quantity_id="mounding",
+            kind="raster",
+            name="Recharge mounding (head rise)",
+            style_preset="continuous_mounding_m",
+            units="meters",
+            role="primary",
+            default_on=True,
+            doc="Recharged minus pre-recharge GWF head under the MAR basin (mound).",
+        ),
+        # NEW (sprint-18 Wave-2): ASR recovery-efficiency -> scalar/metrics + chart.
+        OutputQuantitySpec(
+            quantity_id="recovery-efficiency",
+            kind="scalar",
+            name="ASR recovery efficiency",
+            style_preset="continuous_head_m",
+            units="fraction",
+            role="context",
+            default_on=True,
+            doc="ASR recovered/injected fraction + inject/recover head sawtooth -> metrics + chart.",
+        ),
+        # NEW (sprint-18 Wave-2): wetland seasonal head-range -> hydroperiod COG.
+        OutputQuantitySpec(
+            quantity_id="hydroperiod",
+            kind="raster",
+            name="Wetland hydroperiod (seasonal head range)",
+            style_preset="continuous_hydroperiod_m",
+            units="meters",
+            role="primary",
+            default_on=True,
+            doc="Seasonal water-table swing (max-min head) under the wetland footprint.",
+        ),
     ),
     "geoclaw": (),
     "landlab": (

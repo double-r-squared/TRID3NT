@@ -12,9 +12,9 @@ This module implements the Wave 4.10 CachedContent Option A architecture from
   per-session ``AllowedToolSet`` BEFORE dispatch. If the call name IS a real
   registered tool (present in ``TOOL_REGISTRY``) but outside the allowed set,
   the validator AUTO-WIDENS the set with that name and lets the dispatch
-  proceed (job-0270 — Gemini saw the full catalog via CachedContent, so a
+  proceed (job-0270 - Gemini saw the full catalog via CachedContent, so a
   registry-valid call is correct routing, not a hallucination). Only names
-  that do NOT exist in the registry raise ``OutOfAllowedSetError`` — a typed
+  that do NOT exist in the registry raise ``OutOfAllowedSetError`` - a typed
   exception with ``error_code='OUT_OF_ALLOWED_SET'`` and ``retryable=False``.
   ``summarize_tool_result`` in ``adapter.py`` then renders this as the
   canonical Wave 4.9 ``{status: error, error_code, retryable, message}``
@@ -23,27 +23,27 @@ This module implements the Wave 4.10 CachedContent Option A architecture from
 
 Twelve categories (from ``project_generic_endpoint_architecture.md``):
 
-1. ``hazard_modeling`` — SFINCS, MODFLOW (future), Pelicun
-2. ``weather_atmosphere`` — NWS, NEXRAD, MRMS, HRRR, GOES, ERA5, ASOS, RAWS,
+1. ``hazard_modeling`` - SFINCS, MODFLOW (future), Pelicun
+2. ``weather_atmosphere`` - NWS, NEXRAD, MRMS, HRRR, GOES, ERA5, ASOS, RAWS,
    gridMET, HRRR-Smoke
-3. ``hydrology`` — NWM, NHDPlus, river geometry, precip return period, STATSGO
-4. ``terrain_elevation`` — DEM, hillshade, slope, aspect, colored relief,
+3. ``hydrology`` - NWM, NHDPlus, river geometry, precip return period, STATSGO
+4. ``terrain_elevation`` - DEM, hillshade, slope, aspect, colored relief,
    LANDFIRE
-5. ``land_cover_development`` — NLCD, building density, impervious, HRSL/MS
+5. ``land_cover_development`` - NLCD, building density, impervious, HRSL/MS
    Buildings, OSM roads, USACE NSI
-6. ``conservation_ecology`` — GBIF, iNat, WDPA, IUCN, eBird, Movebank
-7. ``fire`` — FIRMS, MTBS, NIFC, LANDFIRE fuels, USFS canopy
-8. ``coastal`` — GTSM, CO-OPS tides, SLR scenarios, bathymetry
-9. ``damage_assessment`` — Pelicun, USACE NSI (cross-listed)
-10. ``flood_infrastructure`` — FEMA NFHL, USACE NLD (levees), USACE NID (dams)
-11. ``geographic_primitives`` — geocode, administrative boundaries, clip,
+6. ``conservation_ecology`` - GBIF, iNat, WDPA, IUCN, eBird, Movebank
+7. ``fire`` - FIRMS, MTBS, NIFC, LANDFIRE fuels, USFS canopy
+8. ``coastal`` - GTSM, CO-OPS tides, SLR scenarios, bathymetry
+9. ``damage_assessment`` - Pelicun, USACE NSI (cross-listed)
+10. ``flood_infrastructure`` - FEMA NFHL, USACE NLD (levees), USACE NID (dams)
+11. ``geographic_primitives`` - geocode, administrative boundaries, clip,
     publish, discovery, catalog
-12. ``news_events`` — web_fetch, NWS event, storm events, aggregate claims
+12. ``news_events`` - web_fetch, NWS event, storm events, aggregate claims
 
 The hot set (always-on at session start, before any category has been opened)
-is defined in ``HOT_SET_TOOLS`` — ten tools that span the most common entry
+is defined in ``HOT_SET_TOOLS`` - ten tools that span the most common entry
 points to a session: the two top-level workflow composers, geocoding, terrain,
-weather alerts (CONUS sweep + state/county-scoped — job-0261), code-exec
+weather alerts (CONUS sweep + state/county-scoped - job-0261), code-exec
 (job-0247), and the meta-tools (list_categories, list_tools_in_category,
 discover_dataset).
 """
@@ -80,7 +80,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Category specifications.
 #
-# Each entry primes Gemini for category-aware routing — the ``description`` is
+# Each entry primes Gemini for category-aware routing - the ``description`` is
 # what Gemini sees when it calls ``list_categories()``. Keep it crisp (one or
 # two short sentences); the goal is to disambiguate this category from the
 # others so the LLM picks the right ``list_tools_in_category()`` arg.
@@ -93,10 +93,10 @@ class CategorySpec:
 
     Fields:
 
-    - ``id`` — short stable identifier (e.g. ``"hazard_modeling"``). This is
+    - ``id`` - short stable identifier (e.g. ``"hazard_modeling"``). This is
       the argument the LLM passes to ``list_tools_in_category``.
-    - ``name`` — human-readable name shown in the catalog UI / system prompt.
-    - ``description`` — one-sentence priming for the LLM. Tells it when this
+    - ``name`` - human-readable name shown in the catalog UI / system prompt.
+    - ``description`` - one-sentence priming for the LLM. Tells it when this
       category is the right one to open.
     """
 
@@ -233,7 +233,7 @@ CATEGORIES: tuple[CategorySpec, ...] = (
 #
 # Every registered tool has exactly one primary category (used for
 # ``list_tools_in_category`` membership). A small number cross-list as
-# secondaries when they materially belong to a second category too —
+# secondaries when they materially belong to a second category too -
 # Pelicun shows up under both ``hazard_modeling`` (you run it as a hazard
 # workflow) and ``damage_assessment`` (it IS damage assessment). USACE NSI
 # shows up under ``land_cover_development`` (structure inventory) and
@@ -267,13 +267,27 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_swmm_urban_flood": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
     "run_pelicun_with_buildings": "hazard_modeling",
-    # sprint-17 NEW engines (parallel lanes) — all are run_* hazard solvers /
+    # sprint-17 NEW engines (parallel lanes) - all are run_* hazard solvers /
     # composers, filed alongside the other engines above.
     "run_river_seepage_job": "hazard_modeling",
     "run_model_river_seepage_scenario": "hazard_modeling",
     "run_geoclaw_inundation": "hazard_modeling",
     "run_seismic_hazard_psha": "hazard_modeling",
+    # real-fault seismic-source fetcher: the OpenQuake PSHA input data fetcher
+    # (USGS / GEM fault sources -> source-model XML). Filed alongside its consumer
+    # run_seismic_hazard_psha (there is no dedicated geophysics data category).
+    "fetch_fault_sources": "hazard_modeling",
     "run_landlab_susceptibility": "hazard_modeling",
+    # sprint-18 MODFLOW GWF-only archetype composers (Wave-1 + Wave-2): each is a
+    # run_model_* groundwater-flow composer that dispatches the shared MODFLOW
+    # solver via run_modflow_archetype_job. Filed alongside the other MODFLOW
+    # engines above (run_modflow_job / run_river_seepage_job).
+    "run_model_sustainable_yield_scenario": "hazard_modeling",
+    "run_model_mine_dewatering_scenario": "hazard_modeling",
+    "run_model_regional_water_budget_scenario": "hazard_modeling",
+    "run_model_mar_scenario": "hazard_modeling",
+    "run_model_asr_scenario": "hazard_modeling",
+    "run_model_wetland_hydroperiod_scenario": "hazard_modeling",
     # SWAN Phase 1: standalone spectral nearshore wave-field engine (the additive
     # comparison engine vs SFINCS+SnapWave). Filed as a hazard engine; also
     # cross-listed under coastal (SECONDARY_CATEGORIES) since it is a coastal/wave
@@ -386,7 +400,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_noaa_coops_tides": "coastal",
     "fetch_noaa_slr_scenarios": "coastal",
     # SFINCS North Star P1: merged coastal topo-bathymetry DEM (NOAA NCEI CUDEM
-    # 1/9 arc-sec + USGS 3DEP land) — the bathymetric input the coastal SFINCS
+    # 1/9 arc-sec + USGS 3DEP land) - the bathymetric input the coastal SFINCS
     # bed needs (fetch_dem alone is land-only). EPSG:32616 NAVD88 positive-up.
     "fetch_topobathy": "coastal",
     # AWS / Australian-Water-School "Making Waves" SWAN-lecture post-processors:
@@ -433,7 +447,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "summarize_layer_statistics": "geographic_primitives",
     "count_features_above_threshold": "geographic_primitives",
     "aggregate_property_within_zone": "geographic_primitives",
-    # job-0230 (sprint-13 Stage 2): chart-generation tools — visual companions
+    # job-0230 (sprint-13 Stage 2): chart-generation tools - visual companions
     # to the analytical Q&A tools above (conversational data-analysis layer).
     "generate_histogram": "geographic_primitives",
     "generate_choropleth_legend": "geographic_primitives",
@@ -444,7 +458,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # stations along a drawn-or-derived line; multi-layer overlay). Filed in the
     # same conversational-analysis surface as the other chart-emission tools.
     "compute_cross_section": "geographic_primitives",
-    # job-0233 (sprint-13 Stage 2): user-confirmed Python sandbox — the ad-hoc
+    # job-0233 (sprint-13 Stage 2): user-confirmed Python sandbox - the ad-hoc
     # computation escape hatch behind the conversational data-analysis layer.
     # The kickoff named a "data_analysis" category; no such category exists, so
     # this is filed under geographic_primitives alongside the analytical Q&A +
@@ -477,7 +491,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
 }
 
 
-#: Cross-listings — a tool that materially belongs to a second category.
+#: Cross-listings - a tool that materially belongs to a second category.
 #: Used by ``tools_for_category`` so a tool appears in BOTH categories' member
 #: lists. Membership is additive: the validator treats a tool as allowed if it
 #: matches either the primary or any secondary category it carries.
@@ -501,12 +515,12 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # AND news_events (it's the canonical entry point to that category).
     "run_model_news_event_ingest": ("news_events",),
     # Case 2 groundwater composer spans hazard_modeling (it runs MODFLOW) AND
-    # news_events (it's driven by a spill news article — the canonical "model
+    # news_events (it's driven by a spill news article - the canonical "model
     # the spill from this article" entry point). job-0228.
     "run_model_groundwater_contamination_scenario": ("news_events",),
     # Case 3 composer spans hazard_modeling (it runs SFINCS) AND
     # weather_atmosphere (it's driven by an active NWS flood warning + MRMS
-    # observed precip — the canonical "model the live flood" entry point).
+    # observed precip - the canonical "model the live flood" entry point).
     "run_model_nws_flood_event_scenario": ("weather_atmosphere",),
     # SWAN spans hazard_modeling (it runs the SWAN spectral solver) AND coastal
     # (it is THE defensible nearshore wave-field tool -- a user reaches it from the
@@ -560,18 +574,18 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
 
 
 # ---------------------------------------------------------------------------
-# Hot set — always-on tools surfaced before any category has been opened.
+# Hot set - always-on tools surfaced before any category has been opened.
 # Picked to span the most-common entry points to a session:
 #
-# - run_model_flood_scenario, run_model_flood_habitat_scenario — the two
+# - run_model_flood_scenario, run_model_flood_habitat_scenario - the two
 #   top-level workflow composers a user is likely to invoke first.
-# - geocode_location, fetch_dem, fetch_nws_alerts_conus, fetch_nws_event —
+# - geocode_location, fetch_dem, fetch_nws_alerts_conus, fetch_nws_event -
 #   the most commonly cited "before you can do anything else" tools
-#   (fetch_nws_event added by job-0261 — see inline comment).
-# - list_categories, list_tools_in_category, discover_dataset — the three
+#   (fetch_nws_event added by job-0261 - see inline comment).
+# - list_categories, list_tools_in_category, discover_dataset - the three
 #   meta-tools that let Gemini surface anything else when the hot set
 #   isn't enough.
-# - code_exec_request — cross-cutting capability (job-0247).
+# - code_exec_request - cross-cutting capability (job-0247).
 # ---------------------------------------------------------------------------
 
 
@@ -598,14 +612,14 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # "show me weather alerts in texas": Gemini called
         # fetch_nws_event(area='TX') CORRECTLY on the first turn, the
         # validator rejected it, and Gemini fell back to the in-hot-set
-        # fetch_nws_alerts_conus() — the UNSCOPED national sweep — so
+        # fetch_nws_alerts_conus() - the UNSCOPED national sweep - so
         # alerts rendered far beyond the named state. The state-scoped NWS
         # tool must be as reachable as its CONUS sibling.
         "fetch_nws_event",
         # NATE 2026-06-17: fit/zoom/resize-to-encompass-all-features is a
         # cross-cutting view action a user invokes at any point ("resize the box
         # to encompass all the buildings"). It must be reachable WITHOUT a
-        # category-open round-trip — same rationale as code_exec_request above.
+        # category-open round-trip - same rationale as code_exec_request above.
         # Critically, this keeps the agent from falling back to the Python
         # sandbox for bbox math when compute_layer_bounds isn't in the allowed
         # set (the job-0247 / job-0261 failure mode).
@@ -613,7 +627,7 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # FR-AS-10 / FR-WC-16: request_spatial_input is a cross-cutting user-
         # input action the agent invokes at any point ("let me draw the flood
         # walls"). Same hot-set rationale as code_exec_request / compute_layer_
-        # bounds — it must be reachable WITHOUT a category-open round-trip so the
+        # bounds - it must be reachable WITHOUT a category-open round-trip so the
         # urban-flood draw flow does not stall on the post-hoc allowed-set
         # validator (the job-0247 / job-0261 failure mode).
         "request_spatial_input",
@@ -667,12 +681,12 @@ class OutOfAllowedSetError(RuntimeError):
     Per the Wave 4.10 CachedContent Option A architecture: every Gemini
     function_call is validated against the per-session ``AllowedToolSet``
     BEFORE dispatch. Since job-0270, a registry-valid name outside the
-    allowed set auto-widens the set instead of raising — this exception is
+    allowed set auto-widens the set instead of raising - this exception is
     now the HALLUCINATION GUARD: it fires only for names that exist nowhere
     in ``TOOL_REGISTRY``. ``summarize_tool_result`` (adapter.py) renders it
     as the canonical Wave 4.9 structured error envelope with
     ``error_code='OUT_OF_ALLOWED_SET'`` and ``retryable=False``. Gemini
-    reads the envelope on its next turn and retries — typically by calling
+    reads the envelope on its next turn and retries - typically by calling
     ``list_tools_in_category`` / ``discover_dataset`` to find a real tool.
     """
 
@@ -724,7 +738,7 @@ class AllowedToolSet:
       ``list_tools_in_category``, and ``discover_dataset`` are merged into
       every snapshot so the escape-hatch discovery path is never gated.
 
-    The set is **monotonically growing** within a session — tools never
+    The set is **monotonically growing** within a session - tools never
     leave. A new session (new WebSocket connection / new ``SessionState``)
     starts with a fresh ``AllowedToolSet`` seeded from the hot set.
 
@@ -748,7 +762,7 @@ class AllowedToolSet:
     #: as None so the first async call re-fetches from Mongo / static).
     _dynamic_hot_set: frozenset[str] | None = field(default=None, repr=False)
 
-    # Always-available meta-tools — never gated behind the hot set.
+    # Always-available meta-tools - never gated behind the hot set.
     _META_TOOLS: frozenset[str] = field(
         default=frozenset({"list_categories", "list_tools_in_category", "discover_dataset"}),
         init=False,
@@ -791,7 +805,7 @@ class AllowedToolSet:
         return frozenset(allowed)
 
     def as_frozenset(self) -> frozenset[str]:
-        """Synchronous snapshot — uses static ``HOT_SET_TOOLS`` or the
+        """Synchronous snapshot - uses static ``HOT_SET_TOOLS`` or the
         already-cached dynamic hot set (if ``as_frozenset_async`` has run
         at least once this session).
 
@@ -808,7 +822,7 @@ class AllowedToolSet:
         return self._build_from_hot_set(hot_set)
 
     async def as_frozenset_async(self) -> frozenset[str]:
-        """Async snapshot — fetches the dynamic hot set from Mongo when
+        """Async snapshot - fetches the dynamic hot set from Mongo when
         ``GRACE2_DYNAMIC_HOT_SET=1``, then caches it for subsequent
         synchronous calls.
 
@@ -829,10 +843,10 @@ class AllowedToolSet:
             dynamic = await _get_dyn(user_id=self.user_id, top_k=8)
             # Merge with the static set so tools the user has never called
             # (e.g. on a cold-start user account) still see the canonical
-            # baseline — the dynamic set only *replaces* the hot-set slot;
+            # baseline - the dynamic set only *replaces* the hot-set slot;
             # the meta-tools are always present via ``_build_from_hot_set``.
             self._dynamic_hot_set = dynamic if dynamic else HOT_SET_TOOLS
-        except Exception:  # noqa: BLE001 — Mongo unavailable; stay on static
+        except Exception:  # noqa: BLE001 - Mongo unavailable; stay on static
             import logging as _logging
 
             _logging.getLogger("grace2_agent.categories").debug(
@@ -843,7 +857,7 @@ class AllowedToolSet:
 
         return self._build_from_hot_set(self._dynamic_hot_set)
 
-    def __contains__(self, tool_name: object) -> bool:  # pragma: no cover — thin
+    def __contains__(self, tool_name: object) -> bool:  # pragma: no cover - thin
         if not isinstance(tool_name, str):
             return False
         return tool_name in self.as_frozenset()
@@ -892,7 +906,7 @@ def validate_function_call(call_name: str, allowed: AllowedToolSet) -> None:
 
     job-0270 (auto-widen for REAL tools): when ``call_name`` IS a registered
     tool (in the live ``TOOL_REGISTRY``) but outside the current allowed set,
-    do NOT raise — Gemini saw the full catalog via CachedContent, so a
+    do NOT raise - Gemini saw the full catalog via CachedContent, so a
     registry-valid call is a correct routing decision, not a hallucination.
     The set auto-widens with that name (same monotonic explicit-tools growth
     path used by category pre-warm) and the dispatch proceeds; a WARNING log
@@ -903,7 +917,7 @@ def validate_function_call(call_name: str, allowed: AllowedToolSet) -> None:
     raster unpublished (invisible to the user).
 
     Names NOT in the registry still raise ``OutOfAllowedSetError`` exactly as
-    before — that is the hallucination guard, unweakened. The caller
+    before - that is the hallucination guard, unweakened. The caller
     (server.py) catches the typed exception and routes it through
     ``summarize_tool_result(error=...)`` so Gemini sees a structured envelope
     and can retry.
@@ -949,7 +963,7 @@ def _list_tools_in_category_impl(category_id: str) -> dict:
     """Return member tools for ``category_id`` with short description snippets.
 
     The snippet is the first sentence (or first 200 chars) of each tool's
-    docstring — enough to let Gemini decide whether to call the tool without
+    docstring - enough to let Gemini decide whether to call the tool without
     the full FunctionDeclaration overhead.
 
     Raises ``UnknownCategoryError`` if ``category_id`` is not registered.
@@ -962,7 +976,7 @@ def _list_tools_in_category_impl(category_id: str) -> dict:
     for name in names:
         entry = TOOL_REGISTRY.get(name)
         if entry is None:
-            # Tool listed in PRIMARY_CATEGORY but not registered — should not
+            # Tool listed in PRIMARY_CATEGORY but not registered - should not
             # happen in product code; covered by test_categories. Skip rather
             # than raise so a temporary registry-skew during local dev does
             # not crash discovery for the LLM.
@@ -1013,9 +1027,9 @@ def list_categories() -> dict:
           session.
 
     Do NOT use this for:
-        - Querying member tools of a specific category — call
+        - Querying member tools of a specific category - call
           ``list_tools_in_category`` with the ``id`` instead.
-        - Free-text retrieval of a tool by user-query — use
+        - Free-text retrieval of a tool by user-query - use
           ``discover_dataset`` for that.
 
     Returns:
@@ -1048,8 +1062,8 @@ def list_tools_in_category(category_id: str) -> dict:
           subsequent function_calls into this category are not rejected.
 
     Do NOT use this for:
-        - Free-text search across all tools — call ``discover_dataset``.
-        - Listing the categories themselves — call ``list_categories``.
+        - Free-text search across all tools - call ``discover_dataset``.
+        - Listing the categories themselves - call ``list_categories``.
 
     Args:
         category_id: One of the 12 stable category ids returned by

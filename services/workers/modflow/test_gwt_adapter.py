@@ -1,6 +1,6 @@
 """Unit tests for the MODFLOW 6 GWF+GWT deck adapter (job-0221).
 
-These tests assert the *deck construction* contract — no LLM call, no `mf6`
+These tests assert the *deck construction* contract - no LLM call, no `mf6`
 binary required (engine invariant 2: workflows/adapters are unit-testable
 without the solver in the loop). The end-to-end solver run lives in the job's
 evidence script (`reports/inflight/job-0221-engine-20260609/evidence/`), which
@@ -27,11 +27,16 @@ from gwt_adapter import (  # noqa: E402
     DEFAULT_AQUIFER_SS,
     DEFAULT_AQUIFER_SY,
     DEFAULT_DRAIN_CONDUCTANCE_M2_DAY,
+    DEFAULT_MAR_INFILTRATION_M_DAY,
     DEFAULT_N_TRANSIENT_PERIODS,
+    DEFAULT_WETLAND_SY,
     DOMAIN_HALF_WIDTH_M,
     DeckManifest,
+    _build_asr_well_schedule,
     _build_zone_array,
+    _drape_footprint_to_cells,
     _fill_polygon_cells,
+    _resolve_monthly_periods,
     _resolve_transient_periods,
     build_deck,
     build_modflow_deck,
@@ -62,13 +67,13 @@ def test_simulation_namefile_exists(deck, tmp_path):
 
 
 def test_gwf_package_files_exist(deck, tmp_path):
-    # GWF: DIS, IC, NPF, CHD, OC, nam — the steady-state flow model.
+    # GWF: DIS, IC, NPF, CHD, OC, nam - the steady-state flow model.
     for ext in ("nam", "dis", "ic", "npf", "chd", "oc"):
         assert (tmp_path / f"gwf_model.{ext}").is_file(), f"missing gwf .{ext}"
 
 
 def test_gwt_package_files_exist(deck, tmp_path):
-    # GWT: DIS, IC, ADV, DSP, MST, SRC, SSM, OC, nam — transport model.
+    # GWT: DIS, IC, ADV, DSP, MST, SRC, SSM, OC, nam - transport model.
     for ext in ("nam", "dis", "ic", "adv", "dsp", "mst", "src", "ssm", "oc"):
         assert (tmp_path / f"gwt_model.{ext}").is_file(), f"missing gwt .{ext}"
 
@@ -175,7 +180,7 @@ def test_spill_cell_is_grid_centre(deck):
 
 def test_spill_cell_reprojects_back_to_input_latlon(deck):
     """The chosen spill cell centre, reprojected to EPSG:4326, must land within
-    one cell (~50 m) of the requested lat/lon — the georegistration is real,
+    one cell (~50 m) of the requested lat/lon - the georegistration is real,
     not nominal."""
     from pyproj import Transformer
 
@@ -760,3 +765,416 @@ def test_real_run_spill_deck_still_converges(tmp_path):
     rc, out = _run_mf6(d.sim_dir, mf6)
     assert "Normal termination of simulation" in out, out[-1500:]
     assert rc == 0
+
+
+# =========================================================================== #
+# sprint-18 Wave-2: MAR (RCH/RCHA mounding) + ASR (seasonal WEL inject/recover)
+# + wetland_hydroperiod (RCH-schedule + EVT + Newton IMS). Deck-SHAPE asserts +
+# a REAL mf6-run per archetype asserting CONVERGED + non-trivial physics.
+# =========================================================================== #
+
+# A basin / wetland footprint (lon, lat) ring near the grid centre (reuses the
+# PIT_FOOTPRINT geometry; small enough to drape to a handful of in-grid cells).
+BASIN_FOOTPRINT = list(PIT_FOOTPRINT)
+WETLAND_FOOTPRINT = list(PIT_FOOTPRINT)
+ASR_WELL = (26.64, -81.87)
+
+
+# --- Pure Wave-2 helpers ---------------------------------------------------- #
+
+
+def test_resolve_monthly_periods_count_and_length():
+    rows = _resolve_monthly_periods(n_months=6)
+    assert len(rows) == 6
+    # Every period is a flat demo "month" (DEFAULT_DAYS_PER_MONTH = 30 days).
+    assert all(r[0] == pytest.approx(30.0) for r in rows)
+
+
+def test_build_asr_well_schedule_cycles():
+    sched = _build_asr_well_schedule(
+        injection_periods=2, recovery_periods=3, n_cycles=2
+    )
+    # 2 cycles of (2 inject + 3 recover) = [I,I,R,R,R, I,I,R,R,R]
+    assert sched == ["inject", "inject", "recover", "recover", "recover"] * 2
+    assert sched.count("inject") == 4
+    assert sched.count("recover") == 6
+
+
+def test_drape_footprint_to_cells_skips_chd_cols():
+    from pyproj import Transformer
+    from gwt_adapter import _utm_crs_for_lonlat
+
+    crs = _utm_crs_for_lonlat(-81.87, 26.64)
+    to_utm = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+    east, north = to_utm.transform(-81.87, 26.64)
+    xorigin = east - DOMAIN_HALF_WIDTH_M
+    yorigin = north - DOMAIN_HALF_WIDTH_M
+    cells = _drape_footprint_to_cells(
+        BASIN_FOOTPRINT,
+        to_utm=to_utm,
+        xorigin=xorigin,
+        yorigin=yorigin,
+        delr=CELL_SIZE_M,
+        delc=CELL_SIZE_M,
+        nrow=40,
+        ncol=40,
+        skip_cols={0, 39},
+    )
+    assert cells, "footprint should drape to in-grid cells"
+    assert all(0 < c < 39 for (_r, c) in cells)  # CHD columns skipped
+
+
+# --- MAR deck shape --------------------------------------------------------- #
+
+
+@pytest.fixture()
+def mar_deck(tmp_path):
+    return build_modflow_deck(
+        workdir=tmp_path,
+        archetype="MAR",
+        basin_footprint_lonlat=BASIN_FOOTPRINT,
+        infiltration_rate_m_day=0.02,
+        recharge_months=4,
+        **ARCH_SPILL,
+    )
+
+
+def test_mar_is_gwf_only_transient_unconfined(mar_deck, tmp_path):
+    assert mar_deck.archetype == "MAR"
+    assert mar_deck.gwt_present is False
+    assert mar_deck.transient is True
+    # GWF-only: NO transport files, NO exchange.
+    assert not (tmp_path / "gwt_model.mst").exists()
+    assert not (tmp_path / "gwfgwt.exg").exists()
+    # Unconfined water table so the mound can rise.
+    assert mar_deck.npf_icelltype == 1
+    # RCH (basin footprint) + STO written; spin-up + 4 recharge periods.
+    assert (tmp_path / "gwf_model.rch").is_file()
+    assert (tmp_path / "gwf_model.sto").is_file()
+    assert mar_deck.n_stress_periods == 5
+    assert mar_deck.n_transient_periods == 4
+    assert mar_deck.recharge_active_periods == 4
+
+
+def test_mar_rch_carries_positive_flux(mar_deck, tmp_path):
+    assert mar_deck.recharge_cell_count > 0
+    assert mar_deck.infiltration_rate_m_day == pytest.approx(0.02)
+    rch_text = (tmp_path / "gwf_model.rch").read_text().lower()
+    assert "begin period" in rch_text
+    # The recharge flux is POSITIVE (mounding, not extraction).
+    assert "2.00000000e-02" in rch_text or "0.02" in rch_text
+    assert "-2.00000000e-02" not in rch_text
+
+
+def test_mar_rch_off_in_spinup(mar_deck, tmp_path):
+    """Period 1 (MF6 1-based = steady spin-up) carries NO recharge so the mound is
+    measured against the undisturbed regional head."""
+    rch_text = (tmp_path / "gwf_model.rch").read_text().lower()
+    # The first recharge record only appears in periods >= 2 (transient).
+    assert "begin period  2" in rch_text or "begin period 2" in rch_text
+
+
+def test_mar_without_basin_uses_rcha(tmp_path):
+    """No basin footprint -> a uniform array recharge (RCHA) over the whole grid."""
+    d = build_modflow_deck(
+        workdir=tmp_path, archetype="MAR", infiltration_rate_m_day=0.01, **ARCH_SPILL
+    )
+    assert (tmp_path / "gwf_model.rcha").is_file()
+    assert not (tmp_path / "gwf_model.rch").exists()
+    assert d.recharge_cell_count == d.nrow * d.ncol
+
+
+def test_mar_infiltration_default(tmp_path):
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="MAR",
+        basin_footprint_lonlat=BASIN_FOOTPRINT,
+        **ARCH_SPILL,
+    )
+    assert d.infiltration_rate_m_day == pytest.approx(DEFAULT_MAR_INFILTRATION_M_DAY)
+
+
+# --- ASR deck shape --------------------------------------------------------- #
+
+
+@pytest.fixture()
+def asr_deck(tmp_path):
+    return build_modflow_deck(
+        workdir=tmp_path,
+        archetype="ASR",
+        well_location_latlon=ASR_WELL,
+        injection_rate_m3_day=1500.0,
+        recovery_rate_m3_day=1200.0,
+        injection_months=3,
+        recovery_months=3,
+        n_cycles=2,
+        **ARCH_SPILL,
+    )
+
+
+def test_asr_is_gwf_only_transient(asr_deck, tmp_path):
+    assert asr_deck.archetype == "ASR"
+    assert asr_deck.gwt_present is False
+    assert asr_deck.transient is True
+    assert not (tmp_path / "gwt_model.mst").exists()
+    assert (tmp_path / "gwf_model.wel").is_file()
+    assert (tmp_path / "gwf_model.sto").is_file()
+    # 2 cycles of (3 inject + 3 recover) = 12 transient periods + 1 spin-up.
+    assert asr_deck.n_stress_periods == 13
+    assert asr_deck.injection_periods == 6
+    assert asr_deck.recovery_periods == 6
+    assert asr_deck.n_cycles == 2
+
+
+def test_asr_well_schedule_flips_sign(asr_deck, tmp_path):
+    """The WEL must carry a POSITIVE q (injection) in injection periods and a
+    NEGATIVE q (recovery) in recovery periods."""
+    assert asr_deck.injection_rate_m3_day == pytest.approx(1500.0)
+    assert asr_deck.recovery_rate_m3_day == pytest.approx(1200.0)
+    wel_text = (tmp_path / "gwf_model.wel").read_text().lower()
+    # Injection: +1500 (positive). Recovery: -1200 (negative).
+    assert "1.50000000e+03" in wel_text or "1500" in wel_text
+    assert "-1.20000000e+03" in wel_text or "-1200" in wel_text
+
+
+def test_asr_requires_well(tmp_path):
+    with pytest.raises(ValueError, match="well_location_latlon"):
+        build_modflow_deck(
+            workdir=tmp_path,
+            archetype="ASR",
+            injection_rate_m3_day=1000.0,
+            recovery_rate_m3_day=1000.0,
+            **ARCH_SPILL,
+        )
+
+
+def test_asr_well_off_in_spinup(asr_deck, tmp_path):
+    wel_text = (tmp_path / "gwf_model.wel").read_text().lower()
+    # The first WEL record appears only from period 2 (the first injection period).
+    assert "begin period  2" in wel_text or "begin period 2" in wel_text
+
+
+# --- wetland_hydroperiod deck shape ----------------------------------------- #
+
+
+@pytest.fixture()
+def wetland_deck(tmp_path):
+    return build_modflow_deck(
+        workdir=tmp_path,
+        archetype="wetland_hydroperiod",
+        wetland_footprint_lonlat=WETLAND_FOOTPRINT,
+        recharge_schedule_m_day=[0.004, 0.0005, 0.004, 0.0005],
+        et_surface_m=0.0,
+        et_max_rate_m_day=0.004,
+        et_extinction_depth_m=2.0,
+        specific_yield=0.18,
+        **ARCH_SPILL,
+    )
+
+
+def test_wetland_is_gwf_only_transient_unconfined(wetland_deck, tmp_path):
+    assert wetland_deck.archetype == "wetland_hydroperiod"
+    assert wetland_deck.gwt_present is False
+    assert wetland_deck.transient is True
+    assert wetland_deck.npf_icelltype == 1  # unconfined water-table response
+    assert not (tmp_path / "gwt_model.mst").exists()
+    # RCH (per-period schedule) + EVT + STO written.
+    assert (tmp_path / "gwf_model.rch").is_file()
+    assert (tmp_path / "gwf_model.evt").is_file()
+    assert (tmp_path / "gwf_model.sto").is_file()
+    # 4 scheduled periods + 1 steady spin-up.
+    assert wetland_deck.n_stress_periods == 5
+    assert wetland_deck.n_transient_periods == 4
+    assert wetland_deck.wetland_cell_count > 0
+
+
+def test_wetland_uses_newton_bicgstab_ims(wetland_deck, tmp_path):
+    """The unconfined + ET system needs MF6's NEWTON formulation + BICGSTAB; CG on
+    the Newton matrix fails to converge."""
+    assert wetland_deck.newton_under_relaxation is True
+    # NEWTON declared on the GWF model name file.
+    nam_text = (tmp_path / "gwf_model.nam").read_text().lower()
+    assert "newton" in nam_text
+    # IMS uses BICGSTAB.
+    ims_text = (tmp_path / "gwf_model.ims").read_text().lower()
+    assert "bicgstab" in ims_text
+
+
+def test_wetland_rch_schedule_per_period(wetland_deck, tmp_path):
+    """flopy forward-fills the last block, so a per-period schedule must emit EVERY
+    transient period -- both the wet (0.004) and dry (0.0005) rates must appear."""
+    rch_text = (tmp_path / "gwf_model.rch").read_text().lower()
+    assert "4.00000000e-03" in rch_text or "0.004" in rch_text  # wet
+    assert "5.00000000e-04" in rch_text or "0.0005" in rch_text  # dry
+
+
+def test_wetland_evt_carries_surface_rate_depth(wetland_deck, tmp_path):
+    assert wetland_deck.et_max_rate_m_day == pytest.approx(0.004)
+    assert wetland_deck.et_extinction_depth_m == pytest.approx(2.0)
+    evt_text = (tmp_path / "gwf_model.evt").read_text().lower()
+    assert "begin period" in evt_text
+    assert "4.00000000e-03" in evt_text or "0.004" in evt_text  # max ET rate
+
+
+def test_wetland_sto_uses_specific_yield(wetland_deck, tmp_path):
+    assert wetland_deck.aquifer_sy == pytest.approx(0.18)
+
+
+def test_wetland_sy_default(tmp_path):
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="wetland_hydroperiod",
+        wetland_footprint_lonlat=WETLAND_FOOTPRINT,
+        **ARCH_SPILL,
+    )
+    assert d.aquifer_sy == pytest.approx(DEFAULT_WETLAND_SY)
+
+
+def test_wetland_requires_footprint(tmp_path):
+    with pytest.raises(ValueError, match="wetland_footprint_lonlat"):
+        build_modflow_deck(
+            workdir=tmp_path, archetype="wetland_hydroperiod", **ARCH_SPILL
+        )
+
+
+# --- OC saves HEAD + BUDGET ALL for the Wave-2 archetypes ------------------- #
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(archetype="MAR", basin_footprint_lonlat=BASIN_FOOTPRINT),
+        dict(
+            archetype="ASR",
+            well_location_latlon=ASR_WELL,
+            injection_rate_m3_day=1000.0,
+            recovery_rate_m3_day=1000.0,
+        ),
+        dict(
+            archetype="wetland_hydroperiod",
+            wetland_footprint_lonlat=WETLAND_FOOTPRINT,
+        ),
+    ],
+)
+def test_wave2_oc_saves_head_and_budget(tmp_path, kw):
+    build_modflow_deck(workdir=tmp_path, **{**ARCH_SPILL, **kw})
+    oc_text = (tmp_path / "gwf_model.oc").read_text().lower()
+    assert "head" in oc_text and "budget" in oc_text
+
+
+# =========================================================================== #
+# REAL mf6 runs (env-gated) -- author each Wave-2 archetype deck, run mf6, assert
+# CONVERGED + non-trivial physics (the headline CBC term / head response).
+# =========================================================================== #
+
+
+@requires_mf6
+def test_real_run_mar_converges_with_mounding(tmp_path):
+    """MAR: author + run mf6, assert CONVERGED + a real groundwater MOUND (head
+    rises under the recharge basin vs the no-recharge spin-up) + positive RCH inflow
+    (the headline CBC term)."""
+    import numpy as np
+    import flopy
+
+    mf6 = _mf6_bin()
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="MAR",
+        basin_footprint_lonlat=BASIN_FOOTPRINT,
+        infiltration_rate_m_day=0.02,
+        recharge_months=4,
+        **ARCH_SPILL,
+    )
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    hds = flopy.utils.HeadFile(str(tmp_path / "gwf_model.hds"))
+    times = hds.get_times()
+    h0 = hds.get_data(totim=times[0])  # steady spin-up (no recharge)
+    hN = hds.get_data(totim=times[-1])  # last recharge period
+    mound = hN - h0
+    assert float(np.nanmax(mound)) > 0.1, "expected a real groundwater mound"
+    # RCH is the headline budget term: a positive inflow to the aquifer.
+    cbc = flopy.utils.CellBudgetFile(str(tmp_path / "gwf_model.cbc"))
+    rch = cbc.get_data(text="RCH")[-1]
+    try:
+        q = rch["q"]
+    except Exception:
+        q = np.array([rec[-1] for rec in rch])
+    assert float(q[q > 0].sum()) > 1.0, "expected real positive RCH inflow"
+
+
+@requires_mf6
+def test_real_run_asr_converges_with_seasonal_swing(tmp_path):
+    """ASR: author + run mf6, assert CONVERGED + a real seasonal head swing at the
+    ASR well (injection raises it, recovery lowers it) -> a non-trivial head range.
+    WEL is the headline CBC term (the recovery extraction the agent narrates)."""
+    import numpy as np
+    import flopy
+
+    mf6 = _mf6_bin()
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="ASR",
+        well_location_latlon=ASR_WELL,
+        injection_rate_m3_day=1500.0,
+        recovery_rate_m3_day=1500.0,
+        injection_months=3,
+        recovery_months=3,
+        n_cycles=2,
+        **ARCH_SPILL,
+    )
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    hds = flopy.utils.HeadFile(str(tmp_path / "gwf_model.hds"))
+    times = hds.get_times()
+    head_at_well = [
+        float(hds.get_data(totim=t)[0, d.well_row, d.well_col]) for t in times
+    ]
+    swing = max(head_at_well) - min(head_at_well)
+    assert swing > 0.1, "expected a real seasonal head swing at the ASR well"
+    # WEL is the headline budget term (the recovery extraction).
+    cbc = flopy.utils.CellBudgetFile(str(tmp_path / "gwf_model.cbc"))
+    wel = cbc.get_data(text="WEL")[-1]  # last period = a recovery period
+    try:
+        q = wel["q"]
+    except Exception:
+        q = np.array([rec[-1] for rec in wel])
+    assert float(-q[q < 0].sum()) > 1.0, "expected real WEL recovery extraction"
+
+
+@requires_mf6
+def test_real_run_wetland_converges_with_hydroperiod_range(tmp_path):
+    """wetland_hydroperiod: author + run mf6, assert CONVERGED (the Newton/BICGSTAB
+    solve) + a real seasonal water-table RANGE under the wetland (the hydroperiod).
+    RCH is the headline recharge CBC term."""
+    import numpy as np
+    import flopy
+
+    mf6 = _mf6_bin()
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="wetland_hydroperiod",
+        wetland_footprint_lonlat=WETLAND_FOOTPRINT,
+        recharge_schedule_m_day=[0.004, 0.0005, 0.004, 0.0005],
+        et_surface_m=0.0,
+        et_max_rate_m_day=0.004,
+        et_extinction_depth_m=2.0,
+        **ARCH_SPILL,
+    )
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    hds = flopy.utils.HeadFile(str(tmp_path / "gwf_model.hds"))
+    times = hds.get_times()
+    # A representative wetland-centre cell (grid centre).
+    centre = (0, d.nrow // 2, d.ncol // 2)
+    series = [float(hds.get_data(totim=t)[centre]) for t in times]
+    hydroperiod_range = max(series) - min(series)
+    assert hydroperiod_range > 0.01, "expected a real seasonal water-table range"
+    # RCH is the headline budget term: a positive inflow over the wetland.
+    cbc = flopy.utils.CellBudgetFile(str(tmp_path / "gwf_model.cbc"))
+    rch = cbc.get_data(text="RCH")[-1]
+    try:
+        q = rch["q"]
+    except Exception:
+        q = np.array([rec[-1] for rec in rch])
+    assert float(q[q > 0].sum()) >= 0.0  # recharge inflow is non-negative

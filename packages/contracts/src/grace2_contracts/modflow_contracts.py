@@ -4,19 +4,19 @@ integration, OQ-9 mf6-gwt solute transport).
 Two shapes back the Case 2 groundwater-contamination demo path
 (news article -> parameter extraction -> MODFLOW run -> plume layer):
 
-- ``MODFLOWRunArgs``  — the forcing parameters the agent confirms with the user
+- ``MODFLOWRunArgs``  - the forcing parameters the agent confirms with the user
   before submitting a MODFLOW run. Consumed by the engine adapter
   (``services/workers/modflow/gwt_adapter.py``, job-0221) that maps these to
   MF6-GWT input files via ``flopy``, and by the agent-side
   ``run_modflow_job`` tool (job-0227).
-- ``PlumeLayerURI`` — the postprocess output layer. Extends ``LayerURI``
+- ``PlumeLayerURI`` - the postprocess output layer. Extends ``LayerURI``
   field-for-field (so it still maps onto ``map-command load-layer`` with no
   translation, like every other layer) and adds the two plume scalars the
   agent narrates: peak concentration and plume footprint.
 
 Design notes
 ------------
-- ``spill_location_latlon`` is ordered ``(lat, lon)`` — this is a single point,
+- ``spill_location_latlon`` is ordered ``(lat, lon)`` - this is a single point,
   NOT a ``bbox``. The project ``BBox`` convention is ``(min_lon, min_lat, ...)``
   (lon-first, EPSG:4326); a *point* spill location reads more naturally as
   ``(lat, lon)`` and is documented as such here so the engine adapter and the
@@ -30,7 +30,7 @@ Design notes
 - ``PlumeLayerURI`` is a structured numeric carrier (invariant 1 / Decision H /
   FR-AS-7): the agent narrates ``max_concentration_mgl`` and ``plume_area_km2``
   from these typed fields rather than inventing them from free text.
-- ``contaminant`` is a free ``str`` (open by design — the contaminant name is an
+- ``contaminant`` is a free ``str`` (open by design - the contaminant name is an
   open vocabulary, e.g. "benzene", "TCE", "PFOA"; the engine maps it to MF6-GWT
   transport parameters). It is non-numeric, so it stays a scalar.
 """
@@ -63,10 +63,14 @@ __all__ = [
     "DrawdownLayerURI",
     "DewaterLayerURI",
     "BudgetPartitionLayerURI",
+    "MoundingLayerURI",
+    "ASRLayerURI",
+    "HydroperiodLayerURI",
     "DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY",
     "DEFAULT_STREAMBED_THICKNESS_M",
     "DEFAULT_AQUIFER_SY",
     "DEFAULT_AQUIFER_SS",
+    "DEFAULT_WETLAND_SY",
 ]
 
 
@@ -82,6 +86,13 @@ DEFAULT_POROSITY: float = 0.3  # effective porosity, dimensionless
 # steady + the byte-identical conservative-tracer deck). Demo values, narrated.
 DEFAULT_AQUIFER_SY: float = 0.2  # specific yield (drainable porosity), dimensionless
 DEFAULT_AQUIFER_SS: float = 1e-5  # specific storage (1/m), confined-aquifer demo value
+
+# Wetland-hydroperiod specific-yield default (sprint-18 Wave-2 wetland_hydroperiod
+# archetype). The seasonal water-table response under a recharging wetland is
+# governed by the unconfined specific yield; a shallow-water-table wetland soil
+# drains/fills with a Sy ~= 0.2 (same family as DEFAULT_AQUIFER_SY but named
+# separately so the wetland archetype reads its own demo value). Narrated demo.
+DEFAULT_WETLAND_SY: float = 0.2  # wetland-soil specific yield, dimensionless
 
 
 class MODFLOWRunArgs(EngineRunArgsMixin):
@@ -121,7 +132,7 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
         porosity: aquifer effective porosity, dimensionless in (0, 1].
             Defaults to a TENTATIVE demo value (OQ-3); narrate as a demo default.
 
-    River-coupling fields (sprint-17 J9 — ADDITIVE, all optional; the pure-spill
+    River-coupling fields (sprint-17 J9 - ADDITIVE, all optional; the pure-spill
     deck is byte-identical when ``river_geometry_uri`` is None):
         river_geometry_uri: a FlatGeobuf / GeoJSON URI of the river polyline(s)
             (from ``fetch_river_geometry`` / NLDI) to drape onto the structured
@@ -147,7 +158,7 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             (default) the SRC stays at the spill cell exactly as the original
             groundwater-contamination deck.
 
-    Archetype selector + per-archetype fields (sprint-18 Wave-1 — ADDITIVE, all
+    Archetype selector + per-archetype fields (sprint-18 Wave-1 - ADDITIVE, all
     optional/defaulted; ``archetype is None`` is the EXISTING spill/seepage path
     and the deck is byte-identical):
         archetype: which new MODFLOW question this run answers. ``None`` (the
@@ -194,6 +205,47 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             headline). Per-zone (e.g. upgradient/downgradient) partitioning is not
             yet wired agent-side; this field is accepted but does not change the
             output until then. Leave None.
+
+    Archetype fields (sprint-18 Wave-2 - ADDITIVE, all optional/defaulted; a
+    run-args with none of them is byte-identical to the Wave-1 / spill path):
+
+        --- MAR (managed aquifer recharge -> RCH mounding) ---
+        basin_footprint_lonlat: the infiltration-basin footprint as an ordered
+            list of ``(lon, lat)`` vertices (lon-first, the BBox/polygon
+            convention) draped onto the grid as RCH recharge cells.
+        infiltration_rate_m_day: applied recharge rate over the basin, m/day
+            (> 0). The RCH package raises the water table (mounding) under it.
+        recharge_months: number of months the basin floods (>= 1). Drives the
+            transient stress-period count alongside ``n_periods``.
+        n_periods: REUSED (sustainable_yield) - explicit transient period count
+            override.
+
+        --- ASR (aquifer storage & recovery -> seasonal WEL inject/recover) ---
+        well_location_latlon: REUSED (sustainable_yield) - the ASR well point as
+            ``(lat, lon)`` EPSG:4326 (lat-first).
+        injection_rate_m3_day: ASR injection rate as a POSITIVE magnitude,
+            m^3/day (> 0). The adapter applies the MF6 WEL sign (inject = +).
+        recovery_rate_m3_day: ASR recovery (extraction) rate as a POSITIVE
+            magnitude, m^3/day (> 0). The adapter applies the WEL sign (recover
+            = -).
+        injection_months: months of the injection half-cycle (>= 1).
+        recovery_months: months of the recovery half-cycle (>= 1).
+        n_cycles: number of inject/recover cycles (>= 1).
+
+        --- wetland_hydroperiod (seasonal water-table range under a wetland) ---
+        wetland_footprint_lonlat: the wetland footprint as an ordered list of
+            ``(lon, lat)`` vertices (lon-first) draped onto the grid as the
+            recharge + EVT cells.
+        recharge_schedule_m_day: per-transient-period recharge rate schedule
+            (one m/day value per period) applied over the wetland footprint.
+        et_surface_m: EVT surface elevation (m, local datum) - the elevation at
+            which evapotranspiration is at its max rate.
+        et_max_rate_m_day: maximum ET rate at the surface, m/day (> 0).
+        et_extinction_depth_m: ET extinction depth (m, > 0) below the surface
+            past which ET is zero (the EVT linear-decline depth).
+        specific_yield: wetland-soil specific yield for the unconfined seasonal
+            response, dimensionless in (0, 1]. Demo default ``DEFAULT_WETLAND_SY``
+            (0.2).
     """
 
     schema_version: Literal["v1", "v2"] = "v2"
@@ -218,10 +270,20 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
     river_dem_uri: str | None = None
     along_river_source: bool = False
 
-    # --- Archetype selector (sprint-18 Wave-1; ADDITIVE, all optional) ------ #
-    # None = the EXISTING spill/seepage path (deck byte-identical).
+    # --- Archetype selector (sprint-18 Wave-1 + Wave-2; ADDITIVE, optional) -- #
+    # None = the EXISTING spill/seepage path (deck byte-identical). The three
+    # Wave-2 values ("MAR", "ASR", "wetland_hydroperiod") are additive on top of
+    # the Wave-1 three.
     archetype: (
-        Literal["sustainable_yield", "mine_dewatering", "regional_water_budget"] | None
+        Literal[
+            "sustainable_yield",
+            "mine_dewatering",
+            "regional_water_budget",
+            "MAR",
+            "ASR",
+            "wetland_hydroperiod",
+        ]
+        | None
     ) = None
 
     # --- sustainable_yield: pumping-well drawdown --------------------------- #
@@ -240,6 +302,39 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
 
     # --- regional_water_budget: zonal flow-budget partition ---------------- #
     zone_partition: str | None = None
+
+    # --- MAR: managed aquifer recharge (RCH mounding) ---------------------- #
+    # An infiltration basin floods a footprint with a recharge rate over a number
+    # of recharge months; the RCH/RCHA package raises the water table (mounding)
+    # under the basin. All optional/defaulted -> additive.
+    basin_footprint_lonlat: list[tuple[float, float]] | None = None
+    infiltration_rate_m_day: float | None = Field(default=None, gt=0.0)
+    recharge_months: int | None = Field(default=None, ge=1)
+
+    # --- ASR: aquifer storage & recovery (seasonal WEL inject/recover) ------ #
+    # A single ASR well (reuse ``well_location_latlon``) INJECTS at a positive
+    # rate for ``injection_months`` then RECOVERS (extracts) at a positive rate
+    # for ``recovery_months``, repeated for ``n_cycles``. Both rates are passed
+    # as POSITIVE magnitudes; the adapter applies the MF6 WEL sign (inject = +,
+    # recover = -). All optional/defaulted -> additive.
+    injection_rate_m3_day: float | None = Field(default=None, gt=0.0)
+    recovery_rate_m3_day: float | None = Field(default=None, gt=0.0)
+    injection_months: int | None = Field(default=None, ge=1)
+    recovery_months: int | None = Field(default=None, ge=1)
+    n_cycles: int | None = Field(default=None, ge=1)
+
+    # --- wetland_hydroperiod: seasonal water-table range under a wetland ---- #
+    # A wetland footprint receives a per-period recharge schedule
+    # (``recharge_schedule_m_day``, one rate per transient period) while EVT
+    # removes water at the surface (EVT package: surface elevation, max rate,
+    # extinction depth); the seasonal head range is the hydroperiod. All
+    # optional/defaulted -> additive.
+    wetland_footprint_lonlat: list[tuple[float, float]] | None = None
+    recharge_schedule_m_day: list[float] | None = None
+    et_surface_m: float | None = None
+    et_max_rate_m_day: float | None = Field(default=None, gt=0.0)
+    et_extinction_depth_m: float | None = Field(default=None, gt=0.0)
+    specific_yield: float = Field(default=DEFAULT_WETLAND_SY, gt=0.0, le=1.0)
 
     @field_validator("spill_location_latlon")
     @classmethod
@@ -294,7 +389,7 @@ class PlumeLayerURI(LayerURI):
             threshold, km^2 (>= 0).
 
     ``layer_type`` for a plume is typically ``"raster"`` (a concentration COG),
-    but the base contract's vocabulary is inherited unchanged — no new format
+    but the base contract's vocabulary is inherited unchanged - no new format
     set is introduced (rasters COG; vectors FlatGeobuf/GeoParquet).
     """
 
@@ -306,8 +401,8 @@ class SeepageLayerURI(LayerURI):
     """A ``LayerURI`` for the river-seepage (RIV leakage) layer + narration scalars.
 
     The companion of ``PlumeLayerURI`` for the sprint-17 river-coupled MODFLOW
-    engine. The postprocess reads the GWF cell-by-cell budget RIV term — the
-    per-reach-cell head-dependent exchange flux Q = C*(stage - h) — and renders
+    engine. The postprocess reads the GWF cell-by-cell budget RIV term - the
+    per-reach-cell head-dependent exchange flux Q = C*(stage - h) - and renders
     a DIVERGING gaining/losing-stream COG (negative = the river GAINS water from
     the aquifer i.e. baseflow OUT of the aquifer; positive = the river LOSES
     water to the aquifer i.e. seepage INTO the aquifer, MF6 RIV sign convention:
@@ -377,7 +472,7 @@ class DewaterLayerURI(LayerURI):
     (invariant 1, FR-AS-7):
 
         dewatering_rate_m3_day: total DRN outflow magnitude summed over the pit
-            drain cells, m^3/day (>= 0) — the pumping rate the pit needs.
+            drain cells, m^3/day (>= 0) - the pumping rate the pit needs.
         drain_cell_count: number of DRN drain cells draped onto the grid (>= 0).
 
     ``layer_type`` is ``"raster"`` (a dewatering-rate COG); the base contract's
@@ -410,3 +505,83 @@ class BudgetPartitionLayerURI(LayerURI):
     """
 
     budget_partition_m3_day: dict[str, float]
+
+
+class MoundingLayerURI(LayerURI):
+    """A ``LayerURI`` for the MAR groundwater-mounding layer + narration scalars.
+
+    The headline output of the ``"MAR"`` (managed aquifer recharge) archetype: the
+    postprocess reads the transient GWF head (.hds) and renders the mound (pumped/
+    recharged head minus pre-recharge head) as a COG so the user sees how high the
+    water table rises under the infiltration basin.
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured numbers
+    the agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        max_mounding_m: peak head RISE (mounding) anywhere in the domain, m (>= 0).
+        recharged_volume_m3: OPTIONAL total volume of water recharged into the
+            aquifer over the simulation, m^3 (>= 0). None when not computed.
+
+    ``layer_type`` is ``"raster"`` (a mounding COG); the base contract's format
+    vocabulary is inherited unchanged.
+    """
+
+    max_mounding_m: float = Field(ge=0.0)
+    recharged_volume_m3: float | None = Field(default=None, ge=0.0)
+
+
+class ASRLayerURI(LayerURI):
+    """A ``LayerURI`` for the ASR (aquifer storage & recovery) layer + scalars.
+
+    The headline output of the ``"ASR"`` archetype: the postprocess reads the
+    transient GWF head (.hds) at the ASR well and renders a representative head
+    surface as a COG, narrating the cyclic inject/recover storage behavior and the
+    recovery efficiency (the fraction of injected water recovered).
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured numbers
+    the agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        recovery_efficiency: OPTIONAL fraction (dimensionless, 0..1) of injected
+            water recovered over the ASR cycle(s). None when not computed.
+        head_timeseries: OPTIONAL per-step head at the ASR well, m, one value per
+            saved transient step (the inject-rise / recover-fall sawtooth). None
+            when the run published a single frame with no time series.
+
+    ``layer_type`` is ``"raster"`` (a head COG); the base contract's format
+    vocabulary is inherited unchanged.
+    """
+
+    recovery_efficiency: float | None = Field(default=None, ge=0.0, le=1.0)
+    head_timeseries: list[float] | None = None
+
+
+class HydroperiodLayerURI(LayerURI):
+    """A ``LayerURI`` for the wetland-hydroperiod layer + narration scalars.
+
+    The headline output of the ``"wetland_hydroperiod"`` archetype: the
+    postprocess reads the transient GWF head (.hds) under the wetland footprint
+    and renders the seasonal head-range (max minus min water table over the
+    transient periods) as a COG, narrating how much the wetland water table swings
+    across the recharge/ET seasons.
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured numbers
+    the agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        seasonal_head_range_m: the seasonal water-table swing (max head minus min
+            head over the wetland) m (>= 0).
+        head_timeseries: OPTIONAL per-step head under the wetland, m, one value
+            per saved transient step (the seasonal rise/fall). None when the run
+            published a single frame with no time series.
+
+    ``layer_type`` is ``"raster"`` (a seasonal-range COG); the base contract's
+    format vocabulary is inherited unchanged.
+    """
+
+    seasonal_head_range_m: float = Field(ge=0.0)
+    head_timeseries: list[float] | None = None
