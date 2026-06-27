@@ -321,6 +321,13 @@ from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_sw
 # no cache shim. Both are deterministic closed-form sanity/post-processing tools.
 from . import compute_wave_nomograph  # noqa: E402,F401 -- registers compute_wave_nomograph (wind+fetch -> Hs/Tp deep-water fetch-limited wave-growth sanity estimate; SPM 1984 / CEM Part II-2; pre-flight reality-check on a SWAN run)
 from . import compute_overtopping  # noqa: E402,F401 -- registers compute_overtopping (EurOtop 2018 Ch.5 mean wave-overtopping discharge over a sloped coastal structure; deterministic post-processor on nearshore Hs/Tp from SWAN/SnapWave)
+from . import digitize_water_body  # noqa: F401  -- NDWI surface-water polygons (land cover)
+from . import fetch_usgs_earthquakes  # noqa: E402,F401 — registers fetch_usgs_earthquakes (REAL recorded USGS FDSN Event Web Service earthquakes as epicenter points; bbox|global + time window (default ~30d) + min_magnitude (default 2.5); props mag/depth_km/mag_type/place/time/url; style_preset='earthquakes'; supports_global_query=True; honest EarthquakesNoEventsError on zero events + EarthquakesResultTooLargeError on the 20000-event FDSN cap)
+from . import fetch_hifld_critical_infrastructure  # noqa: F401
+from . import fetch_cdc_svi  # noqa: E402,F401 — registers fetch_cdc_svi (CDC/ATSDR Social Vulnerability Index 2022 census-tract choropleth: overall RPL_THEMES + 4 theme percentile ranks as FlatGeobuf; CDC/ATSDR OneMap ArcGIS REST FeatureServer layer 2; US-only, public no-key; social-vulnerability/equity exposure overlay)
+from . import fetch_sentinel2_truecolor  # noqa: F401  (registers fetch_sentinel2_truecolor)
+from . import compute_home_range_kde  # noqa: E402,F401 — registers compute_home_range_kde (kernel-density home range / utilization-distribution isopleths from animal-track POINTS: scipy.stats.gaussian_kde over the fetch_movebank_tracks point FGB -> 50%/95% UD isopleth Polygons via skimage contouring in local UTM; vector FGB inline-GeoJSON layer; honest TOO_FEW_POINTS empty; pairs with fetch_movebank_tracks + compute_zonal_statistics)
+from . import compute_movement_trajectory  # noqa: F401
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged

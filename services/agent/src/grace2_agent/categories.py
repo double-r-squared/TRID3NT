@@ -472,6 +472,14 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "web_fetch": "news_events",
     "fetch_storm_events_db": "news_events",
     "aggregate_claims_across_sources": "news_events",
+    # a+b+c batch (2026-06-27)
+    "digitize_water_body": "land_cover_development",
+    "fetch_usgs_earthquakes": "hazard_modeling",
+    "fetch_hifld_critical_infrastructure": "flood_infrastructure",
+    "fetch_cdc_svi": "damage_assessment",
+    "fetch_sentinel2_truecolor": "geographic_primitives",
+    "compute_home_range_kde": "conservation_ecology",
+    "compute_movement_trajectory": "conservation_ecology",
 }
 
 
@@ -553,6 +561,14 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # rather than ingesting fire news (that front half is the review-gated
     # run_model_satellite_fire_animation's lane).
     "run_model_goes_fire_animation": ("fire",),
+    # a+b+c batch (2026-06-27)
+    "digitize_water_body": ('hydrology', 'terrain_elevation',),
+    "fetch_usgs_earthquakes": ('news_events', 'geographic_primitives',),
+    "fetch_hifld_critical_infrastructure": ('damage_assessment', 'geographic_primitives',),
+    "fetch_cdc_svi": ('geographic_primitives',),
+    "fetch_sentinel2_truecolor": ('land_cover_development', 'terrain_elevation', 'damage_assessment',),
+    "compute_home_range_kde": ('geographic_primitives',),
+    "compute_movement_trajectory": ('geographic_primitives',),
 }
 
 
