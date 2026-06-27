@@ -36,6 +36,8 @@ from gwt_adapter import (  # noqa: E402
     _build_zone_array,
     _drape_footprint_to_cells,
     _fill_polygon_cells,
+    _gwt_model_name_for_species,
+    _normalize_species,
     _resolve_monthly_periods,
     _resolve_transient_periods,
     build_deck,
@@ -1178,3 +1180,330 @@ def test_real_run_wetland_converges_with_hydroperiod_range(tmp_path):
     except Exception:
         q = np.array([rec[-1] for rec in rch])
     assert float(q[q > 0].sum()) >= 0.0  # recharge inflow is non-negative
+
+
+# =========================================================================== #
+# sprint-18 Wave-3: multi_species transport (ONE shared GWF + N ModflowGwt models
+# + N ModflowGwfgwt exchanges, ONE mf6 run). Deck-SHAPE asserts + a REAL mf6-run
+# (env-gated) authoring a 2-species deck, running mf6, and asserting CONVERGED +
+# both per-species .ucn written with non-trivial concentration.
+# =========================================================================== #
+
+# Per-species spill placeholders: duration_days is MEANINGFUL for multi_species (it
+# sets the transient transport period length); the top-level release_rate_kg_s is a
+# placeholder (the per-species rate lives on each SpeciesSpec).
+MS_SPILL = dict(
+    spill_location_latlon=(26.64, -81.87),
+    contaminant="x",  # placeholder; the per-species names carry the real labels
+    release_rate_kg_s=0.0,  # placeholder
+    duration_days=20,
+    aquifer_k_ms=1e-4,
+    porosity=0.3,
+)
+
+# A two-species decay chain: TCE (parent, sourced + decaying) -> cis-DCE (daughter,
+# pure decay product with no direct source).
+TWO_SPECIES = [
+    {"name": "TCE", "release_rate_kg_s": 0.01, "sorption_kd": 0.2, "decay_per_day": 0.01},
+    {"name": "cis-DCE", "release_rate_kg_s": 0.0, "decay_per_day": 0.02, "parent": "TCE"},
+]
+
+
+# --- Pure _normalize_species helper ----------------------------------------- #
+
+
+def test_normalize_species_dicts_round_trip():
+    out = _normalize_species(TWO_SPECIES)
+    assert [s["name"] for s in out] == ["TCE", "cis-DCE"]
+    assert out[0]["release_rate_kg_s"] == pytest.approx(0.01)
+    assert out[1]["parent"] == "TCE"
+    # Missing optionals normalize to None.
+    assert out[0]["parent"] is None
+    assert out[1]["sorption_kd"] is None
+
+
+def test_normalize_species_accepts_objects():
+    class _Spec:
+        def __init__(self, name, rate, **kw):
+            self.name = name
+            self.release_rate_kg_s = rate
+            self.sorption_kd = kw.get("sorption_kd")
+            self.decay_per_day = kw.get("decay_per_day")
+            self.parent = kw.get("parent")
+
+    out = _normalize_species([_Spec("TCE", 0.01), _Spec("DCE", 0.0, parent="TCE")])
+    assert [s["name"] for s in out] == ["TCE", "DCE"]
+    assert out[1]["parent"] == "TCE"
+
+
+def test_normalize_species_rejects_duplicate_names():
+    with pytest.raises(ValueError, match="duplicate species name"):
+        _normalize_species(
+            [
+                {"name": "TCE", "release_rate_kg_s": 0.01},
+                {"name": "TCE", "release_rate_kg_s": 0.02},
+            ]
+        )
+
+
+def test_normalize_species_rejects_unknown_parent():
+    with pytest.raises(ValueError, match="parent"):
+        _normalize_species(
+            [{"name": "DCE", "release_rate_kg_s": 0.0, "parent": "nope"}]
+        )
+
+
+def test_normalize_species_rejects_negative_rate():
+    with pytest.raises(ValueError, match="release_rate_kg_s must be >= 0"):
+        _normalize_species([{"name": "TCE", "release_rate_kg_s": -1.0}])
+
+
+def test_gwt_model_name_sanitises_species_name():
+    assert _gwt_model_name_for_species("TCE") == "gwt_tce"
+    assert _gwt_model_name_for_species("cis-DCE") == "gwt_cis_dce"
+
+
+def test_gwt_model_name_respects_mf6_16_char_limit():
+    # MF6 aborts the whole sim if MODELNAME > 16 chars. "gwt_vinyl_chloride" is 18,
+    # so long names are truncated + hash-disambiguated rather than overflowed.
+    vc = _gwt_model_name_for_species("Vinyl Chloride")
+    assert len(vc) <= 16
+    assert vc.startswith("gwt_vinyl_c")
+    # Deterministic: same name -> same model name (postprocess mirrors this).
+    assert _gwt_model_name_for_species("Vinyl Chloride") == vc
+    # Distinct long names that share a 16-char prefix stay distinct (hash tag).
+    a = _gwt_model_name_for_species("Tetrachloroethylene alpha")
+    b = _gwt_model_name_for_species("Tetrachloroethylene beta")
+    assert a != b
+    assert len(a) <= 16 and len(b) <= 16
+
+
+# --- multi_species dispatch + validation ------------------------------------ #
+
+
+def test_multi_species_requires_species_list(tmp_path):
+    with pytest.raises(ValueError, match="non-empty species list"):
+        build_modflow_deck(workdir=tmp_path, archetype="multi_species", **MS_SPILL)
+
+
+def test_multi_species_validates_duration(tmp_path):
+    with pytest.raises(ValueError, match="duration_days must be > 0"):
+        build_modflow_deck(
+            workdir=tmp_path,
+            archetype="multi_species",
+            species=TWO_SPECIES,
+            **{**MS_SPILL, "duration_days": 0},
+        )
+
+
+def test_multi_species_unknown_archetype_still_rejected(tmp_path):
+    with pytest.raises(ValueError, match="unknown MODFLOW archetype"):
+        build_modflow_deck(
+            workdir=tmp_path, archetype="multi_specie", species=TWO_SPECIES, **MS_SPILL
+        )
+
+
+# --- multi_species deck shape ----------------------------------------------- #
+
+
+@pytest.fixture()
+def ms_deck(tmp_path):
+    return build_modflow_deck(
+        workdir=tmp_path,
+        archetype="multi_species",
+        species=TWO_SPECIES,
+        **MS_SPILL,
+    )
+
+
+def test_multi_species_manifest_fields(ms_deck):
+    assert ms_deck.archetype == "multi_species"
+    assert ms_deck.multi_species is True
+    assert ms_deck.gwt_present is True
+    assert ms_deck.species_names == ["TCE", "cis-DCE"]
+    assert ms_deck.gwt_model_names == ["gwt_tce", "gwt_cis_dce"]
+    assert ms_deck.species_ucn_files == ["gwt_tce.ucn", "gwt_cis_dce.ucn"]
+    # ONE GwfGwt flow<->transport exchange PER species.
+    assert ms_deck.n_gwfgwt_exchanges == 2
+    # parent->daughter ingrowth is recorded but NOT yet wired (honest note).
+    assert ms_deck.species_with_parent == ["cis-DCE"]
+    assert ms_deck.n_gwtgwt_exchanges == 0
+    assert ms_deck.decay_chain_coupled is False
+
+
+def test_multi_species_two_gwt_models_on_disk(ms_deck, tmp_path):
+    # ONE shared GWF.
+    for ext in ("nam", "dis", "ic", "npf", "chd", "oc"):
+        assert (tmp_path / f"gwf_model.{ext}").is_file(), f"missing gwf .{ext}"
+    # TWO complete GWT transport models (one per species).
+    for stem in ("gwt_tce", "gwt_cis_dce"):
+        for ext in ("nam", "dis", "ic", "adv", "dsp", "mst", "src", "ssm", "oc"):
+            assert (tmp_path / f"{stem}.{ext}").is_file(), f"missing {stem}.{ext}"
+
+
+def test_multi_species_two_gwfgwt_exchanges_on_disk(ms_deck, tmp_path):
+    exgs = sorted(p.name for p in tmp_path.glob("*.exg"))
+    assert exgs == ["gwfgwt_gwt_cis_dce.exg", "gwfgwt_gwt_tce.exg"]
+
+
+def test_multi_species_two_ucn_declared_in_oc(ms_deck, tmp_path):
+    """Each species' OC must write its OWN gwt_<species>.ucn (the postprocess
+    globs per species)."""
+    for stem in ("gwt_tce", "gwt_cis_dce"):
+        oc_text = (tmp_path / f"{stem}.oc").read_text().lower()
+        assert f"{stem}.ucn" in oc_text, f"{stem}.oc must write {stem}.ucn"
+        assert "concentration" in oc_text
+
+
+def test_multi_species_per_species_src_rate(ms_deck, tmp_path):
+    """Each species' SRC injects ITS OWN release_rate -> g/day; the daughter with
+    release_rate 0.0 writes a zero-rate SRC record."""
+    # TCE: 0.01 kg/s -> 0.01 * 1000 * 86400 = 864000 g/day.
+    tce_src = (tmp_path / "gwt_tce.src").read_text().lower()
+    assert "8.64000000e+05" in tce_src or "864000" in tce_src
+    # cis-DCE: a pure daughter product, 0.0 release rate.
+    dce_src = (tmp_path / "gwt_cis_dce.src").read_text().lower()
+    assert "begin period" in dce_src  # the SRC block still exists (zero-rate record)
+
+
+def test_multi_species_per_species_mst_physics(ms_deck, tmp_path):
+    """Per-species sorption/decay land on each species' OWN MST package."""
+    # TCE: sorption (Kd 0.2) + decay (0.01) -> LINEAR sorption + decay + decay_sorbed.
+    tce_mst = (tmp_path / "gwt_tce.mst").read_text().lower()
+    assert "sorption" in tce_mst
+    assert "decay" in tce_mst
+    assert "decay_sorbed" in tce_mst  # both decay AND sorption -> decay_sorbed required
+    # cis-DCE: decay only (no sorption) -> no decay_sorbed.
+    dce_mst = (tmp_path / "gwt_cis_dce.mst").read_text().lower()
+    assert "decay" in dce_mst
+    assert "decay_sorbed" not in dce_mst
+
+
+def test_multi_species_files_list_matches_disk(ms_deck, tmp_path):
+    on_disk = {str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_file()}
+    assert set(ms_deck.files) == on_disk
+    assert "mfsim.nam" in ms_deck.files
+
+
+def test_multi_species_does_not_perturb_single_species(tmp_path):
+    """archetype=None / species=None keeps the byte-identical single-GWT spill deck
+    (regression guard for the multi_species switch)."""
+    d = build_modflow_deck(workdir=tmp_path, **DEMO)
+    assert d.multi_species is False
+    assert d.archetype is None
+    assert d.gwt_name == "gwt_model"
+    assert (tmp_path / "gwt_model.mst").is_file()
+    assert (tmp_path / "gwfgwt.exg").is_file()  # the single-species exchange name
+    assert not list(tmp_path.glob("gwfgwt_gwt_*.exg"))  # no multi_species exchanges
+
+
+def test_multi_species_three_species_three_models(tmp_path):
+    """N species -> N GWT models + N GwfGwt exchanges + N .ucn (generalises beyond 2)."""
+    three = [
+        {"name": "TCE", "release_rate_kg_s": 0.01, "decay_per_day": 0.01},
+        {"name": "cis-DCE", "release_rate_kg_s": 0.0, "decay_per_day": 0.02, "parent": "TCE"},
+        {"name": "VC", "release_rate_kg_s": 0.0, "decay_per_day": 0.03, "parent": "cis-DCE"},
+    ]
+    d = build_modflow_deck(
+        workdir=tmp_path, archetype="multi_species", species=three, **MS_SPILL
+    )
+    assert len(d.gwt_model_names) == 3
+    assert d.n_gwfgwt_exchanges == 3
+    assert len(d.species_ucn_files) == 3
+    assert d.species_with_parent == ["cis-DCE", "VC"]
+
+
+# --- REAL mf6 run (env-gated) ----------------------------------------------- #
+
+
+@requires_mf6
+def test_real_run_multi_species_converges_with_two_plumes(tmp_path):
+    """multi_species: author a 2-species deck, run mf6, assert CONVERGED and BOTH
+    per-species .ucn written with a non-trivial concentration plume from the shared
+    flow field (the gap-closer -- nothing else runs the N-GWT binary path)."""
+    import numpy as np
+    import flopy
+
+    mf6 = _mf6_bin()
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="multi_species",
+        species=TWO_SPECIES,
+        **{**MS_SPILL, "duration_days": 15},
+    )
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    assert rc == 0
+    # BOTH species' .ucn must be written.
+    for ucn in d.species_ucn_files:
+        upath = tmp_path / ucn
+        assert upath.is_file(), f"missing per-species concentration output {ucn}"
+    # The PARENT (TCE, the sourced species) must show a real plume (max conc > 0).
+    tce = flopy.utils.HeadFile(
+        str(tmp_path / "gwt_tce.ucn"), text="CONCENTRATION"
+    )
+    tce_conc = tce.get_data(totim=tce.get_times()[-1])
+    assert float(np.nanmax(tce_conc)) > 0.0, "expected a real TCE plume"
+    # The daughter file is a valid CONCENTRATION HeadFile (independent transport;
+    # ingrowth coupling not yet wired so it stays at its own source = 0 here).
+    dce = flopy.utils.HeadFile(
+        str(tmp_path / "gwt_cis_dce.ucn"), text="CONCENTRATION"
+    )
+    dce_conc = dce.get_data(totim=dce.get_times()[-1])
+    assert float(np.nanmax(dce_conc)) >= 0.0
+
+
+@requires_mf6
+def test_real_run_multi_species_three_chain_converges(tmp_path):
+    """A 3-species chain (TCE -> cis-DCE -> VC) authors + runs mf6 and CONVERGES with
+    all three .ucn written (N-species generalisation, one mf6 invocation)."""
+    import flopy
+
+    mf6 = _mf6_bin()
+    three = [
+        {"name": "TCE", "release_rate_kg_s": 0.01, "sorption_kd": 0.1, "decay_per_day": 0.01},
+        {"name": "cis-DCE", "release_rate_kg_s": 0.002, "decay_per_day": 0.02, "parent": "TCE"},
+        {"name": "VC", "release_rate_kg_s": 0.001, "decay_per_day": 0.03, "parent": "cis-DCE"},
+    ]
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="multi_species",
+        species=three,
+        **{**MS_SPILL, "duration_days": 12},
+    )
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    assert rc == 0
+    for ucn in d.species_ucn_files:
+        assert (tmp_path / ucn).is_file(), f"missing {ucn}"
+        # Each is a readable CONCENTRATION HeadFile.
+        flopy.utils.HeadFile(str(tmp_path / ucn), text="CONCENTRATION").get_times()
+
+
+@requires_mf6
+def test_real_run_multi_species_long_name_converges(tmp_path):
+    """A species whose sanitised name exceeds MF6's 16-char MODELNAME limit
+    ("Vinyl Chloride" -> "gwt_vinyl_chloride" is 18) MUST be truncated + hash-
+    tagged so the deck still CONVERGES on a real mf6 run (the overflow used to
+    abort the whole simulation at write)."""
+    import flopy
+
+    mf6 = _mf6_bin()
+    two = [
+        {"name": "TCE", "release_rate_kg_s": 0.01},
+        {"name": "Vinyl Chloride", "release_rate_kg_s": 0.005, "decay_per_day": 0.03},
+    ]
+    d = build_modflow_deck(
+        workdir=tmp_path,
+        archetype="multi_species",
+        species=two,
+        **{**MS_SPILL, "duration_days": 12},
+    )
+    # The long-name GWT model name (and its .ucn stem) respects the 16-char cap.
+    assert all(len(name) <= 16 for name in d.gwt_model_names), d.gwt_model_names
+    rc, out = _run_mf6(d.sim_dir, mf6)
+    assert "Normal termination of simulation" in out, out[-1500:]
+    assert rc == 0
+    for ucn in d.species_ucn_files:
+        assert (tmp_path / ucn).is_file(), f"missing {ucn}"
+        flopy.utils.HeadFile(str(tmp_path / ucn), text="CONCENTRATION").get_times()

@@ -78,8 +78,10 @@ from .modflow_contracts import (
     HydroperiodLayerURI,
     MODFLOWRunArgs,
     MoundingLayerURI,
+    MultiSpeciesPlumeResult,
     PlumeLayerURI,
     SeepageLayerURI,
+    SpeciesSpec,
 )
 from .publish_manifest import (
     MANIFEST_SCHEMA_VERSION,
@@ -136,6 +138,9 @@ __all__ = [
     "MODFLOWRunArgs",
     "PlumeLayerURI",
     "SeepageLayerURI",
+    # MODFLOW Wave-3 multi_species transport (sprint-18 Wave-3)
+    "SpeciesSpec",
+    "MultiSpeciesPlumeResult",
     "DrawdownLayerURI",
     "DewaterLayerURI",
     "BudgetPartitionLayerURI",

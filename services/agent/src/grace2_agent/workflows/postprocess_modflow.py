@@ -31,6 +31,7 @@ client renders it (mocked in tests; callable in production).
 from __future__ import annotations
 
 import glob
+import hashlib
 import logging
 import tempfile
 from pathlib import Path
@@ -43,6 +44,7 @@ from grace2_contracts.modflow_contracts import (
     DrawdownLayerURI,
     HydroperiodLayerURI,
     MoundingLayerURI,
+    MultiSpeciesPlumeResult,
     PlumeLayerURI,
     SeepageLayerURI,
 )
@@ -55,6 +57,7 @@ logger = logging.getLogger("grace2_agent.workflows.postprocess_modflow")
 __all__ = [
     "PostprocessMODFLOWError",
     "postprocess_modflow",
+    "postprocess_multi_species",
     "postprocess_river_seepage",
     "postprocess_drawdown",
     "postprocess_dewatering",
@@ -101,6 +104,17 @@ PLUME_DETECTION_FLOOR_MGL: float = 0.001
 
 #: Concentration output filename the GWT OC package writes (gwt_adapter).
 GWT_UCN_FILENAME: str = "gwt_model.ucn"
+
+#: multi_species (Wave-3): the per-species GWT OC writes ``gwt_<species>.ucn``
+#: (e.g. ``gwt_tce.ucn`` / ``gwt_cis_dce.ucn``) - one CONCENTRATION HeadFile per
+#: solute. The single-species deck writes the bare ``gwt_model.ucn`` (above); the
+#: postprocess globs ``gwt_*.ucn`` and EXCLUDES the single-species stem so a
+#: spill run (one ``gwt_model.ucn``) is never mis-read as a one-species multi run.
+GWT_SPECIES_UCN_GLOB: str = "gwt_*.ucn"
+#: The single-species concentration stem (without extension) excluded from the
+#: per-species glob so a spill deck's ``gwt_model.ucn`` is never treated as a
+#: per-species file.
+GWT_SINGLE_SPECIES_STEM: str = "gwt_model"
 
 #: GWF cell-by-cell budget filename (carries the RIV leakage term). The OC
 #: BUDGET FILEOUT uses this bare name; the recursive glob captures it wherever
@@ -1194,6 +1208,240 @@ def postprocess_modflow(
         max_concentration_mgl=max_conc,
         plume_area_km2=plume_area_km2,
     )
+
+
+# --------------------------------------------------------------------------- #
+# multi_species postprocess (sprint-18 Wave-3) - N per-species UCN -> N plumes
+#
+# A multi_species run writes ONE ``gwt_<species>.ucn`` per solute (the adapter's
+# per-species OC, gwt_adapter._build_multi_species_deck). This path globs those
+# N files, REUSES the single-species concentration reader + plume COG + publish
+# path per species, and returns a LIST of PlumeLayerURI (one per species; each
+# carries the same two narration scalars + the species name in the layer label).
+# The single-species spill path (postprocess_modflow, ONE gwt_model.ucn) is
+# byte-untouched.
+# --------------------------------------------------------------------------- #
+
+
+# Must stay byte-identical to gwt_adapter._gwt_model_name_for_species (worker side,
+# a separate deploy bundle) so a per-species UCN stem maps back to the user's name
+# by value. MF6 caps MODELNAME at 16 chars -> the worker truncates + hash-tags long
+# names; this mirror reproduces that exactly. See that function's docstring.
+_MF6_MODELNAME_MAXLEN = 16
+
+
+def _sanitise_species_to_stem(name: str) -> str:
+    """Map a species name to the adapter's filesystem-safe ``gwt_<safe>`` stem.
+
+    Mirrors ``gwt_adapter._gwt_model_name_for_species`` EXACTLY (lowercase, every
+    non-alphanumeric run -> single ``_``, prefix ``gwt_``, then truncate + 4-hex
+    hash when the result would exceed MF6's 16-char MODELNAME limit). Used to align
+    a composer-supplied real species name (e.g. ``"cis-DCE"``) to the per-species
+    UCN filename stem (``gwt_cis_dce``) BY VALUE rather than by position, so the
+    layer label is correct regardless of the glob sort order.
+    """
+    safe = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(name))
+    safe = "_".join(part for part in safe.split("_") if part) or "species"
+    candidate = f"gwt_{safe}"
+    if len(candidate) <= _MF6_MODELNAME_MAXLEN:
+        return candidate
+    digest = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:4]
+    head_budget = _MF6_MODELNAME_MAXLEN - len("gwt_") - 1 - len(digest)
+    return f"gwt_{safe[:head_budget]}_{digest}"
+
+
+def _species_label_from_ucn_stem(stem: str) -> str:
+    """Recover a human species label from a ``gwt_<species>`` UCN file stem.
+
+    The adapter sanitises a species name to a filesystem-safe GWT model name
+    ``gwt_<safe>`` (``gwt_adapter._gwt_model_name_for_species``: lowercased,
+    non-alnum -> ``_``), so the exact original casing/punctuation is not
+    recoverable from the filename alone. We strip the ``gwt_`` prefix and
+    upper-case the remainder for a readable label (e.g. ``gwt_cis_dce`` ->
+    ``CIS_DCE``). The caller may override with the real species name when the
+    deck manifest carried it (the composer threads ``species_names`` so the
+    layer label matches the user's vocabulary exactly).
+    """
+    s = stem
+    if s.startswith("gwt_"):
+        s = s[len("gwt_"):]
+    return s.upper() if s else stem
+
+
+def _species_label_for_path(
+    ucn_path: Path, species_names: list[str] | None
+) -> str:
+    """Resolve the display label for one per-species UCN path.
+
+    Prefers the composer-threaded real name whose sanitised form equals the UCN
+    file stem (BY VALUE, not position - so the label is correct regardless of the
+    glob sort order). Falls back to the stem-recovered label when no name matches
+    (the per-species concentration scalars are correct either way).
+    """
+    if species_names:
+        for name in species_names:
+            if _sanitise_species_to_stem(name) == ucn_path.stem:
+                return str(name)
+    return _species_label_from_ucn_stem(ucn_path.stem)
+
+
+def _resolve_species_ucn_paths(run_outputs_uri: str) -> list[Path]:
+    """Locate every per-species ``gwt_<species>.ucn`` from a run output.
+
+    Local (``file://`` / bare path): glob ``gwt_*.ucn`` under the dir tree,
+    EXCLUDING the single-species ``gwt_model.ucn`` stem (so a spill deck is never
+    mis-read as a one-species multi run). ``s3://`` / ``gs://``: the multi_species
+    live path always passes a LOCAL deck dir (the local-mode mf6 run), so the
+    object-store branch fetches by listing is not required here; a single ``.ucn``
+    URI is resolved as one species. Returns the per-species UCN paths sorted by
+    filename for a deterministic plume ordering.
+
+    Raises ``PostprocessMODFLOWError("PLUME_OUTPUT_READ_FAILED")`` when no
+    per-species UCN is found.
+    """
+    # A directly-pointed single .ucn (object-store / explicit file) is one species.
+    if run_outputs_uri.endswith(".ucn"):
+        if run_outputs_uri.startswith(("s3://", "gs://")):
+            # Reuse the single-species resolver's fetch for one explicit file.
+            return [_resolve_ucn_path(run_outputs_uri)]
+        p = Path(run_outputs_uri.replace("file://", ""))
+        if p.is_file():
+            return [p]
+
+    p = Path(run_outputs_uri.replace("file://", ""))
+    if p.is_dir():
+        hits = sorted(
+            Path(g)
+            for g in glob.glob(str(p / "**" / GWT_SPECIES_UCN_GLOB), recursive=True)
+            if Path(g).stem != GWT_SINGLE_SPECIES_STEM
+        )
+        if hits:
+            return hits
+    raise PostprocessMODFLOWError(
+        "PLUME_OUTPUT_READ_FAILED",
+        message=(
+            f"no per-species {GWT_SPECIES_UCN_GLOB} found under {run_outputs_uri} "
+            f"(excluding the single-species {GWT_SINGLE_SPECIES_STEM} stem); a "
+            "multi_species run must write one gwt_<species>.ucn per solute."
+        ),
+        details={"run_outputs_uri": run_outputs_uri},
+    )
+
+
+def postprocess_multi_species(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+    species_names: list[str] | None = None,
+) -> MultiSpeciesPlumeResult:
+    """Convert a multi_species MODFLOW run's N UCN outputs into N plume layers.
+
+    Globs the per-species ``gwt_<species>.ucn`` files the multi_species deck
+    wrote, and for EACH species REUSES the single-species concentration reader +
+    plume-metric math + plume COG + upload/publish path to produce ONE
+    ``PlumeLayerURI`` carrying that species' ``max_concentration_mgl`` +
+    ``plume_area_km2`` and the species name in the layer label. Returns an ordered
+    ``MultiSpeciesPlumeResult`` (one plume per species, in glob/filename order, or
+    in ``species_names`` order when the composer threads the real names).
+
+    Args:
+        run_outputs_uri: the run output location (a local dir / ``file://`` for
+            the local-mode mf6 path; finds the per-species ``gwt_<species>.ucn``).
+        run_id: the run identifier each per-species COG is keyed under.
+        model_crs: the deck's projected CRS (the OQ-MOD-3 handoff field).
+        deck_dir: optional on-disk deck dir for the SHARED grid georegistration
+            (all species share one GWF flow field / grid).
+        runs_bucket: optional override for the runs bucket name.
+        publish: when True, dispatch ``publish_layer`` per species (mocked).
+        species_names: optional ordered real species names (the composer threads
+            ``DeckStaging.species_names`` so the layer labels match the user's
+            vocabulary exactly, e.g. "TCE" / "cis-DCE"). When None, a label is
+            recovered from each UCN file stem. When supplied AND the count matches
+            the per-species UCN count, the names are zipped onto the SORTED ucn
+            paths positionally; the adapter writes ucn files in species order and
+            the sort is stable on the sanitised stem, so this is best-effort
+            alignment (the per-species scalars are correct regardless).
+
+    Returns:
+        ``MultiSpeciesPlumeResult`` with ``plumes`` = ordered list of one
+        ``PlumeLayerURI`` per species.
+
+    Raises:
+        PostprocessMODFLOWError: a read / reproject / write / upload step failed,
+            or no per-species UCN was found.
+    """
+    ucn_paths = _resolve_species_ucn_paths(run_outputs_uri)
+
+    # The N species share ONE GWF flow field / grid, so the georegistration is
+    # read ONCE (not per species) - identical cell area for every plume.
+    geo = _grid_georegistration_from_deck(deck_dir)
+    cell_area_m2 = (
+        float(geo["delr"]) * float(geo["delc"]) if geo is not None else 2500.0
+    )  # default 50 m cells if deck georegistration unavailable (gwt_adapter CELL_SIZE_M)
+
+    plumes: list[PlumeLayerURI] = []
+    for idx, ucn_path in enumerate(ucn_paths):
+        # Resolve the label by VALUE (match the composer-threaded real name whose
+        # sanitised form equals this UCN stem), not by position - robust to the
+        # glob sort order. Falls back to the stem-recovered label.
+        species_label = _species_label_for_path(ucn_path, species_names)
+
+        final2d = _read_final_concentration(ucn_path)
+        max_conc, plume_area_km2 = compute_plume_metrics(final2d, cell_area_m2)
+        logger.info(
+            "postprocess_multi_species run_id=%s species=%r max_concentration_mgl=%.6g "
+            "plume_area_km2=%.6g",
+            run_id,
+            species_label,
+            max_conc,
+            plume_area_km2,
+        )
+
+        cog_path = _write_reprojected_cog(final2d, model_crs, geo)
+        bbox_4326 = _cog_bbox_4326(cog_path)
+        # Each species gets its own COG filename + layer id so N COGs never
+        # collide in the runs bucket and N layers render as distinct map layers.
+        slug = _species_slug(species_label, idx)
+        cog_uri = _upload_cog(
+            cog_path,
+            run_id,
+            runs_bucket,
+            cog_filename=f"plume_{slug}_concentration_4326.tif",
+        )
+
+        layer_id = f"plume-concentration-{slug}-{run_id}"
+        final_uri = cog_uri
+        if publish:
+            wms_url = _dispatch_publish_layer(cog_uri, layer_id)
+            if wms_url:
+                final_uri = wms_url
+
+        plumes.append(
+            PlumeLayerURI(
+                layer_id=layer_id,
+                name=f"Contaminant Plume - {species_label} (peak concentration)",
+                layer_type="raster",
+                uri=final_uri,
+                style_preset=PLUME_STYLE_PRESET,
+                role="primary",
+                units="mg/L",
+                bbox=bbox_4326,
+                max_concentration_mgl=max_conc,
+                plume_area_km2=plume_area_km2,
+            )
+        )
+
+    return MultiSpeciesPlumeResult(plumes=plumes)
+
+
+def _species_slug(species_label: str, idx: int) -> str:
+    """Filesystem/layer-id-safe slug for a species label (lowercased, alnum/_)."""
+    slug = "".join(c.lower() if c.isalnum() else "_" for c in species_label).strip("_")
+    return slug or f"species{idx}"
 
 
 # --------------------------------------------------------------------------- #

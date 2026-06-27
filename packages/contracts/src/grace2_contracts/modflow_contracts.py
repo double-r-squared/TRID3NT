@@ -58,6 +58,8 @@ DEFAULT_STREAMBED_THICKNESS_M: float = 1.0  # streambed (M) for K-derived conduc
 
 __all__ = [
     "MODFLOWRunArgs",
+    "SpeciesSpec",
+    "MultiSpeciesPlumeResult",
     "PlumeLayerURI",
     "SeepageLayerURI",
     "DrawdownLayerURI",
@@ -93,6 +95,63 @@ DEFAULT_AQUIFER_SS: float = 1e-5  # specific storage (1/m), confined-aquifer dem
 # drains/fills with a Sy ~= 0.2 (same family as DEFAULT_AQUIFER_SY but named
 # separately so the wetland archetype reads its own demo value). Narrated demo.
 DEFAULT_WETLAND_SY: float = 0.2  # wetland-soil specific yield, dimensionless
+
+
+class SpeciesSpec(GraceModel):
+    """One solute species in a multi_species MODFLOW 6 GWT run (Wave-3 - ADDITIVE).
+
+    Carries the per-species transport forcing the adapter maps to ONE
+    ``ModflowGwt`` (DIS/IC/ADV/DSP/MST/SRC/SSM/OC) plus a ``ModflowGwfgwt``
+    flow<->transport exchange on the shared GWF flow field. The MST physics
+    (sorption Kd / first-order decay) is per-species and each species transports
+    INDEPENDENTLY: its own SRC is its only source and its own decay only REMOVES
+    its mass.
+
+    NOTE on decay chains: parent->daughter mass INGROWTH (the daughter being
+    produced by the parent's decay, e.g. TCE -> cis-DCE -> VC) is NOT modeled.
+    MF6's ``GWT6-GWT6`` exchange couples two GWT models across a SPATIAL grid
+    interface (domain decomposition), not chemical ingrowth on a shared grid, so
+    the adapter does not wire one. The ``parent`` field is RECORDED on the run
+    manifest for provenance only (``decay_chain_coupled`` stays False); a pure
+    daughter with ``release_rate_kg_s=0.0`` will simply stay at zero
+    concentration. True chain ingrowth is future work.
+
+    Use this when:
+        Building one of the N entries of ``MODFLOWRunArgs.species`` for an
+        ``archetype="multi_species"`` run (N independent or chained plumes from a
+        single shared GWF flow field).
+
+    Do NOT use this for:
+        The single-contaminant spill path (leave ``MODFLOWRunArgs.species`` None
+        and use the top-level ``contaminant`` / ``release_rate_kg_s``).
+
+    Fields:
+        name: species name (open vocabulary, e.g. "TCE", "cis-DCE", "VC"). Must
+            be unique within a ``species`` list (the adapter keys GWT models on
+            it). Non-empty.
+        release_rate_kg_s: this species' mass release rate at the spill cell,
+            kg/s (>= 0). Since ingrowth is not modeled, a species with 0.0 here
+            has NO source and stays at zero concentration (set a real rate for
+            every species you want a plume from).
+        sorption_kd: OPTIONAL per-species linear sorption distribution coefficient
+            Kd (m^3/kg) applied at the ``GwtMst`` package. None => no sorption
+            (conservative-tracer transport for this species).
+        decay_per_day: OPTIONAL per-species first-order decay rate (1/day, >= 0)
+            applied at ``GwtMst``. None => no decay. This only REMOVES this
+            species' mass; the lost mass is NOT loaded onto any daughter (no
+            ingrowth coupling -- see the class note).
+        parent: OPTIONAL name of the conceptual PARENT species, RECORDED on the
+            manifest for provenance ONLY. It does NOT wire any species-to-species
+            coupling (ingrowth is not modeled -- see the class note); each species
+            still transports independently. When set, must match the ``name`` of
+            another species in the same ``species`` list.
+    """
+
+    name: str = Field(min_length=1)
+    release_rate_kg_s: float = Field(ge=0.0)
+    sorption_kd: float | None = Field(default=None, ge=0.0)
+    decay_per_day: float | None = Field(default=None, ge=0.0)
+    parent: str | None = None
 
 
 class MODFLOWRunArgs(EngineRunArgsMixin):
@@ -282,9 +341,22 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             "MAR",
             "ASR",
             "wetland_hydroperiod",
+            "multi_species",
         ]
         | None
     ) = None
+
+    # --- multi_species: N-species solute transport (Wave-3) ----------------- #
+    # An optional list of per-species transport specs. When None (the default)
+    # the EXISTING single-contaminant path is used unchanged (the deck builds the
+    # one ModflowGwt + ModflowGwfgwt exchange from ``contaminant`` /
+    # ``release_rate_kg_s`` exactly as before). When supplied (with
+    # ``archetype="multi_species"``) the adapter builds ONE ModflowGwt + ONE
+    # ModflowGwfgwt per species on the shared GWF flow field; each species
+    # transports INDEPENDENTLY. Parent->daughter ingrowth is NOT wired (a species'
+    # ``parent`` is recorded for provenance only -- see SpeciesSpec). ADDITIVE:
+    # ``species is None`` => byte-identical single-contaminant deck.
+    species: list[SpeciesSpec] | None = None
 
     # --- sustainable_yield: pumping-well drawdown --------------------------- #
     well_location_latlon: tuple[float, float] | None = None
@@ -395,6 +467,29 @@ class PlumeLayerURI(LayerURI):
 
     max_concentration_mgl: float = Field(ge=0.0)
     plume_area_km2: float = Field(ge=0.0)
+
+
+class MultiSpeciesPlumeResult(GraceModel):
+    """The output carrier for a multi_species MODFLOW run (Wave-3 - ADDITIVE).
+
+    A multi_species run produces N plumes - one per ``SpeciesSpec``. Each plume
+    REUSES ``PlumeLayerURI`` field-for-field (so each still maps onto
+    ``map-command load-layer`` with no translation, and the agent narrates each
+    species' ``max_concentration_mgl`` / ``plume_area_km2`` from typed fields).
+    This is a thin typed carrier the composer returns so the ordered list of
+    per-species plumes round-trips as one structured object; it does NOT
+    introduce a new ``LayerURI`` - the per-species layer stays ``PlumeLayerURI``.
+
+    The single-contaminant path is UNAFFECTED: it returns a single
+    ``PlumeLayerURI`` as before. This carrier is used only by the
+    ``archetype="multi_species"`` composer return.
+
+    Fields:
+        plumes: ordered list of one ``PlumeLayerURI`` per species (same order as
+            ``MODFLOWRunArgs.species``). At least one plume.
+    """
+
+    plumes: list[PlumeLayerURI] = Field(min_length=1)
 
 
 class SeepageLayerURI(LayerURI):

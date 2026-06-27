@@ -36,6 +36,7 @@ import from `grace2_contracts` - the binding happens upstream.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -300,6 +301,19 @@ class DeckManifest:
     et_max_rate_m_day: float = 0.0  # EVT max ET rate written (m/day)
     et_extinction_depth_m: float = 0.0  # EVT extinction depth written (m)
     newton_under_relaxation: bool = False  # True iff IMS used NEWTON + BICGSTAB
+    # --- multi_species transport (sprint-18 Wave-3; ADDITIVE) -------------------- #
+    # ``archetype == "multi_species"``: ONE shared GWF + N ModflowGwt models (one per
+    # solute species) + N ModflowGwfgwt flow<->transport exchanges, all in ONE
+    # simulation / ONE mf6 run. Every field below stays at its default for the
+    # single-species spill path (byte-identical deck).
+    multi_species: bool = False  # True iff a multi_species (N-GWT) deck was written
+    species_names: list[str] = field(default_factory=list)  # ordered species names
+    species_ucn_files: list[str] = field(default_factory=list)  # per-species .ucn (deck order)
+    gwt_model_names: list[str] = field(default_factory=list)  # per-species GWT model names
+    n_gwfgwt_exchanges: int = 0  # number of ModflowGwfgwt flow<->transport exchanges
+    n_gwtgwt_exchanges: int = 0  # number of ModflowGwtGwt species-coupling exchanges (decay chain)
+    species_with_parent: list[str] = field(default_factory=list)  # daughter species (parent set)
+    decay_chain_coupled: bool = False  # True iff any parent->daughter GwtGwt exchange was written
     # Files written (relative to sim_dir), for manifest/upload assembly:
     files: list[str] = field(default_factory=list)
 
@@ -1395,6 +1409,445 @@ def _build_zone_array(
     return zone_array, 2
 
 
+# ---------------------------------------------------------------------------
+# multi_species transport (sprint-18 Wave-3). One shared GWF flow field drives N
+# independent ModflowGwt transport models (one per solute species), each coupled
+# to the SHARED GWF by its own ModflowGwfgwt exchange. All N transport models +
+# the GWF + every exchange live in ONE mfsim.nam and run in ONE mf6 invocation.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_species(species: list) -> list[dict]:
+    """Normalize a heterogeneous ``species`` list into validated plain dicts.
+
+    Accepts either ``SpeciesSpec``-like objects (any object exposing the
+    ``name`` / ``release_rate_kg_s`` / ``sorption_kd`` / ``decay_per_day`` /
+    ``parent`` attributes) OR plain dicts with those keys. Returns one dict per
+    species in input order with every key present (missing optionals -> None).
+
+    Validates (engine determinism: fail loud, never silently drop a species):
+      * every name is a non-empty string and UNIQUE within the list;
+      * release_rate_kg_s >= 0 (0.0 allowed for a pure daughter product);
+      * sorption_kd / decay_per_day, when set, are >= 0;
+      * a ``parent`` (when set) names another species in the SAME list.
+    """
+    if not species:
+        raise ValueError("multi_species requires a non-empty species list")
+
+    def _get(s, key):
+        if isinstance(s, dict):
+            return s.get(key)
+        return getattr(s, key, None)
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for s in species:
+        name = _get(s, "name")
+        if not name or not str(name).strip():
+            raise ValueError(f"species name must be a non-empty string, got {name!r}")
+        name = str(name)
+        if name in seen:
+            raise ValueError(f"duplicate species name in species list: {name!r}")
+        seen.add(name)
+        rate = _get(s, "release_rate_kg_s")
+        if rate is None:
+            raise ValueError(f"species {name!r} missing release_rate_kg_s")
+        rate = float(rate)
+        if rate < 0.0:
+            raise ValueError(
+                f"species {name!r} release_rate_kg_s must be >= 0, got {rate!r}"
+            )
+        kd = _get(s, "sorption_kd")
+        if kd is not None and float(kd) < 0.0:
+            raise ValueError(f"species {name!r} sorption_kd must be >= 0, got {kd!r}")
+        decay = _get(s, "decay_per_day")
+        if decay is not None and float(decay) < 0.0:
+            raise ValueError(
+                f"species {name!r} decay_per_day must be >= 0, got {decay!r}"
+            )
+        out.append(
+            {
+                "name": name,
+                "release_rate_kg_s": rate,
+                "sorption_kd": float(kd) if kd is not None else None,
+                "decay_per_day": float(decay) if decay is not None else None,
+                "parent": _get(s, "parent"),
+            }
+        )
+    # Parent references must resolve to a species in the same list.
+    for spec in out:
+        parent = spec["parent"]
+        if parent is not None and str(parent) not in seen:
+            raise ValueError(
+                f"species {spec['name']!r} parent {parent!r} not found in species list"
+            )
+    return out
+
+
+# MF6 enforces a HARD 16-character limit on MODELNAME: a longer name aborts the
+# whole simulation at namefile-write time (caught with a real 3-species mf6 run --
+# "Vinyl Chloride" -> "gwt_vinyl_chloride" is 18 chars and killed the run). Every
+# per-species GWT model name MUST stay <= this.
+MF6_MODELNAME_MAXLEN = 16
+
+
+def _gwt_model_name_for_species(name: str) -> str:
+    """Map a species name to a filesystem-safe, length-bounded GWT model name.
+
+    MF6 model names must be a safe token (no spaces/punctuation that would break
+    the namefile or the per-model file stems) AND <= 16 chars (``MF6_MODELNAME_MAXLEN``;
+    an overflow aborts the entire multi-species sim at write). We lower-case,
+    replace any non-alphanumeric run with a single underscore, prefix ``gwt_``,
+    and -- when the result would exceed 16 chars -- truncate the stem and append a
+    short deterministic hash of the FULL sanitised stem, so two long names that
+    share a 16-char prefix still get distinct, reproducible model names. The
+    transform is a pure function of the species name, so the postprocess side
+    mirrors it (``postprocess_modflow._sanitise_species_to_stem``) to map a
+    ``gwt_<species>.ucn`` file back to the user's species label BY VALUE.
+
+    The species list is name-unique (``_normalize_species``) but two names could
+    collide after sanitisation/truncation; the caller de-duplicates the resulting
+    model names (length-aware, see ``_with_dedup_suffix``) so each GWT gets a
+    unique stem.
+    """
+    safe = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(name))
+    safe = "_".join(part for part in safe.split("_") if part) or "species"  # collapse runs
+    candidate = f"gwt_{safe}"
+    if len(candidate) <= MF6_MODELNAME_MAXLEN:
+        return candidate
+    # Truncate the stem + disambiguate with a 4-hex hash of the full stem so
+    # distinct long names never collide after truncation: 4 ("gwt_") + 7 + 1
+    # ("_") + 4 (hash) = 16.
+    digest = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:4]
+    head_budget = MF6_MODELNAME_MAXLEN - len("gwt_") - 1 - len(digest)
+    return f"gwt_{safe[:head_budget]}_{digest}"
+
+
+def _with_dedup_suffix(base: str, suffix: int) -> str:
+    """Append a numeric de-dup ``_<suffix>`` while keeping the name <= 16 chars.
+
+    Two distinct species names can collapse to the same sanitised/truncated GWT
+    model name; the caller disambiguates with a numeric suffix. The suffix must
+    not push the name back over MF6's 16-char MODELNAME limit, so we truncate the
+    base to make room for the tag.
+    """
+    tag = f"_{suffix}"
+    head = base[: MF6_MODELNAME_MAXLEN - len(tag)]
+    return f"{head}{tag}"
+
+
+def _build_multi_species_deck(
+    *,
+    species: list,
+    lat: float,
+    lon: float,
+    crs,
+    to_utm,
+    xorigin: float,
+    yorigin: float,
+    nrow: int,
+    ncol: int,
+    delr: float,
+    delc: float,
+    k_m_per_day: float,
+    aquifer_k_ms: float,
+    porosity: float,
+    duration_days: float,
+    spill_row: int,
+    spill_col: int,
+    spill_cell_east: float,
+    spill_cell_north: float,
+    sim_dir: Path,
+    sim_name: str,
+    gwf_name: str,
+    write: bool,
+    save_concentration_all_steps: bool,
+) -> DeckManifest:
+    """Assemble a multi_species GWF + N-GWT deck (ONE shared flow field, N plumes).
+
+    Builds ONE steady-state GWF flow model (the EXACT same 40x40x50 m UTM grid +
+    west->east REGIONAL_GRADIENT CHD as the single-species spill deck) and, for
+    EACH species, a complete ModflowGwt transport model
+    (DIS/IC/ADV(TVD)/DSP/MST/SRC/SSM/OC) named ``gwt_<species>`` plus a
+    ModflowGwfgwt exchange linking the shared GWF to that species' GWT. Each
+    species' SRC injects its own ``release_rate_kg_s`` (-> g/day) at the shared
+    spill cell, and its OC writes ``gwt_<species>.ucn`` (a per-species
+    CONCENTRATION HeadFile the postprocess globs and reads per species).
+
+    Parent->daughter decay chains: the ``parent`` field is RECORDED on the
+    manifest (``species_with_parent``) but the species-to-species mass-ingrowth
+    coupling is NOT yet wired -- MF6's ``GWT6-GWT6`` exchange couples two GWT
+    models across a SPATIAL grid interface (domain decomposition), not chemical
+    parent->daughter ingrowth on a shared grid, so writing one would NOT model
+    the decay chain. Each species therefore transports independently (its own
+    first-order decay removes mass; the daughter is sourced only by its own SRC).
+    ``decay_chain_coupled`` stays False until a real ingrowth coupling lands;
+    ``n_gwtgwt_exchanges`` is 0. This is the honest "independent species first"
+    path the Wave-3 kickoff sanctions.
+    """
+    specs = _normalize_species(species)
+
+    # Per-species transport step count tracks duration exactly like the spill deck.
+    n_transport_steps = int(max(1, min(round(duration_days), 365)))
+    conc_save = "ALL" if save_concentration_all_steps else "LAST"
+
+    sim = flopy.mf6.MFSimulation(
+        sim_name=sim_name,
+        sim_ws=str(sim_dir),
+        exe_name="mf6",
+        version="mf6",
+    )
+    # Two periods (steady-state flow spin-up + transient transport), identical to
+    # the single-species spill deck so the SRC stays off during spin-up.
+    flopy.mf6.ModflowTdis(
+        sim,
+        time_units=TIME_UNITS,
+        nper=2,
+        perioddata=[
+            (1.0, 1, 1.0),
+            (float(duration_days), n_transport_steps, 1.0),
+        ],
+    )
+
+    # --- Shared GWF flow model (one per simulation) -------------------------- #
+    ims_gwf = flopy.mf6.ModflowIms(
+        sim,
+        filename=f"{gwf_name}.ims",
+        complexity="SIMPLE",
+        outer_dvclose=1e-6,
+        inner_dvclose=1e-6,
+        linear_acceleration="CG",
+    )
+    gwf = flopy.mf6.ModflowGwf(
+        sim,
+        modelname=gwf_name,
+        model_nam_file=f"{gwf_name}.nam",
+        save_flows=True,
+    )
+    sim.register_ims_package(ims_gwf, [gwf_name])
+
+    flopy.mf6.ModflowGwfdis(
+        gwf,
+        length_units=LENGTH_UNITS,
+        nlay=N_LAYERS,
+        nrow=nrow,
+        ncol=ncol,
+        delr=delr,
+        delc=delc,
+        top=AQUIFER_TOP_M,
+        botm=AQUIFER_BOTTOM_M,
+        xorigin=xorigin,
+        yorigin=yorigin,
+        filename=f"{gwf_name}.dis",
+    )
+    try:
+        gwf.modelgrid.set_coord_info(xoff=xorigin, yoff=yorigin, crs=crs.to_epsg())
+    except Exception:  # pragma: no cover - older flopy signature fallback
+        pass
+
+    domain_width_m = ncol * delr
+    head_west = AQUIFER_TOP_M + REGIONAL_GRADIENT * domain_width_m
+    head_east = AQUIFER_TOP_M
+    flopy.mf6.ModflowGwfic(gwf, strt=head_west, filename=f"{gwf_name}.ic")
+    flopy.mf6.ModflowGwfnpf(
+        gwf,
+        save_flows=True,
+        icelltype=0,
+        k=k_m_per_day,
+        filename=f"{gwf_name}.npf",
+    )
+    chd_records = []
+    for r in range(nrow):
+        chd_records.append([(0, r, 0), head_west])
+        chd_records.append([(0, r, ncol - 1), head_east])
+    flopy.mf6.ModflowGwfchd(
+        gwf,
+        stress_period_data={0: chd_records, 1: chd_records},
+        filename=f"{gwf_name}.chd",
+    )
+    flopy.mf6.ModflowGwfoc(
+        gwf,
+        head_filerecord=f"{gwf_name}.hds",
+        budget_filerecord=f"{gwf_name}.cbc",
+        saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")],
+        filename=f"{gwf_name}.oc",
+    )
+
+    # --- One ModflowGwt + one ModflowGwfgwt exchange per species ------------- #
+    species_names: list[str] = []
+    gwt_model_names: list[str] = []
+    species_ucn_files: list[str] = []
+    species_with_parent: list[str] = []
+    used_model_names: set[str] = set()
+
+    for spec in specs:
+        sp_name = spec["name"]
+        gwt_name = _gwt_model_name_for_species(sp_name)
+        # De-duplicate sanitised model names (distinct species names that collapse
+        # to the same token get a numeric suffix so each GWT keeps a unique stem).
+        # Length-aware: the suffix must not push the name over MF6's 16-char limit.
+        if gwt_name in used_model_names:
+            suffix = 2
+            candidate = _with_dedup_suffix(gwt_name, suffix)
+            while candidate in used_model_names:
+                suffix += 1
+                candidate = _with_dedup_suffix(gwt_name, suffix)
+            gwt_name = candidate
+        used_model_names.add(gwt_name)
+
+        ims_gwt = flopy.mf6.ModflowIms(
+            sim,
+            filename=f"{gwt_name}.ims",
+            complexity="MODERATE",
+            outer_dvclose=1e-6,
+            inner_dvclose=1e-6,
+            linear_acceleration="BICGSTAB",
+        )
+        gwt = flopy.mf6.ModflowGwt(
+            sim,
+            modelname=gwt_name,
+            model_nam_file=f"{gwt_name}.nam",
+            save_flows=True,
+        )
+        sim.register_ims_package(ims_gwt, [gwt_name])
+
+        flopy.mf6.ModflowGwtdis(
+            gwt,
+            length_units=LENGTH_UNITS,
+            nlay=N_LAYERS,
+            nrow=nrow,
+            ncol=ncol,
+            delr=delr,
+            delc=delc,
+            top=AQUIFER_TOP_M,
+            botm=AQUIFER_BOTTOM_M,
+            xorigin=xorigin,
+            yorigin=yorigin,
+            filename=f"{gwt_name}.dis",
+        )
+        flopy.mf6.ModflowGwtic(gwt, strt=0.0, filename=f"{gwt_name}.ic")
+        flopy.mf6.ModflowGwtadv(gwt, scheme="TVD", filename=f"{gwt_name}.adv")
+        flopy.mf6.ModflowGwtdsp(
+            gwt,
+            alh=LONGITUDINAL_DISPERSIVITY_M,
+            ath1=LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_HORIZONTAL_RATIO,
+            atv=LONGITUDINAL_DISPERSIVITY_M * TRANSVERSE_VERTICAL_RATIO,
+            filename=f"{gwt_name}.dsp",
+        )
+
+        # Per-species MST: porosity (shared aquifer) + optional per-species linear
+        # sorption (Kd) and first-order decay. decay_sorbed is required by MF6 when
+        # BOTH decay AND sorption are active (the Wave-1 DECAY_SORBED bugfix), and
+        # defaults to the aqueous decay rate.
+        mst_kwargs: dict = {"porosity": porosity, "filename": f"{gwt_name}.mst"}
+        kd = spec["sorption_kd"]
+        sorption_active = kd is not None and float(kd) > 0.0
+        if sorption_active:
+            mst_kwargs["sorption"] = "LINEAR"
+            mst_kwargs["distcoef"] = float(kd)
+            mst_kwargs["bulk_density"] = 1600.0
+        decay = spec["decay_per_day"]
+        decay_active = decay is not None and float(decay) > 0.0
+        if decay_active:
+            mst_kwargs["first_order_decay"] = True
+            mst_kwargs["decay"] = float(decay)
+            if sorption_active:
+                mst_kwargs["decay_sorbed"] = float(decay)
+        flopy.mf6.ModflowGwtmst(gwt, **mst_kwargs)
+
+        # Per-species mass-loading source at the SHARED spill cell, active only in
+        # the transient transport period (period 1, 0-based) -- the same off-in-
+        # spin-up pattern as the single-species deck. A pure daughter product with
+        # release_rate_kg_s == 0.0 writes a zero-rate SRC record (a real, but empty,
+        # source so the deck shape is uniform across species).
+        sp_mass_rate_g_per_day = spec["release_rate_kg_s"] * KG_TO_G * SECONDS_PER_DAY
+        src_record = [[(0, spill_row, spill_col), sp_mass_rate_g_per_day]]
+        flopy.mf6.ModflowGwtsrc(
+            gwt,
+            stress_period_data={0: [], 1: src_record},
+            filename=f"{gwt_name}.src",
+        )
+        flopy.mf6.ModflowGwtssm(
+            gwt,
+            sources=None,
+            filename=f"{gwt_name}.ssm",
+        )
+        flopy.mf6.ModflowGwtoc(
+            gwt,
+            concentration_filerecord=f"{gwt_name}.ucn",
+            budget_filerecord=f"{gwt_name}.cbc",
+            saverecord=[("CONCENTRATION", conc_save), ("BUDGET", "LAST")],
+            filename=f"{gwt_name}.oc",
+        )
+
+        # The flow<->transport exchange linking the SHARED GWF to THIS species' GWT.
+        flopy.mf6.ModflowGwfgwt(
+            sim,
+            exgtype="GWF6-GWT6",
+            exgmnamea=gwf_name,
+            exgmnameb=gwt_name,
+            filename=f"gwfgwt_{gwt_name}.exg",
+        )
+
+        species_names.append(sp_name)
+        gwt_model_names.append(gwt_name)
+        species_ucn_files.append(f"{gwt_name}.ucn")
+        if spec["parent"] is not None:
+            species_with_parent.append(sp_name)
+
+    # The headline spill mass-rate carried into the manifest is the FIRST species'
+    # rate (the manifest's single mass_rate_g_per_day field is a per-deck scalar;
+    # the full per-species rates are reconstructable from species_ucn_files order).
+    headline_rate_g_per_day = specs[0]["release_rate_kg_s"] * KG_TO_G * SECONDS_PER_DAY
+
+    manifest = DeckManifest(
+        sim_dir=str(sim_dir),
+        sim_name=sim_name,
+        gwf_name=gwf_name,
+        # gwt_name is the FIRST species' GWT model (the manifest single-GWT field);
+        # the full per-species list is gwt_model_names.
+        gwt_name=gwt_model_names[0],
+        model_crs=f"EPSG:{crs.to_epsg()}",
+        xorigin=xorigin,
+        yorigin=yorigin,
+        nrow=nrow,
+        ncol=ncol,
+        nlay=N_LAYERS,
+        delr=delr,
+        delc=delc,
+        spill_row=spill_row,
+        spill_col=spill_col,
+        spill_easting_m=spill_cell_east,
+        spill_northing_m=spill_cell_north,
+        spill_lat=lat,
+        spill_lon=lon,
+        mass_rate_g_per_day=headline_rate_g_per_day,
+        release_rate_kg_s=specs[0]["release_rate_kg_s"],
+        duration_days=float(duration_days),
+        n_transport_steps=n_transport_steps,
+        contaminant=species_names[0],
+        aquifer_k_ms=aquifer_k_ms,
+        porosity=porosity,
+        archetype="multi_species",
+        gwt_present=True,
+        multi_species=True,
+        species_names=species_names,
+        species_ucn_files=species_ucn_files,
+        gwt_model_names=gwt_model_names,
+        n_gwfgwt_exchanges=len(gwt_model_names),
+        n_gwtgwt_exchanges=0,
+        species_with_parent=species_with_parent,
+        decay_chain_coupled=False,
+    )
+
+    if write:
+        sim.write_simulation()
+        manifest.files = sorted(
+            str(p.relative_to(sim_dir)) for p in sim_dir.rglob("*") if p.is_file()
+        )
+    return manifest
+
+
 def build_modflow_deck(
     spill_location_latlon: tuple[float, float],
     contaminant: str,
@@ -1448,6 +1901,14 @@ def build_modflow_deck(
     et_max_rate_m_day: float | None = None,
     et_extinction_depth_m: float | None = None,
     specific_yield: float | None = None,
+    # --- multi_species transport (sprint-18 Wave-3; ADDITIVE, optional) ----- #
+    # When ``archetype == "multi_species"`` the adapter builds ONE shared GWF +
+    # one ModflowGwt per species + one ModflowGwfgwt per species. ``species`` is
+    # an ordered list of per-species specs: either ``SpeciesSpec``-like objects
+    # (any object exposing .name/.release_rate_kg_s/.sorption_kd/.decay_per_day/
+    # .parent attributes) OR plain dicts with those keys. ``species is None`` =>
+    # the byte-identical single-contaminant spill deck.
+    species: list | None = None,
     # --- advanced-physics overrides (levers STEP 3; ADDITIVE, optional) ----- #
     advanced_physics: dict | None = None,
     save_concentration_all_steps: bool = True,
@@ -1524,6 +1985,20 @@ def build_modflow_deck(
             leaks into the aquifer) instead of the single spill cell. Requires a
             ``river_polyline_lonlat``; ignored (with the SRC staying at the spill
             cell) when no river is supplied.
+        species: multi_species transport (sprint-18 Wave-3 - ADDITIVE). When
+            ``archetype == "multi_species"`` this is an ordered list of per-species
+            specs (``SpeciesSpec``-like objects OR plain dicts with ``name`` /
+            ``release_rate_kg_s`` / ``sorption_kd`` / ``decay_per_day`` /
+            ``parent`` keys). The adapter builds ONE shared steady-state GWF flow
+            field + one ``ModflowGwt`` transport model per species (named
+            ``gwt_<species>``, writing ``gwt_<species>.ucn``) + one
+            ``ModflowGwfgwt`` flow<->transport exchange per species, all in ONE
+            simulation / ONE mf6 run. ``species is None`` (the default) keeps the
+            single-contaminant spill deck byte-identical. NOTE: a species'
+            ``parent`` is recorded on the manifest but the parent->daughter
+            mass-ingrowth coupling is not yet wired (MF6's GWT6-GWT6 exchange is
+            spatial domain-decomposition, not chemical ingrowth) - each species
+            transports independently for now.
 
     Returns:
         DeckManifest: typed deck description (paths, grid georegistration,
@@ -1545,6 +2020,19 @@ def build_modflow_deck(
             )
         if duration_days <= 0:
             raise ValueError(f"duration_days must be > 0, got {duration_days!r}")
+    elif archetype == "multi_species":
+        # multi_species is a GWF+GWT transport deck: duration_days IS meaningful
+        # (it sets the transient transport period length, exactly like the spill
+        # deck). The per-species release_rate lives on each SpeciesSpec, so the
+        # top-level release_rate_kg_s is a placeholder and is NOT validated here.
+        if duration_days <= 0:
+            raise ValueError(
+                f"multi_species duration_days must be > 0, got {duration_days!r}"
+            )
+        if not species:
+            raise ValueError(
+                "multi_species archetype requires a non-empty species list"
+            )
     if aquifer_k_ms <= 0:
         raise ValueError(f"aquifer_k_ms must be > 0, got {aquifer_k_ms!r}")
     if not (0.0 < porosity < 1.0):
@@ -1607,8 +2095,38 @@ def build_modflow_deck(
             "MAR",
             "ASR",
             "wetland_hydroperiod",
+            "multi_species",
         ):
             raise ValueError(f"unknown MODFLOW archetype: {archetype!r}")
+        # multi_species is a GWF+GWT deck (ONE shared GWF + N transport models),
+        # NOT a GWF-only archetype, so it dispatches to its own builder.
+        if archetype == "multi_species":
+            return _build_multi_species_deck(
+                species=species,
+                lat=lat,
+                lon=lon,
+                crs=crs,
+                to_utm=to_utm,
+                xorigin=xorigin,
+                yorigin=yorigin,
+                nrow=nrow,
+                ncol=ncol,
+                delr=delr,
+                delc=delc,
+                k_m_per_day=k_m_per_day,
+                aquifer_k_ms=aquifer_k_ms,
+                porosity=porosity,
+                duration_days=duration_days,
+                spill_row=spill_row,
+                spill_col=spill_col,
+                spill_cell_east=spill_cell_east,
+                spill_cell_north=spill_cell_north,
+                sim_dir=sim_dir,
+                sim_name=sim_name,
+                gwf_name=gwf_name,
+                write=write,
+                save_concentration_all_steps=save_concentration_all_steps,
+            )
         return _build_gwf_only_archetype_deck(
             archetype=archetype,
             lat=lat,

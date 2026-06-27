@@ -24,7 +24,9 @@ from grace2_contracts import (
     HydroperiodLayerURI,
     MODFLOWRunArgs,
     MoundingLayerURI,
+    MultiSpeciesPlumeResult,
     PlumeLayerURI,
+    SpeciesSpec,
 )
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.envelope import TemporalConfig
@@ -995,3 +997,170 @@ def test_wave2_modflow_output_quantities_registered() -> None:
     assert "budget-partition" in by_id
     assert "plume-concentration" in by_id
     assert "river-seepage" in by_id
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-3: multi_species transport - SpeciesSpec + species list +
+# MultiSpeciesPlumeResult (ADDITIVE / DEFAULTED - the single-contaminant spill
+# path is byte-identical when ``species is None``).
+# --------------------------------------------------------------------------- #
+
+
+def test_multi_species_archetype_accepted_by_literal() -> None:
+    """The ``multi_species`` archetype literal validates (additive on Wave-1/2)."""
+    args = _spill_args(
+        archetype="multi_species",
+        species=[SpeciesSpec(name="TCE", release_rate_kg_s=0.5)],
+    )
+    assert args.archetype == "multi_species"
+
+
+def test_species_spec_minimal_optional_fields_default_none() -> None:
+    """A SpeciesSpec needs only name + release_rate; physics fields default None."""
+    sp = SpeciesSpec(name="TCE", release_rate_kg_s=0.5)
+    assert sp.name == "TCE"
+    assert sp.release_rate_kg_s == 0.5
+    assert sp.sorption_kd is None
+    assert sp.decay_per_day is None
+    assert sp.parent is None
+
+
+def test_species_spec_full_decay_chain_fields() -> None:
+    """A daughter species carries sorption Kd + decay + a parent reference."""
+    sp = SpeciesSpec(
+        name="cis-DCE",
+        release_rate_kg_s=0.0,  # pure daughter (produced only by decay)
+        sorption_kd=0.0002,
+        decay_per_day=0.01,
+        parent="TCE",
+    )
+    assert sp.parent == "TCE"
+    assert sp.sorption_kd == 0.0002
+    assert sp.decay_per_day == 0.01
+
+
+def test_species_list_roundtrip_on_run_args() -> None:
+    """A TCE -> cis-DCE -> VC decay chain round-trips through JSON on the run-args."""
+    args = _spill_args(
+        archetype="multi_species",
+        species=[
+            SpeciesSpec(name="TCE", release_rate_kg_s=0.5, decay_per_day=0.02),
+            SpeciesSpec(
+                name="cis-DCE",
+                release_rate_kg_s=0.0,
+                decay_per_day=0.01,
+                parent="TCE",
+            ),
+            SpeciesSpec(
+                name="VC",
+                release_rate_kg_s=0.0,
+                sorption_kd=0.0001,
+                parent="cis-DCE",
+            ),
+        ],
+    )
+    assert args.species is not None
+    assert [s.name for s in args.species] == ["TCE", "cis-DCE", "VC"]
+    assert args.species[1].parent == "TCE"
+    assert args.species[2].parent == "cis-DCE"
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # the species list survives the JSON round-trip back into SpeciesSpec models.
+    rehydrated = MODFLOWRunArgs.model_validate(json.loads(text_a))
+    assert rehydrated.species is not None
+    assert isinstance(rehydrated.species[0], SpeciesSpec)
+    assert rehydrated.species[1].parent == "TCE"
+    assert rehydrated.species[2].sorption_kd == 0.0001
+
+
+def test_additive_safety_no_species_is_valid_single_contaminant() -> None:
+    """No species (archetype None) is the EXISTING single-contaminant path: the
+    top-level contaminant/release_rate are used and ``species`` defaults None."""
+    args = _spill_args()
+    assert args.species is None
+    assert args.archetype is None
+    # the single-contaminant scalars are untouched.
+    assert args.contaminant == "benzene"
+    assert args.release_rate_kg_s == 0.5
+    # schema_version UNCHANGED by the additive growth.
+    assert args.schema_version == "v2"
+    # species defaults absent from a minimal dump path only via None (additive).
+    assert MODFLOWRunArgs.model_fields["species"].default is None
+
+
+@pytest.mark.parametrize("rate", [-0.1, -1.0])
+def test_species_release_rate_must_be_non_negative(rate: float) -> None:
+    """A species release rate is >= 0 (0 allowed for a pure daughter product)."""
+    with pytest.raises(ValidationError):
+        SpeciesSpec(name="TCE", release_rate_kg_s=rate)
+
+
+def test_species_release_rate_zero_allowed_for_daughter() -> None:
+    """release_rate 0.0 is valid (a daughter produced only by parent decay)."""
+    sp = SpeciesSpec(name="VC", release_rate_kg_s=0.0, parent="cis-DCE")
+    assert sp.release_rate_kg_s == 0.0
+
+
+@pytest.mark.parametrize("kd", [-0.1, -1.0])
+def test_species_sorption_kd_must_be_non_negative(kd: float) -> None:
+    with pytest.raises(ValidationError):
+        SpeciesSpec(name="TCE", release_rate_kg_s=0.5, sorption_kd=kd)
+
+
+@pytest.mark.parametrize("decay", [-0.1, -1.0])
+def test_species_decay_must_be_non_negative(decay: float) -> None:
+    with pytest.raises(ValidationError):
+        SpeciesSpec(name="TCE", release_rate_kg_s=0.5, decay_per_day=decay)
+
+
+def test_species_name_must_be_non_empty() -> None:
+    with pytest.raises(ValidationError):
+        SpeciesSpec(name="", release_rate_kg_s=0.5)
+
+
+def test_species_spec_forbids_unknown_fields() -> None:
+    """SpeciesSpec is a GraceModel (extra='forbid')."""
+    with pytest.raises(ValidationError):
+        SpeciesSpec(name="TCE", release_rate_kg_s=0.5, some_unknown_field=1.0)
+
+
+def test_multi_species_plume_result_reuses_plume_layer_uri() -> None:
+    """MultiSpeciesPlumeResult carries N PlumeLayerURI (one per species), no new
+    LayerURI type, and round-trips through JSON."""
+    result = MultiSpeciesPlumeResult(
+        plumes=[
+            _plume(layer_id="run-01HX-plume-TCE", name="TCE plume (mg/L)"),
+            _plume(
+                layer_id="run-01HX-plume-DCE",
+                name="cis-DCE plume (mg/L)",
+                max_concentration_mgl=3.1,
+                plume_area_km2=1.0,
+            ),
+        ]
+    )
+    assert len(result.plumes) == 2
+    assert all(isinstance(p, PlumeLayerURI) for p in result.plumes)
+    assert all(isinstance(p, LayerURI) for p in result.plumes)  # still a LayerURI
+    a = result.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MultiSpeciesPlumeResult.model_validate(
+        json.loads(text_a)
+    ).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # the per-species plume narration scalars survive.
+    assert a["plumes"][1]["max_concentration_mgl"] == 3.1
+    assert a["plumes"][1]["plume_area_km2"] == 1.0
+
+
+def test_multi_species_plume_result_requires_at_least_one_plume() -> None:
+    """An empty plume list is rejected (a multi_species run has >= 1 plume)."""
+    with pytest.raises(ValidationError):
+        MultiSpeciesPlumeResult(plumes=[])
+
+
+def test_unknown_archetype_still_rejected_with_multi_species_added() -> None:
+    """Adding multi_species does not open the literal to arbitrary values."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="not_an_archetype")
