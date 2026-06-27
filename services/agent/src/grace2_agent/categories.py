@@ -480,6 +480,15 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_sentinel2_truecolor": "geographic_primitives",
     "compute_home_range_kde": "conservation_ecology",
     "compute_movement_trajectory": "conservation_ecology",
+    # fetchers2 batch (2026-06-27)
+    "fetch_epa_frs_facilities": "flood_infrastructure",
+    "fetch_us_drought_monitor": "hazard_modeling",
+    "fetch_overpass_pois": "geographic_primitives",
+    "fetch_census_acs": "land_cover_development",
+    "fetch_landsat_imagery": "land_cover_development",
+    "fetch_noaa_sst": "coastal",
+    "fetch_openfema_disasters": "news_events",
+    "fetch_esri_landcover_10m": "land_cover_development",
 }
 
 
@@ -569,6 +578,15 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "fetch_sentinel2_truecolor": ('land_cover_development', 'terrain_elevation', 'damage_assessment',),
     "compute_home_range_kde": ('geographic_primitives',),
     "compute_movement_trajectory": ('geographic_primitives',),
+    # fetchers2 batch (2026-06-27)
+    "fetch_epa_frs_facilities": ('damage_assessment', 'hazard_modeling',),
+    "fetch_us_drought_monitor": ('fire', 'conservation_ecology',),
+    "fetch_overpass_pois": ('damage_assessment', 'flood_infrastructure',),
+    "fetch_census_acs": ('damage_assessment', 'geographic_primitives',),
+    "fetch_landsat_imagery": ('terrain_elevation', 'weather_atmosphere',),
+    "fetch_noaa_sst": ('weather_atmosphere', 'conservation_ecology',),
+    "fetch_openfema_disasters": ('damage_assessment', 'geographic_primitives',),
+    "fetch_esri_landcover_10m": ('conservation_ecology', 'geographic_primitives',),
 }
 
 
