@@ -184,6 +184,238 @@ def render_source_model_xml(
 """
 
 
+#: Shear modulus (rigidity) mu, Pa. The moment-balance constant: a fault slipping
+#: at rate ``s`` (m/yr) over rupture area ``A`` (m^2) releases seismic moment at
+#: ``mdot = mu * A * s`` per year. 3e10 Pa is the canonical crustal value (the
+#: proven local run + standard PSHA practice).
+_MU_PA: float = 3.0e10
+
+
+def _haversine_trace_length_m(trace: list[list[float]]) -> float:
+    """Along-trace length (m) by summing equirectangular segment distances.
+
+    Faithful to the proven local run (``/tmp/oq_realfault_e2e.py``): each
+    segment's east-west span is scaled by ``cos(mean_lat)`` and both spans by
+    ~111195 m/deg, then ``hypot``-summed. ``trace`` is ``[[lon, lat], ...]``.
+    """
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(trace[:-1], trace[1:]):
+        dx = (x2 - x1) * math.cos(math.radians((y1 + y2) / 2.0)) * 111195.0
+        dy = (y2 - y1) * 111195.0
+        total += math.hypot(dx, dy)
+    return total
+
+
+def fault_mfd_a_value(
+    slip_mm_yr: float,
+    area_m2: float,
+    *,
+    b_value: float = 0.9,
+    min_mag: float = 5.0,
+    max_mag: float = 7.8,
+    bin_width: float = 0.1,
+) -> float | None:
+    """Moment-balanced ``a`` value for a fault's truncated GR MFD.
+
+    Solves for the GR ``a`` so the MFD's TOTAL seismic-moment rate equals the
+    fault's tectonic moment rate ``mdot = mu * A * slip``. Numerically: sum, over
+    0.1-mag bins in ``[min_mag, max_mag]``, the per-bin incremental rate factor
+    ``(10^(-b*(m-dm/2)) - 10^(-b*(m+dm/2)))`` times the per-event moment
+    ``10^(1.5m + 9.05)`` (Hanks & Kanamori), giving the moment per unit ``10^a``;
+    then ``a = log10(mdot / munit)``.
+
+    Returns ``None`` when the balance is undefined (zero/negative slip, area, or
+    bin sum) so the caller skips the source rather than emitting a bad MFD.
+    Ported verbatim from the proven local run.
+    """
+    s = slip_mm_yr * 1e-3  # mm/yr -> m/yr
+    mdot = _MU_PA * area_m2 * s
+    n = max(int(round((max_mag - min_mag) / bin_width)), 1)
+    mags = [min_mag + bin_width * (i + 0.5) for i in range(n)]
+    munit = sum(
+        (
+            10 ** (-b_value * (m - bin_width / 2.0))
+            - 10 ** (-b_value * (m + bin_width / 2.0))
+        )
+        * 10 ** (1.5 * m + 9.05)
+        for m in mags
+    )
+    if munit <= 0 or mdot <= 0:
+        return None
+    return math.log10(mdot / munit)
+
+
+def is_fault_record_renderable(
+    rec: dict[str, Any], *, b_value: float = 0.9, min_mag: float = 5.0
+) -> bool:
+    """True iff ``rec`` will yield a usable ``simpleFaultSource``.
+
+    This is the SINGLE gate shared by the worker renderer
+    (``render_fault_source_model_xml``) AND the agent composer
+    (``resolve_fault_sources`` filters fetched faults through it). Keeping ONE
+    predicate is the honesty floor: the composer must only stamp a run
+    ``real-fault`` for faults the worker will actually render, or a run could be
+    labelled real while the engine ran the synthetic fallback (the divergence the
+    fetcher's looser >=2-point/slip>0 filter alone allowed). Mirrors exactly the
+    per-record checks in ``render_fault_source_model_xml``: a >=2-point trace, a
+    positive slip rate, a positive haversine length, and a finite moment-balanced
+    a-value.
+    """
+    trace = rec.get("geometry") or []
+    if not isinstance(trace, (list, tuple)) or len(trace) < 2:
+        return False
+    slip = rec.get("net_slip_rate_mm_yr")
+    if slip is None or float(slip) <= 0:
+        return False
+    slip = float(slip)
+    dip = float(rec.get("dip_deg", 90.0))
+    usd = float(rec.get("upper_seis_depth_km", 0.0))
+    lsd = float(rec.get("lower_seis_depth_km", usd + 12.0))
+    if lsd <= usd:
+        lsd = usd + 12.0
+    try:
+        length_m = _haversine_trace_length_m(
+            [[float(p[0]), float(p[1])] for p in trace]
+        )
+    except (TypeError, ValueError, IndexError):
+        return False
+    if length_m <= 0:
+        return False
+    width_m = (lsd - usd) * 1000.0 / max(math.sin(math.radians(dip)), 0.2)
+    area_m2 = length_m * width_m
+    m_max = round(min(8.0, max(6.0, 4.07 + 0.98 * math.log10(max(area_m2 / 1e6, 1.0)))), 1)
+    a_value = fault_mfd_a_value(slip, area_m2, b_value=b_value, min_mag=min_mag, max_mag=m_max)
+    return a_value is not None and math.isfinite(a_value)
+
+
+def render_fault_source_model_xml(
+    fault_records: list[dict[str, Any]],
+    *,
+    model_name: str = "GEM GAF real faults",
+    b_value: float = 0.9,
+    min_mag: float = 5.0,
+    tectonic_region: str = "Active Shallow Crust",
+) -> str:
+    """Render an NRML 0.4 sourceModel of ``simpleFaultSource`` from fault records.
+
+    Each record (the shape ``fetch_fault_sources`` emits) is turned into a
+    physics-based ``simpleFaultSource`` carrying a moment-balanced truncated
+    Gutenberg-Richter MFD derived from the fault's slip rate -- the REAL-source
+    path that produces hazard PEAKING ON the fault trace (proven by a real local
+    ``oq engine`` run: a 530-site SF map, max 1.23 g, peaking on the San Andreas
+    trace). This is the companion to the synthetic ``render_source_model_xml``
+    area source, which stays the FALLBACK for AOIs with no mapped active faults.
+
+    The recipe (ported faithfully from the proven local run):
+
+      - L = haversine length along the trace.
+      - W = (lsd - usd) * 1000 / sin(dip)  with sin floored at 0.2.
+      - A = L * W.
+      - Mmax = round(min(8.0, max(6.0, 4.07 + 0.98*log10(A/1e6))), 1)
+        (Wells & Coppersmith 1994 area-magnitude scaling).
+      - a-value: moment-balanced so the GR MFD's total moment rate equals
+        mu*A*slip (``fault_mfd_a_value``), with b = ``b_value`` (0.9),
+        minMag = ``min_mag`` (5.0), maxMag = Mmax.
+
+    NRML 0.4 (the same xmlns the area-source renderer uses -- engine-verified):
+    ``simpleFaultSource`` with the trace ``gml:posList``, ``dip`` /
+    ``upperSeismoDepth`` / ``lowerSeismoDepth``, ``magScaleRel`` = WC1994,
+    ``ruptAspectRatio`` = 1.5, a ``truncGutenbergRichterMFD``, and ``rake``.
+
+    Records missing a usable slip rate, a >=2-point trace, or a definable
+    moment balance are SKIPPED (the same guard the fetcher applies). Raises
+    ``ValueError`` only when NO record yields a usable source.
+    """
+    sources: list[str] = []
+    for idx, rec in enumerate(fault_records):
+        # The SINGLE shared usability gate (same one resolve_fault_sources filters
+        # through) -- a record that fails here is skipped, and the composer will
+        # have already excluded it from its real-fault count so the two cannot
+        # disagree about whether the run is real-fault vs synthetic.
+        if not is_fault_record_renderable(rec, b_value=b_value, min_mag=min_mag):
+            continue
+        trace = rec.get("geometry") or []
+        slip = float(rec.get("net_slip_rate_mm_yr"))
+        dip = float(rec.get("dip_deg", 90.0))
+        rake = float(rec.get("rake_deg", 180.0))
+        usd = float(rec.get("upper_seis_depth_km", 0.0))
+        lsd = float(rec.get("lower_seis_depth_km", usd + 12.0))
+        if lsd <= usd:
+            lsd = usd + 12.0
+
+        length_m = _haversine_trace_length_m([[float(p[0]), float(p[1])] for p in trace])
+        if length_m <= 0:
+            continue
+        # Down-dip width: seismogenic thickness / sin(dip), dip floored so a
+        # near-horizontal fault does not blow the width up.
+        width_m = (lsd - usd) * 1000.0 / max(math.sin(math.radians(dip)), 0.2)
+        area_m2 = length_m * width_m
+        # Wells & Coppersmith 1994 area-magnitude relation, clamped to [6.0, 8.0].
+        m_max = round(
+            min(8.0, max(6.0, 4.07 + 0.98 * math.log10(max(area_m2 / 1e6, 1.0)))),
+            1,
+        )
+        a_value = fault_mfd_a_value(
+            slip, area_m2, b_value=b_value, min_mag=min_mag, max_mag=m_max
+        )
+        if a_value is None or not math.isfinite(a_value):
+            continue
+
+        pos_list = " ".join(
+            f"{float(p[0]):.5f} {float(p[1]):.5f}" for p in trace
+        )
+        name = _xml_escape(str(rec.get("name") or f"fault{idx}"))
+        sources.append(
+            f'        <simpleFaultSource id="f{idx}" name="{name}" '
+            f'tectonicRegion="{tectonic_region}">\n'
+            f"            <simpleFaultGeometry>\n"
+            f"                <gml:LineString>\n"
+            f"                    <gml:posList>{pos_list}</gml:posList>\n"
+            f"                </gml:LineString>\n"
+            f"                <dip>{dip}</dip>\n"
+            f"                <upperSeismoDepth>{usd}</upperSeismoDepth>\n"
+            f"                <lowerSeismoDepth>{lsd}</lowerSeismoDepth>\n"
+            f"            </simpleFaultGeometry>\n"
+            f"            <magScaleRel>WC1994</magScaleRel>\n"
+            f"            <ruptAspectRatio>1.5</ruptAspectRatio>\n"
+            f'            <truncGutenbergRichterMFD aValue="{a_value:.4f}" '
+            f'bValue="{b_value}" minMag="{min_mag}" maxMag="{m_max}"/>\n'
+            f"            <rake>{rake}</rake>\n"
+            f"        </simpleFaultSource>"
+        )
+
+    if not sources:
+        raise ValueError(
+            "no usable simpleFaultSource could be built from the supplied fault "
+            "records (all lacked a positive slip rate, a >=2-point trace, or a "
+            "definable moment balance); fall back to the synthetic area source"
+        )
+
+    body = "\n".join(sources)
+    # NRML 0.4 namespace (engine-verified: OQ rejects this 0.4-style source body
+    # under an 0.5 declaration), matching render_source_model_xml.
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<nrml xmlns:gml="http://www.opengis.net/gml"\n'
+        '      xmlns="http://openquake.org/xmlns/nrml/0.4">\n'
+        f'    <sourceModel name="{_xml_escape(model_name)}">\n'
+        f"{body}\n"
+        "    </sourceModel>\n"
+        "</nrml>\n"
+    )
+
+
+def _xml_escape(text: str) -> str:
+    """Escape the five XML-significant characters for safe attribute/text use."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
 def render_source_model_logic_tree_xml(
     source_model_filename: str = "source_model.xml",
 ) -> str:
@@ -384,13 +616,36 @@ def render_openquake_deck(build_spec: dict[str, Any]) -> OpenQuakeDeck:
     min_mag = float(build_spec.get("min_magnitude", 5.0))
     max_mag = float(build_spec.get("max_magnitude", 7.5))
 
-    source_model_xml = render_source_model_xml(
-        bbox,
-        a_value=a_value,
-        b_value=b_value,
-        min_magnitude=min_mag,
-        max_magnitude=max_mag,
-    )
+    # task #199: REAL-fault source model. When the agent composer attached
+    # ``fault_sources`` (the records ``fetch_fault_sources`` emits for the AOI),
+    # build a physics-based ``simpleFaultSource`` model so the hazard PEAKS ON the
+    # actual fault traces. ADDITIVE: a build_spec with no (or an empty)
+    # ``fault_sources`` renders the synthetic AOI area source byte-for-byte as
+    # before, so every existing run is unchanged. The honesty floor is the
+    # composer's (it only attaches fault_sources when the fetcher returned faults
+    # AND narrates "synthetic-area" otherwise); if the records somehow yield no
+    # usable source the renderer raises and we fall back to the area source here
+    # rather than failing the run.
+    fault_sources = build_spec.get("fault_sources")
+    source_model_xml: str | None = None
+    if isinstance(fault_sources, list) and fault_sources:
+        try:
+            source_model_xml = render_fault_source_model_xml(
+                fault_sources,
+                b_value=b_value,
+                min_mag=min_mag,
+            )
+        except ValueError:
+            # No usable fault source could be built -> honest area-source fallback.
+            source_model_xml = None
+    if source_model_xml is None:
+        source_model_xml = render_source_model_xml(
+            bbox,
+            a_value=a_value,
+            b_value=b_value,
+            min_magnitude=min_mag,
+            max_magnitude=max_mag,
+        )
     smlt_xml = render_source_model_logic_tree_xml("source_model.xml")
     gmpelt_xml = render_gmpe_logic_tree_xml(gmpe)
     # levers STEP 3: advanced-physics overrides + UHS flag (all default-match,

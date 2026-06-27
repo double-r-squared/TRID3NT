@@ -40,6 +40,7 @@ from typing import Any
 
 from grace2_contracts import new_ulid
 from grace2_contracts.openquake_contracts import (
+    DEFAULT_SITE_GRID_SPACING_KM,
     OpenQuakeRunArgs,
     SeismicHazardLayerURI,
 )
@@ -65,10 +66,20 @@ __all__ = [
     "OPENQUAKE_SOLVER_NAME",
     "assemble_build_spec",
     "stage_openquake_build_spec",
+    "resolve_fault_sources",
+    "REAL_FAULT_SITE_GRID_SPACING_KM",
 ]
 
 #: The registry key + handle ``solver`` tag for the seismic-hazard engine.
 OPENQUAKE_SOLVER_NAME: str = "openquake"
+
+#: task #199: a FINER default site-grid spacing for the real-fault case. The
+#: synthetic area-source default (``DEFAULT_SITE_GRID_SPACING_KM`` == 5 km) is a
+#: coarse uniform smear; a real-fault hazard map should resolve the sharp
+#: gradient AROUND the fault trace, so we drop to 2 km when faults drive the
+#: source model AND the caller left the (coarse) default in place. An explicit
+#: finer request from the user still wins.
+REAL_FAULT_SITE_GRID_SPACING_KM: float = 2.0
 
 
 class OpenQuakeWorkflowError(RuntimeError):
@@ -100,13 +111,29 @@ class OpenQuakeWorkflowError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # build_spec assembly (PURE — unit-tested in isolation).
 # --------------------------------------------------------------------------- #
-def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
+def assemble_build_spec(
+    run_args: OpenQuakeRunArgs,
+    *,
+    fault_sources: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Map ``OpenQuakeRunArgs`` -> the build_spec dict the worker reads.
 
     Pure (no I/O) so the composer arg-assembly unit-tests in isolation. The
     build_spec is exactly the shape ``job_ini.render_openquake_deck`` consumes
     (bbox + IMT + poe + grid spacing + max distance + GMPE + the G-R source
     params) plus the output globs for the worker's upload step.
+
+    task #199 real-fault wiring: when ``fault_sources`` (the records
+    ``fetch_fault_sources`` emits for the AOI) is a NON-empty list, it is attached
+    to the build_spec under ``"fault_sources"`` so the worker's
+    ``render_openquake_deck`` builds a physics-based ``simpleFaultSource`` model
+    (hazard PEAKING ON the trace) instead of the synthetic AOI area source. In
+    that case the site grid is ALSO refined to ``REAL_FAULT_SITE_GRID_SPACING_KM``
+    (2 km) -- BUT ONLY when the caller left the coarse synthetic default
+    (``DEFAULT_SITE_GRID_SPACING_KM`` == 5 km) in place; an explicit user request
+    for a different spacing is honored unchanged. ADDITIVE: ``fault_sources=None``
+    (or an empty list) renders a byte-identical synthetic build_spec, so a run
+    with no faults in the AOI behaves exactly like before.
 
     levers STEP 3: the validated ``advanced_physics`` (truncation_level /
     rupture_mesh_spacing_km / width_of_mfd_bin / area_source_discretization_km)
@@ -131,12 +158,21 @@ def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
             details={"engine": "openquake", "key": getattr(exc, "key", None)},
         ) from exc
 
-    spec = {
+    have_faults = bool(fault_sources)
+
+    # Real-fault case: refine the (coarse synthetic-default) site grid so the map
+    # resolves the sharp gradient around the trace -- but never override an
+    # explicit user request.
+    grid_km = float(run_args.site_grid_spacing_km)
+    if have_faults and grid_km == float(DEFAULT_SITE_GRID_SPACING_KM):
+        grid_km = REAL_FAULT_SITE_GRID_SPACING_KM
+
+    spec: dict[str, Any] = {
         "bbox": list(run_args.bbox),
         "imt": run_args.imt,
         "poe": float(run_args.poe),
         "investigation_time_years": float(run_args.investigation_time_years),
-        "site_grid_spacing_km": float(run_args.site_grid_spacing_km),
+        "site_grid_spacing_km": grid_km,
         "max_distance_km": float(run_args.max_distance_km),
         "gmpe": run_args.gmpe,
         "a_value": float(run_args.a_value),
@@ -147,6 +183,10 @@ def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
         # rendered deck for provenance.
         "outputs": ["output/*.csv", "*.csv"],
     }
+    # Real-fault source model: hand the worker the fetched fault records so it
+    # builds simpleFaultSources. Absent/empty => synthetic area source (default).
+    if have_faults:
+        spec["fault_sources"] = [dict(rec) for rec in fault_sources]  # type: ignore[union-attr]
     # Merge validated physics overrides (the worker render_job_ini reads them).
     spec.update(resolved)
     # levers STEP 3: request UHS export when the registry-quantities flag is on
@@ -161,10 +201,95 @@ def assemble_build_spec(run_args: OpenQuakeRunArgs) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# task #199: real-fault source resolution (the SYNC fetch wrapper).
+#
+# Calls the ``fetch_fault_sources`` atomic tool for the AOI and returns
+# ``(fault_records, narration_note)``. This is a SYNC function (it does network
+# I/O via the cache shim) -> the composer runs it OFF the asyncio loop with
+# ``asyncio.to_thread`` (the no-sync-blocking norm). The honesty floor lives
+# HERE + in the composer: a fetch that returns 0 faults (open ocean, stable
+# craton, upstream wobble) yields an EMPTY list -> the composer narrates
+# "synthetic-area" and never claims real faults.
+# --------------------------------------------------------------------------- #
+def resolve_fault_sources(
+    bbox: list[float] | tuple[float, float, float, float],
+) -> tuple[list[dict[str, Any]], str]:
+    """Fetch real active-fault sources for ``bbox`` (sync; run off the loop).
+
+    Returns ``(fault_records, note)``:
+
+      - ``fault_records``: the list ``fetch_fault_sources`` emits (possibly empty).
+        Pass straight to ``assemble_build_spec(fault_sources=...)``.
+      - ``note``: a short human-readable line for the layer narration.
+
+    NEVER raises for the "no faults / fetch failed" case -- a missing fault source
+    is an HONEST fallback to the synthetic area source, not a workflow error (the
+    data-source fallback norm). A genuine upstream failure with no cache is logged
+    and degraded to the empty-faults synthetic path (we still want a hazard map).
+    Only the caller's malformed bbox would surface upstream (already validated by
+    ``OpenQuakeRunArgs``), so in practice this always returns cleanly.
+    """
+    from ..tools.fetch_fault_sources import (
+        FaultSourcesError,
+        fetch_fault_sources,
+    )
+
+    try:
+        result = fetch_fault_sources(list(bbox))
+    except FaultSourcesError as exc:
+        logger.warning(
+            "resolve_fault_sources: fault fetch failed bbox=%s (%s); "
+            "falling back to the synthetic area source",
+            list(bbox),
+            exc,
+        )
+        return [], (
+            "Real active-fault sources were unavailable for this AOI "
+            f"({exc.error_code}); used the synthetic area source instead."
+        )
+
+    # HONESTY FLOOR: the fetcher already drops degenerate traces (it requires a
+    # non-collinear/non-coincident >=2-distinct-point trace + slip>0), which is
+    # the only realistic way a fetched fault could pass here yet fail the worker's
+    # length/moment-balance render gate. So a non-empty list here == faults the
+    # worker WILL render into simpleFaultSources -> the real-fault stamp matches
+    # what the engine runs. (We do NOT import the worker's job_ini agent-side: it
+    # is not in the agent bundle, and an ImportError would wrongly force the
+    # synthetic fallback on the deployed agent.)
+    faults = list(result.get("faults") or [])
+    if faults:
+        names = ", ".join(
+            str(f.get("name") or "fault") for f in faults[:4]
+        )
+        more = "" if len(faults) <= 4 else f", +{len(faults) - 4} more"
+        note = (
+            f"Hazard built from {len(faults)} real GEM active-fault source"
+            f"{'s' if len(faults) != 1 else ''} ({names}{more}); the hazard "
+            "peaks on the actual fault traces."
+        )
+        return faults, note
+
+    # Empty AOI -> honest synthetic fallback. Surface the fetcher's typed note.
+    fetch_note = result.get("note")
+    note = (
+        str(fetch_note)
+        if fetch_note
+        else (
+            "No mapped active fault intersects this AOI; used the synthetic "
+            "area source."
+        )
+    )
+    return [], note
+
+
+# --------------------------------------------------------------------------- #
 # build_spec staging (S3) — mirror of stage_swmm_manifest.
 # --------------------------------------------------------------------------- #
 def stage_openquake_build_spec(
-    run_args: OpenQuakeRunArgs, run_id: str
+    run_args: OpenQuakeRunArgs,
+    run_id: str,
+    *,
+    fault_sources: list[dict[str, Any]] | None = None,
 ) -> str:
     """Upload the build_spec JSON to S3; return its ``s3://`` URI.
 
@@ -173,6 +298,10 @@ def stage_openquake_build_spec(
     boto3 client + the same ``GRACE2_CACHE_BUCKET`` staging bucket. Feed the
     returned URI STRAIGHT to ``run_solver(solver='openquake',
     model_setup_uri=<this>, ...)``.
+
+    task #199: ``fault_sources`` (when non-empty) is threaded into
+    ``assemble_build_spec`` so the staged build_spec carries the real-fault source
+    model. ``None`` => synthetic area source (unchanged).
 
     Raises:
         OpenQuakeWorkflowError("OQ_STAGING_FAILED"): the upload could not complete.
@@ -186,7 +315,7 @@ def stage_openquake_build_spec(
     spec_key = f"{prefix}build_spec.json"
     spec_uri = f"{scheme}://{cache_bucket}/{spec_key}"
 
-    build_spec = assemble_build_spec(run_args)
+    build_spec = assemble_build_spec(run_args, fault_sources=fault_sources)
     try:
         s3 = _get_s3_client()
         s3.put_object(
@@ -443,14 +572,36 @@ async def model_seismic_hazard_scenario(
     )
 
     # Declare the planned child count up front so the parent card's live
-    # breadcrumb can render "k/4" (build_spec -> solve -> download -> publish).
-    # No-op when no emitter is bound (verify/CI direct-call path).
-    begin_substeps(current_emitter(), 4)
+    # breadcrumb can render "k/5" (faults -> build_spec -> solve -> download ->
+    # publish). No-op when no emitter is bound (verify/CI direct-call path).
+    begin_substeps(current_emitter(), 5)
 
-    # 1) Stage the build_spec (sync boto3 off the loop).
+    # 0) task #199: resolve REAL active-fault sources for the AOI (sync fetch off
+    #    the loop). Non-empty => build the fault source model + narrate
+    #    "real-fault"; empty => honest synthetic-area fallback. NEVER fails the
+    #    run (resolve_fault_sources degrades to [] on any fetch error).
+    async with substep(current_emitter(), "resolve_fault_sources"):
+        fault_sources, source_model_note = await asyncio.to_thread(
+            resolve_fault_sources, list(run_args.bbox)
+        )
+    used_real_faults = bool(fault_sources)
+    source_model_kind = "real-fault" if used_real_faults else "synthetic-area"
+    logger.info(
+        "model_seismic_hazard_scenario run_id=%s source_model_kind=%s "
+        "(fault_count=%d): %s",
+        run_id,
+        source_model_kind,
+        len(fault_sources),
+        source_model_note,
+    )
+
+    # 1) Stage the build_spec (sync boto3 off the loop). Thread the resolved
+    #    fault sources so a real-fault AOI stages the simpleFaultSource model.
     async with substep(current_emitter(), "stage_openquake_build_spec"):
         build_spec_uri = await asyncio.to_thread(
-            stage_openquake_build_spec, run_args, run_id
+            lambda: stage_openquake_build_spec(
+                run_args, run_id, fault_sources=fault_sources or None
+            )
         )
 
     # 2) Dispatch through the generic run_solver / wait_for_completion seam.
@@ -509,6 +660,18 @@ async def model_seismic_hazard_scenario(
             details={"run_id": batch_run_id, **getattr(exc, "details", {})},
         ) from exc
 
+    # task #199 honesty floor: stamp the source-model provenance onto the typed
+    # layer so the agent narrates real-vs-fallback from a TYPED field, never a
+    # free claim. ``source_model_kind`` reflects the path THIS run actually took
+    # (postprocess builds the layer with the synthetic-area default; we flip it to
+    # real-fault ONLY when fault sources were actually staged).
+    layer = layer.model_copy(
+        update={
+            "source_model_kind": source_model_kind,
+            "source_model_note": source_model_note,
+        }
+    )
+
     # task-198: wire the NON-RASTER PSHA products (hazard CURVE + UHS) to charts.
     # The documented FOLLOW-UP (postprocess_openquake.py:524-531): the chart
     # producers consume the parsed curve arrays, not a layer URI. Best-effort -
@@ -523,9 +686,11 @@ async def model_seismic_hazard_scenario(
 
     logger.info(
         "model_seismic_hazard_scenario complete run_id=%s layer_id=%s "
-        "max_hazard=%.6g hazard_area_km2=%.6g n_sites=%d uri=%s",
+        "source_model_kind=%s max_hazard=%.6g hazard_area_km2=%.6g n_sites=%d "
+        "uri=%s",
         batch_run_id,
         layer.layer_id,
+        layer.source_model_kind,
         layer.max_hazard_value,
         layer.hazard_area_km2,
         layer.n_sites,

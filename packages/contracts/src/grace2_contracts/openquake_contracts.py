@@ -222,6 +222,18 @@ class SeismicHazardLayerURI(LayerURI):
         hazard_area_km2: areal footprint above the hazard floor, km^2 (>= 0).
         n_sites: number of PSHA site-grid points the hazard was computed at
             (>= 0).
+        source_model_kind: which seismic-source model produced this hazard map --
+            ``"real-fault"`` (GEM Global Active Faults ``simpleFaultSource``
+            traces, so the hazard PEAKS ON the actual faults) or
+            ``"synthetic-area"`` (the synthetic uniform-rate AOI area source, the
+            honest fallback when no mapped active fault intersects the AOI).
+            HONESTY FLOOR: this is set to the path the run ACTUALLY took -- it
+            NEVER reads ``"real-fault"`` when the run fell back to the synthetic
+            source, so the agent can never claim real faults it did not use.
+        source_model_note: a human-readable one-line narration of the source-model
+            decision (e.g. "Hazard built from 6 real GEM active-fault sources ..."
+            or "No mapped active fault intersects this AOI; used the synthetic
+            area source.") that the agent surfaces verbatim.
 
     ``layer_type`` for a hazard map is ``"raster"`` (a hazard-value COG); the
     base contract's vocabulary is inherited unchanged.
@@ -237,3 +249,10 @@ class SeismicHazardLayerURI(LayerURI):
     max_hazard_value: float = Field(ge=0.0)
     hazard_area_km2: float = Field(ge=0.0)
     n_sites: int = Field(default=0, ge=0)
+
+    # task #199 real-fault wiring: which source model drove the hazard + a
+    # narration line. Default "synthetic-area" so EVERY existing construction
+    # (and the synthetic fallback path) stays valid without change; the composer
+    # flips it to "real-fault" only when it actually built fault sources.
+    source_model_kind: Literal["real-fault", "synthetic-area"] = "synthetic-area"
+    source_model_note: str = ""

@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from job_ini import (  # noqa: E402
     OpenQuakeDeck,
+    fault_mfd_a_value,
+    render_fault_source_model_xml,
     render_gmpe_logic_tree_xml,
     render_job_ini,
     render_openquake_deck,
@@ -158,6 +160,164 @@ def test_render_openquake_deck_rejects_bad_bbox():
         render_openquake_deck({"bbox": [1, 2, 3]})  # not 4 elements
     with pytest.raises(ValueError):
         render_openquake_deck({"bbox": [10, 0, 5, 1]})  # min_lon > max_lon
+
+
+# ---------------------------------------------------------------------------
+# render_openquake_deck source-model BRANCHING (task #199 real-fault wiring).
+# ---------------------------------------------------------------------------
+_DECK_BBOX = [-122.55, 37.45, -122.15, 37.90]
+
+
+def test_render_openquake_deck_no_faults_uses_synthetic_area_source():
+    """No 'fault_sources' key => the synthetic AOI area source (unchanged)."""
+    deck = render_openquake_deck({"bbox": _DECK_BBOX})
+    assert "<areaSource" in deck.source_model_xml
+    assert "<simpleFaultSource" not in deck.source_model_xml
+
+
+def test_render_openquake_deck_empty_faults_is_byte_identical_to_synthetic():
+    """An EMPTY fault_sources list renders the synthetic source byte-for-byte
+    (additive: a no-fault AOI behaves exactly like before)."""
+    base = render_openquake_deck({"bbox": _DECK_BBOX})
+    empty = render_openquake_deck({"bbox": _DECK_BBOX, "fault_sources": []})
+    assert empty.source_model_xml == base.source_model_xml
+
+
+def test_render_openquake_deck_with_faults_uses_simple_fault_source():
+    """fault_sources present => a physics-based simpleFaultSource model (the
+    hazard peaks ON the trace), NOT the synthetic area source."""
+    deck = render_openquake_deck(
+        {"bbox": _DECK_BBOX, "fault_sources": _FAULT_RECORDS}
+    )
+    assert "<simpleFaultSource" in deck.source_model_xml
+    assert "<areaSource" not in deck.source_model_xml
+    assert "San Andreas" in deck.source_model_xml
+    # Well-formed NRML 0.4.
+    root = ET.fromstring(deck.source_model_xml)
+    assert root.tag == f"{{{_NRML_NS}}}nrml"
+
+
+def test_render_openquake_deck_unusable_faults_falls_back_to_area_source():
+    """A fault_sources list that yields NO usable source (zero slip / 1-point
+    trace) must fall back to the synthetic area source, not crash the deck."""
+    bad = [
+        {"name": "x", "geometry": [[-122.4, 37.6]], "net_slip_rate_mm_yr": 0.0}
+    ]
+    deck = render_openquake_deck({"bbox": _DECK_BBOX, "fault_sources": bad})
+    assert "<areaSource" in deck.source_model_xml
+    assert "<simpleFaultSource" not in deck.source_model_xml
+
+
+# ===========================================================================
+# real-fault simpleFaultSource converter (task #199)
+# ===========================================================================
+import math  # noqa: E402
+import xml.etree.ElementTree as ET  # noqa: E402
+
+
+# San Andreas-like + Mount Diablo-like records, the shape fetch_fault_sources
+# emits (parsed best-estimate values).
+_FAULT_RECORDS = [
+    {
+        "name": "San Andreas (Peninsula)",
+        "geometry": [[-122.50, 37.50], [-122.40, 37.65], [-122.30, 37.80]],
+        "net_slip_rate_mm_yr": 17.0,
+        "dip_deg": 90.0,
+        "rake_deg": 180.0,
+        "upper_seis_depth_km": 0.0,
+        "lower_seis_depth_km": 12.0,
+        "slip_type": "Dextral",
+        "catalog_name": "UCERF3",
+    },
+    {
+        "name": "Mount Diablo Thrust",
+        "geometry": [[-122.45, 37.55], [-122.35, 37.70], [-122.25, 37.85]],
+        "net_slip_rate_mm_yr": 1.55,
+        "dip_deg": 38.0,
+        "rake_deg": 90.0,
+        "upper_seis_depth_km": 8.0,
+        "lower_seis_depth_km": 16.0,
+        "slip_type": "Reverse",
+        "catalog_name": "UCERF3",
+    },
+]
+
+_NRML_NS = "http://openquake.org/xmlns/nrml/0.4"
+_GML_NS = "http://www.opengis.net/gml"
+
+
+def test_fault_mfd_a_value_finite_and_balanced():
+    # A real fault area (~ tens of km^2) yields a finite a-value.
+    a = fault_mfd_a_value(17.0, 50.0e3 * 12.0e3, max_mag=7.5)
+    assert a is not None
+    assert math.isfinite(a)
+    # Degenerate inputs return None (caller skips the source).
+    assert fault_mfd_a_value(0.0, 1.0e9) is None
+    assert fault_mfd_a_value(5.0, 0.0) is None
+
+
+def test_render_fault_source_model_xml_is_valid_nrml_04():
+    xml = render_fault_source_model_xml(_FAULT_RECORDS)
+    # NRML 0.4 namespace (matches the area-source renderer; engine-verified).
+    assert 'xmlns="http://openquake.org/xmlns/nrml/0.4"' in xml
+    # Parses as well-formed XML.
+    root = ET.fromstring(xml)
+    assert root.tag == f"{{{_NRML_NS}}}nrml"
+    sources = root.findall(
+        f"{{{_NRML_NS}}}sourceModel/{{{_NRML_NS}}}simpleFaultSource"
+    )
+    # Both records produced a source.
+    assert len(sources) == 2
+
+    src = sources[0]
+    assert src.get("tectonicRegion") == "Active Shallow Crust"
+    geom = src.find(f"{{{_NRML_NS}}}simpleFaultGeometry")
+    assert geom is not None
+    # The trace posList is present and carries the lon/lat pairs.
+    poslist = geom.find(f"{{{_GML_NS}}}LineString/{{{_GML_NS}}}posList")
+    assert poslist is not None and poslist.text
+    assert "-122.50000 37.50000" in poslist.text
+    # dip / seismogenic depths.
+    assert geom.find(f"{{{_NRML_NS}}}dip") is not None
+    assert geom.find(f"{{{_NRML_NS}}}upperSeismoDepth") is not None
+    assert geom.find(f"{{{_NRML_NS}}}lowerSeismoDepth") is not None
+    # Scaling relation + aspect ratio.
+    assert src.find(f"{{{_NRML_NS}}}magScaleRel").text == "WC1994"
+    assert src.find(f"{{{_NRML_NS}}}ruptAspectRatio").text == "1.5"
+    # The moment-balanced truncated GR MFD.
+    mfd = src.find(f"{{{_NRML_NS}}}truncGutenbergRichterMFD")
+    assert mfd is not None
+    a_value = float(mfd.get("aValue"))
+    assert math.isfinite(a_value)
+    assert mfd.get("bValue") == "0.9"
+    assert float(mfd.get("minMag")) == 5.0
+    m_max = float(mfd.get("maxMag"))
+    # Wells & Coppersmith area-magnitude clamp.
+    assert 6.0 <= m_max <= 8.0
+    # rake present.
+    assert src.find(f"{{{_NRML_NS}}}rake") is not None
+
+
+def test_render_fault_source_model_xml_skips_unusable_and_raises_when_empty():
+    import pytest as _pytest
+
+    # A record with no usable slip / trace is skipped; mixed with a good one
+    # the good one still renders.
+    mixed = [
+        {"name": "bad", "geometry": [[0, 0]], "net_slip_rate_mm_yr": 5.0},
+        _FAULT_RECORDS[0],
+    ]
+    xml = render_fault_source_model_xml(mixed)
+    root = ET.fromstring(xml)
+    assert (
+        len(root.findall(f"{{{_NRML_NS}}}sourceModel/{{{_NRML_NS}}}simpleFaultSource"))
+        == 1
+    )
+    # ALL-unusable raises (caller falls back to the synthetic area source).
+    with _pytest.raises(ValueError):
+        render_fault_source_model_xml(
+            [{"name": "x", "geometry": [[0, 0]], "net_slip_rate_mm_yr": 0.0}]
+        )
 
 
 # ===========================================================================

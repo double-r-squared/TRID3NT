@@ -203,11 +203,33 @@ async def test_model_seismic_hazard_scenario_mocked_dispatch(monkeypatch):
 
     args = OpenQuakeRunArgs(bbox=_BBOX)
 
-    # Stub the staging (no S3 put).
+    # Stub the staging (no S3 put). Accept the additive task-#199 fault_sources
+    # kwarg the composer now threads through.
     monkeypatch.setattr(
         comp,
         "stage_openquake_build_spec",
-        lambda run_args, run_id: "s3://cache/openquake_setup/RID/build_spec.json",
+        lambda run_args, run_id, *, fault_sources=None: (
+            "s3://cache/openquake_setup/RID/build_spec.json"
+        ),
+    )
+
+    # task #199: stub the real-fault fetch so this dispatch test stays hermetic
+    # (no network). The synthetic-fallback path is the default here; the
+    # real-fault wiring has its own dedicated suite
+    # (test_seismic_real_fault_wiring.py).
+    import grace2_agent.tools.fetch_fault_sources as ff
+
+    monkeypatch.setattr(
+        ff,
+        "fetch_fault_sources",
+        lambda bbox, **_k: {
+            "catalog": "gem",
+            "bbox": list(bbox),
+            "fault_count": 0,
+            "faults": [],
+            "note": "No GEM active faults intersect this AOI.",
+            "source": "GEM Global Active Faults (harmonized)",
+        },
     )
 
     # Stub run_solver -> a fake handle; wait_for_completion -> a complete result.
