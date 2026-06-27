@@ -90,6 +90,13 @@ async def run_geoclaw_inundation(
     amr_levels: int = 2,
     manning_n: float = 0.025,
     sea_level_m: float = 0.0,
+    fault_strike_deg: float | None = None,
+    fault_dip_deg: float | None = None,
+    fault_rake_deg: float | None = None,
+    fault_depth_km: float | None = None,
+    extra_topo_uris: list[str] | None = None,
+    coastal_gauge_lonlat: tuple[float, float] | list[float] | None = None,
+    fgmax_arrival_tol_m: float | None = None,
     compute_class: str = "standard",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -139,6 +146,24 @@ async def run_geoclaw_inundation(
         amr_levels: AMR refinement levels (>= 1; 1 = uniform grid). Default 2.
         manning_n: shallow-water friction Manning n (> 0). Default 0.025.
         sea_level_m: still-water datum (m). Default 0.0.
+        fault_strike_deg: for ``scenario="tsunami"`` synthetic-Okada mode ONLY -
+            OPTIONAL USER-GATED fault strike (deg, [0, 360]). When unset the engine
+            substitutes a scenario default (and surfaces that substitution; it is
+            never silently fabricated). Default unset.
+        fault_dip_deg: OPTIONAL USER-GATED Okada fault dip (deg, (0, 90]). Default
+            unset.
+        fault_rake_deg: OPTIONAL USER-GATED Okada fault rake/slip (deg, [-180,
+            180]). Default unset.
+        fault_depth_km: OPTIONAL USER-GATED Okada fault depth (km, > 0). Default
+            unset.
+        extra_topo_uris: OPTIONAL ordered (coarse -> fine) list of additional
+            topo/bathy DEM ``s3://`` URIs layered onto the primary topo (finest
+            wins). Default unset.
+        coastal_gauge_lonlat: OPTIONAL ``(lon, lat)`` of a single coastal gauge
+            point to record a water-surface time series. Default unset.
+        fgmax_arrival_tol_m: OPTIONAL fgmax wet-cell threshold (m, > 0) backing the
+            wave-arrival-on-land time. When unset the contract default (0.01 m) is
+            used; ``arrival_time_s`` is only reported when an fgmax monitor ran.
         compute_class: FR-CE-3 compute class. Default ``"standard"``.
 
     Returns:
@@ -195,6 +220,25 @@ async def run_geoclaw_inundation(
             kwargs["tsunami_dtopo_uri"] = str(tsunami_dtopo_uri)
         if surge_forcing_uri:
             kwargs["surge_forcing_uri"] = str(surge_forcing_uri)
+        # USER-GATED Okada fault overrides: thread ONLY the ones supplied so the
+        # contract default (None) holds otherwise and the engine substitutes a
+        # scenario default it surfaces (never silently fabricated).
+        if fault_strike_deg is not None:
+            kwargs["fault_strike_deg"] = float(fault_strike_deg)
+        if fault_dip_deg is not None:
+            kwargs["fault_dip_deg"] = float(fault_dip_deg)
+        if fault_rake_deg is not None:
+            kwargs["fault_rake_deg"] = float(fault_rake_deg)
+        if fault_depth_km is not None:
+            kwargs["fault_depth_km"] = float(fault_depth_km)
+        if extra_topo_uris:
+            kwargs["extra_topo_uris"] = [str(u) for u in extra_topo_uris if u]
+        if coastal_gauge_lonlat is not None:
+            cg = list(coastal_gauge_lonlat)
+            if len(cg) == 2:
+                kwargs["coastal_gauge_lonlat"] = (float(cg[0]), float(cg[1]))
+        if fgmax_arrival_tol_m is not None:
+            kwargs["fgmax_arrival_tol_m"] = float(fgmax_arrival_tol_m)
         run_args = GeoClawRunArgs(**kwargs)
     except Exception as exc:  # noqa: BLE001 — pydantic ValidationError or coercion
         return {

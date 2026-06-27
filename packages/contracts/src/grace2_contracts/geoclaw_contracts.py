@@ -60,6 +60,7 @@ __all__ = [
     "DEFAULT_DAM_BREAK_DEPTH_M",
     "DEFAULT_OUTPUT_FRAMES",
     "DEFAULT_AMR_LEVELS",
+    "GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M",
     "GeoClawRunArgs",
     "GeoClawDepthLayerURI",
     "GEOCLAW_DEPTH_STYLE_PRESET",
@@ -112,6 +113,12 @@ DEFAULT_AMR_LEVELS: int = 2  # AMR refinement levels (1 = uniform grid)
 #: Shared depth style preset (GeoClaw depth == SFINCS/SWMM depth physically), so
 #: NO new publish_layer style key is added. Single source of truth here.
 GEOCLAW_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
+
+#: Default fgmax wet-cell threshold (m) used to define wave-arrival-on-land. A
+#: cell is considered "arrived" the first time its overland depth exceeds this
+#: tolerance; the recorded time becomes ``arrival_time_s`` on the depth layer.
+#: Demo default 0.01 m (1 cm) - a conservative, near-dry-front threshold.
+GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M: float = 0.01
 
 
 class GeoClawRunArgs(GraceModel):
@@ -170,6 +177,27 @@ class GeoClawRunArgs(GraceModel):
             GeoClaw default 0.025. Demo value 0.025.
         sea_level_m: the still-water datum (m) GeoClaw initializes the ocean to
             (the ``sea_level`` setrun parameter). Demo default 0.0 (MSL).
+        fault_strike_deg: for ``scenario="tsunami"`` synthetic Okada source ONLY
+            and USER-GATED - the fault strike angle (deg, [0, 360]). OPTIONAL;
+            when ``None`` the engine uses its scenario default and MUST surface
+            that it did so (NEVER silently fabricated downstream).
+        fault_dip_deg: USER-GATED Okada fault dip angle (deg, (0, 90]). OPTIONAL;
+            ``None`` -> engine default, surfaced not silently invented.
+        fault_rake_deg: USER-GATED Okada fault rake / slip angle (deg, [-180,
+            180]). OPTIONAL; ``None`` -> engine default, surfaced not invented.
+        fault_depth_km: USER-GATED Okada fault top/centroid depth (km, > 0).
+            OPTIONAL; ``None`` -> engine default, surfaced not invented.
+        extra_topo_uris: OPTIONAL list of additional topo/bathy DEM URIs (fine
+            coastal DEMs) appended AFTER the primary topo, in coarse->fine order
+            (later entries refine earlier ones in GeoClaw's topo stack). Default
+            ``[]`` (primary topo only). Additive: empty list preserves behaviour.
+        fgmax_arrival_tol_m: the fgmax wet-cell threshold (m, > 0) defining
+            wave-arrival-on-land for ``arrival_time_s``: a cell counts as arrived
+            the first time its overland depth exceeds this tolerance. Default
+            ``GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M`` (0.01 m / 1 cm).
+        coastal_gauge_lonlat: OPTIONAL ``(lon, lat)`` of a single coastal gauge
+            point at which GeoClaw records a water-level time series (a
+            virtual tide gauge). When ``None`` no gauge is placed.
     """
 
     schema_version: Literal["v1"] = "v1"
@@ -194,6 +222,23 @@ class GeoClawRunArgs(GraceModel):
 
     manning_n: float = Field(default=0.025, gt=0.0)
     sea_level_m: float = Field(default=0.0)
+
+    # User-gated tsunami fault geometry (Okada synthetic source). None-default;
+    # the engine MUST surface any scenario-default substitution, NEVER fabricate
+    # these silently downstream.
+    fault_strike_deg: float | None = Field(default=None, ge=0.0, le=360.0)
+    fault_dip_deg: float | None = Field(default=None, gt=0.0, le=90.0)
+    fault_rake_deg: float | None = Field(default=None, ge=-180.0, le=180.0)
+    fault_depth_km: float | None = Field(default=None, gt=0.0)
+
+    # Fine coastal DEMs appended coarse->fine after the primary topo.
+    extra_topo_uris: list[str] = Field(default_factory=list)
+    # fgmax wet-cell threshold (m) defining wave-arrival-on-land.
+    fgmax_arrival_tol_m: float = Field(
+        default=GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M, gt=0.0
+    )
+    # Optional single coastal gauge (lon, lat) for a recorded water-level series.
+    coastal_gauge_lonlat: tuple[float, float] | None = None
 
     @field_validator("scenario", mode="before")
     @classmethod
@@ -235,8 +280,12 @@ class GeoClawDepthLayerURI(LayerURI):
         max_depth_m: peak overland water depth across the AOI, m (>= 0).
         flooded_area_km2: areal footprint above the wet threshold, km^2 (>= 0).
         max_inundation_m: peak overland depth observed on DRY-land cells (cells
-            whose topography is above the still-water datum) — the run-up /
+            whose topography is above the still-water datum) - the run-up /
             inundation signal distinct from in-channel/ocean depth (>= 0).
+        arrival_time_s: OPTIONAL wave-arrival-on-land time, seconds from t0 (>=
+            0), derived from the fgmax grid (the first time overland depth at the
+            arrival cell exceeds ``fgmax_arrival_tol_m``). ``None`` when fgmax was
+            not run; the agent narrates an arrival time ONLY when this is present.
 
     And the echoed scenario descriptor so the result is self-describing:
 
@@ -252,5 +301,9 @@ class GeoClawDepthLayerURI(LayerURI):
     max_depth_m: float = Field(ge=0.0)
     flooded_area_km2: float = Field(ge=0.0)
     max_inundation_m: float = Field(ge=0.0)
+
+    # Wave-arrival-on-land time (s from t0), from the fgmax grid. None when
+    # fgmax was not run (the agent narrates an arrival time only when present).
+    arrival_time_s: float | None = Field(default=None, ge=0.0)
 
     scenario: GeoClawScenario = "dam_break"

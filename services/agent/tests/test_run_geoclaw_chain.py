@@ -270,6 +270,10 @@ def test_postprocess_geoclaw_end_to_end_shape(tmp_path: Path):
     assert peak.max_depth_m == pytest.approx(3.0)  # the middle frame amplitude
     assert peak.uri.startswith("s3://fake-runs/RID123/geoclaw_depth_peak.tif")
     assert metrics["max_depth_m"] == pytest.approx(3.0)
+    # No fgmax in this fixture -> read_fgmax_output returns None: fort.q metrics
+    # are unchanged and arrival is HONESTLY None (never a fabricated time).
+    assert peak.arrival_time_s is None
+    assert metrics["arrival_time_s"] is None
 
     # layers[1:] = contiguous 'Flood depth step N' frames, distinct URIs.
     frames = layers[1:]
@@ -292,6 +296,154 @@ def test_postprocess_geoclaw_empty_output_raises(tmp_path: Path):
     with pytest.raises(PostprocessGeoClawError) as ei:
         postprocess_geoclaw(tmp_path, _AOI, run_id="X", scenario="dam_break")
     assert ei.value.error_code == "GEOCLAW_OUTPUT_EMPTY"
+
+
+# ===========================================================================
+# (4b) fgmax (fixed-grid maximum) reader + override (GAP1).
+# ===========================================================================
+# A SENTINEL: GeoClaw stamps |t| > 1e8 in a time column for a never-arrived point.
+_FGMAX_SENTINEL = 9.999_999_999e9
+# The REAL GeoClaw never-SET sentinel (FG_NOTSET, fgmax_module.f90): every fgmax
+# valuemax (h, B, tmax, arrival) is initialized to this and only overwritten where
+# the wave updated it. It is FINITE and NEGATIVE -> must be masked or it poisons
+# nanmax(h) into a negative max_depth_m.
+_FG_NOTSET = -0.99999e99
+
+
+def _synthetic_fgmax(rows: list[tuple]) -> str:
+    """Build a real-format fgmax{NNNN}.txt body (num_fgmax_val=2 -> 9 columns).
+
+    Columns: x y amr_level B h s t_hmax t_smax arrival_time. Each row is a tuple
+    in that order. A leading ``#`` comment header mirrors a real GeoClaw file
+    (np.loadtxt(comments='#') skips it).
+    """
+    lines = ["# x y level B h s t_hmax t_smax arrival_time"]
+    for (x, y, lvl, B, h, s, t_h, t_s, t_a) in rows:
+        lines.append(
+            f"{x:.6f} {y:.6f} {int(lvl)} {B:.6f} {h:.6f} {s:.6f} "
+            f"{t_h:.6e} {t_s:.6e} {t_a:.6e}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _write_fgmax_fixture(out: Path, rows: list[tuple]) -> None:
+    """Write _output/fgmax0001.txt + _output/fgmax_grids.data under ``out``."""
+    sub = out / "_output"
+    sub.mkdir(parents=True, exist_ok=True)
+    (sub / "fgmax0001.txt").write_text(_synthetic_fgmax(rows))
+    # The grids header need only EXIST for the reader to proceed (it reads the
+    # txt, not this file); a minimal stub mirrors a real fgmax_grids.data.
+    (sub / "fgmax_grids.data").write_text(
+        "# fgmax grid geometry stub\n1    num_fgmax_grids\n"
+    )
+
+
+def test_read_fgmax_output_parses_depth_and_arrival(tmp_path: Path):
+    """read_fgmax_output maps the 9-col layout -> max_depth/inundation/arrival,
+    with never-arrived sentinels -> NaN (so they do NOT poison the min)."""
+    from grace2_agent.workflows.postprocess_geoclaw import read_fgmax_output
+
+    # rows: (x, y, level, B, h, s, t_hmax, t_smax, arrival_time)
+    rows = [
+        # offshore (B<0), wave arrives at t=120 s, depth 4.0 m.
+        (-85.50, 29.90, 2, -3.0, 4.0, 1.2, 130.0, 130.0, 120.0),
+        # on land (B>0), inundated 2.5 m, arrives at t=300 s (the run-up).
+        (-85.45, 29.95, 2, 1.5, 2.5, 0.8, 305.0, 305.0, 300.0),
+        # on land, deeper run-up 3.1 m, arrives LATER at t=360 s.
+        (-85.44, 29.96, 2, 0.8, 3.1, 0.9, 365.0, 365.0, 360.0),
+        # never-arrived dry point: sentinel time + zero depth -> NaN, excluded.
+        (-85.40, 30.10, 1, 5.0, 0.0, 0.0, _FGMAX_SENTINEL, _FGMAX_SENTINEL,
+         _FGMAX_SENTINEL),
+        # another never-arrived point, NEGATIVE sentinel time -> NaN.
+        (-85.39, 30.11, 1, 6.0, 0.0, 0.0, -_FGMAX_SENTINEL, -_FGMAX_SENTINEL,
+         -1.0),
+    ]
+    _write_fgmax_fixture(tmp_path, rows)
+
+    res = read_fgmax_output(tmp_path)
+    assert res is not None
+    # max depth over ALL points = 4.0 (the offshore peak).
+    assert res["max_depth_m"] == pytest.approx(4.0)
+    # inundation = max depth on LAND (B>0) = 3.1.
+    assert res["max_inundation_m"] == pytest.approx(3.1)
+    # earliest arrival among WET points = 120 s (sentinels mapped to NaN so the
+    # never-arrived rows do not collapse the min to a bogus huge/negative value).
+    assert res["arrival_time_s"] == pytest.approx(120.0)
+    # the arrival grid carries NaN at the two sentinel rows.
+    assert np.isnan(res["grid"]["arrival_time"][3])
+    assert np.isnan(res["grid"]["arrival_time"][4])
+
+
+def test_read_fgmax_output_all_never_set_is_zero_not_negative(tmp_path: Path):
+    """REGRESSION (adversarial review): an fgmax grid where NO point was ever set
+    (every h/B/arrival == FG_NOTSET = -0.99999e99) must yield max_depth_m == 0.0
+    and arrival None -- NOT a huge negative depth that crashes the
+    GeoClawDepthLayerURI(ge=0.0) validator."""
+    from grace2_agent.workflows.postprocess_geoclaw import read_fgmax_output
+
+    rows = [
+        (-85.50, 29.90, 1, _FG_NOTSET, _FG_NOTSET, _FG_NOTSET, _FG_NOTSET,
+         _FG_NOTSET, _FG_NOTSET),
+        (-85.45, 29.95, 1, _FG_NOTSET, _FG_NOTSET, _FG_NOTSET, _FG_NOTSET,
+         _FG_NOTSET, _FG_NOTSET),
+    ]
+    _write_fgmax_fixture(tmp_path, rows)
+
+    res = read_fgmax_output(tmp_path)
+    assert res is not None
+    assert res["max_depth_m"] == 0.0  # masked, not -9.9999e98
+    assert res["max_inundation_m"] == 0.0
+    assert res["arrival_time_s"] is None
+    # the masked depth/B are NaN, not the raw FG_NOTSET.
+    assert np.isnan(res["grid"]["h"]).all()
+
+
+def test_read_fgmax_output_absent_returns_none(tmp_path: Path):
+    """No fgmax file (dam_break / surge / fgmax disabled) -> None, NOT an error."""
+    from grace2_agent.workflows.postprocess_geoclaw import read_fgmax_output
+
+    (tmp_path / "_output").mkdir()
+    assert read_fgmax_output(tmp_path) is None
+
+
+def test_postprocess_geoclaw_fgmax_overrides_fortq(tmp_path: Path):
+    """With fgmax present, postprocess OVERRIDES the fort.q max_depth with the
+    fgmax between-frame peak and sets arrival_time_s on the peak layer."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    out = tmp_path / "_output"
+    out.mkdir()
+    # fort.q frames whose peak is 2.0 m (the discrete snapshot peak).
+    amps = [0.5, 2.0, 1.0]
+    for fi, amp in enumerate(amps):
+        text = _synthetic_fort_q(
+            8, 8, _AOI, (lambda a: (lambda i, j: a if (i + j) % 2 == 0 else 0.0))(amp)
+        )
+        (out / f"fort.q{fi:04d}").write_text(text)
+        (out / f"fort.t{fi:04d}").write_text(f"{fi * 60.0:.6e}    time\n")
+
+    # fgmax records a HIGHER true between-frame peak (5.5 m) + an arrival time.
+    rows = [
+        (-85.50, 29.90, 2, -2.0, 5.5, 1.5, 95.0, 95.0, 90.0),
+        (-85.45, 29.95, 2, 1.0, 3.0, 0.7, 200.0, 200.0, 180.0),
+        (-85.40, 30.10, 1, 4.0, 0.0, 0.0, _FGMAX_SENTINEL, _FGMAX_SENTINEL,
+         _FGMAX_SENTINEL),
+    ]
+    _write_fgmax_fixture(tmp_path, rows)
+
+    with patch.object(pg, "_upload_cog_to_runs_bucket", _fake_upload):
+        layers, metrics = pg.postprocess_geoclaw(
+            tmp_path, _AOI, run_id="FGRID", scenario="tsunami", grid_shape=(32, 32)
+        )
+
+    peak = layers[0]
+    # fort.q peak (2.0) is OVERRIDDEN by the fgmax between-frame peak (5.5).
+    assert metrics["max_depth_m"] == pytest.approx(5.5)
+    assert peak.max_depth_m == pytest.approx(5.5)
+    # inundation = land peak (3.0); arrival = earliest wet arrival (90 s).
+    assert metrics["max_inundation_m"] == pytest.approx(3.0)
+    assert metrics["arrival_time_s"] == pytest.approx(90.0)
+    assert peak.arrival_time_s == pytest.approx(90.0)
 
 
 # ===========================================================================
@@ -326,8 +478,9 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
     captured: dict = {}
 
     def _fake_stage(ra, *, dem_uri, run_id=None, dtopo_uri=None, surge_uri=None,
-                    base_num_cells=(40, 40)):
+                    extra_dem_uris=None, base_num_cells=(40, 40)):
         captured["dem_uri"] = dem_uri
+        captured["extra_dem_uris"] = extra_dem_uris
         return GeoClawStaging(
             run_id="STAGERID",
             manifest_uri="s3://cache/geoclaw_setup/STAGERID/manifest.json",
@@ -349,7 +502,9 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
     def _fake_download(run_id):
         return str(tmp_path)  # a dir with no _output -> postprocess is mocked too
 
-    def _fake_postprocess(out_dir, bbox, *, run_id, scenario, **_kw):
+    def _fake_postprocess(out_dir, bbox, *, run_id, scenario,
+                          fgmax_arrival_tol_m=0.01, **_kw):
+        captured["fgmax_arrival_tol_m"] = fgmax_arrival_tol_m
         peak = GeoClawDepthLayerURI(
             layer_id=f"geoclaw-depth-peak-{run_id}",
             name="Peak flood depth",
@@ -362,9 +517,10 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
             max_depth_m=3.3,
             flooded_area_km2=2.1,
             max_inundation_m=1.4,
+            arrival_time_s=None,
             scenario=scenario,
         )
-        return [peak], {"max_depth_m": 3.3}
+        return [peak], {"max_depth_m": 3.3, "arrival_time_s": None}
 
     def _fake_publish(raw_peak, run_id):
         return raw_peak.model_copy(update={"uri": "https://tiles/peak.png"})

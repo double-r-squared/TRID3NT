@@ -234,8 +234,13 @@ async def model_dambreak_geoclaw_scenario(
     # Optional staged tsunami dtopo / surge forcing (already-staged URIs on args).
     dtopo_uri = run_args.tsunami_dtopo_uri
     surge_uri = run_args.surge_forcing_uri
+    # Optional additional topo/bathy tiles (ordered coarse -> fine on the args).
+    extra_dem_uris = list(run_args.extra_topo_uris or [])
 
     # --- Step 2: stage the build_spec manifest + DEM reference --------------
+    # The USER-GATED fault_* + coastal_gauge_lonlat + fgmax_arrival_tol_m live on
+    # run_args and ride into the build_spec inside stage_geoclaw_manifest ->
+    # build_geoclaw_build_spec (only the supplied fault_* are threaded).
     async with substep(emitter, "stage_geoclaw_manifest"):
         staging = await asyncio.to_thread(
             stage_geoclaw_manifest,
@@ -244,6 +249,7 @@ async def model_dambreak_geoclaw_scenario(
             run_id=run_id,
             dtopo_uri=dtopo_uri,
             surge_uri=surge_uri,
+            extra_dem_uris=extra_dem_uris,
         )
 
     # --- Auto vertical scaling from the base grid cell count ----------------
@@ -377,6 +383,7 @@ async def model_dambreak_geoclaw_scenario(
                 bbox,
                 run_id=staging.run_id,
                 scenario=run_args.scenario,
+                fgmax_arrival_tol_m=run_args.fgmax_arrival_tol_m,
             )
     finally:
         if cleanup_outputs:
@@ -401,12 +408,13 @@ async def model_dambreak_geoclaw_scenario(
     logger.info(
         "model_dambreak_geoclaw_scenario complete run_id=%s scenario=%s "
         "max_depth_m=%.4g flooded_area_km2=%.6g max_inundation_m=%.4g "
-        "frames_emitted=%d/%d peak_uri=%s",
+        "arrival_time_s=%s frames_emitted=%d/%d peak_uri=%s",
         staging.run_id,
         run_args.scenario,
         peak.max_depth_m,
         peak.flooded_area_km2,
         peak.max_inundation_m,
+        peak.arrival_time_s,
         emitted_frames,
         len(frame_layers),
         peak.uri,
@@ -470,6 +478,7 @@ def _publish_peak_layer(
         max_depth_m=raw_peak.max_depth_m,
         flooded_area_km2=raw_peak.flooded_area_km2,
         max_inundation_m=raw_peak.max_inundation_m,
+        arrival_time_s=raw_peak.arrival_time_s,
         scenario=raw_peak.scenario,
     )
 

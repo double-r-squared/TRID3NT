@@ -342,12 +342,16 @@ def _write_completion(
     return completion_uri
 
 
-#: Default output globs — the GeoClaw AMR ASCII frames + headers postprocess reads.
+#: Default output globs - the GeoClaw AMR ASCII frames + headers postprocess reads,
+#: plus the fgmax (max depth/speed/arrival) + gauge time-series outputs.
 DEFAULT_OUTPUT_GLOBS: list[str] = [
     "_output/fort.q*",
     "_output/fort.t*",
     "_output/fort.h*",
     "_output/fort.b*",
+    "_output/fgmax*.txt",
+    "_output/fgmax_grids.data",
+    "_output/gauge*.txt",
     "deck_manifest.json",
 ]
 

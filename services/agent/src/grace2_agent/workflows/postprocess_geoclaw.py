@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from grace2_contracts.geoclaw_contracts import (
+    GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M,
     GEOCLAW_DEPTH_STYLE_PRESET,
     GeoClawDepthLayerURI,
 )
@@ -70,11 +71,17 @@ __all__ = [
     "parse_fort_q_frame",
     "rasterize_frame_to_grid",
     "compute_geoclaw_depth_metrics",
+    "read_fgmax_output",
     "GEOCLAW_DEPTH_STYLE_PRESET",
     "NODATA_DEPTH_M",
     "MAX_FLOOD_FRAMES",
     "RUNS_BUCKET_DEFAULT",
 ]
+
+#: fgmax time-column sentinel: GeoClaw writes an extreme value (|t| > 1e8) at a
+#: point the wave never reached. The reader maps these (and any negative time)
+#: to NaN so the earliest-arrival nanmin is honest.
+_FGMAX_SENTINEL_ABS: float = 1e8
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_geoclaw")
 
@@ -332,6 +339,7 @@ def compute_geoclaw_depth_metrics(
             "flooded_cell_count": 0,
             "flooded_area_km2": 0.0,
             "max_inundation_m": 0.0,
+            "arrival_time_s": None,
         }
 
     flooded_cell_count = int(wet.size)
@@ -355,6 +363,144 @@ def compute_geoclaw_depth_metrics(
         "flooded_cell_count": flooded_cell_count,
         "flooded_area_km2": flooded_cell_count * cell_area_m2 / 1_000_000.0,
         "max_inundation_m": max_inundation,
+        # arrival_time_s comes ONLY from a real fgmax run (read_fgmax_output);
+        # the between-frame fort.q metrics cannot supply a wave-arrival time, so
+        # this is None here (the honesty floor: never narrate a fabricated time).
+        "arrival_time_s": None,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# fgmax (fixed-grid maximum) reader (GAP1 - hand-rolled, NO clawpack import).
+# --------------------------------------------------------------------------- #
+def read_fgmax_output(
+    out_dir: str | Path,
+    *,
+    fgno: int = 1,
+    arrival_tol_m: float = GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M,
+) -> dict[str, Any] | None:
+    """Read a GeoClaw fgmax (fixed-grid maximum) output into the depth scalars.
+
+    GeoClaw's fgmax monitor records, per fixed-grid point, the TRUE between-frame
+    peak (max depth + max speed) and the wave arrival time - quantities the
+    discrete fort.q frame snapshots cannot recover (the peak can fall between two
+    output frames). This is a HAND-ROLLED reader (mirroring the hand-rolled fort.q
+    reader above): it keeps the agent venv clawpack-free - there is NO
+    ``clawpack``/``geoclaw`` import here, only ``numpy.loadtxt``.
+
+    Expected layout (a real GeoClaw 5.14.0 run with ``num_fgmax_val=2``):
+        ``<out_dir>/_output/fgmax{fgno:04d}.txt`` - 9 space-separated columns:
+            col0 x (lon)            col4 h     (max water depth, m)
+            col1 y (lat)            col5 s     (max speed, m/s)
+            col2 amr_level (int)    col6 t_hmax (time of max depth, s)
+            col3 B (topo, m; <0 offshore)  col7 t_smax (time of max speed, s)
+                                    col8 arrival_time (s)
+        ``<out_dir>/_output/fgmax_grids.data`` - the grid geometry header.
+
+    Sentinels: GeoClaw writes an EXTREME value (|t| > 1e8) in a time column for a
+    point the wave NEVER reached; the reader maps those (and any negative time) to
+    NaN so the earliest-arrival ``nanmin`` is honest.
+
+    Returns ``None`` (NOT an error) when the fgmax file OR its grids header is
+    absent - a dam_break / surge run (or a tsunami run with fgmax disabled) simply
+    did not produce fgmax output, which is not fatal: the caller keeps the fort.q
+    metrics and reports ``arrival_time_s=None``.
+
+    Returns (when present):
+        ``{"max_depth_m", "max_inundation_m", "arrival_time_s",
+           "grid": {"x", "y", "h", "B", "arrival_time"}}`` where:
+          - ``max_depth_m``      = nanmax(h) over all fgmax points.
+          - ``max_inundation_m`` = nanmax(h) over ON-LAND points (B > 0) - the
+            overland run-up signal (0.0 when no land point is wet).
+          - ``arrival_time_s``   = earliest arrival over points whose recorded max
+            depth exceeds ``arrival_tol_m`` (nan-safe); ``None`` when no such point
+            arrived (all-NaN).
+    """
+    import numpy as np
+
+    out = Path(out_dir)
+    base = out / "_output"
+    if not base.is_dir():
+        base = out
+    fgmax_path = base / f"fgmax{fgno:04d}.txt"
+    grids_path = base / "fgmax_grids.data"
+    if not fgmax_path.exists() or not grids_path.exists():
+        return None
+
+    try:
+        arr = np.loadtxt(fgmax_path, comments="#")
+    except Exception as exc:  # noqa: BLE001 - fgmax is best-effort overlay
+        logger.warning(
+            "read_fgmax_output: could not parse %s (%s); ignoring fgmax",
+            fgmax_path,
+            exc,
+        )
+        return None
+
+    arr = np.atleast_2d(np.asarray(arr, dtype="float64"))
+    # Require EXACTLY 9 columns (num_fgmax_val=2, the layout our deck pins). A
+    # 15-column file (num_fgmax_val=5) would put arrival_time at col14 and a
+    # depth-minimum at col8, so a loose ">= 9" guard would silently read the WRONG
+    # arrival column. We pin 9 and otherwise degrade to the fort.q metrics.
+    if arr.size == 0 or arr.shape[1] != 9:
+        logger.warning(
+            "read_fgmax_output: %s has %d columns (expected exactly 9 for "
+            "num_fgmax_val=2); ignoring fgmax",
+            fgmax_path,
+            arr.shape[1] if arr.ndim == 2 else 0,
+        )
+        return None
+
+    x = arr[:, 0]
+    y = arr[:, 1]
+    B = arr[:, 3].copy()
+    h = arr[:, 4].copy()
+    arrival = arr[:, 8].copy()
+
+    # NEVER-SET sentinel -> NaN. GeoClaw initializes EVERY fgmax valuemax (h, B,
+    # tmax, arrival) to FG_NOTSET = -0.99999e99 and only overwrites updated points
+    # (fgmax_module.f90). FG_NOTSET is FINITE, so without this mask an all-never-set
+    # grid (a weak run, or an fgmax grid entirely on high ground) would make
+    # nanmax(h) ~ -9.9999e98 -> a NEGATIVE max_depth_m that crashes the
+    # GeoClawDepthLayerURI(ge=0.0) validator. Mirror the canonical reader's
+    # `h < -1e50` mask (fgmax_tools.py): never-set points become NaN -> an honest
+    # max_depth_m=0.0 / arrival=None degrade.
+    notset = h < -1e50
+    h[notset] = np.nan
+    B[notset] = np.nan
+
+    # Sentinel -> NaN: a never-arrived point carries |t| > 1e8 (or t < 0).
+    sentinel = (np.abs(arrival) > _FGMAX_SENTINEL_ABS) | (arrival < 0.0)
+    arrival[sentinel] = np.nan
+
+    # max depth over all points (NaN-safe; empty -> 0.0).
+    finite_h = h[np.isfinite(h)]
+    max_depth_m = float(np.nanmax(h)) if finite_h.size else 0.0
+
+    # inundation = max depth on land (B > 0).
+    land = B > 0.0
+    land_h = h[land & np.isfinite(h)]
+    max_inundation_m = float(np.nanmax(land_h)) if land_h.size else 0.0
+
+    # earliest on-land-ish arrival: points whose recorded peak depth is wet.
+    wet = np.isfinite(h) & (h > arrival_tol_m)
+    wet_arrival = arrival[wet]
+    if wet_arrival.size and np.isfinite(wet_arrival).any():
+        arrival_time_s: float | None = float(np.nanmin(wet_arrival))
+    else:
+        arrival_time_s = None
+
+    return {
+        "max_depth_m": max_depth_m,
+        "max_inundation_m": max_inundation_m,
+        "arrival_time_s": arrival_time_s,
+        "grid": {
+            "x": x,
+            "y": y,
+            "h": h,
+            "B": B,
+            "arrival_time": arrival,
+        },
     }
 
 
@@ -498,6 +644,7 @@ def postprocess_geoclaw(
     grid_shape: tuple[int, int] = (256, 256),
     runs_bucket: str | None = None,
     topo_grid: Any = None,
+    fgmax_arrival_tol_m: float = GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M,
 ) -> tuple[list[GeoClawDepthLayerURI], dict[str, Any]]:
     """Rasterize a solved GeoClaw run into a peak + per-frame depth-COG layer set.
 
@@ -521,6 +668,8 @@ def postprocess_geoclaw(
         runs_bucket: optional override for the runs bucket name.
         topo_grid: optional ``(H, W)`` topography grid (same shape) for the
             ``max_inundation_m`` land/ocean split.
+        fgmax_arrival_tol_m: the fgmax wet-cell threshold (m) backing
+            ``arrival_time_s`` when an fgmax monitor was run.
 
     Returns:
         ``(layers, metrics)``: ``layers[0]`` peak ``GeoClawDepthLayerURI`` +
@@ -577,15 +726,34 @@ def postprocess_geoclaw(
     )
     metrics["crs"] = "EPSG:4326"
 
+    # --- fgmax override (GAP1) ----------------------------------------------
+    # fort.q snapshots can MISS the true between-frame peak; when an fgmax monitor
+    # ran (tsunami/surge run-up), its fixed-grid maximum is the authoritative peak
+    # + the only source of a wave-arrival time. Override the depth/inundation
+    # scalars with the fgmax values and set arrival_time_s. When fgmax is absent
+    # (dam_break / surge / fgmax disabled) read_fgmax_output returns None and we
+    # KEEP the fort.q metrics with arrival_time_s=None (honesty floor: no
+    # fabricated arrival).
+    metrics.setdefault("arrival_time_s", None)
+    fgmax = read_fgmax_output(out, arrival_tol_m=fgmax_arrival_tol_m)
+    if fgmax is not None:
+        metrics["max_depth_m"] = float(fgmax["max_depth_m"])
+        metrics["max_inundation_m"] = float(fgmax["max_inundation_m"])
+        metrics["arrival_time_s"] = fgmax["arrival_time_s"]
+        metrics["fgmax_used"] = True
+
     logger.info(
         "postprocess_geoclaw run_id=%s scenario=%s n_steps=%d max_depth_m=%.4g "
-        "flooded_area_km2=%.6g max_inundation_m=%.4g",
+        "flooded_area_km2=%.6g max_inundation_m=%.4g fgmax_used=%s "
+        "arrival_time_s=%s",
         run_id,
         scenario,
         n_steps,
         metrics["max_depth_m"],
         metrics["flooded_area_km2"],
         metrics["max_inundation_m"],
+        bool(fgmax is not None),
+        metrics.get("arrival_time_s"),
     )
 
     # --- PEAK layer (always layers[0]) ---
@@ -610,6 +778,7 @@ def postprocess_geoclaw(
             max_depth_m=float(metrics["max_depth_m"]),
             flooded_area_km2=float(metrics["flooded_area_km2"]),
             max_inundation_m=float(metrics["max_inundation_m"]),
+            arrival_time_s=metrics.get("arrival_time_s"),
             scenario=scenario,  # type: ignore[arg-type]
         )
     ]

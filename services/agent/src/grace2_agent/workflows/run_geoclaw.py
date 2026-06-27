@@ -55,12 +55,18 @@ __all__ = [
 GEOCLAW_SOLVER_NAME: str = "geoclaw"
 
 #: GeoClaw fort.q output globs the postprocess reads (the AMR ASCII frames +
-#: their headers + the echoed deck manifest).
+#: their headers + the echoed deck manifest). Kept BYTE-IDENTICAL to the worker
+#: entrypoint's output list so the agent + worker agree on the harvested set; the
+#: fgmax monitor (fgmax{NNNN}.txt + fgmax_grids.data) + gauge time series
+#: (gauge{NNNNN}.txt) ride along for the GAP1 fgmax reader.
 GEOCLAW_OUTPUT_GLOBS: list[str] = [
     "_output/fort.q*",
     "_output/fort.t*",
     "_output/fort.h*",
     "_output/fort.b*",
+    "_output/fgmax*.txt",
+    "_output/fgmax_grids.data",
+    "_output/gauge*.txt",
     "deck_manifest.json",
 ]
 
@@ -128,6 +134,7 @@ def build_geoclaw_build_spec(
     topo_dest: str = "topo.asc",
     dtopo_dest: str | None = None,
     surge_dest: str | None = None,
+    extra_topo_files: list[str] | None = None,
     base_num_cells: tuple[int, int] = (40, 40),
 ) -> dict[str, Any]:
     """Assemble the setrun_builder ``build_spec`` dict from the validated run args.
@@ -137,6 +144,14 @@ def build_geoclaw_build_spec(
     ``setrun_builder.parse_build_spec`` consumes. The staged DEM is referenced by
     its in-deck destination filename (``topo_dest``); a staged dtopo / surge file
     is referenced by ``dtopo_dest`` / ``surge_dest`` when present.
+
+    ``extra_topo_files`` are the staged-destination names of additional topo/bathy
+    tiles (ordered coarse -> fine, appended AFTER the primary ``topo_dest`` so the
+    worker layers them finest-last). ``fgmax_arrival_tol_m`` always rides along
+    (it backs the fgmax wave-arrival monitor); ``coastal_gauge_lonlat`` and the
+    four USER-GATED Okada ``fault_*`` keys are threaded ONLY when supplied (the
+    engine substitutes scenario defaults otherwise and MUST surface that, never
+    silently fabricate them).
 
     Pure dict assembly — unit-testable with no network.
     """
@@ -152,12 +167,29 @@ def build_geoclaw_build_spec(
         "base_num_cells": [int(base_num_cells[0]), int(base_num_cells[1])],
         "source_magnitude": float(run_args.source_magnitude),
         "dam_break_depth_m": float(run_args.dam_break_depth_m),
+        "fgmax_arrival_tol_m": float(run_args.fgmax_arrival_tol_m),
     }
     if run_args.source_lonlat is not None:
         spec["source_lonlat"] = [
             float(run_args.source_lonlat[0]),
             float(run_args.source_lonlat[1]),
         ]
+    if extra_topo_files:
+        spec["extra_topo_files"] = list(extra_topo_files)
+    if run_args.coastal_gauge_lonlat is not None:
+        spec["coastal_gauge_lonlat"] = [
+            float(run_args.coastal_gauge_lonlat[0]),
+            float(run_args.coastal_gauge_lonlat[1]),
+        ]
+    # USER-GATED Okada fault overrides: thread ONLY the ones the user supplied.
+    if run_args.fault_strike_deg is not None:
+        spec["fault_strike_deg"] = float(run_args.fault_strike_deg)
+    if run_args.fault_dip_deg is not None:
+        spec["fault_dip_deg"] = float(run_args.fault_dip_deg)
+    if run_args.fault_rake_deg is not None:
+        spec["fault_rake_deg"] = float(run_args.fault_rake_deg)
+    if run_args.fault_depth_km is not None:
+        spec["fault_depth_km"] = float(run_args.fault_depth_km)
     if run_args.scenario == "tsunami" and dtopo_dest is not None:
         spec["dtopo_file"] = dtopo_dest
     if run_args.scenario == "surge" and surge_dest is not None:
@@ -175,6 +207,7 @@ def stage_geoclaw_manifest(
     run_id: str | None = None,
     dtopo_uri: str | None = None,
     surge_uri: str | None = None,
+    extra_dem_uris: list[str] | None = None,
     base_num_cells: tuple[int, int] = (40, 40),
 ) -> GeoClawStaging:
     """Stage the GeoClaw ``manifest.json`` (build_spec + input refs) to S3.
@@ -197,6 +230,10 @@ def stage_geoclaw_manifest(
         run_id: optional ULID; minted if absent.
         dtopo_uri: optional ``s3://`` URI of a staged dtopo (tsunami scenario).
         surge_uri: optional ``s3://`` URI of a staged surge hydrograph CSV.
+        extra_dem_uris: optional ordered (coarse -> fine) list of additional
+            topo/bathy DEM ``s3://`` URIs; each is staged BY REFERENCE as
+            ``topo_extra_{i}.asc`` and threaded into the build_spec after the
+            primary topo so the worker layers them finest-last.
         base_num_cells: the GeoClaw base computational-grid resolution.
 
     Returns:
@@ -217,6 +254,14 @@ def stage_geoclaw_manifest(
     inputs: list[dict[str, str]] = [{"gs_uri": dem_uri, "dest": "topo.asc"}]
     dtopo_dest: str | None = None
     surge_dest: str | None = None
+    # Additional topo/bathy tiles (ordered coarse -> fine) staged BY REFERENCE.
+    extra_topo_files: list[str] = []
+    for i, uri in enumerate(extra_dem_uris or []):
+        if not uri:
+            continue
+        dest = f"topo_extra_{i}.asc"
+        inputs.append({"gs_uri": str(uri), "dest": dest})
+        extra_topo_files.append(dest)
     if run_args.scenario == "tsunami" and dtopo_uri:
         dtopo_dest = "dtopo.tt3"
         inputs.append({"gs_uri": dtopo_uri, "dest": dtopo_dest})
@@ -229,6 +274,7 @@ def stage_geoclaw_manifest(
         topo_dest="topo.asc",
         dtopo_dest=dtopo_dest,
         surge_dest=surge_dest,
+        extra_topo_files=extra_topo_files,
         base_num_cells=base_num_cells,
     )
 

@@ -125,9 +125,11 @@ def test_render_setrun_is_valid_python_dam_break():
     assert "topo_data.topofiles.append([3, 'topo.asc'])" in text
     # AMR levels.
     assert "amrdata.amr_levels_max = 2" in text
-    # dam_break -> qinit block present.
+    # dam_break -> qinit block present (topotype-1 file, single-element list:
+    # GeoClaw read_qinit only parses bare x y z; QinitData.write requires len-1).
     assert "qinit_data.qinit_type = 4" in text
-    assert "qinit.xyz" in text
+    assert "qinit_data.qinitfiles.append(['qinit.xyz'])" in text
+    assert "qinit.tt3" not in text
 
 
 def test_render_setrun_tsunami_has_dtopo_block_not_qinit():
@@ -153,22 +155,38 @@ def test_render_setrun_amr_ratios_scale_with_levels():
     spec = parse_build_spec(_spec(amr_levels=3))
     text = render_setrun_py(spec)
     ast.parse(text)
-    # 3 levels -> 2 refinement ratios (between consecutive levels).
-    assert "amrdata.refinement_ratios_x = [2, 2]" in text
+    # 3 levels -> 2 refinement ratios (between consecutive levels), INCREASING
+    # toward the finest level (first transition 2x, then 4x) -- not a flat all-2s.
+    assert "amrdata.refinement_ratios_x = [2, 4]" in text
+    assert "amrdata.refinement_ratios_y = [2, 4]" in text
+    assert "amrdata.refinement_ratios_t = [2, 4]" in text
+
+
+def test_render_setrun_amr_ratios_increase_for_deeper_levels():
+    spec = parse_build_spec(_spec(amr_levels=4))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # 4 levels -> 3 transitions; ratios increase (2, then 4 for every deeper
+    # transition) so coarse levels stay cheap and the finest resolve the front.
+    assert "amrdata.refinement_ratios_x = [2, 4, 4]" in text
 
 
 # ===========================================================================
 # (3) scenario source-file renders.
 # ===========================================================================
-def test_render_qinit_is_xyz_grid_with_raised_column():
+def test_render_qinit_is_topotype1_xyz_with_raised_column():
     spec = parse_build_spec(_spec(scenario="dam_break", dam_break_depth_m=7.0))
     xyz = render_qinit_data(spec)
-    rows = [r for r in xyz.splitlines() if r.strip()]
-    assert len(rows) == 16 * 16  # n x n perturbation grid
-    # at least one cell carries the raised-column height; corners are dry (0).
-    zs = [float(r.split()[2]) for r in rows]
-    assert max(zs) == pytest.approx(7.0)
-    assert min(zs) == pytest.approx(0.0)
+    lines = [r for r in xyz.splitlines() if r.strip()]
+    # TOPOTYPE-1: bare `x y z` triples, NO header (the only form read_qinit takes).
+    assert all(len(r.split()) == 3 for r in lines)
+    assert len(lines) == 16 * 16  # 16x16 perturbation grid
+    zs = [float(r.split()[2]) for r in lines]
+    # the raised column reaches the dam_break depth at the centre, 0 outside.
+    assert max(zs) == 7.0 and min(zs) == 0.0
+    # north-first ordering: first row latitude is the maximum.
+    ys = [float(r.split()[1]) for r in lines]
+    assert ys[0] == max(ys) and ys[-1] == min(ys)
 
 
 def test_render_maketopo_dtopo_is_valid_python_and_uses_dtopotools():
@@ -194,6 +212,12 @@ def test_render_makefile_provides_output_target_via_includes():
     assert "include $(CLAWMAKE)" in mk
     # The GeoClaw 2d shallow module/source lists come from Makefile.geoclaw.
     assert "include $(CLAW)/geoclaw/src/2d/shallow/Makefile.geoclaw" in mk
+    # REGRESSION (real-solve gate): the Riemann solvers MUST be listed in SOURCES
+    # (Makefile.geoclaw does NOT add them) or xgeoclaw fails to link with
+    # "undefined reference to rpn2_/rpt2_". Assert all three.
+    assert "$(CLAW)/riemann/src/rpn2_geoclaw.f" in mk
+    assert "$(CLAW)/riemann/src/rpt2_geoclaw.f" in mk
+    assert "$(CLAW)/riemann/src/geoclaw_riemann_utils.f" in mk
     # The required GeoClaw build vars (mirror the canonical example Makefile).
     assert "CLAW_PKG = geoclaw" in mk
     assert "EXE = xgeoclaw" in mk
@@ -222,10 +246,18 @@ def test_build_dam_break_deck_writes_setrun_and_qinit(tmp_path: Path):
     assert manifest.scenario == "dam_break"
     assert (tmp_path / "setrun.py").exists()
     assert (tmp_path / "qinit.xyz").exists()
+    assert not (tmp_path / "qinit.tt3").exists()
     assert (tmp_path / "deck_manifest.json").exists()
     assert "setrun.py" in manifest.files_written
     assert "qinit.xyz" in manifest.files_written
     assert "dam_break" in manifest.driver_descriptor
+    # qinit.xyz is a TOPOTYPE-1 file (bare `x y z`, no header) -- the only form
+    # GeoClaw's read_qinit accepts. Every non-blank line is exactly 3 floats.
+    qlines = [r for r in (tmp_path / "qinit.xyz").read_text().splitlines() if r.strip()]
+    assert all(len(r.split()) == 3 for r in qlines)
+    assert float(qlines[0].split()[2]) >= 0.0  # z column parses as a float
+    # north-first: the first row's latitude is the max (>= the last row's lat).
+    assert float(qlines[0].split()[1]) >= float(qlines[-1].split()[1])
     # The Makefile MUST be written alongside setrun.py so `make .output` has a
     # rule for the `.output` target (the live "No rule to make target" bug).
     assert (tmp_path / "Makefile").exists()
@@ -275,10 +307,181 @@ def test_source_lonlat_overrides_centroid_in_qinit(tmp_path: Path):
     build_geoclaw_deck(
         _spec(scenario="dam_break", source_lonlat=list(src)), tmp_path
     )
-    xyz = (tmp_path / "qinit.xyz").read_text()
-    rows = [r for r in xyz.splitlines() if r.strip()]
+    # topotype-1 qinit: recover the x-range directly from the `x y z` columns.
+    lines = [r for r in (tmp_path / "qinit.xyz").read_text().splitlines() if r.strip()]
+    xs = [float(r.split()[0]) for r in lines]
+    xmin, xmax = min(xs), max(xs)
     # the perturbation grid is centred on the explicit source -> its x-range
     # straddles src lon, distinct from the AOI centroid (-85.5).
-    xs = [float(r.split()[0]) for r in rows]
-    assert min(xs) < src[0] < max(xs)
-    assert max(xs) < -85.30  # well left of the AOI centroid box if centred on src
+    assert xmin < src[0] < xmax
+    assert xmax < -85.30  # well left of the AOI centroid box if centred on src
+
+
+# ===========================================================================
+# (5) GAP1 fgmax - max depth/speed/arrival monitor over the AOI.
+# ===========================================================================
+def test_render_setrun_tsunami_emits_fgmax_block():
+    spec = parse_build_spec(_spec(scenario="tsunami", amr_levels=3))
+    text = render_setrun_py(spec)
+    ast.parse(text)  # the fgmax block must keep the module valid Python.
+    # The fgmax import lives in the GENERATED module (only when fgmax is emitted).
+    assert "from clawpack.geoclaw import fgmax_tools" in text
+    assert "rundata.fgmax_data.num_fgmax_val = 2" in text
+    assert "fgmax_tools.FGmaxGrid()" in text
+    assert "fg.point_style = 2" in text
+    assert "fg.min_level_check = 3" in text  # finest level == amr_levels
+    assert "fg.interp_method = 0" in text
+    assert "fg.arrival_tol = 0.01" in text  # default fgmax_arrival_tol_m
+    assert "fgmax_grids.append(fg)" in text
+
+
+def test_render_setrun_surge_emits_fgmax_block():
+    spec = parse_build_spec(_spec(scenario="surge", sea_level_m=1.5))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    assert "from clawpack.geoclaw import fgmax_tools" in text
+    assert "rundata.fgmax_data.num_fgmax_val = 2" in text
+    assert "fgmax_grids.append(fg)" in text
+
+
+def test_render_setrun_dam_break_has_no_fgmax_block():
+    # dam_break has no coastal-arrival concept -> no fgmax import or block.
+    spec = parse_build_spec(_spec(scenario="dam_break"))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    assert "from clawpack.geoclaw import fgmax_tools" not in text
+    assert "num_fgmax_val" not in text
+
+
+def test_render_setrun_fgmax_arrival_tol_threads_from_spec():
+    spec = parse_build_spec(_spec(scenario="tsunami", fgmax_arrival_tol_m=0.25))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    assert "fg.arrival_tol = 0.25" in text
+
+
+# ===========================================================================
+# (6) GAP3 regions + GAP4 gauges - pin finest level + a coastal gauge.
+# ===========================================================================
+def test_render_setrun_appends_coastal_region_over_aoi():
+    spec = parse_build_spec(_spec(scenario="tsunami", amr_levels=3))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # The region pins [minlevel, maxlevel, t1, t2, x1, x2, y1, y2] = finest
+    # level over the AOI box for the whole run [0, tfinal].
+    assert "rundata.regiondata.regions.append([3, 3, 0., 1800.0, " in text
+    assert "-85.75, -85.25, 29.55, 30.2])" in text
+
+
+def test_render_setrun_appends_gauge_fallback_seaward_edge():
+    spec = parse_build_spec(_spec(scenario="tsunami"))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # gauge form: [gaugeno, x, y, t1, t2]; fallback x = AOI lon-mid (-85.5).
+    assert "rundata.gaugedata.gauges.append([1, -85.5, " in text
+    assert ", 0., 1.e10])" in text
+
+
+def test_render_setrun_appends_explicit_coastal_gauge():
+    spec = parse_build_spec(
+        _spec(scenario="tsunami", coastal_gauge_lonlat=[-85.42, 29.61])
+    )
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    assert "rundata.gaugedata.gauges.append([1, -85.42, 29.61, 0., 1.e10])" in text
+
+
+# ===========================================================================
+# (7) GAP7 nested DEM - primary topo + extra topos, ordered coarse->fine.
+# ===========================================================================
+def test_render_setrun_appends_extra_topo_files_coarse_to_fine():
+    spec = parse_build_spec(
+        _spec(
+            scenario="tsunami",
+            topo_file="coarse.asc",
+            extra_topo_files=["mid.asc", "fine.asc"],
+        )
+    )
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # primary first, then extras in order -> the ordered appends appear in
+    # coarse->fine sequence in the generated setgeo block.
+    i_primary = text.index("topo_data.topofiles.append([3, 'coarse.asc'])")
+    i_mid = text.index("topo_data.topofiles.append([3, 'mid.asc'])")
+    i_fine = text.index("topo_data.topofiles.append([3, 'fine.asc'])")
+    assert i_primary < i_mid < i_fine
+
+
+def test_parse_rejects_non_list_extra_topo_files():
+    with pytest.raises(GeoClawDeckError) as ei:
+        parse_build_spec(_spec(extra_topo_files="not-a-list.asc"))
+    assert ei.value.error_code == "GEOCLAW_SPEC_INVALID"
+
+
+# ===========================================================================
+# (8) GAP6 Okada fault geometry - user-supplied vs synthetic + honesty banner.
+# ===========================================================================
+def test_render_maketopo_uses_create_dtopo_xy_and_centroid_spec():
+    spec = parse_build_spec(_spec(scenario="tsunami", source_magnitude=9.0))
+    text = render_maketopo_dtopo(spec)
+    ast.parse(text)
+    # the canonical GeoClaw helper, not a hand-rolled np.linspace box.
+    assert "fault.create_dtopo_xy(dx=1/60., buffer_size=2.0)" in text
+    assert "np.linspace" not in text
+    # coordinate_specification stays 'centroid' (Okada requires it).
+    assert 'subfault.coordinate_specification = "centroid"' in text
+
+
+def test_render_maketopo_defaults_print_non_site_specific_banner():
+    # No fault geometry supplied -> synthetic defaults + the honesty banner.
+    spec = parse_build_spec(_spec(scenario="tsunami"))
+    text = render_maketopo_dtopo(spec)
+    ast.parse(text)
+    assert "NON-SITE-SPECIFIC synthetic source" in text
+    # the defaulted geometry uses the synthetic values.
+    assert "subfault.strike = 0.0" in text
+    assert "subfault.dip = 15.0" in text
+    assert "subfault.rake = 90.0" in text
+    assert "subfault.depth = 10000.0" in text  # 10 km synthetic default in m
+
+
+def test_render_maketopo_threads_user_fault_geometry_no_banner():
+    spec = parse_build_spec(
+        _spec(
+            scenario="tsunami",
+            fault_strike_deg=210.0,
+            fault_dip_deg=20.0,
+            fault_rake_deg=95.0,
+            fault_depth_km=12.0,
+        )
+    )
+    text = render_maketopo_dtopo(spec)
+    ast.parse(text)
+    # all four supplied -> user geometry threaded, depth_km -> m, NO banner.
+    assert "subfault.strike = 210.0" in text
+    assert "subfault.dip = 20.0" in text
+    assert "subfault.rake = 95.0" in text
+    assert "subfault.depth = 12000.0" in text  # 12 km -> 12000 m
+    assert "NON-SITE-SPECIFIC synthetic source" not in text
+
+
+def test_render_maketopo_partial_fault_geometry_still_banners():
+    # Only strike supplied -> the other three default -> banner names them.
+    spec = parse_build_spec(_spec(scenario="tsunami", fault_strike_deg=180.0))
+    text = render_maketopo_dtopo(spec)
+    ast.parse(text)
+    assert "subfault.strike = 180.0" in text  # user value
+    assert "NON-SITE-SPECIFIC synthetic source" in text
+    assert "dip" in text and "rake" in text and "depth" in text
+
+
+def test_build_spec_additive_defaults_preserve_behaviour():
+    # The new optional fields default to safe no-ops so an old build_spec parses.
+    spec = parse_build_spec({"bbox": _AOI, "topo_file": "t.asc"})
+    assert spec.extra_topo_files == []
+    assert spec.fgmax_arrival_tol_m == 0.01
+    assert spec.coastal_gauge_lonlat is None
+    assert spec.fault_strike_deg is None
+    assert spec.fault_dip_deg is None
+    assert spec.fault_rake_deg is None
+    assert spec.fault_depth_km is None

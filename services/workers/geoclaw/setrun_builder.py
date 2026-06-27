@@ -112,8 +112,19 @@ class GeoClawBuildSpec:
     # tsunami.
     dtopo_file: str | None = None
     source_magnitude: float = 8.0
+    # tsunami Okada fault geometry (user-gated; synthetic defaults when omitted).
+    fault_strike_deg: float | None = None
+    fault_dip_deg: float | None = None
+    fault_rake_deg: float | None = None
+    fault_depth_km: float | None = None
     # surge.
     surge_forcing_file: str | None = None
+    # Nested DEM(s), ordered coarse->fine, appended after the primary topo.
+    extra_topo_files: list[str] = field(default_factory=list)
+    # fgmax (max water depth / speed / arrival time) monitoring.
+    fgmax_arrival_tol_m: float = 0.01
+    # Coastal gauge (lon, lat); deterministic seaward-edge fallback if None.
+    coastal_gauge_lonlat: tuple[float, float] | None = None
 
 
 @dataclass
@@ -203,6 +214,26 @@ def parse_build_spec(raw: dict[str, Any]) -> GeoClawBuildSpec:
     if isinstance(src, (list, tuple)) and len(src) == 2:
         source_lonlat = (float(src[0]), float(src[1]))
 
+    gauge = raw.get("coastal_gauge_lonlat")
+    coastal_gauge_lonlat: tuple[float, float] | None = None
+    if isinstance(gauge, (list, tuple)) and len(gauge) == 2:
+        coastal_gauge_lonlat = (float(gauge[0]), float(gauge[1]))
+
+    extra_topo_raw = raw.get("extra_topo_files")
+    if extra_topo_raw is None:
+        extra_topo_files: list[str] = []
+    elif isinstance(extra_topo_raw, (list, tuple)):
+        extra_topo_files = [str(f).strip() for f in extra_topo_raw if str(f).strip()]
+    else:
+        raise GeoClawDeckError(
+            "GEOCLAW_SPEC_INVALID",
+            f"extra_topo_files must be a list of file names, got {extra_topo_raw!r}",
+        )
+
+    def _opt_num(key: str) -> float | None:
+        v = raw.get(key)
+        return float(v) if v is not None else None
+
     sim_duration_s = _num("sim_duration_s", 3600.0)
     if sim_duration_s <= 0:
         raise GeoClawDeckError(
@@ -233,11 +264,18 @@ def parse_build_spec(raw: dict[str, Any]) -> GeoClawBuildSpec:
         source_lonlat=source_lonlat,
         dtopo_file=(str(raw["dtopo_file"]).strip() if raw.get("dtopo_file") else None),
         source_magnitude=_num("source_magnitude", 8.0),
+        fault_strike_deg=_opt_num("fault_strike_deg"),
+        fault_dip_deg=_opt_num("fault_dip_deg"),
+        fault_rake_deg=_opt_num("fault_rake_deg"),
+        fault_depth_km=_opt_num("fault_depth_km"),
         surge_forcing_file=(
             str(raw["surge_forcing_file"]).strip()
             if raw.get("surge_forcing_file")
             else None
         ),
+        extra_topo_files=extra_topo_files,
+        fgmax_arrival_tol_m=_num("fgmax_arrival_tol_m", 0.01),
+        coastal_gauge_lonlat=coastal_gauge_lonlat,
     )
 
 
@@ -249,15 +287,70 @@ def _centroid(spec: GeoClawBuildSpec) -> tuple[float, float]:
     return (0.5 * (min_lon + max_lon), 0.5 * (min_lat + max_lat))
 
 
+def _coastal_gauge(spec: GeoClawBuildSpec) -> tuple[float, float]:
+    """The coastal time-series gauge point.
+
+    Explicit ``coastal_gauge_lonlat`` when supplied, else a deterministic
+    seaward-edge fallback: the mid-point of the AOI's SOUTHERN edge, inset a
+    small fraction off the boundary so the gauge sits just inside the domain
+    (the southern edge is the conventional seaward edge for these northern-
+    hemisphere coastal demos; this is a deterministic fallback, not a claim about
+    the true coastline).
+    """
+    if spec.coastal_gauge_lonlat is not None:
+        return spec.coastal_gauge_lonlat
+    min_lon, min_lat, max_lon, max_lat = spec.bbox
+    gx = 0.5 * (min_lon + max_lon)
+    gy = min_lat + 0.05 * (max_lat - min_lat)
+    return (gx, gy)
+
+
+def _refinement_ratios(amr_levels: int) -> list[int]:
+    """Per-level AMR refinement ratios - INCREASING toward the finest level.
+
+    GeoClaw's ``refinement_ratios_{x,y,t}`` lists carry one entry per level
+    transition (``amr_levels - 1`` entries). A flat all-2s list under-refines the
+    inundation front; the canonical examples step the ratio up (e.g. ``[4, 3]``).
+    We mirror that intent deterministically: the first transition is 2x, every
+    subsequent transition is 4x, so coarse levels stay cheap while the finest
+    levels resolve the wet/dry front. ``amr_levels=1`` -> ``[1]`` (GeoClaw wants a
+    non-empty list of length >= mxnest-1, and 1 is a harmless self-ratio).
+    """
+    n = max(amr_levels - 1, 1)
+    return [2 if i == 0 else 4 for i in range(n)]
+
+
+# Synthetic (NON-SITE-SPECIFIC) Okada fault defaults - used ONLY when the
+# user did not supply the matching geometry field. Mirrored from the v0.1
+# render_maketopo_dtopo synthetic source so the banner / honesty story is
+# consistent.
+_SYNTHETIC_FAULT_STRIKE_DEG = 0.0
+_SYNTHETIC_FAULT_DIP_DEG = 15.0
+_SYNTHETIC_FAULT_RAKE_DEG = 90.0
+_SYNTHETIC_FAULT_DEPTH_KM = 10.0
+
+
 def render_qinit_data(spec: GeoClawBuildSpec) -> str:
     """Render a ``qinit.xyz`` raised-column perturbation for the dam_break scenario.
 
-    A topotype-1 (x y z) ESRI-style grid: a circular raised water column of
-    height ``dam_break_depth_m`` centred on the source, radius scaled to ~1/8 of
-    the domain. GeoClaw's ``qinit`` module adds this perturbation to the initial
-    water surface, releasing it at t=0 (the canonical dam-break test).
+    A TOPOTYPE-1 file: a circular raised water column of height
+    ``dam_break_depth_m`` centred on the source, radius scaled to ~1/8 of the
+    domain. GeoClaw's ``qinit`` module (``read_qinit`` in qinit_module.f90) reads
+    ONLY a bare ``x y z`` topotype-1 file -- it has NO ESRI/topotype-3 header
+    branch (it reads the first line as ``x_low y_hi`` then sweeps ``x y`` to infer
+    the grid, then re-reads ``x y q``). The perturbation is added to the initial
+    water surface and released at t=0 (qinit_type=4). It is referenced as the
+    SINGLE-element ``qinitfiles.append(['qinit.xyz'])`` (QinitData.write accepts
+    only a len-1 [fname] or the deprecated len-3 form; a len-2 list raises
+    ValueError at rundata.write()).
 
-    Pure string render — unit-testable with no clawpack import.
+    TOPOTYPE-1 layout (matches clawpack ``Topography.write(topo_type=1)``, format
+    verified against a real write): one ``x y z`` line per point, ordered
+    NORTH-FIRST (rows of decreasing latitude) and x-fastest (west->east) within
+    each row, so the first line is ``xlower yupper z`` exactly as read_qinit
+    expects. No header.
+
+    Pure string render -- unit-testable with no clawpack import.
     """
     min_lon, min_lat, max_lon, max_lat = spec.bbox
     cx, cy = _centroid(spec)
@@ -267,14 +360,23 @@ def render_qinit_data(spec: GeoClawBuildSpec) -> str:
     # A small (16x16) perturbation grid covering the source disc. GeoClaw
     # bilinearly interpolates the qinit file onto the computational grid.
     n = 16
+    x0 = cx - radius
+    y0 = cy - radius
+    cellsize = (2.0 * radius) / (n - 1)
+
+    def _z(i: int, j: int) -> float:
+        x = x0 + cellsize * i
+        y = y0 + cellsize * j
+        r = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+        return h if r <= radius else 0.0
+
+    # NORTH-FIRST rows (j = n-1 down to 0), x-fastest within each row; bare x y z.
     lines = []
-    for j in range(n):
+    for j in range(n - 1, -1, -1):
+        y = y0 + cellsize * j
         for i in range(n):
-            x = cx - radius + (2.0 * radius) * (i / (n - 1))
-            y = cy - radius + (2.0 * radius) * (j / (n - 1))
-            r = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-            z = h if r <= radius else 0.0
-            lines.append(f"{x:.8f} {y:.8f} {z:.6f}")
+            x = x0 + cellsize * i
+            lines.append(f"{x:.8f} {y:.8f} {_z(i, j):.6f}")
     return "\n".join(lines) + "\n"
 
 
@@ -284,15 +386,59 @@ def render_maketopo_dtopo(spec: GeoClawBuildSpec) -> str:
 
     Uses ``clawpack.geoclaw.dtopotools`` to build a single-subfault Okada source
     scaled from ``source_magnitude`` at the source point and write ``dtopo.tt3``.
+    The fault GEOMETRY (strike / dip / rake / depth) is taken from the build_spec
+    when the user supplied it, else a NON-SITE-SPECIFIC synthetic default - and
+    the generated helper PRINTS a loud banner for every defaulted field so the
+    run NEVER silently fabricates a site-specific source.
+
+    The dtopo grid is built with ``fault.create_dtopo_xy(dx=1/60., buffer_size=
+    2.0)`` (the canonical GeoClaw helper) rather than a hand-rolled
+    ``np.linspace`` box, and ``coordinate_specification="centroid"`` is kept
+    (required by Okada - a wrong/empty value raises ValueError).
+
     This is emitted as a SEPARATE Python helper the entrypoint runs BEFORE the
     solve (it imports clawpack, so it must not be imported by this authoring
     module). Pure string render here.
     """
     cx, cy = _centroid(spec)
     mw = float(spec.source_magnitude)
+
+    strike = spec.fault_strike_deg if spec.fault_strike_deg is not None else _SYNTHETIC_FAULT_STRIKE_DEG
+    dip = spec.fault_dip_deg if spec.fault_dip_deg is not None else _SYNTHETIC_FAULT_DIP_DEG
+    rake = spec.fault_rake_deg if spec.fault_rake_deg is not None else _SYNTHETIC_FAULT_RAKE_DEG
+    depth_km = spec.fault_depth_km if spec.fault_depth_km is not None else _SYNTHETIC_FAULT_DEPTH_KM
+    depth_m = float(depth_km) * 1000.0
+
+    defaulted = [
+        name
+        for name, supplied in (
+            ("strike", spec.fault_strike_deg is not None),
+            ("dip", spec.fault_dip_deg is not None),
+            ("rake", spec.fault_rake_deg is not None),
+            ("depth", spec.fault_depth_km is not None),
+        )
+        if not supplied
+    ]
+    # Honesty banner: emitted (and printed at runtime) whenever ANY geometry
+    # field fell back to a synthetic, NON-SITE-SPECIFIC default.
+    if defaulted:
+        banner = (
+            "NON-SITE-SPECIFIC synthetic source: fault geometry field(s) "
+            + ", ".join(defaulted)
+            + " were NOT user-supplied and use generic synthetic defaults; "
+            "this dtopo is illustrative, NOT a site-specific seismic source."
+        )
+    else:
+        banner = ""
+
     return f'''"""Auto-generated by GRACE-2 GeoClaw worker — synthesize an Okada dtopo."""
-import numpy as np
 from clawpack.geoclaw import dtopotools
+
+# Honesty banner: loudly flag a non-site-specific synthetic source so the run
+# never silently fabricates a site-specific fault geometry.
+BANNER = {banner!r}
+if BANNER:
+    print("*** " + BANNER)
 
 # Scale a single rectangular subfault from the moment magnitude (Mw).
 # Wells & Coppersmith (1994) style log-scaling for length/width; mu = 4e10 Pa.
@@ -304,27 +450,28 @@ mu = 4.0e10
 slip = M0 / (mu * length * width)
 
 subfault = dtopotools.SubFault()
-subfault.strike = 0.0
-subfault.dip = 15.0
-subfault.rake = 90.0
+subfault.strike = {float(strike)!r}
+subfault.dip = {float(dip)!r}
+subfault.rake = {float(rake)!r}
 subfault.length = length
 subfault.width = width
-subfault.depth = 10.0e3
+subfault.depth = {depth_m!r}
 subfault.slip = slip
 subfault.longitude = {cx!r}
 subfault.latitude = {cy!r}
+# coordinate_specification is REQUIRED by Okada (empty/wrong -> ValueError).
 subfault.coordinate_specification = "centroid"
 
 fault = dtopotools.Fault()
 fault.subfaults = [subfault]
 
-# A dtopo grid covering a generous box around the source.
-dx = max(length, width) / 1.0e5 * 2.0
-x = np.linspace({cx!r} - 0.5, {cx!r} + 0.5, 101)
-y = np.linspace({cy!r} - 0.5, {cy!r} + 0.5, 101)
+# Build the dtopo grid with the canonical GeoClaw helper (auto-sizes a box
+# around the fault with a buffer), not a hand-rolled linspace box.
+x, y = fault.create_dtopo_xy(dx=1/60., buffer_size=2.0)
 fault.create_dtopography(x, y, times=[0.0, 1.0])
 fault.dtopo.write("dtopo.tt3", dtopo_type=3)
-print("wrote dtopo.tt3 mw=%s slip=%.2f m" % (mw, slip))
+print("wrote dtopo.tt3 mw=%s slip=%.2f m strike=%s dip=%s rake=%s depth_m=%s"
+      % (mw, slip, {float(strike)!r}, {float(dip)!r}, {float(rake)!r}, {depth_m!r}))
 '''
 
 
@@ -343,12 +490,24 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
     """
     min_lon, min_lat, max_lon, max_lat = spec.bbox
     nx, ny = spec.base_num_cells
-    amr_ratios = ", ".join(["2"] * max(spec.amr_levels - 1, 1))
+    amr_levels = int(spec.amr_levels)
+    ratios = _refinement_ratios(amr_levels)
+    amr_ratios = ", ".join(str(r) for r in ratios)
 
     # Evenly-spaced output frames including the final time (exclude t=0 dump:
     # GeoClaw always writes frame 0 at t=0, so we request output_frames AFTER it
     # via output_style=1 with num_output_times = output_frames and tfinal set).
     num_output_times = int(spec.output_frames)
+    tfinal = float(spec.sim_duration_s)
+
+    # Finest-level cell size over the AOI (dx_fine): the base cell size divided
+    # by the product of the refinement ratios. The fgmax monitor grid aligns to
+    # this so its sample points sit on finest-level FV cell centers.
+    base_dx = (max_lon - min_lon) / float(nx)
+    refine_product = 1
+    for r in ratios:
+        refine_product *= int(r)
+    dx_fine = base_dx / float(refine_product)
 
     # Scenario-specific source blocks.
     qinit_block = ""
@@ -358,7 +517,7 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
             "    qinit_data = rundata.qinit_data\n"
             "    qinit_data.qinit_type = 4  # perturbation to eta (water surface)\n"
             "    qinit_data.qinitfiles = []\n"
-            "    qinit_data.qinitfiles.append([1, 'qinit.xyz'])\n"
+            "    qinit_data.qinitfiles.append(['qinit.xyz'])\n"
         )
     elif spec.scenario == "tsunami":
         dtopo_file = spec.dtopo_file or "dtopo.tt3"
@@ -372,6 +531,59 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
     # raised sea surface as a single-pulse surge); a staged hydrograph upgrade
     # plugs in here via a fgmax/boundary forcing in a later phase.
 
+    # --- GAP1 fgmax: monitor max depth + speed + arrival time over the AOI ---
+    # Emitted for tsunami and surge (the inundation scenarios) - the fgmax output
+    # backs the max-inundation depth layer + the arrival_time_s narration. NOT
+    # emitted for dam_break (no coastal arrival concept there).
+    fgmax_block = ""
+    fgmax_import = ""
+    if spec.scenario in ("tsunami", "surge"):
+        fgmax_import = "from clawpack.geoclaw import fgmax_tools\n"
+        # A sane fgmax check cadence: ~50 checks across the run, floored at 1 s.
+        dt_check = max(tfinal / 50.0, 1.0)
+        arrival_tol = float(spec.fgmax_arrival_tol_m)
+        fgmax_block = (
+            "    # --- fgmax: max depth/speed/arrival monitored over the AOI ---\n"
+            "    rundata.fgmax_data.num_fgmax_val = 2  # save max depth + speed\n"
+            "    fgmax_grids = rundata.fgmax_data.fgmax_grids\n"
+            f"    dx_fine = {dx_fine!r}  # finest-level cell size over the AOI\n"
+            "    fg = fgmax_tools.FGmaxGrid()\n"
+            "    fg.point_style = 2  # uniform rectangular x-y grid\n"
+            "    # align sample pts with finest-level FV cell centers (half-cell inset):\n"
+            f"    fg.x1 = {min_lon!r} + dx_fine / 2.0\n"
+            f"    fg.x2 = {max_lon!r} - dx_fine / 2.0\n"
+            f"    fg.y1 = {min_lat!r} + dx_fine / 2.0\n"
+            f"    fg.y2 = {max_lat!r} - dx_fine / 2.0\n"
+            "    fg.dx = dx_fine\n"
+            "    fg.tstart_max = 0.0  # monitor max values from t0\n"
+            "    fg.tend_max = 1.e10\n"
+            f"    fg.dt_check = {dt_check!r}\n"
+            f"    fg.min_level_check = {amr_levels!r}  # monitor on the finest level\n"
+            f"    fg.arrival_tol = {arrival_tol!r}  # wet-cell threshold for arrival\n"
+            "    fg.interp_method = 0  # 0 ==> pw const in cells, recommended\n"
+            "    fgmax_grids.append(fg)\n"
+        )
+
+    # --- GAP3 regions: pin the finest level over the AOI for the whole run ---
+    regions_block = (
+        "    # --- Regions: pin the finest AMR level over the AOI for the run ---\n"
+        f"    rundata.regiondata.regions.append([{amr_levels!r}, {amr_levels!r}, "
+        f"0., {tfinal!r}, {min_lon!r}, {max_lon!r}, {min_lat!r}, {max_lat!r}])\n"
+    )
+
+    # --- GAP4 gauges: one coastal gauge (explicit or seaward-edge fallback) ---
+    gx, gy = _coastal_gauge(spec)
+    gauges_block = (
+        "    # --- Gauges: one coastal time-series gauge ---\n"
+        f"    rundata.gaugedata.gauges.append([1, {gx!r}, {gy!r}, 0., 1.e10])\n"
+    )
+
+    # --- GAP7 nested DEM: primary topo + any extra (coarse->fine) topo files ---
+    topo_lines = [f"    topo_data.topofiles.append([3, {spec.topo_file!r}])\n"]
+    for f in spec.extra_topo_files:
+        topo_lines.append(f"    topo_data.topofiles.append([3, {f!r}])\n")
+    topo_block = "".join(topo_lines)
+
     return f'''"""Auto-generated by GRACE-2 GeoClaw worker (setrun_builder).
 
 Scenario: {spec.scenario}
@@ -379,7 +591,7 @@ Domain (EPSG:4326): {spec.bbox}
 Do NOT hand-edit — regenerate from the build_spec.
 """
 from clawpack.clawutil import data
-
+{fgmax_import}
 
 def setrun(claw_pkg="geoclaw"):
     assert claw_pkg.lower() == "geoclaw", "setrun expects claw_pkg='geoclaw'"
@@ -449,7 +661,7 @@ def setrun(claw_pkg="geoclaw"):
     amrdata.regrid_buffer_width = 2
     amrdata.verbosity_regrid = 0
 
-{qinit_block}{dtopo_block}    return rundata
+{regions_block}{gauges_block}{fgmax_block}{qinit_block}{dtopo_block}    return rundata
 
 
 def setgeo(rundata):
@@ -477,9 +689,9 @@ def setgeo(rundata):
     topo_data = rundata.topo_data
     topo_data.topofiles = []
     # topotype 3 = ESRI/GeoClaw header ASCII; the entrypoint converts the staged
-    # DEM to this form as {spec.topo_file!r}.
-    topo_data.topofiles.append([3, {spec.topo_file!r}])
-
+    # DEM to this form as {spec.topo_file!r}. Any nested DEM(s) follow,
+    # ordered coarse->fine (GeoClaw prefers finer topo where it overlaps).
+{topo_block}
     return rundata
 
 
@@ -501,21 +713,22 @@ def render_makefile(spec: GeoClawBuildSpec) -> str:
     "No rule to make target '.output'".
 
     Mirrors the canonical clawpack/geoclaw example Makefile
-    (clawpack/geoclaw/examples/*/Makefile): set the load-bearing vars, leave the
-    custom MODULES/SOURCES empty (the GeoClaw 2d shallow Fortran + the Riemann
-    solvers come from ``$(CLAW)/geoclaw/src/2d/shallow/Makefile.geoclaw`` via its
-    COMMON_MODULES / COMMON_SOURCES), then include ``Makefile.geoclaw`` followed
-    by ``$(CLAWMAKE)`` = ``$(CLAW)/clawutil/src/Makefile.common``. The result
-    compiles ``xgeoclaw`` and runs it headless into ``_output/``.
+    (clawpack/geoclaw/examples/*/Makefile): set the load-bearing vars and list the
+    GeoClaw Riemann solvers in SOURCES (rpn2_geoclaw / rpt2_geoclaw /
+    geoclaw_riemann_utils -- these are NOT supplied by Makefile.geoclaw and MUST be
+    listed explicitly, exactly as every example Makefile does, or xgeoclaw fails to
+    link with "undefined reference to rpn2_/rpt2_"), then include
+    ``Makefile.geoclaw`` followed by ``$(CLAWMAKE)`` =
+    ``$(CLAW)/clawutil/src/Makefile.common``. The result compiles ``xgeoclaw`` and
+    runs it headless into ``_output/``.
 
     PURE string render -- unit-testable with NO clawpack import. $(CLAW) is
     resolved at run time from the image env (set in the Dockerfile).
     """
-    # The default GeoClaw maketopo target in the canonical example builds
-    # topography; our topo is staged (topo.asc) so no extra build step is
-    # needed. We keep MODULES/SOURCES empty -- the GeoClaw 2d shallow Fortran
-    # modules + the rpn2/rpt2 Riemann sources are supplied by Makefile.geoclaw's
-    # COMMON_MODULES / COMMON_SOURCES, exactly as the example Makefiles do.
+    # The GeoClaw 2d shallow modules come from Makefile.geoclaw's COMMON_MODULES,
+    # but the rpn2/rpt2 Riemann solvers are per-application SOURCES that the
+    # canonical example Makefiles list explicitly (Makefile.geoclaw does NOT add
+    # them). Omitting them is the "undefined reference to rpn2_/rpt2_" link bug.
     return '''# Auto-generated by GRACE-2 GeoClaw worker (setrun_builder.render_makefile).
 # Per-application GeoClaw Makefile -- defines the build vars then includes the
 # Clawpack machinery that provides the `.output` (headless solve) target.
@@ -538,12 +751,16 @@ PLOTDIR = _plots
 FFLAGS ?= -O2 -fopenmp
 FC ?= gfortran
 
-# Custom per-application Fortran -- none. The GeoClaw 2d shallow modules and the
-# Riemann solvers (rpn2_geoclaw / rpt2_geoclaw) come from Makefile.geoclaw's
-# COMMON_MODULES / COMMON_SOURCES below.
+# Custom per-application Fortran modules -- none (the GeoClaw 2d shallow modules
+# come from Makefile.geoclaw's COMMON_MODULES below).
 MODULES = \\
 
+# The GeoClaw Riemann solvers MUST be listed here (Makefile.geoclaw does not add
+# them); without them xgeoclaw fails to link (undefined reference to rpn2_/rpt2_).
 SOURCES = \\
+  $(CLAW)/riemann/src/rpn2_geoclaw.f \\
+  $(CLAW)/riemann/src/rpt2_geoclaw.f \\
+  $(CLAW)/riemann/src/geoclaw_riemann_utils.f \\
 
 EXCLUDE_MODULES = \\
 
