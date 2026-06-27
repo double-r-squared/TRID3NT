@@ -66,6 +66,29 @@ $SUDO cp -a /tmp/agent_deploy/grace2_agent/.     "$AGENT_DIR"/
 $SUDO cp -a /tmp/agent_deploy/grace2_contracts/. "$CONTRACTS_DIR"/
 echo "rollback: restore *.bak-$TS over the live dirs + restart $SERVICE"
 
+echo "== swap MODFLOW worker gwt_adapter (agent imports it for LOCAL mf6 runs) =="
+# The agent resolves gwt_adapter at <repo>/services/workers/modflow via
+# run_modflow._import_gwt_adapter (parents[5] of run_modflow.py). It is NOT in
+# either Python package, so without this swap the box runs a STALE gwt_adapter and
+# the MODFLOW archetypes raise "unknown MODFLOW archetype". Derive the worker dir
+# from the SAME anchor the agent uses (grace2_agent.__file__) so it tracks the
+# source layout, with a fallback to the conventional /opt/grace2 path.
+WORKER_DIR="$("$PY" - <<'PYEOF' 2>/dev/null
+import grace2_agent
+from pathlib import Path
+# grace2_agent/__init__.py -> parents: [grace2_agent, src, agent, services, REPO]
+print(Path(grace2_agent.__file__).resolve().parents[4] / "services" / "workers" / "modflow")
+PYEOF
+)"
+[ -d "$WORKER_DIR" ] || WORKER_DIR="/opt/grace2/services/workers/modflow"
+if [ -f /tmp/agent_deploy/workers_modflow/gwt_adapter.py ] && [ -d "$WORKER_DIR" ]; then
+  $SUDO cp -a "$WORKER_DIR/gwt_adapter.py" "$WORKER_DIR/gwt_adapter.py.bak-$TS" 2>/dev/null || true
+  $SUDO cp -a /tmp/agent_deploy/workers_modflow/gwt_adapter.py "$WORKER_DIR/gwt_adapter.py"
+  echo "gwt_adapter swapped: $WORKER_DIR/gwt_adapter.py"
+else
+  echo "WARN: gwt_adapter not in bundle or worker dir missing ($WORKER_DIR) -- MODFLOW archetypes may fail"
+fi
+
 echo "== install python-sandbox executor (code_exec_request) =="
 # sandbox-staging: executor.py is NOT in either Python package (it lives in the
 # repo's container build context), so the bundle ships it under python_sandbox/.
