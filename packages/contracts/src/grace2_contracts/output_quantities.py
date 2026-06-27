@@ -299,6 +299,39 @@ OUTPUT_QUANTITIES: dict[str, tuple[OutputQuantitySpec, ...]] = {
             default_on=False,
             doc="Per-cell signed RIV exchange flux (existing path).",
         ),
+        # NEW (sprint-18 Wave-1): sustainable_yield drawdown -> head-decline COG.
+        OutputQuantitySpec(
+            quantity_id="drawdown",
+            kind="raster",
+            name="Pumping drawdown (head decline)",
+            style_preset="continuous_drawdown_m",
+            units="meters",
+            role="primary",
+            default_on=True,
+            doc="Pre-pumping minus pumped GWF head (cone of depression).",
+        ),
+        # NEW (sprint-18 Wave-1): mine_dewatering DRN outflow -> dewatering-rate COG.
+        OutputQuantitySpec(
+            quantity_id="dewatering-rate",
+            kind="raster",
+            name="Mine dewatering rate",
+            style_preset="continuous_dewatering_rate",
+            units="m^3/day",
+            role="primary",
+            default_on=True,
+            doc="Per-cell DRN outflow over the pit footprint (pump-to-dewater rate).",
+        ),
+        # NEW (sprint-18 Wave-1): regional_water_budget zonal partition -> scalars.
+        OutputQuantitySpec(
+            quantity_id="budget-partition",
+            kind="scalar",
+            name="Regional water budget partition",
+            style_preset="continuous_head_m",
+            units="m^3/day",
+            role="context",
+            default_on=True,
+            doc="Per-zone cell-budget flow partition (CHD/RIV/WEL/storage) -> metrics.",
+        ),
     ),
     "geoclaw": (),
     "landlab": (

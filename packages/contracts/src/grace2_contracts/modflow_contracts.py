@@ -60,8 +60,13 @@ __all__ = [
     "MODFLOWRunArgs",
     "PlumeLayerURI",
     "SeepageLayerURI",
+    "DrawdownLayerURI",
+    "DewaterLayerURI",
+    "BudgetPartitionLayerURI",
     "DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY",
     "DEFAULT_STREAMBED_THICKNESS_M",
+    "DEFAULT_AQUIFER_SY",
+    "DEFAULT_AQUIFER_SS",
 ]
 
 
@@ -69,6 +74,14 @@ __all__ = [
 # not site-specific hydrogeology, by the Case 2 composer.
 DEFAULT_AQUIFER_K_MS: float = 1e-4  # hydraulic conductivity, m/s (sandy coastal plain)
 DEFAULT_POROSITY: float = 0.3  # effective porosity, dimensionless
+
+# Transient-storage defaults for the three new sprint-18 archetypes
+# (sustainable_yield / mine_dewatering / regional_water_budget). These feed the
+# GwfSto package (specific yield + specific storage) the transient stress period
+# needs; the existing spill/seepage archetype path does NOT read them (it stays
+# steady + the byte-identical conservative-tracer deck). Demo values, narrated.
+DEFAULT_AQUIFER_SY: float = 0.2  # specific yield (drainable porosity), dimensionless
+DEFAULT_AQUIFER_SS: float = 1e-5  # specific storage (1/m), confined-aquifer demo value
 
 
 class MODFLOWRunArgs(EngineRunArgsMixin):
@@ -133,6 +146,51 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             leaks into the aquifer) INSTEAD of the single spill cell. When False
             (default) the SRC stays at the spill cell exactly as the original
             groundwater-contamination deck.
+
+    Archetype selector + per-archetype fields (sprint-18 Wave-1 — ADDITIVE, all
+    optional/defaulted; ``archetype is None`` is the EXISTING spill/seepage path
+    and the deck is byte-identical):
+        archetype: which new MODFLOW question this run answers. ``None`` (the
+            default) keeps the existing spill/seepage deck. The three new values
+            are ``"sustainable_yield"`` (well-pumping drawdown), ``"mine_dewatering"``
+            (DRN-package pit dewatering), and ``"regional_water_budget"`` (zonal
+            flow-budget partition). The adapter branches on this; an unknown value
+            is rejected by the literal.
+
+        --- sustainable_yield (pumping-well drawdown) ---
+        well_location_latlon: pumping-well point as ``(lat, lon)`` EPSG:4326
+            (lat-first, same convention as ``spill_location_latlon``).
+        pumping_rate_m3_day: well discharge, m^3/day. NEGATIVE = extraction
+            (MF6 WEL sign convention: q < 0 removes water from the cell); a
+            positive value is injection.
+        aquifer_sy: specific yield (drainable porosity) for the GwfSto transient
+            storage term, dimensionless. Demo default ``DEFAULT_AQUIFER_SY`` (0.2).
+        aquifer_ss: specific storage (1/m) for the GwfSto transient term. Demo
+            default ``DEFAULT_AQUIFER_SS`` (1e-5).
+        sim_years: transient simulation length, years (> 0). When None the
+            adapter uses ``n_periods`` (or its own demo default).
+        n_periods: number of transient stress periods (>= 1). An alternative to
+            ``sim_years`` for explicit period control.
+
+        --- mine_dewatering (DRN-package pit dewatering) ---
+        pit_footprint_lonlat: the pit footprint as an ordered list of
+            ``(lon, lat)`` vertices (lon-first, the BBox/polygon convention) draped
+            onto the grid as DRN drain cells. A point or single-cell pit is a
+            one-element list.
+        drain_elevation_m: DRN drain elevation (the target dewatered head, m local
+            datum) applied to every pit cell. Water above this elevation drains out.
+        drain_conductance_m2_day: per-cell DRN conductance (m^2/day) controlling the
+            head-dependent drain flux Q = C*(h - drain_elev) for h > drain_elev.
+        well_pumping_rate_m3_day: OPTIONAL supplemental WEL extraction (m^3/day,
+            negative = extraction) combined with the drains (a pit can be dewatered
+            by drains plus pumping wells). None = drains only.
+
+        --- regional_water_budget (zonal flow-budget partition) ---
+        zone_partition: how to split the domain for the cell-budget zonal
+            accounting, e.g. ``"upgradient_downgradient"`` (a simple two-zone split
+            across the regional CHD gradient). None = no partition (whole-domain
+            budget only); a free string lets the adapter map a named partition
+            scheme.
     """
 
     schema_version: Literal["v1", "v2"] = "v2"
@@ -157,6 +215,29 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
     river_dem_uri: str | None = None
     along_river_source: bool = False
 
+    # --- Archetype selector (sprint-18 Wave-1; ADDITIVE, all optional) ------ #
+    # None = the EXISTING spill/seepage path (deck byte-identical).
+    archetype: (
+        Literal["sustainable_yield", "mine_dewatering", "regional_water_budget"] | None
+    ) = None
+
+    # --- sustainable_yield: pumping-well drawdown --------------------------- #
+    well_location_latlon: tuple[float, float] | None = None
+    pumping_rate_m3_day: float | None = None  # negative = extraction (WEL sign)
+    aquifer_sy: float = Field(default=DEFAULT_AQUIFER_SY, gt=0.0, le=1.0)
+    aquifer_ss: float = Field(default=DEFAULT_AQUIFER_SS, gt=0.0)
+    sim_years: float | None = Field(default=None, gt=0.0)
+    n_periods: int | None = Field(default=None, ge=1)
+
+    # --- mine_dewatering: DRN-package pit dewatering ------------------------ #
+    pit_footprint_lonlat: list[tuple[float, float]] | None = None
+    drain_elevation_m: float | None = None
+    drain_conductance_m2_day: float | None = Field(default=None, gt=0.0)
+    well_pumping_rate_m3_day: float | None = None  # optional supplemental WEL
+
+    # --- regional_water_budget: zonal flow-budget partition ---------------- #
+    zone_partition: str | None = None
+
     @field_validator("spill_location_latlon")
     @classmethod
     def _validate_latlon(cls, value: tuple[float, float]) -> tuple[float, float]:
@@ -170,6 +251,27 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
         if not (-180.0 <= lon <= 180.0):
             raise ValueError(
                 f"spill_location_latlon longitude out of range [-180, 180]: {lon!r} "
+                f"(expected (lat, lon) order)"
+            )
+        return value
+
+    @field_validator("well_location_latlon")
+    @classmethod
+    def _validate_well_latlon(
+        cls, value: tuple[float, float] | None
+    ) -> tuple[float, float] | None:
+        """Enforce ``(lat, lon)`` ranges on the pumping well, when supplied."""
+        if value is None:
+            return None
+        lat, lon = value
+        if not (-90.0 <= lat <= 90.0):
+            raise ValueError(
+                f"well_location_latlon latitude out of range [-90, 90]: {lat!r} "
+                f"(expected (lat, lon) order)"
+            )
+        if not (-180.0 <= lon <= 180.0):
+            raise ValueError(
+                f"well_location_latlon longitude out of range [-180, 180]: {lon!r} "
                 f"(expected (lat, lon) order)"
             )
         return value
@@ -230,3 +332,78 @@ class SeepageLayerURI(LayerURI):
     gaining_m3_day: float = Field(ge=0.0)
     losing_m3_day: float = Field(ge=0.0)
     river_cell_count: int = Field(ge=0)
+
+
+class DrawdownLayerURI(LayerURI):
+    """A ``LayerURI`` for the sustainable-yield drawdown layer + narration scalars.
+
+    The headline output of the ``"sustainable_yield"`` archetype: the postprocess
+    reads the transient GWF head (.hds) and renders head-DECLINE (pre-pumping head
+    minus pumped head) as a COG so the user sees the cone of depression a pumping
+    well draws down around it.
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured numbers
+    the agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        max_drawdown_m: peak head decline anywhere in the domain, m (>= 0).
+        head_decline_timeseries: OPTIONAL per-step head decline at the well (or a
+            monitoring cell), m, one value per saved transient step. None when the
+            run published a single steady/peak frame with no time series.
+
+    ``layer_type`` is ``"raster"`` (a drawdown COG); the base contract's format
+    vocabulary is inherited unchanged.
+    """
+
+    max_drawdown_m: float = Field(ge=0.0)
+    head_decline_timeseries: list[float] | None = None
+
+
+class DewaterLayerURI(LayerURI):
+    """A ``LayerURI`` for the mine-dewatering DRN-flux layer + narration scalars.
+
+    The headline output of the ``"mine_dewatering"`` archetype: the postprocess
+    reads the GWF cell-by-cell budget DRN term (the per-cell head-dependent drain
+    flux Q = C*(h - drain_elev)) over the pit footprint and renders the dewatering
+    rate as a COG, narrating the total water the pit must pump to stay dewatered.
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured numbers
+    the agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        dewatering_rate_m3_day: total DRN outflow magnitude summed over the pit
+            drain cells, m^3/day (>= 0) — the pumping rate the pit needs.
+        drain_cell_count: number of DRN drain cells draped onto the grid (>= 0).
+
+    ``layer_type`` is ``"raster"`` (a dewatering-rate COG); the base contract's
+    format vocabulary is inherited unchanged.
+    """
+
+    dewatering_rate_m3_day: float = Field(ge=0.0)
+    drain_cell_count: int = Field(ge=0)
+
+
+class BudgetPartitionLayerURI(LayerURI):
+    """A ``LayerURI`` for the regional-water-budget zonal partition + scalars.
+
+    The headline output of the ``"regional_water_budget"`` archetype: the
+    postprocess reads the GWF cell-by-cell budget and partitions the flow terms
+    (CHD in/out, RIV, WEL, storage) by zone, narrating where the regional water
+    goes. The ``layer_type`` may be ``"vector"`` (a per-zone polygon carrying the
+    partitioned budget) or ``"raster"`` (a zone-id raster); the base contract's
+    format vocabulary is inherited unchanged.
+
+    Extends ``LayerURI`` field-for-field so it maps onto ``map-command load-layer``
+    with no translation (same as every other layer). Adds the structured budget the
+    agent narrates so the LLM cites typed fields, never invents them
+    (invariant 1, FR-AS-7):
+
+        budget_partition_m3_day: mapping of zone/term label -> signed flow rate,
+            m^3/day (positive = into the aquifer/zone, MF6 budget sign convention).
+            e.g. ``{"upgradient_chd_in": 1200.0, "downgradient_chd_out": -1180.0,
+            "storage": -20.0}``.
+    """
+
+    budget_partition_m3_day: dict[str, float]

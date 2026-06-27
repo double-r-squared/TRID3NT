@@ -16,11 +16,19 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from grace2_contracts import MODFLOWRunArgs, PlumeLayerURI
+from grace2_contracts import (
+    BudgetPartitionLayerURI,
+    DewaterLayerURI,
+    DrawdownLayerURI,
+    MODFLOWRunArgs,
+    PlumeLayerURI,
+)
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.envelope import TemporalConfig
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
+    DEFAULT_AQUIFER_SS,
+    DEFAULT_AQUIFER_SY,
     DEFAULT_POROSITY,
 )
 
@@ -322,3 +330,310 @@ def test_plume_layer_uri_forbids_extra_fields() -> None:
     """Inherited GraceModel extra='forbid' still applies on the subclass."""
     with pytest.raises(ValidationError):
         _plume(some_unknown_field=1.0)
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-1: archetype run-args fields + new LayerURI subclasses
+# (ADDITIVE / DEFAULTED — the existing spill/seepage path stays byte-identical)
+# --------------------------------------------------------------------------- #
+
+
+def _spill_args(**overrides: object) -> MODFLOWRunArgs:
+    """The minimal EXISTING spill run-args (no archetype) as the additive base."""
+    base: dict[str, object] = dict(
+        spill_location_latlon=(26.6, -81.9),
+        contaminant="benzene",
+        release_rate_kg_s=0.5,
+        duration_days=3.0,
+    )
+    base.update(overrides)
+    return MODFLOWRunArgs(**base)  # type: ignore[arg-type]
+
+
+def test_additive_safety_no_new_fields_still_validates() -> None:
+    """A run-args with NONE of the sprint-18 archetype fields validates, all the
+    new fields default off, and schema_version is unchanged (additive growth)."""
+    args = _spill_args()
+    # archetype selector defaults to None -> existing spill/seepage path.
+    assert args.archetype is None
+    # sustainable_yield fields default off (storage uses the demo SY/SS defaults).
+    assert args.well_location_latlon is None
+    assert args.pumping_rate_m3_day is None
+    assert args.aquifer_sy == DEFAULT_AQUIFER_SY == 0.2
+    assert args.aquifer_ss == DEFAULT_AQUIFER_SS == 1e-5
+    assert args.sim_years is None
+    assert args.n_periods is None
+    # mine_dewatering fields default off.
+    assert args.pit_footprint_lonlat is None
+    assert args.drain_elevation_m is None
+    assert args.drain_conductance_m2_day is None
+    assert args.well_pumping_rate_m3_day is None
+    # regional_water_budget field defaults off.
+    assert args.zone_partition is None
+    # schema_version UNCHANGED by the additive growth.
+    assert args.schema_version == "v2"
+
+
+def test_schema_version_unchanged_after_additive_fields() -> None:
+    """The contract version pin stays v2 (no schema_version bump for additive)."""
+    assert MODFLOWRunArgs.model_fields["schema_version"].default == "v2"
+
+
+def test_sustainable_yield_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="sustainable_yield",
+        well_location_latlon=(40.0, -100.0),
+        pumping_rate_m3_day=-2000.0,  # extraction (WEL negative)
+        aquifer_sy=0.15,
+        aquifer_ss=2e-5,
+        sim_years=10.0,
+        n_periods=12,
+    )
+    assert args.archetype == "sustainable_yield"
+    assert args.well_location_latlon == (40.0, -100.0)
+    assert args.pumping_rate_m3_day == -2000.0
+    assert args.aquifer_sy == 0.15
+    assert args.aquifer_ss == 2e-5
+    assert args.sim_years == 10.0
+    assert args.n_periods == 12
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # the well-location tuple round-trips through a JSON list back to a tuple.
+    assert a["well_location_latlon"] == [40.0, -100.0]
+    assert (
+        MODFLOWRunArgs.model_validate(json.loads(text_a)).well_location_latlon
+        == (40.0, -100.0)
+    )
+
+
+def test_well_location_latlon_range_validated() -> None:
+    """The pumping-well location honors the (lat, lon) range contract."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="sustainable_yield", well_location_latlon=(100.0, -100.0))
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="sustainable_yield", well_location_latlon=(40.0, 200.0))
+
+
+@pytest.mark.parametrize("sy", [0.0, -0.1, 1.5])
+def test_aquifer_sy_bounds(sy: float) -> None:
+    """Specific yield is in (0, 1]; 0 and >1 are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(aquifer_sy=sy)
+
+
+@pytest.mark.parametrize("ss", [0.0, -1e-6])
+def test_aquifer_ss_must_be_positive(ss: float) -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(aquifer_ss=ss)
+
+
+@pytest.mark.parametrize("n", [0, -1])
+def test_n_periods_must_be_at_least_one(n: int) -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(n_periods=n)
+
+
+def test_mine_dewatering_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="mine_dewatering",
+        pit_footprint_lonlat=[(-100.0, 40.0), (-100.0, 40.1), (-99.9, 40.1)],
+        drain_elevation_m=12.5,
+        drain_conductance_m2_day=500.0,
+        well_pumping_rate_m3_day=-300.0,
+    )
+    assert args.archetype == "mine_dewatering"
+    assert args.pit_footprint_lonlat == [
+        (-100.0, 40.0),
+        (-100.0, 40.1),
+        (-99.9, 40.1),
+    ]
+    assert args.drain_elevation_m == 12.5
+    assert args.drain_conductance_m2_day == 500.0
+    assert args.well_pumping_rate_m3_day == -300.0
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # list-of-tuples round-trips to list-of-lists in JSON and back to tuples.
+    assert a["pit_footprint_lonlat"] == [[-100.0, 40.0], [-100.0, 40.1], [-99.9, 40.1]]
+    assert MODFLOWRunArgs.model_validate(json.loads(text_a)).pit_footprint_lonlat == [
+        (-100.0, 40.0),
+        (-100.0, 40.1),
+        (-99.9, 40.1),
+    ]
+
+
+def test_drain_conductance_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="mine_dewatering", drain_conductance_m2_day=0.0)
+
+
+def test_regional_water_budget_archetype_roundtrip() -> None:
+    args = _spill_args(
+        archetype="regional_water_budget",
+        zone_partition="upgradient_downgradient",
+    )
+    assert args.archetype == "regional_water_budget"
+    assert args.zone_partition == "upgradient_downgradient"
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+
+
+def test_unknown_archetype_rejected_by_literal() -> None:
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="not_an_archetype")
+
+
+# --------------------------------------------------------------------------- #
+# DrawdownLayerURI / DewaterLayerURI / BudgetPartitionLayerURI
+# --------------------------------------------------------------------------- #
+
+
+def _drawdown(**overrides: object) -> DrawdownLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-drawdown",
+        name="Pumping drawdown (m)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/drawdown.cog.tif",
+        style_preset="continuous_drawdown_m",
+        max_drawdown_m=4.2,
+    )
+    base.update(overrides)
+    return DrawdownLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_drawdown_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _drawdown(
+        head_decline_timeseries=[0.0, 1.1, 2.4, 3.7, 4.2],
+        units="meters",
+        bbox=(-100.2, 39.9, -99.8, 40.3),
+    )
+    assert isinstance(layer, LayerURI)
+    assert layer.max_drawdown_m == 4.2
+    assert layer.head_decline_timeseries == [0.0, 1.1, 2.4, 3.7, 4.2]
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = DrawdownLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+
+
+def test_drawdown_timeseries_optional_and_scalar_added() -> None:
+    layer = _drawdown()
+    assert layer.head_decline_timeseries is None  # optional, defaults None
+    assert "max_drawdown_m" not in LayerURI.model_fields
+    assert "max_drawdown_m" in DrawdownLayerURI.model_fields
+
+
+@pytest.mark.parametrize("dd", [-0.1, -5.0])
+def test_max_drawdown_must_be_non_negative(dd: float) -> None:
+    with pytest.raises(ValidationError):
+        _drawdown(max_drawdown_m=dd)
+
+
+def _dewater(**overrides: object) -> DewaterLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-dewater",
+        name="Mine dewatering rate (m^3/day)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/dewater.cog.tif",
+        style_preset="continuous_dewatering_rate",
+        dewatering_rate_m3_day=18500.0,
+        drain_cell_count=42,
+    )
+    base.update(overrides)
+    return DewaterLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_dewater_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _dewater(units="m^3/day")
+    assert isinstance(layer, LayerURI)
+    assert layer.dewatering_rate_m3_day == 18500.0
+    assert layer.drain_cell_count == 42
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = DewaterLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert "dewatering_rate_m3_day" not in LayerURI.model_fields
+    assert "dewatering_rate_m3_day" in DewaterLayerURI.model_fields
+
+
+@pytest.mark.parametrize("rate", [-0.1, -100.0])
+def test_dewatering_rate_must_be_non_negative(rate: float) -> None:
+    with pytest.raises(ValidationError):
+        _dewater(dewatering_rate_m3_day=rate)
+
+
+def test_drain_cell_count_must_be_non_negative() -> None:
+    with pytest.raises(ValidationError):
+        _dewater(drain_cell_count=-1)
+
+
+def _budget(**overrides: object) -> BudgetPartitionLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-budget",
+        name="Regional water budget partition",
+        layer_type="vector",
+        uri="s3://grace-2/runs/01HX/budget.fgb",
+        style_preset="continuous_head_m",
+        budget_partition_m3_day={
+            "upgradient_chd_in": 1200.0,
+            "downgradient_chd_out": -1180.0,
+            "storage": -20.0,
+        },
+    )
+    base.update(overrides)
+    return BudgetPartitionLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_budget_partition_layer_uri_is_a_layer_uri_and_roundtrips() -> None:
+    layer = _budget(units="m^3/day")
+    assert isinstance(layer, LayerURI)
+    assert layer.budget_partition_m3_day["upgradient_chd_in"] == 1200.0
+    assert layer.budget_partition_m3_day["downgradient_chd_out"] == -1180.0
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = BudgetPartitionLayerURI.model_validate(json.loads(text_a)).model_dump(
+        mode="json"
+    )
+    assert text_a == json.dumps(b, sort_keys=True)
+    assert "budget_partition_m3_day" not in LayerURI.model_fields
+    assert "budget_partition_m3_day" in BudgetPartitionLayerURI.model_fields
+
+
+def test_budget_partition_required_and_extra_forbidden() -> None:
+    # the partition dict is required (no default).
+    with pytest.raises(ValidationError):
+        BudgetPartitionLayerURI(
+            layer_id="run-01HX-budget",
+            name="Budget",
+            layer_type="vector",
+            uri="s3://grace-2/runs/01HX/budget.fgb",
+            style_preset="continuous_head_m",
+            # missing budget_partition_m3_day
+        )
+    # inherited GraceModel extra='forbid' still applies.
+    with pytest.raises(ValidationError):
+        _budget(some_unknown_field=1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Output-quantity registry: the three new modflow quantities are registered.
+# --------------------------------------------------------------------------- #
+
+
+def test_new_modflow_output_quantities_registered() -> None:
+    """drawdown / dewatering-rate / budget-partition are registered + default-on."""
+    from grace2_contracts.output_quantities import get_output_registry
+
+    registry = get_output_registry("modflow")
+    by_id = {spec.quantity_id: spec for spec in registry}
+    for qid in ("drawdown", "dewatering-rate", "budget-partition"):
+        assert qid in by_id, f"missing modflow output quantity {qid!r}"
+        assert by_id[qid].default_on is True
+    # the new quantities are ADDITIVE: the existing headline quantities still exist.
+    assert "plume-concentration" in by_id
+    assert "river-seepage" in by_id

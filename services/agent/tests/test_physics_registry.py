@@ -25,7 +25,12 @@ def test_every_entry_has_the_required_keys() -> None:
         for key, spec in table.items():
             for required in ("type", "range", "default", "deck_target", "doc"):
                 assert required in spec, f"{engine}.{key} missing {required!r}"
-            # the default must itself pass the spec (a self-consistent table).
+            # A ``None`` default is a legitimate SENTINEL ("no pinned value /
+            # mirror another key at the deck seam", e.g. modflow.decay_sorbed_per_day
+            # -> mirror the aqueous decay) and intentionally does NOT round-trip
+            # through coercion. Concrete defaults must self-consistently pass.
+            if spec["default"] is None:
+                continue
             resolved = validate_and_resolve_physics(engine, {key: spec["default"]})
             assert key in resolved
 

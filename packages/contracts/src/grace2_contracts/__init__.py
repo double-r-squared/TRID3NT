@@ -70,7 +70,14 @@ from .common import (
     now_utc,
 )
 from .geoclaw_contracts import GeoClawDepthLayerURI, GeoClawRunArgs
-from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI, SeepageLayerURI
+from .modflow_contracts import (
+    BudgetPartitionLayerURI,
+    DewaterLayerURI,
+    DrawdownLayerURI,
+    MODFLOWRunArgs,
+    PlumeLayerURI,
+    SeepageLayerURI,
+)
 from .publish_manifest import (
     MANIFEST_SCHEMA_VERSION,
     PublishManifest,
@@ -126,6 +133,9 @@ __all__ = [
     "MODFLOWRunArgs",
     "PlumeLayerURI",
     "SeepageLayerURI",
+    "DrawdownLayerURI",
+    "DewaterLayerURI",
+    "BudgetPartitionLayerURI",
     # SWMM quasi-2D urban-flood contracts (sprint-16 P1)
     "SWMMRunArgs",
     "SWMMDepthLayerURI",

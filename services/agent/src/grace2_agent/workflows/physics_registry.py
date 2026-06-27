@@ -228,6 +228,22 @@ PHYSICS_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
             "deck_target": "GwtMst:decay",
             "doc": "First-order decay rate (1/day); 0 = conservative tracer.",
         },
+        # MF6 GwtMst has a SEPARATE sorbed-phase first-order decay (decay_sorbed)
+        # distinct from the aqueous-phase decay above (decay). With sorption on
+        # (sorption_kd > 0) a contaminant degrades on the solid phase too; this
+        # makes the sorbed decay rate user-controllable so the decay+sorption fix
+        # is a real lever (default None = mirror the aqueous decay_rate_per_day at
+        # the deck seam, NOT a hard 0 -> byte-identical until set).
+        "decay_sorbed_per_day": {
+            "type": float,
+            "range": (0.0, 10.0),
+            "default": None,
+            "deck_target": "GwtMst:decay_sorbed",
+            "doc": (
+                "Sorbed-phase first-order decay rate (1/day); None = mirror the "
+                "aqueous decay_rate_per_day (only active when sorption_kd > 0)."
+            ),
+        },
         "long_dispersivity_m": {
             "type": float,
             "range": (0.1, 1000.0),
