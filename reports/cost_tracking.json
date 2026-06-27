@@ -2691,5 +2691,90 @@
     "description": "Opus Agent: 2 small agent-side OpenQuake gaps - added run_seismic_hazard_psha to SOLVER_CONFIRM_TOOLS (proceed/cancel confirm card via _build_psha_confirm_envelope + autostop solver-busy marker, Invariant 9) + reconciled physics_registry width_of_mfd_bin default 0.1->0.2 to match the engine-proven deck default. 71 agent tests green. Part of the OpenQuake local-proof-then-deploy (4 deck/postprocess bugs the orchestrator found + fixed via a real local oq engine run; worker image CodeBuild-rebuilt + agent SSM-deployed).",
     "model": "opus",
     "subagent_tokens": 122517
+  },
+  {
+    "job_id": "sfincs-coverage-implement",
+    "sprint": 17,
+    "description": "Dynamic workflow w9jospiy9 (4 agents: deck+physics builder / composer auto-wire / real-fixture archetype-deck tests / reviewer). Full SFINCS archetype coverage: physics switches (advection/theta/alpha/huthresh/coriolis_latitude/wind_drag), infiltration (CN/constant/qinf), levee-breach interior discharge, tsunami bzs N-wave synth, fluvial+compound NWM->USGS auto-wire. Proven against real Mexico Beach 3DEP+NLCD fixture.",
+    "model": "opus-4.8",
+    "subagent_tokens": 755823
+  },
+  {
+    "job_id": "sfincs-geoclaw-docs-grounding",
+    "sprint": 17,
+    "description": "Dynamic workflow wodjlwi39: thorough official-manual grounding for SFINCS + GeoClaw + (OpenQuake/MODFLOW confirm) - caught SFINCS physics bugs (advection no value 2; theta/alpha/huthresh baselines; coriolis-is-real) + GeoClaw gaps (fgmax/AMR regions/nested DEMs/gauges/qinit header/Okada). Findings -> reports/inflight/engine-docs-grounding.md.",
+    "model": "opus-4.8",
+    "subagent_tokens": null
+  },
+  {
+    "job_id": "geoclaw-install-research",
+    "sprint": 17,
+    "description": "Workflow wevmxoco2 (16 agents): research viable GeoClaw local-proof install path grounded in clawpack docs + empirical box probe + 3-vote adversarial verify + synthesis. Verdict: conda-forge full-solve (rootless micromamba gfortran, no sudo).",
+    "model": "opus-4.8",
+    "subagent_tokens": 1021336
+  },
+  {
+    "job_id": "geoclaw-gap-plan",
+    "sprint": 17,
+    "description": "Plan agent af4ade66: read-only current-code-grounded fix plan for the 7 GeoClaw gaps + local-proof test plan.",
+    "model": "opus-4.8",
+    "subagent_tokens": 120590
+  },
+  {
+    "job_id": "geoclaw-gap-fixes",
+    "sprint": 17,
+    "description": "Workflow wrx787u26 (7 agents): implement 7 GeoClaw gap-fixes across contracts+worker+agent + 4-dim adversarial review (caught the qinit-topotype + fgmax-sentinel blocking bugs). Main loop then fixed those + the Riemann-SOURCES link bug, proven by real local xgeoclaw solve. Commit 9ae6c2e.",
+    "model": "opus-4.8",
+    "subagent_tokens": 761818
+  },
+  {
+    "job_id": "modflow-coverage-scope",
+    "sprint": 17,
+    "description": "Workflow wrai4oorb (7 agents): scope MODFLOW scenario coverage - assess current gwt_adapter seam + ground 5 archetype clusters in flopy/mf6 docs (yield/budget/ASR/MAR, MODPATH-capture via native PRT, GWT-extend, saltwater BUY, dewater/wetland) + prioritized plan. Found a LIVE decay_sorbed bug; all 11 archetypes are zero-worker-rebuild (native PRT+BUY).",
+    "model": "opus-4.8",
+    "subagent_tokens": 658112
+  },
+  {
+    "job_id": "modflow-wave1",
+    "sprint": 17,
+    "description": "Workflow waxmmshef (8 agents): MODFLOW Wave-1 (decay_sorption bugfix + sustainable_yield + mine_dewatering + regional_water_budget) - contracts prep + adapter + agent composers + REAL mf6 proof gate (caught a WEL sign bug) + 4-dim review. Integrated worktree->main (3e4fbc2..bf01153). All 4 archetypes proven on real mf6.",
+    "model": "opus-4.8",
+    "subagent_tokens": 1237680
+  },
+  {
+    "job_id": "fault-fetcher-productionize",
+    "sprint": 17,
+    "description": "Workflow wvd79obh1 (6 agents): productionize real-fault OpenQuake - fetch_fault_sources tool (GEM Global Active Faults) + slip-rate->moment-balanced-MFD->NRML simpleFaultSource in job_ini + composer wiring (real faults / synthetic fallback) + product-path proof (530-site fault-aligned SF map, 100% top-decile within 5km of a real trace) + review. Honesty divergence fixed via a shared renderability gate. Commit aacfa44.",
+    "model": "opus-4.8",
+    "subagent_tokens": 791932
+  },
+  {
+    "job_id": "modflow-wave2",
+    "sprint": 18,
+    "description": "Workflow wjj0g5hge (8 agents): MODFLOW Wave-2 (MAR/ASR/wetland_hydroperiod) on the Wave-1 transient helpers + real mf6 proof gate (caught a run_modflow archetype_kwargs drop) + 4-dim review. Proven on real mf6 (MAR mounding 18.3m, ASR recovery_eff 1.0 sawtooth, wetland range 0.31m). Style-preset guard + semantic ramps fixed. Commit 4ab181c.",
+    "model": "opus-4.8",
+    "subagent_tokens": 1527303
+  },
+  {
+    "job_id": "modflow-wave3-multispecies",
+    "sprint": 18,
+    "description": "Workflow wv2rbdqsu (MODFLOW Wave-3 multi_species: N ModflowGwt + N ModflowGwfgwt on one shared GWF). Real mf6 proof (TCE conservative vs cis-DCE sorbing/decaying) + 3-dim review. Caught the BLOCKING MF6 16-char MODELNAME overflow + over-sold decay-chain docstrings (fixed). Commit 2ae8778. NOTE: token count is an estimate (workflow completed pre-compaction; usage block unavailable).",
+    "model": "opus-4.8",
+    "subagent_tokens": 1000000,
+    "estimated": true
+  },
+  {
+    "job_id": "modflow-wave4-prt-research",
+    "sprint": 18,
+    "description": "PRT capture-zone method research agent (general-purpose): proved live with real mf6 6.7.0 + flopy 3.10 that MF6 PRT has no backward flag -> USGS two-sim reverse-flow method (CellBudgetFile.reverse + FMI); pinned the deck recipe + CRS gotchas. Working script /tmp/prt_capture_zone.",
+    "model": "opus-4.8",
+    "subagent_tokens": 145802
+  },
+  {
+    "job_id": "modflow-wave4-build",
+    "sprint": 18,
+    "description": "Workflow wf_b0fe88a5 (8 agents): MODFLOW Wave-4 capture_zone + wellhead_protection (native PRT backward tracking -> FIRST vector MODFLOW output). 6 phases contracts/adapter/postprocess/compose/prove/review. Real mf6 proof + 3-dim adversarial review caught 2 BLOCKING (equator-polygon georef + discarded tiers) + 1 MAJOR (wrong 40 CFR cite); all fixed by orchestrator. Commit ed7fd50. Plus a read-only seam scout (Explore, ~est 40k, folded here).",
+    "model": "opus-4.8",
+    "subagent_tokens": 1025759
   }
 ]
