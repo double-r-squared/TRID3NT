@@ -27,6 +27,7 @@ from grace2_contracts import (
     MoundingLayerURI,
     MultiSpeciesPlumeResult,
     PlumeLayerURI,
+    SaltwaterWedgeLayerURI,
     SpeciesSpec,
 )
 from grace2_contracts.execution import LayerURI
@@ -1397,3 +1398,231 @@ def test_capture_zone_exported_from_package_top_level() -> None:
     from grace2_contracts import CaptureZoneLayerURI as CZL  # noqa: F401
 
     assert CZL is CaptureZoneLayerURI
+
+
+# --------------------------------------------------------------------------- #
+# sprint-18 Wave-5: saltwater_intrusion - MODFLOWRunArgs fields +
+# SaltwaterWedgeLayerURI (ADDITIVE / DEFAULTED - all prior paths byte-identical)
+# --------------------------------------------------------------------------- #
+
+
+def test_wave5_saltwater_intrusion_archetype_accepted_by_literal() -> None:
+    """The saltwater_intrusion archetype literal validates (additive on Wave-1/2/3/4)."""
+    args = _spill_args(archetype="saltwater_intrusion")
+    assert args.archetype == "saltwater_intrusion"
+
+
+def test_saltwater_intrusion_fields_default_off_on_spill_path() -> None:
+    """All Wave-5 saltwater_intrusion fields default off; the existing spill/seepage
+    path is byte-identical when none of them are set (additive growth guarantee)."""
+    args = _spill_args()
+    assert args.coastal_transect_latlon is None
+    assert args.seawater_salinity_ppt == 35.0
+    assert args.n_vertical_layers == 20
+    assert args.freshwater_inflow_m3_day is None
+
+
+def test_saltwater_intrusion_archetype_roundtrip() -> None:
+    """saltwater_intrusion with explicit fields round-trips through JSON."""
+    args = _spill_args(
+        archetype="saltwater_intrusion",
+        coastal_transect_latlon=((25.7, -80.2), (25.7, -80.1)),
+        seawater_salinity_ppt=35.0,
+        n_vertical_layers=20,
+        freshwater_inflow_m3_day=500.0,
+    )
+    assert args.archetype == "saltwater_intrusion"
+    assert args.coastal_transect_latlon == ((25.7, -80.2), (25.7, -80.1))
+    assert args.seawater_salinity_ppt == 35.0
+    assert args.n_vertical_layers == 20
+    assert args.freshwater_inflow_m3_day == 500.0
+    a = args.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = MODFLOWRunArgs.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # nested tuple of tuples round-trips to nested list-of-lists in JSON and back
+    assert a["coastal_transect_latlon"] == [[25.7, -80.2], [25.7, -80.1]]
+    rehydrated = MODFLOWRunArgs.model_validate(json.loads(text_a))
+    assert rehydrated.coastal_transect_latlon == ((25.7, -80.2), (25.7, -80.1))
+
+
+def test_seawater_salinity_ppt_must_be_positive() -> None:
+    """seawater_salinity_ppt must be > 0; 0 and negative values are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", seawater_salinity_ppt=0.0)
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", seawater_salinity_ppt=-5.0)
+
+
+def test_n_vertical_layers_bounds() -> None:
+    """n_vertical_layers must be in [4, 80]; values outside that range are rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", n_vertical_layers=3)
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", n_vertical_layers=81)
+
+
+def test_n_vertical_layers_boundary_values_allowed() -> None:
+    """Boundary values 4 and 80 are valid for n_vertical_layers."""
+    assert _spill_args(archetype="saltwater_intrusion", n_vertical_layers=4).n_vertical_layers == 4
+    assert _spill_args(archetype="saltwater_intrusion", n_vertical_layers=80).n_vertical_layers == 80
+
+
+def test_freshwater_inflow_m3_day_must_be_positive_when_supplied() -> None:
+    """freshwater_inflow_m3_day must be > 0 when supplied; 0 is rejected."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", freshwater_inflow_m3_day=0.0)
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="saltwater_intrusion", freshwater_inflow_m3_day=-100.0)
+
+
+def test_freshwater_inflow_m3_day_none_is_valid() -> None:
+    """freshwater_inflow_m3_day=None is valid (adapter auto-derives the flux)."""
+    args = _spill_args(archetype="saltwater_intrusion", freshwater_inflow_m3_day=None)
+    assert args.freshwater_inflow_m3_day is None
+
+
+def test_wave5_unknown_archetype_still_rejected() -> None:
+    """Adding saltwater_intrusion does not open the Literal to arbitrary values."""
+    with pytest.raises(ValidationError):
+        _spill_args(archetype="henry_problem")
+
+
+# --------------------------------------------------------------------------- #
+# SaltwaterWedgeLayerURI - Wave-5 vector LayerURI
+# --------------------------------------------------------------------------- #
+
+
+def _saltwater_wedge(**overrides: object) -> SaltwaterWedgeLayerURI:
+    base: dict[str, object] = dict(
+        layer_id="run-01HX-saltwater-wedge",
+        name="Saltwater wedge transect (Henry demo)",
+        layer_type="vector",
+        uri="s3://grace-2/runs/01HX/saltwater_wedge.fgb",
+        style_preset="saltwater_intrusion",
+        intrusion_length_m=850.0,
+        toe_distance_m=850.0,
+        seaward_salinity_ppt=35.0,
+        transect_endpoints=((25.7, -80.2), (25.7, -80.1)),
+    )
+    base.update(overrides)
+    return SaltwaterWedgeLayerURI(**base)  # type: ignore[arg-type]
+
+
+def test_saltwater_wedge_layer_uri_is_a_layer_uri() -> None:
+    """SaltwaterWedgeLayerURI extends LayerURI - substitutable as a LayerURI."""
+    layer = _saltwater_wedge()
+    assert isinstance(layer, LayerURI)
+    assert layer.layer_id == "run-01HX-saltwater-wedge"
+    assert layer.layer_type == "vector"
+    assert layer.role == "primary"  # inherited default
+    assert layer.temporal is None  # inherited default
+
+
+def test_saltwater_wedge_layer_type_defaults_to_vector() -> None:
+    """layer_type defaults to 'vector' (the transect line + toe point are a vector)."""
+    layer = _saltwater_wedge()
+    assert layer.layer_type == "vector"
+    assert SaltwaterWedgeLayerURI.model_fields["layer_type"].default == "vector"
+
+
+def test_saltwater_wedge_layer_uri_roundtrips() -> None:
+    """SaltwaterWedgeLayerURI round-trips through JSON serialization."""
+    layer = _saltwater_wedge(
+        bbox=(-80.21, 25.69, -80.09, 25.71),
+        units="m",
+    )
+    a = layer.model_dump(mode="json")
+    text_a = json.dumps(a, sort_keys=True)
+    b = SaltwaterWedgeLayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+    # Nested tuple-of-tuples serializes to list-of-lists in JSON.
+    assert a["transect_endpoints"] == [[25.7, -80.2], [25.7, -80.1]]
+    assert a["intrusion_length_m"] == 850.0
+    assert a["seaward_salinity_ppt"] == 35.0
+
+
+def test_saltwater_wedge_transect_endpoints_roundtrip() -> None:
+    """transect_endpoints nested tuple survives a JSON round-trip back to tuples."""
+    layer = _saltwater_wedge()
+    text = json.dumps(layer.model_dump(mode="json"), sort_keys=True)
+    rehydrated = SaltwaterWedgeLayerURI.model_validate(json.loads(text))
+    assert rehydrated.transect_endpoints == ((25.7, -80.2), (25.7, -80.1))
+
+
+def test_saltwater_wedge_added_fields_not_on_base_layer_uri() -> None:
+    """The four added fields are on SaltwaterWedgeLayerURI, not on the base LayerURI."""
+    for field in (
+        "intrusion_length_m",
+        "toe_distance_m",
+        "seaward_salinity_ppt",
+        "transect_endpoints",
+    ):
+        assert field not in LayerURI.model_fields, f"{field!r} should not be on LayerURI"
+        assert field in SaltwaterWedgeLayerURI.model_fields, (
+            f"{field!r} missing from SaltwaterWedgeLayerURI"
+        )
+
+
+@pytest.mark.parametrize("length", [-0.1, -500.0])
+def test_intrusion_length_must_be_non_negative(length: float) -> None:
+    """intrusion_length_m is >= 0; negative values are rejected."""
+    with pytest.raises(ValidationError):
+        _saltwater_wedge(intrusion_length_m=length)
+
+
+@pytest.mark.parametrize("dist", [-0.1, -1.0])
+def test_toe_distance_must_be_non_negative(dist: float) -> None:
+    """toe_distance_m is >= 0; negative values are rejected."""
+    with pytest.raises(ValidationError):
+        _saltwater_wedge(toe_distance_m=dist)
+
+
+def test_saltwater_wedge_zero_intrusion_allowed() -> None:
+    """intrusion_length_m == 0 is valid (no wedge penetration yet)."""
+    layer = _saltwater_wedge(intrusion_length_m=0.0, toe_distance_m=0.0)
+    assert layer.intrusion_length_m == 0.0
+    assert layer.toe_distance_m == 0.0
+
+
+def test_saltwater_wedge_requires_all_added_fields() -> None:
+    """All four added fields are required (no defaults for the key scalars)."""
+    # Missing intrusion_length_m.
+    with pytest.raises(ValidationError):
+        SaltwaterWedgeLayerURI(
+            layer_id="run-01HX-saltwater-wedge",
+            name="Saltwater wedge",
+            layer_type="vector",
+            uri="s3://grace-2/runs/01HX/saltwater_wedge.fgb",
+            style_preset="saltwater_intrusion",
+            toe_distance_m=850.0,
+            seaward_salinity_ppt=35.0,
+            transect_endpoints=((25.7, -80.2), (25.7, -80.1)),
+            # missing intrusion_length_m
+        )
+    # Missing transect_endpoints.
+    with pytest.raises(ValidationError):
+        SaltwaterWedgeLayerURI(
+            layer_id="run-01HX-saltwater-wedge",
+            name="Saltwater wedge",
+            layer_type="vector",
+            uri="s3://grace-2/runs/01HX/saltwater_wedge.fgb",
+            style_preset="saltwater_intrusion",
+            intrusion_length_m=850.0,
+            toe_distance_m=850.0,
+            seaward_salinity_ppt=35.0,
+            # missing transect_endpoints
+        )
+
+
+def test_saltwater_wedge_forbids_extra_fields() -> None:
+    """Inherited GraceModel extra='forbid' still applies on SaltwaterWedgeLayerURI."""
+    with pytest.raises(ValidationError):
+        _saltwater_wedge(some_unknown_field=1.0)
+
+
+def test_saltwater_wedge_exported_from_package_top_level() -> None:
+    """SaltwaterWedgeLayerURI is importable from the grace2_contracts top level."""
+    from grace2_contracts import SaltwaterWedgeLayerURI as SWL  # noqa: F401
+
+    assert SWL is SaltwaterWedgeLayerURI

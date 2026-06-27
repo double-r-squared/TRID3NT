@@ -77,6 +77,7 @@ from ..workflows.postprocess_modflow import (
     postprocess_dewatering,
     postprocess_drawdown,
     postprocess_mounding,
+    postprocess_saltwater_intrusion,
     postprocess_wetland_hydroperiod,
 )
 from ..workflows.run_modflow import (
@@ -125,6 +126,11 @@ ARCHETYPE_POSTPROCESS: dict[str, Any] = {
     # The headline is the outer envelope area; a zero-area zone is an empty result.
     "capture_zone": (postprocess_capture_zone, "capture_zone_area_km2"),
     "wellhead_protection": (postprocess_capture_zone, "capture_zone_area_km2"),
+    # Wave-5 Henry-style variable-density GWF+GWT saltwater intrusion (LOCAL-ONLY:
+    # the Henry demo grid is small + fast; Batch is never used). The headline is the
+    # bottom-layer 50%-isochlor toe penetration in metres (a positive scalar; the
+    # > 0 floor applies). NOT in PRT_ARCHETYPES (no PRT sim; standard GWF+GWT run).
+    "saltwater_intrusion": (postprocess_saltwater_intrusion, "intrusion_length_m"),
 }
 
 #: Archetypes whose headline deliverable is a SERIES / dict (truthy-when-present)

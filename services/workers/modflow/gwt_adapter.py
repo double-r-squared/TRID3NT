@@ -268,6 +268,82 @@ def _default_travel_time_years(archetype: str) -> list[float]:
 DEFAULT_PRT_MAX_TRACKING_YEARS = 75.0
 
 
+# ---------------------------------------------------------------------------
+# Wave-5 saltwater_intrusion defaults (sprint-18 Wave-5). The Henry-style
+# FIELD-SCALE coastal transect uses a vertical nrow=1 slice: ~1 km transect
+# length (ncol * delr), ~50 m saturated aquifer depth (nlay * delv). Salinity
+# is transported in PPT (0 = fresh, 35 = seawater). Density EOS via BUY:
+#   drhodc = (1025 - 1000) / (35 - 0) = 0.714 kg/m3 per ppt.
+# The seaward boundary is GHB+AUX (constant salt-water head) and the inland
+# boundary is WEL+AUX (freshwater inflow) -- the two-IMS, GWF-first pattern
+# from the proven henry_buy_proof.py script.
+# ---------------------------------------------------------------------------
+
+#: Horizontal cell width (m) along the transect. 100 columns * 10 m = 1 km.
+DEFAULT_SI_DELR_M = 10.0
+
+#: Number of horizontal columns across the transect. 100 * 10 m = 1 km domain.
+DEFAULT_SI_NCOL = 100
+
+#: Vertical cell height (m) per layer. 20 layers * 2.5 m = 50 m aquifer depth.
+DEFAULT_SI_DELV_M = 2.5
+
+#: Number of vertical layers in the Henry slice (caller-adjustable via
+#: ``n_vertical_layers``). Default 20 gives a 50 m aquifer at 2.5 m per cell.
+DEFAULT_SI_NLAY = 20
+
+#: Slice thickness (m) in the nrow=1 direction (unit-width 2D cross-section).
+DEFAULT_SI_DELC_M = 1.0
+
+#: Aquifer top elevation (m; sea-level datum). The seaward GHB holds head at
+#: this level; the inland WEL drives fresh water in at the same elevation.
+DEFAULT_SI_TOP_M = 0.0
+
+#: Seawater salinity (ppt) for the GHB+AUX boundary and the GWT IC (starts
+#: fully salty, fresh inflow displaces to equilibrium -- Henry convention).
+DEFAULT_SI_CSALT_PPT = 35.0
+
+#: Freshwater salinity (ppt). Used for the inland WEL+AUX boundary and the
+#: BUY crhoref (density reference concentration) so fresh water has density
+#: equal to denseref (1000 kg/m3).
+DEFAULT_SI_CFRESH_PPT = 0.0
+
+#: Reference fresh-water density (kg/m3) for the BUY EOS.
+DEFAULT_SI_DENSEREF = 1000.0
+
+#: Seawater density at csalt (kg/m3) for the BUY EOS.
+DEFAULT_SI_DENSESALT = 1025.0
+
+#: BUY drhodc (kg/m3 per ppt). Derived from (densesalt - denseref) / csalt.
+DEFAULT_SI_DRHODC = (DEFAULT_SI_DENSESALT - DEFAULT_SI_DENSEREF) / DEFAULT_SI_CSALT_PPT
+
+#: Hydraulic conductivity (m/day) for the saltwater-intrusion aquifer. Sandy
+#: coastal aquifer demo default (8.64 m/day ~ 1e-4 m/s). The caller can
+#: override by supplying ``aquifer_k_ms``.
+DEFAULT_SI_K_M_DAY = 8.64
+
+#: Porosity for the saltwater-intrusion aquifer (sand demo value).
+DEFAULT_SI_POROSITY = 0.35
+
+#: Molecular diffusion coefficient (m2/day) for salinity transport. Henry
+#: canonical value: 0.57024 m2/day (6.6e-6 m2/s * 86400 s/day).
+DEFAULT_SI_DIFFC_M2_DAY = 0.57024
+
+#: Total freshwater inflow (m3/day) through the inland WEL boundary when the
+#: caller does not supply ``freshwater_inflow_m3_day``. 5.7024 m3/day is the
+#: Henry Case-A benchmark (matches the diffusion flux at the 1 m-wide slice).
+DEFAULT_SI_INFLOW_M3_DAY = 5.7024
+
+#: Transient simulation length (days). One period of nsteps time steps ramping
+#: the system to a quasi-steady saltwater wedge (Henry: 0.5 day x 500 steps).
+#: For the field-scale (1 km) domain we run longer to equilibrate.
+DEFAULT_SI_PERIOD_DAYS = 250.0
+
+#: Number of time steps within the single transient period. 500 sub-steps
+#: resolves the sharp wedge front while keeping the run fast on small grids.
+DEFAULT_SI_NSTEPS = 500
+
+
 @dataclass
 class DeckManifest:
     """Typed description of a written MODFLOW 6 deck.
@@ -386,6 +462,27 @@ class DeckManifest:
     # Well easting/northing/lat/lon are the REAL coordinates (NOT local-origin).
     n_particles: int = 0       # number of particles in the PRT release ring
     capture_zone_travel_time_years: list[float] = field(default_factory=list)
+    # --- Wave-5 saltwater_intrusion (sprint-18 Wave-5; ADDITIVE) -------------------- #
+    # ``archetype == "saltwater_intrusion"``: GWF (BUY variable-density) + GWT in ONE
+    # sim, using a vertical nrow=1 slice (Henry geometry) with seaward GHB+AUX (salt)
+    # and inland WEL+AUX (fresh). Salinity transported in PPT (0..csalt). Density EOS
+    # via BUY: drhodc = 0.714 kg/m3 per ppt (at denseref=1000, densesalt=1025, csalt=35
+    # ppt). Every field below stays at its default for all other archetypes.
+    saltwater_intrusion: bool = False   # True iff a BUY variable-density deck was written
+    # Vertical-slice grid geometry (overrides the plan-view nlay/nrow/ncol/delr/delc):
+    si_nlay: int = 0            # number of vertical layers in the Henry slice
+    si_ncol: int = 0            # number of horizontal columns across the transect
+    si_delr: float = 0.0       # horizontal cell width (m) along the transect
+    si_delv: float = 0.0       # vertical cell height (m) per layer
+    sea_level_top: float = 0.0  # top of the aquifer in deck units (m; 0 = sea level)
+    # Transect endpoints in EPSG:4326 (A = seaward, B = inland):
+    transect_lat_a: float = 0.0   # latitude of the seaward endpoint (A)
+    transect_lon_a: float = 0.0   # longitude of the seaward endpoint (A)
+    transect_lat_b: float = 0.0   # latitude of the inland endpoint (B)
+    transect_lon_b: float = 0.0   # longitude of the inland endpoint (B)
+    seawater_salinity_ppt: float = 0.0   # GHB+AUX boundary salinity (ppt); also IC strt
+    # Headline scalar written to the manifest after the real run (0.0 before run):
+    intrusion_length_m: float = 0.0  # bottom-layer 50%-isochlor toe penetration (m)
     # Files written (relative to sim_dir), for manifest/upload assembly:
     files: list[str] = field(default_factory=list)
 
@@ -2415,6 +2512,378 @@ def build_and_run_prt_from_gwf(
     return prt_ws
 
 
+def _build_saltwater_intrusion_deck(
+    *,
+    # Transect endpoints (A = seaward, B = inland) in (lat, lon) order.
+    # When None the seaward endpoint is placed one grid-length west of the
+    # spill point -- the deck is still physically valid; the agent must supply
+    # real endpoints for a geolocated postprocess cross-section.
+    coastal_transect_latlon: tuple[tuple[float, float], tuple[float, float]] | None,
+    # Grid geometry: n_vertical_layers is caller-supplied; ncol + delr derive
+    # from the standard field-scale defaults. delv is set so the total aquifer
+    # depth is nlay * delv.
+    n_vertical_layers: int,
+    # Hydraulic conductivity (m/day) -- the same value as the spill/PRT decks
+    # but applied to the confined (icelltype=0) vertical slice.
+    k_m_per_day: float,
+    aquifer_k_ms: float,
+    porosity: float,
+    seawater_salinity_ppt: float,
+    freshwater_inflow_m3_day: float | None,
+    sim_dir: Path,
+    sim_name: str,
+    gwf_name: str,
+    write: bool,
+) -> DeckManifest:
+    """Build a Henry-style variable-density saltwater-intrusion deck (Wave-5).
+
+    Constructs ONE ``MFSimulation`` containing:
+
+    - A GWF flow model with the BUY (buoyancy) package for variable-density
+      flow. The grid is a vertical ``nrow=1`` Henry slice (``nlay`` layers deep,
+      ``ncol`` columns wide). The seaward boundary (last column, all layers) is
+      a GHB with an AUX ``CONCENTRATION`` column set to ``seawater_salinity_ppt``
+      (salt enters when sea head exceeds aquifer head). The inland boundary
+      (first column, all layers) is a WEL with an AUX ``CONCENTRATION=0``
+      (fresh water inflow).
+
+    - A GWT solute-transport model that advects salinity (PPT) with
+      ``ADV UPSTREAM``, molecular diffusion (``DSP xt3d_off diffc``), and mass
+      storage (``MST porosity``). The initial condition is ``strt=csalt`` (start
+      fully salty -- Henry convention; fresh inflow displaces to equilibrium).
+      ``SSM`` links the GHB-1 and WEL-1 AUX columns to transport so the
+      seaward boundary injects salt and the inland boundary injects fresh water.
+
+    - A ``ModflowGwfgwt`` flow-transport exchange coupling the two models.
+
+    - TWO separate IMS solvers: GWF IMS registered FIRST (MF6 hard requirement
+      when BUY is present). The GWF IMS uses ``BICGSTAB`` and ``relaxation_factor
+      =0.97`` to handle the nonlinear density-dependent flow system.
+
+    Salinity is carried in PPT (0 = fresh, ``seawater_salinity_ppt`` = sea
+    water). The BUY ``drhodc = (1025 - 1000) / 35 = 0.714 kg/m3 per ppt`` so
+    fresh water (0 ppt) has density ``denseref=1000 kg/m3`` and seawater (35 ppt)
+    has density ~1025 kg/m3 -- the canonical Henry EOS.
+
+    The headline scalar is the **intrusion length**: the most-inland distance (m)
+    the bottom-layer 50%-isochlor (``0.5 * csalt``) penetrates from the seaward
+    edge of the domain. A positive value means salt has intruded inland; zero
+    means no wedge has formed (fresh aquifer).
+
+    DeckManifest saltwater_intrusion fields written:
+        ``saltwater_intrusion=True``, ``si_nlay``, ``si_ncol``, ``si_delr``,
+        ``si_delv``, ``sea_level_top``, ``transect_lat_a/lon_a/lat_b/lon_b``,
+        ``seawater_salinity_ppt``. ``intrusion_length_m`` stays 0.0 (set by
+        postprocess after reading the .ucn output).
+
+    The manifest's standard ``nlay/nrow/ncol/delr/delc`` fields are also written
+    (``nlay=si_nlay``, ``nrow=1``, ``ncol=si_ncol``, ``delr=si_delr``,
+    ``delc=DEFAULT_SI_DELC_M``) so generic grid-inspection code works.
+
+    Args:
+        coastal_transect_latlon: ``((lat_a, lon_a), (lat_b, lon_b))`` with A the
+            seaward endpoint and B the inland endpoint. Both in EPSG:4326. When
+            ``None`` the manifest carries zeros (no georegistration).
+        n_vertical_layers:  number of vertical layers (clipped to [4, 80]).
+        k_m_per_day:        horizontal hydraulic conductivity (m/day).
+        aquifer_k_ms:       same K in m/s (stored on manifest).
+        porosity:           effective porosity for transport.
+        seawater_salinity_ppt: applied salinity (ppt) at the seaward GHB+AUX
+            boundary. Also used as the GWT IC ``strt`` (fully-salty start).
+        freshwater_inflow_m3_day: total fresh-water inflow through the inland
+            WEL boundary (m3/day, positive). When ``None`` the Henry benchmark
+            default is used (``DEFAULT_SI_INFLOW_M3_DAY``).
+        sim_dir:    Path to the working directory where files are written.
+        sim_name:   MFSimulation ``sim_name`` (normally "mfsim").
+        gwf_name:   Name of the GWF model (normally "gwf_model").
+        write:      If ``True``, write the deck to disk.
+
+    Returns:
+        ``DeckManifest`` with all saltwater-intrusion Wave-5 fields populated.
+
+    Raises:
+        ValueError: if ``n_vertical_layers`` is outside [4, 80].
+    """
+    nlay = max(4, min(80, int(n_vertical_layers)))
+    ncol = DEFAULT_SI_NCOL
+    delr = DEFAULT_SI_DELR_M
+    delc = DEFAULT_SI_DELC_M
+    delv = DEFAULT_SI_DELV_M
+    top = DEFAULT_SI_TOP_M
+
+    # Aquifer bottom steps downward by delv per layer from top.
+    botm = [top - (k + 1) * delv for k in range(nlay)]
+
+    # Use the caller-supplied hydraulic K; fall back to the demo default if
+    # the inherited k_m_per_day is implausibly low (the spill placeholder 0.0).
+    k = k_m_per_day if k_m_per_day > 0.0 else DEFAULT_SI_K_M_DAY
+
+    csalt = float(seawater_salinity_ppt)
+    cfresh = DEFAULT_SI_CFRESH_PPT
+    inflow = (
+        float(freshwater_inflow_m3_day)
+        if freshwater_inflow_m3_day is not None
+        else DEFAULT_SI_INFLOW_M3_DAY
+    )
+
+    # Density EOS: salinity in PPT, denseref=1000, densesalt=1025 at csalt ppt.
+    denseref = DEFAULT_SI_DENSEREF
+    drhodc = (DEFAULT_SI_DENSESALT - denseref) / max(csalt - cfresh, 1.0)
+
+    diffc = DEFAULT_SI_DIFFC_M2_DAY
+
+    gwtname = "gwt_model"
+
+    # ---------------------------------------------------------------------- #
+    # Simulation + time discretisation. ONE transient period ramps the system
+    # to a quasi-steady wedge (Henry convention: short period, many steps).
+    # ---------------------------------------------------------------------- #
+    sim = flopy.mf6.MFSimulation(
+        sim_name=sim_name,
+        sim_ws=str(sim_dir),
+        exe_name="mf6",
+        version="mf6",
+    )
+    flopy.mf6.ModflowTdis(
+        sim,
+        time_units=TIME_UNITS,
+        nper=1,
+        perioddata=[(DEFAULT_SI_PERIOD_DAYS, DEFAULT_SI_NSTEPS, 1.0)],
+    )
+
+    # ---------------------------------------------------------------------- #
+    # TWO SEPARATE IMS: GWF registered FIRST (MF6 hard requirement with BUY).
+    # BUY makes the flow system nonlinear -> use BICGSTAB + relaxation.
+    # ---------------------------------------------------------------------- #
+    ims_gwf = flopy.mf6.ModflowIms(
+        sim,
+        filename=f"{gwf_name}.ims",
+        print_option="SUMMARY",
+        complexity="MODERATE",
+        outer_dvclose=1e-6,
+        outer_maximum=100,
+        inner_dvclose=1e-7,
+        inner_maximum=300,
+        linear_acceleration="BICGSTAB",
+        relaxation_factor=0.97,
+        rcloserecord=[1e-6, "strict"],
+    )
+    ims_gwt = flopy.mf6.ModflowIms(
+        sim,
+        filename=f"{gwtname}.ims",
+        print_option="SUMMARY",
+        complexity="MODERATE",
+        outer_dvclose=1e-6,
+        outer_maximum=100,
+        inner_dvclose=1e-7,
+        inner_maximum=300,
+        linear_acceleration="BICGSTAB",
+    )
+
+    # ---------------------------------------------------------------------- #
+    # GWF flow model.
+    # ---------------------------------------------------------------------- #
+    gwf = flopy.mf6.ModflowGwf(sim, modelname=gwf_name, save_flows=True)
+    # Register GWF IMS first (BUY requirement).
+    sim.register_ims_package(ims_gwf, [gwf_name])
+
+    flopy.mf6.ModflowGwfdis(
+        gwf,
+        length_units=LENGTH_UNITS,
+        nlay=nlay,
+        nrow=1,
+        ncol=ncol,
+        delr=delr,
+        delc=delc,
+        top=top,
+        botm=botm,
+        filename=f"{gwf_name}.dis",
+    )
+    # IC: start at sea level (head = top; overridden quickly by GHB).
+    flopy.mf6.ModflowGwfic(gwf, strt=top, filename=f"{gwf_name}.ic")
+
+    # NPF: confined (icelltype=0) + save flags required for postprocess.
+    flopy.mf6.ModflowGwfnpf(
+        gwf,
+        save_flows=True,
+        save_specific_discharge=True,
+        save_saturation=True,
+        icelltype=0,
+        k=k,
+        filename=f"{gwf_name}.npf",
+    )
+
+    # BUY: links GWT salinity to fluid density via the EOS.
+    # packagedata row: (irhospec, drhodc, crhoref, modelname, auxspeciesname)
+    # crhoref = cfresh (0.0 ppt) so fresh water has density = denseref.
+    buy_pd = [(0, drhodc, cfresh, gwtname, "CONCENTRATION")]
+    flopy.mf6.ModflowGwfbuy(
+        gwf,
+        denseref=denseref,
+        nrhospecies=1,
+        packagedata=buy_pd,
+        filename=f"{gwf_name}.buy",
+    )
+
+    # Seaward boundary (last column, all layers): GHB + AUX CONCENTRATION=salt.
+    # Conductance = K * delv * delc / (0.5 * delr) (half-cell distance).
+    ghb_cond = k * delv * delc / (0.5 * delr)
+    ghb_spd = [[(lk, 0, ncol - 1), top, ghb_cond, csalt] for lk in range(nlay)]
+    flopy.mf6.ModflowGwfghb(
+        gwf,
+        stress_period_data=ghb_spd,
+        auxiliary="CONCENTRATION",
+        pname="GHB-1",
+        filename=f"{gwf_name}.ghb",
+    )
+
+    # Inland boundary (first column, all layers): WEL + AUX CONCENTRATION=fresh.
+    wel_q = inflow / nlay
+    wel_spd = [[(lk, 0, 0), wel_q, cfresh] for lk in range(nlay)]
+    flopy.mf6.ModflowGwfwel(
+        gwf,
+        stress_period_data=wel_spd,
+        auxiliary="CONCENTRATION",
+        pname="WEL-1",
+        filename=f"{gwf_name}.wel",
+    )
+
+    flopy.mf6.ModflowGwfoc(
+        gwf,
+        head_filerecord=f"{gwf_name}.hds",
+        budget_filerecord=f"{gwf_name}.cbc",
+        saverecord=[("HEAD", "LAST"), ("BUDGET", "LAST")],
+        filename=f"{gwf_name}.oc",
+    )
+
+    # ---------------------------------------------------------------------- #
+    # GWT solute-transport model.
+    # ---------------------------------------------------------------------- #
+    gwt = flopy.mf6.ModflowGwt(sim, modelname=gwtname, save_flows=True)
+    # Register GWT IMS AFTER GWF (MF6 sequence requirement).
+    sim.register_ims_package(ims_gwt, [gwtname])
+
+    flopy.mf6.ModflowGwtdis(
+        gwt,
+        length_units=LENGTH_UNITS,
+        nlay=nlay,
+        nrow=1,
+        ncol=ncol,
+        delr=delr,
+        delc=delc,
+        top=top,
+        botm=botm,
+        filename=f"{gwtname}.dis",
+    )
+    # IC: start fully salty (Henry convention; fresh inflow flushes to equilibrium).
+    flopy.mf6.ModflowGwtic(gwt, strt=csalt, filename=f"{gwtname}.ic")
+
+    # ADV UPSTREAM: robust on the sharp wedge front (TVD oscillates here).
+    flopy.mf6.ModflowGwtadv(gwt, scheme="UPSTREAM", filename=f"{gwtname}.adv")
+
+    # DSP: xt3d_off=True avoids the XT3D cross-term which can destabilize
+    # the narrow Henry slice. Molecular diffusion carries the mixing.
+    flopy.mf6.ModflowGwtdsp(
+        gwt, xt3d_off=True, diffc=diffc, filename=f"{gwtname}.dsp"
+    )
+    flopy.mf6.ModflowGwtmst(gwt, porosity=porosity, filename=f"{gwtname}.mst")
+
+    # SSM: links GWF boundary AUX 'CONCENTRATION' to transport. The SSM source
+    # names MUST match the GWF package pnames exactly (GHB-1 / WEL-1) so that
+    # the seaward GHB injects salt and the inland WEL injects fresh water.
+    # Without this the wedge does NOT form (no-salt boundary is the default).
+    flopy.mf6.ModflowGwtssm(
+        gwt,
+        sources=[("GHB-1", "AUX", "CONCENTRATION"), ("WEL-1", "AUX", "CONCENTRATION")],
+        filename=f"{gwtname}.ssm",
+    )
+
+    flopy.mf6.ModflowGwtoc(
+        gwt,
+        concentration_filerecord=f"{gwtname}.ucn",
+        saverecord=[("CONCENTRATION", "LAST")],
+        filename=f"{gwtname}.oc",
+    )
+
+    # ---------------------------------------------------------------------- #
+    # Flow <-> transport exchange.
+    # ---------------------------------------------------------------------- #
+    flopy.mf6.ModflowGwfgwt(
+        sim,
+        exgtype="GWF6-GWT6",
+        exgmnamea=gwf_name,
+        exgmnameb=gwtname,
+        filename="gwfgwt.exg",
+    )
+
+    # ---------------------------------------------------------------------- #
+    # Transect endpoints for georegistration (A = seaward, B = inland).
+    # ---------------------------------------------------------------------- #
+    if coastal_transect_latlon is not None:
+        pt_a, pt_b = coastal_transect_latlon
+        ta_lat, ta_lon = float(pt_a[0]), float(pt_a[1])
+        tb_lat, tb_lon = float(pt_b[0]), float(pt_b[1])
+    else:
+        ta_lat = ta_lon = tb_lat = tb_lon = 0.0
+
+    manifest = DeckManifest(
+        sim_dir=str(sim_dir),
+        sim_name=sim_name,
+        gwf_name=gwf_name,
+        gwt_name=gwtname,
+        # No UTM plan-view georegistration for the vertical slice; xorigin/yorigin
+        # are zero (the transect endpoints on the manifest geolocate the cross-section).
+        model_crs="EPSG:4326",
+        xorigin=0.0,
+        yorigin=0.0,
+        nrow=1,
+        ncol=ncol,
+        nlay=nlay,
+        delr=delr,
+        delc=delc,
+        # Spill fields are not meaningful for this archetype; zero them out.
+        spill_row=0,
+        spill_col=0,
+        spill_easting_m=0.0,
+        spill_northing_m=0.0,
+        spill_lat=ta_lat,
+        spill_lon=ta_lon,
+        mass_rate_g_per_day=0.0,
+        release_rate_kg_s=0.0,
+        duration_days=DEFAULT_SI_PERIOD_DAYS,
+        n_transport_steps=DEFAULT_SI_NSTEPS,
+        contaminant="",
+        aquifer_k_ms=aquifer_k_ms,
+        porosity=porosity,
+        # Archetype fields.
+        archetype="saltwater_intrusion",
+        gwt_present=True,
+        transient=True,
+        n_stress_periods=1,
+        n_transient_periods=1,
+        # Wave-5 saltwater_intrusion fields.
+        saltwater_intrusion=True,
+        si_nlay=nlay,
+        si_ncol=ncol,
+        si_delr=delr,
+        si_delv=delv,
+        sea_level_top=top,
+        transect_lat_a=ta_lat,
+        transect_lon_a=ta_lon,
+        transect_lat_b=tb_lat,
+        transect_lon_b=tb_lon,
+        seawater_salinity_ppt=csalt,
+        intrusion_length_m=0.0,  # populated by postprocess after reading .ucn
+    )
+
+    if write:
+        sim.write_simulation()
+        manifest.files = sorted(
+            str(p.relative_to(sim_dir)) for p in sim_dir.rglob("*") if p.is_file()
+        )
+    return manifest
+
+
 def build_modflow_deck(
     spill_location_latlon: tuple[float, float],
     contaminant: str,
@@ -2485,6 +2954,14 @@ def build_modflow_deck(
     n_particles: int = 16,
     capture_zone_travel_time_years: list[float] | None = None,
     prt_max_tracking_years: float | None = None,
+    # --- Wave-5 saltwater_intrusion (sprint-18 Wave-5; ADDITIVE, optional) -- #
+    # ``archetype == "saltwater_intrusion"``: Henry-style field-scale coastal
+    # transect; GWF (BUY variable-density) + GWT in ONE sim. All three args are
+    # optional and fall back to the Henry field-scale demo defaults when None.
+    coastal_transect_latlon: tuple[tuple[float, float], tuple[float, float]] | None = None,
+    seawater_salinity_ppt: float = 35.0,
+    n_vertical_layers: int = 20,
+    freshwater_inflow_m3_day: float | None = None,
     # --- advanced-physics overrides (levers STEP 3; ADDITIVE, optional) ----- #
     advanced_physics: dict | None = None,
     save_concentration_all_steps: bool = True,
@@ -2674,8 +3151,26 @@ def build_modflow_deck(
             "multi_species",
             "capture_zone",
             "wellhead_protection",
+            "saltwater_intrusion",
         ):
             raise ValueError(f"unknown MODFLOW archetype: {archetype!r}")
+        # Wave-5 saltwater_intrusion: GWF (BUY variable-density) + GWT in ONE sim,
+        # vertical nrow=1 Henry-style slice with seaward GHB+AUX and inland WEL+AUX.
+        # Bypasses the plan-view UTM georegistration used by other archetypes.
+        if archetype == "saltwater_intrusion":
+            return _build_saltwater_intrusion_deck(
+                coastal_transect_latlon=coastal_transect_latlon,
+                n_vertical_layers=n_vertical_layers,
+                k_m_per_day=k_m_per_day,
+                aquifer_k_ms=aquifer_k_ms,
+                porosity=porosity,
+                seawater_salinity_ppt=seawater_salinity_ppt,
+                freshwater_inflow_m3_day=freshwater_inflow_m3_day,
+                sim_dir=sim_dir,
+                sim_name=sim_name,
+                gwf_name=gwf_name,
+                write=write,
+            )
         # Wave-4 PRT archetypes: a two-sim workflow (GWF built here; the caller
         # runs mf6 on it then calls build_and_run_prt_from_gwf for the PRT phase).
         # The GWF grid is built at LOCAL (0,0) origin inside the helper (the true

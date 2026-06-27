@@ -497,3 +497,39 @@ describe("presetColorFor - capture_zone / wellhead_protection (sprint-18 Wave-4)
     expect(presetColorFor("pelicun_damage")).toBe(PELICUN_DAMAGE_PRESET);
   });
 });
+
+// ---------------------------------------------------------------------------
+// sprint-18 Wave-5 - MODFLOW BUY saltwater-intrusion transect + toe teal
+// ---------------------------------------------------------------------------
+
+describe("presetColorFor - saltwater_intrusion (sprint-18 Wave-5)", () => {
+  it("maps saltwater_intrusion -> teal #1ABC9C", () => {
+    expect(presetColorFor("saltwater_intrusion")).toBe("#1ABC9C");
+  });
+
+  it("is case-insensitive (SALTWATER_INTRUSION)", () => {
+    expect(presetColorFor("SALTWATER_INTRUSION")).toBe("#1ABC9C");
+  });
+
+  it("resolveVectorColor picks the teal preset for saltwater_intrusion layers", () => {
+    expect(resolveVectorColor("si-layer-01", "saltwater_intrusion", "line")).toBe("#1ABC9C");
+  });
+
+  it("is DISTINCT from capture-zone violet, rivers-blue, mesh-cyan, and roads-amber", () => {
+    const si = presetColorFor("saltwater_intrusion")!;
+    const cz = presetColorFor("capture_zone")!;
+    const river = presetColorFor("osm_waterways")!;
+    const mesh = presetColorFor("mesh_grid")!;
+    const road = presetColorFor("osm_roads")!;
+    expect(si).not.toBe(cz);
+    expect(si).not.toBe(river);
+    expect(si).not.toBe(mesh);
+    expect(si).not.toBe(road);
+  });
+
+  it("does not disturb existing preset colours (regression guard)", () => {
+    expect(presetColorFor("capture_zone")).toBe("#9B59B6");
+    expect(presetColorFor("wellhead_protection")).toBe("#9B59B6");
+    expect(presetColorFor("osm_waterways")).toBe("#4477FF");
+  });
+});

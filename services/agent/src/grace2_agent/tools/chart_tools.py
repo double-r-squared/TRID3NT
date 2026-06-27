@@ -93,6 +93,8 @@ __all__ = [
     "build_budget_partition_chart",
     "build_head_decline_chart",
     "build_head_series_chart",
+    # Wave-5 saltwater intrusion cross-section heatmap (task-203).
+    "build_saltwater_wedge_chart",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.chart_tools")
@@ -637,6 +639,167 @@ def build_head_decline_chart(
     return build_chart_payload(
         vega_lite_spec=spec,
         title="Head decline at well over time",
+        caption=caption,
+        source_layer_uri=source_layer_uri,
+        created_turn_id=created_turn_id,
+    )
+
+
+def build_saltwater_wedge_chart(
+    *,
+    salinity_grid: Any,
+    distances_m: Any,
+    depths_m: Any,
+    isochlor_value: float,
+    seawater_salinity_ppt: float = 35.0,
+    intrusion_length_m: float = 0.0,
+    source_layer_uri: str | None = None,
+    created_turn_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Build a vertical cross-section heatmap of the saltwater wedge (Wave-5).
+
+    Turns the GWT ``(nlay, ncol)`` salinity grid from the Henry-style BUY
+    variable-density run into a Vega-Lite v5 layered chart:
+
+      * a rectangle heatmap (x = distance inland m, y = depth m, colour =
+        salinity ppt) flattened to one data row per cell; the colour scale runs
+        from fresh (0 ppt, blue) to seawater (``seawater_salinity_ppt``, teal);
+      * an overlaid rule at the 50 % isochlor toe (``intrusion_length_m`` from
+        the seaward edge) so the wedge boundary reads clearly.
+
+    The chart is intentionally sparse in the inline data: the grid is already
+    subsampled to at most ``_MAX_ROWS`` cells (rows * cols capped at the
+    contract limit) before building the spec so the WS envelope stays small.
+    Cells whose salinity is NaN (flopy dry/inactive sentinels) are dropped.
+
+    Args:
+        salinity_grid: 2-D array of shape ``(nlay, ncol)`` with salinity in ppt
+            for the FINAL timestep (the postprocess already extracted this).
+            Each row is a model layer (row 0 = top, row nlay-1 = bottom).
+        distances_m: 1-D array of length ``ncol``: distance from the SEAWARD
+            boundary for each column centre, m.  Column 0 is at the seaward
+            end (0 m) and column ncol-1 is deepest inland.
+        depths_m: 1-D array of length ``nlay``: depth from sea level (positive
+            downward) for each layer centre, m.  Layer 0 is shallowest.
+        isochlor_value: the 50 %-isochlor threshold in ppt (= 0.5 *
+            seawater_salinity_ppt).  Used only for the rule-layer annotation;
+            the chart does NOT re-compute the toe - it uses ``intrusion_length_m``.
+        seawater_salinity_ppt: the peak seawater salinity applied at the
+            seaward GHB+AUX boundary, ppt.  Sets the colour-scale domain [0,
+            seawater_salinity_ppt] so the legend reads as fresh -> seawater.
+        intrusion_length_m: bottom-layer 50 %-isochlor penetration from the
+            seaward boundary, m.  Drawn as a vertical rule on the chart so the
+            wedge toe is immediately obvious.
+        source_layer_uri: passed through to ``build_chart_payload``; the FGB
+            artifact URI (best-effort, may be None before the upload step).
+        created_turn_id: passed through to ``build_chart_payload``.
+
+    Returns:
+        A ``ChartEmissionPayload`` dict (via ``build_chart_payload``) ready for
+        ``emit_chart_payloads``, or ``None`` when the salinity grid carries
+        fewer than 4 finite cells (nothing to show; the honesty floor).
+    """
+    try:
+        arr = np.asarray(salinity_grid, dtype="float64")
+        dist = np.asarray(distances_m, dtype="float64")
+        dep = np.asarray(depths_m, dtype="float64")
+    except Exception:  # noqa: BLE001
+        return None
+
+    if arr.ndim != 2 or arr.size < 4:
+        return None
+
+    nlay, ncol = arr.shape
+
+    # --- Flatten to one row per cell, drop NaN / MF6 sentinel (1e30) -----
+    rows: list[dict[str, Any]] = []
+    for k in range(nlay):
+        d_m = float(dep[k]) if k < len(dep) else float(k)
+        for j in range(ncol):
+            v = arr[k, j]
+            if not math.isfinite(v) or abs(v) > 1e29:
+                continue
+            x_m = float(dist[j]) if j < len(dist) else float(j)
+            rows.append(
+                {
+                    "dist_m": x_m,
+                    "depth_m": d_m,
+                    "salinity_ppt": float(v),
+                }
+            )
+
+    if len(rows) < 4:
+        return None
+
+    # Cap at _MAX_ROWS (the contract wire-size limit).  Uniform stride so the
+    # spatial pattern is preserved (not just the first N cells).
+    if len(rows) > _MAX_ROWS:
+        stride = max(1, len(rows) // _MAX_ROWS)
+        rows = rows[::stride][: _MAX_ROWS]
+
+    salt_domain_max = max(float(seawater_salinity_ppt), 1.0)
+
+    # --- Heatmap layer --------------------------------------------------------
+    heatmap_layer: dict[str, Any] = {
+        "data": {"values": rows},
+        "mark": {"type": "rect", "tooltip": True},
+        "encoding": {
+            "x": {
+                "field": "dist_m",
+                "type": "quantitative",
+                "title": "distance inland (m)",
+                "scale": {"zero": True},
+            },
+            "y": {
+                "field": "depth_m",
+                "type": "quantitative",
+                "title": "depth (m, positive down)",
+                "scale": {"reverse": False},
+            },
+            "color": {
+                "field": "salinity_ppt",
+                "type": "quantitative",
+                "title": "salinity (ppt)",
+                "scale": {
+                    "domain": [0.0, salt_domain_max],
+                    "range": ["#3498DB", "#1ABC9C"],
+                },
+            },
+        },
+    }
+
+    # --- Isochlor toe rule (vertical line at intrusion_length_m) ------------
+    toe_m = max(0.0, float(intrusion_length_m))
+    iso_label = f"50% isochlor toe: {toe_m:,.1f} m"
+    rule_layer: dict[str, Any] = {
+        "data": {"values": [{"toe": toe_m, "label": iso_label}]},
+        "mark": {
+            "type": "rule",
+            "color": "#c1121f",
+            "strokeDash": [4, 4],
+            "strokeWidth": 2,
+            "tooltip": True,
+        },
+        "encoding": {
+            "x": {"field": "toe", "type": "quantitative"},
+        },
+    }
+
+    spec: dict[str, Any] = {
+        "title": "Saltwater wedge cross-section (salinity ppt)",
+        "layer": [heatmap_layer, rule_layer],
+        "width": "container",
+    }
+
+    n_cells = len(rows)
+    caption = (
+        f"{nlay} layers x {ncol} cols cross-section · "
+        f"50% isochlor toe {toe_m:,.1f} m inland · "
+        f"{n_cells:,} cells · seawater {salt_domain_max:g} ppt"
+    )
+    return build_chart_payload(
+        vega_lite_spec=spec,
+        title="Saltwater wedge cross-section",
         caption=caption,
         source_layer_uri=source_layer_uri,
         created_turn_id=created_turn_id,

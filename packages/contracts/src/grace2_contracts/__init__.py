@@ -81,6 +81,7 @@ from .modflow_contracts import (
     MoundingLayerURI,
     MultiSpeciesPlumeResult,
     PlumeLayerURI,
+    SaltwaterWedgeLayerURI,
     SeepageLayerURI,
     SpeciesSpec,
 )
@@ -151,6 +152,8 @@ __all__ = [
     "HydroperiodLayerURI",
     # MODFLOW Wave-4 PRT capture-zone vector layer (capture_zone / wellhead_protection)
     "CaptureZoneLayerURI",
+    # MODFLOW Wave-5 variable-density saltwater intrusion layer (saltwater_intrusion)
+    "SaltwaterWedgeLayerURI",
     # SWMM quasi-2D urban-flood contracts (sprint-16 P1)
     "SWMMRunArgs",
     "SWMMDepthLayerURI",

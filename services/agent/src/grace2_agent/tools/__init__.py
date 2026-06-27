@@ -344,6 +344,7 @@ from ..workflows import model_asr_scenario as _model_asr_scenario  # noqa: E402,
 from ..workflows import model_wetland_hydroperiod_scenario as _model_wetland_hydroperiod_scenario  # noqa: E402,F401 - sprint-18 Wave-2: registers run_model_wetland_hydroperiod_scenario (MODFLOW wetland-hydroperiod composer)
 from ..workflows import model_multi_species_scenario as _model_multi_species_scenario  # noqa: E402,F401 - sprint-18 Wave-3: registers run_model_multi_species_scenario (MODFLOW N-species transport composer; ONE shared GWF + N GWT -> N per-species plumes)
 from ..workflows import model_capture_zone_scenario as _model_capture_zone_scenario  # noqa: E402,F401 - sprint-18 Wave-4: registers run_model_capture_zone_scenario + run_model_wellhead_protection_scenario (MODFLOW PRT backward particle tracking -> capture-zone / WHPA vector polygon)
+from ..workflows import model_saltwater_intrusion_scenario as _model_saltwater_intrusion_scenario  # noqa: E402,F401 - sprint-18 Wave-5: registers run_model_saltwater_intrusion_scenario (MODFLOW BUY variable-density GWF+GWT Henry-style saltwater wedge -> cross-section heatmap chart + transect/toe vector layer)
 
 # fire-animation demos S5/J5: the satellite fire-animation composer carries its
 # OWN @register_tool (run_model_satellite_fire_animation); import it so the

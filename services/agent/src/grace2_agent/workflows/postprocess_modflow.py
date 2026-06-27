@@ -47,6 +47,7 @@ from grace2_contracts.modflow_contracts import (
     MoundingLayerURI,
     MultiSpeciesPlumeResult,
     PlumeLayerURI,
+    SaltwaterWedgeLayerURI,
     SeepageLayerURI,
 )
 
@@ -67,6 +68,7 @@ __all__ = [
     "postprocess_asr",
     "postprocess_wetland_hydroperiod",
     "postprocess_capture_zone",
+    "postprocess_saltwater_intrusion",
     "publish_modflow_quantities",
     "compute_plume_metrics",
     "compute_seepage_metrics",
@@ -77,6 +79,7 @@ __all__ = [
     "compute_recharged_volume_m3",
     "compute_seasonal_head_range_m",
     "compute_recovery_efficiency",
+    "compute_saltwater_intrusion_metrics",
     "PLUME_DETECTION_FLOOR_MGL",
     "PLUME_STYLE_PRESET",
     "SEEPAGE_STYLE_PRESET",
@@ -87,6 +90,7 @@ __all__ = [
     "ASR_STYLE_PRESET",
     "HYDROPERIOD_STYLE_PRESET",
     "CAPTURE_ZONE_STYLE_PRESET",
+    "SALTWATER_INTRUSION_STYLE_PRESET",
     "GWF_CBC_FILENAME",
     "GWF_HDS_FILENAME",
     "RUNS_BUCKET_DEFAULT",
@@ -162,6 +166,15 @@ HYDROPERIOD_STYLE_PRESET: str = "continuous_hydroperiod_m"
 #: inline-GeoJSON path (``pipeline_emitter.add_loaded_layer`` via
 #: ``_read_vector_uri_as_geojson``) renders it over WS.
 CAPTURE_ZONE_STYLE_PRESET: str = "capture_zone"
+
+#: Vector style preset for the saltwater intrusion transect + toe point (Wave-5).
+#: Two features in one FlatGeobuf: a LINE (coastal transect A->B) and a POINT
+#: (the 50%-isochlor toe). The client's vector renderer applies
+#: ``presetColorFor("saltwater_intrusion")`` -> teal (#1ABC9C) so it reads as a
+#: coastal/saltwater boundary, distinct from the violet capture-zone, the blue
+#: water layers, and the red alert overlays. ``publish_layer`` is RASTER-ONLY and
+#: must NOT be called for this vector; the inline-GeoJSON path renders it over WS.
+SALTWATER_INTRUSION_STYLE_PRESET: str = "saltwater_intrusion"
 
 #: PRT track CSV filename written by the MF6 PRT sim (``ModflowPrtoc`` +
 #: ``trackcsv_filerecord``). The model name the adapter uses for the PRT model is
@@ -3200,3 +3213,629 @@ def postprocess_capture_zone(
         isochrone_areas_km2=isochrone_areas_km2,
         particle_count=particle_count,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Saltwater intrusion postprocess (Wave-5)
+#
+# A GWF+GWT single-sim on a nrow=1 vertical cross-section with ModflowGwfbuy
+# variable-density coupling.  The UCN output is ``gwt_model.ucn`` (same stem as
+# the spill archetype; the BUY deck uses the same GWT OC writer).  The salinity
+# field is (nlay, 1, ncol) after a ``get_data`` call; we squeeze the singleton
+# nrow=1 axis to get a (nlay, ncol) 2-D slice.
+#
+# PRODUCTS:
+#   1. SCALAR: intrusion_length_m / toe_distance_m -- the most-inland column
+#      where the BOTTOM-layer salinity >= 50% threshold (measured from the
+#      seaward edge).  Zero when the domain is fully fresh.
+#   2. MAP ELEMENT: a FlatGeobuf in EPSG:4326 with two features:
+#        feature_type="transect_line"  -- the A->B coastal transect LINE
+#        feature_type="toe_point"      -- a POINT at toe_distance_m along the
+#                                         transect (interpolated between A and B)
+#      The transect endpoints (lat, lon) come from the DeckManifest fields
+#      (transect_lat_a/lon_a/transect_lat_b/lon_b) stored by the adapter.
+#   3. CHART (side-channel): the (nlay, ncol) salinity cross-section heatmap
+#      built via ``build_saltwater_wedge_chart`` from chart_tools and stashed on
+#      the returned LayerURI as the runtime attribute ``_chart_payload`` so the
+#      composer can emit it via ``emit_chart_payloads`` without re-reading the UCN.
+#      Using a private-underscore name so the Pydantic model ignores it (extra
+#      attributes on Pydantic v2 models are silently discarded on dict serialisation;
+#      we read it via ``getattr(layer, "_chart_payload", None)`` in the composer).
+#
+# GEOREGISTRATION:
+#   The saltwater intrusion grid is nrow=1 (a 2-D vertical cross-section), NOT
+#   a plan-view projected grid.  There is no meaningful plan-view CRS -- the
+#   cross-section axis is given directly by the transect endpoints in EPSG:4326.
+#   Distance along the transect is derived from the manifest ``si_ncol`` +
+#   ``si_delr`` fields (or from the UCN array shape if the manifest is absent).
+#   Depth is derived from ``si_nlay`` + ``si_delv`` (layer thickness).
+# --------------------------------------------------------------------------- #
+
+
+#: UCN filename for the saltwater intrusion GWT model.  The BUY deck reuses the
+#: single-species GWT OC writer with the same output stem.
+SI_GWT_UCN_FILENAME: str = GWT_UCN_FILENAME
+
+
+def compute_saltwater_intrusion_metrics(
+    salinity_grid: Any,
+    *,
+    seawater_salinity_ppt: float = 35.0,
+    delr: float = 10.0,
+) -> tuple[float, float]:
+    """Compute (intrusion_length_m, toe_distance_m) from a salinity cross-section.
+
+    Pure arithmetic over the FINAL-timestep ``(nlay, ncol)`` salinity grid (ppt).
+    The 50%-isochlor threshold is ``0.5 * seawater_salinity_ppt``.
+
+    Grid orientation (matches ``_build_saltwater_intrusion_deck``): column 0 is
+    the INLAND boundary (WEL+AUX fresh) and column ncol-1 is the SEAWARD boundary
+    (GHB+AUX salt, pinned at full salinity).  The wedge toe is therefore the
+    most-inland (LOWEST column index) bottom-layer cell at/above the 50% isochlor,
+    and the intrusion length is measured FROM THE SEAWARD edge inward.  Both
+    headline scalars return the same measurement (``toe_distance_m`` is an alias
+    for ``intrusion_length_m`` retained in the contract for downstream
+    compatibility).
+
+    Args:
+        salinity_grid: 2-D array of shape ``(nlay, ncol)`` in ppt.  Row 0 is the
+            top layer; row nlay-1 is the bottom (deepest) layer where the
+            saltwater wedge toe is measured.
+        seawater_salinity_ppt: the boundary salinity that defines 100%; 50% of
+            this is the isochlor threshold.  Default 35.0 ppt.
+        delr: column spacing, m.  Used to convert the column index to metres.
+            Default 10.0 m (the adapter default for a 1 km transect / 100 cols).
+
+    Returns:
+        ``(intrusion_length_m, toe_distance_m)``: both >= 0.  Zero when the
+        domain is entirely below threshold (fully fresh) or the grid is empty.
+    """
+    import numpy as np  # local - caller vouched for the import path
+
+    arr = np.asarray(salinity_grid, dtype="float64")
+    if arr.ndim != 2 or arr.size == 0:
+        return 0.0, 0.0
+    ncol = int(arr.shape[1])
+    # MF6 inactive sentinels (> 1e29) -> NaN so they don't pollute the isochlor.
+    arr = np.where(np.abs(arr) > 1e29, np.nan, arr)
+    threshold = 0.5 * float(seawater_salinity_ppt)
+    # Bottom layer is the last row (index nlay-1).
+    bottom_row = arr[-1, :]
+    # The toe is the most-inland (LOWEST column index) bottom cell >= threshold;
+    # col ncol-1 (seaward GHB) is always salty, so np.min picks the true toe.
+    salty_mask = np.where(np.isfinite(bottom_row), bottom_row >= threshold, False)
+    if not np.any(salty_mask):
+        return 0.0, 0.0
+    toe_col = int(np.min(np.where(salty_mask)[0]))
+    # Intrusion = distance from the SEAWARD edge (right side of col ncol-1) inland
+    # to the toe column centre: (ncol - toe_col - 0.5) * delr.
+    toe_m = float(ncol - toe_col - 0.5) * float(delr)
+    return toe_m, toe_m
+
+
+def _resolve_si_ucn_path(run_outputs_uri: str) -> Path:
+    """Locate the saltwater-intrusion GWT UCN file from a run output location.
+
+    Delegates to ``_resolve_ucn_path`` (the single-species stem ``gwt_model.ucn``
+    is the same for the BUY deck).  Raises
+    ``PostprocessMODFLOWError("SALTWATER_OUTPUT_READ_FAILED")`` when the file is
+    absent, mapping the error code to the Wave-5 surface.
+    """
+    try:
+        return _resolve_ucn_path(run_outputs_uri)
+    except PostprocessMODFLOWError as exc:
+        raise PostprocessMODFLOWError(
+            "SALTWATER_OUTPUT_READ_FAILED",
+            message=exc.args[0] if exc.args else str(exc),
+            details=exc.details,
+        ) from exc
+
+
+def _read_si_salinity_grid(ucn_path: Path) -> Any:
+    """Read the FINAL-timestep salinity grid as a 2-D ``(nlay, ncol)`` array (ppt).
+
+    The BUY GWT deck writes salinity in the CONCENTRATION output (same format as
+    the spill archetype's ``gwt_model.ucn``).  The grid shape is ``(nlay, 1, ncol)``
+    because nrow=1 for the vertical cross-section; we squeeze the nrow axis.
+
+    Raises:
+        PostprocessMODFLOWError: ``SALTWATER_OUTPUT_READ_FAILED`` on any read
+            failure; ``SALTWATER_OUTPUT_EMPTY`` when the file carries no timesteps
+            or all values are NaN.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SALTWATER_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"ucn_path": str(ucn_path)},
+        ) from exc
+
+    try:
+        cobj = flopy.utils.HeadFile(str(ucn_path), text="CONCENTRATION")
+        times = cobj.get_times()
+        if not times:
+            raise PostprocessMODFLOWError(
+                "SALTWATER_OUTPUT_EMPTY",
+                message=f"{ucn_path} carries no concentration timesteps",
+                details={"ucn_path": str(ucn_path)},
+            )
+        data = cobj.get_data(totim=times[-1])  # (nlay, 1, ncol) for nrow=1
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SALTWATER_OUTPUT_READ_FAILED",
+            message=f"could not read salinity from {ucn_path}: {exc}",
+            details={"ucn_path": str(ucn_path)},
+        ) from exc
+
+    arr = np.asarray(data, dtype="float64")
+    # Shape is (nlay, nrow, ncol) with nrow=1; squeeze to (nlay, ncol).
+    if arr.ndim == 3 and arr.shape[1] == 1:
+        arr = arr[:, 0, :]
+    elif arr.ndim == 3:
+        # Unexpected nrow > 1: take the first row (the only active row for nrow=1 decks)
+        logger.warning(
+            "_read_si_salinity_grid: unexpected nrow=%d in UCN %s; taking row 0",
+            arr.shape[1], ucn_path,
+        )
+        arr = arr[:, 0, :]
+    elif arr.ndim == 2:
+        pass  # already (nlay, ncol)
+    else:
+        arr = np.squeeze(arr)
+        if arr.ndim != 2:
+            raise PostprocessMODFLOWError(
+                "SALTWATER_OUTPUT_EMPTY",
+                message=(
+                    f"salinity array has shape {data.shape}; cannot reduce to 2D "
+                    f"(nlay, ncol) for a cross-section postprocess"
+                ),
+                details={"ucn_path": str(ucn_path), "shape": list(data.shape)},
+            )
+
+    # MF6 inactive/dry sentinels (1e30) -> NaN.
+    arr = np.where(np.abs(arr) > 1e29, np.nan, arr)
+
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        raise PostprocessMODFLOWError(
+            "SALTWATER_OUTPUT_EMPTY",
+            message=f"all salinity values are NaN/sentinel in {ucn_path}",
+            details={"ucn_path": str(ucn_path)},
+        )
+    return arr
+
+
+def _transect_endpoints_from_deck(deck_dir: str | None) -> tuple[
+    tuple[float, float],
+    tuple[float, float],
+] | None:
+    """Read the coastal transect endpoints from the DeckManifest via flopy.
+
+    The saltwater intrusion adapter stores
+    ``transect_lat_a/lon_a/transect_lat_b/lon_b`` on the DeckManifest JSON file
+    (``manifest.json``) in the deck directory.  We load it as JSON rather than
+    reloading the full MF6 simulation (faster; the manifest is cheap JSON).
+
+    Returns ``((lat_a, lon_a), (lat_b, lon_b))`` or ``None`` when the deck dir
+    is absent / lacks a manifest with these fields.
+    """
+    if not deck_dir:
+        return None
+    import json
+
+    manifest_path = Path(deck_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        with manifest_path.open() as f:
+            m = json.load(f)
+        lat_a = float(m.get("transect_lat_a", 0.0))
+        lon_a = float(m.get("transect_lon_a", 0.0))
+        lat_b = float(m.get("transect_lat_b", 0.0))
+        lon_b = float(m.get("transect_lon_b", 0.0))
+        # Any zero endpoint means the field was not populated.
+        if lat_a == 0.0 and lon_a == 0.0 and lat_b == 0.0 and lon_b == 0.0:
+            return None
+        return (lat_a, lon_a), (lat_b, lon_b)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_transect_endpoints_from_deck: could not read transect from %s: %s",
+            manifest_path, exc,
+        )
+        return None
+
+
+def _si_grid_params_from_deck(deck_dir: str | None) -> dict[str, float]:
+    """Read nlay/ncol/delr/delv from the DeckManifest JSON in the deck directory.
+
+    Returns a dict with keys ``si_nlay``, ``si_ncol``, ``si_delr``, ``si_delv``,
+    ``seawater_salinity_ppt``.  Missing / unreadable fields fall back to 0.0 so
+    the caller can safely call ``float(params["si_delr"]) or <default>``.
+    """
+    defaults: dict[str, float] = {
+        "si_nlay": 0.0,
+        "si_ncol": 0.0,
+        "si_delr": 0.0,
+        "si_delv": 0.0,
+        "seawater_salinity_ppt": 35.0,
+    }
+    if not deck_dir:
+        return defaults
+    import json
+
+    manifest_path = Path(deck_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return defaults
+    try:
+        with manifest_path.open() as f:
+            m = json.load(f)
+        defaults["si_nlay"] = float(m.get("si_nlay", 0.0))
+        defaults["si_ncol"] = float(m.get("si_ncol", 0.0))
+        defaults["si_delr"] = float(m.get("si_delr", 0.0))
+        defaults["si_delv"] = float(m.get("si_delv", 0.0))
+        defaults["seawater_salinity_ppt"] = float(
+            m.get("seawater_salinity_ppt", 35.0)
+        )
+        return defaults
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "_si_grid_params_from_deck: could not read manifest from %s: %s",
+            manifest_path, exc,
+        )
+        return defaults
+
+
+def _interpolate_toe_point(
+    endpoint_a: tuple[float, float],
+    endpoint_b: tuple[float, float],
+    toe_distance_m: float,
+    transect_length_m: float,
+) -> tuple[float, float]:
+    """Return (lat, lon) for the 50%-isochlor toe point interpolated along A->B.
+
+    Linear interpolation: fraction = toe_distance_m / transect_length_m.  A
+    fraction of 0 is at point A (seaward); 1 is at point B (inland).  Clamped
+    to [0, 1] so an out-of-range toe does not extrapolate past the endpoints.
+
+    Args:
+        endpoint_a: (lat, lon) of the seaward end of the transect.
+        endpoint_b: (lat, lon) of the inland end of the transect.
+        toe_distance_m: 50%-isochlor toe penetration from the seaward end, m.
+        transect_length_m: total transect length, m (si_ncol * si_delr).
+
+    Returns:
+        ``(lat, lon)`` of the toe point in EPSG:4326.
+    """
+    if transect_length_m <= 0.0:
+        return endpoint_a
+    frac = min(1.0, max(0.0, float(toe_distance_m) / float(transect_length_m)))
+    lat = float(endpoint_a[0]) + frac * (float(endpoint_b[0]) - float(endpoint_a[0]))
+    lon = float(endpoint_a[1]) + frac * (float(endpoint_b[1]) - float(endpoint_a[1]))
+    return lat, lon
+
+
+def _write_si_fgb(
+    endpoint_a: tuple[float, float],
+    endpoint_b: tuple[float, float],
+    toe_point_latlon: tuple[float, float],
+    *,
+    intrusion_length_m: float,
+    seaward_salinity_ppt: float,
+    run_id: str,
+) -> Path:
+    """Write the saltwater-intrusion transect + toe FlatGeobuf in EPSG:4326.
+
+    Two features in the output FeatureCollection:
+
+    * ``feature_type="transect_line"``: a LINESTRING from endpoint A (seaward,
+      lat/lon) to endpoint B (inland, lat/lon).  Carries properties:
+      ``intrusion_length_m``, ``seaward_salinity_ppt``, ``run_id``.
+    * ``feature_type="toe_point"``: a POINT at the 50%-isochlor toe position
+      along the transect.  Carries properties: ``toe_distance_m``,
+      ``seaward_salinity_ppt``, ``run_id``.
+
+    The geometry coordinate order is (lon, lat) as required by GeoJSON / WKT
+    (even though the ``(lat, lon)`` convention is used in all Python tuples).
+
+    Raises:
+        PostprocessMODFLOWError: ``SALTWATER_WRITE_FAILED`` on any shapely /
+            geopandas / file-system error.
+    """
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely.geometry import LineString, Point  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SALTWATER_WRITE_FAILED",
+            message=f"shapely / geopandas not importable for saltwater FGB write: {exc}",
+            details={"run_id": run_id},
+        ) from exc
+
+    try:
+        # GeoJSON / WKT coordinate order: (lon, lat).
+        line_geom = LineString([
+            (float(endpoint_a[1]), float(endpoint_a[0])),
+            (float(endpoint_b[1]), float(endpoint_b[0])),
+        ])
+        toe_geom = Point(
+            float(toe_point_latlon[1]),
+            float(toe_point_latlon[0]),
+        )
+
+        features_geom = [line_geom, toe_geom]
+        features_props: list[dict[str, Any]] = [
+            {
+                "feature_type": "transect_line",
+                "intrusion_length_m": float(intrusion_length_m),
+                "seaward_salinity_ppt": float(seaward_salinity_ppt),
+                "run_id": run_id,
+            },
+            {
+                "feature_type": "toe_point",
+                "toe_distance_m": float(intrusion_length_m),
+                "seaward_salinity_ppt": float(seaward_salinity_ppt),
+                "run_id": run_id,
+            },
+        ]
+
+        gdf = gpd.GeoDataFrame(features_props, geometry=features_geom, crs="EPSG:4326")
+        fgb_path = Path(
+            tempfile.NamedTemporaryFile(
+                suffix=f"_si_transect_{run_id}.fgb", delete=False
+            ).name
+        )
+        gdf.to_file(str(fgb_path), driver="FlatGeobuf", engine="pyogrio")
+        return fgb_path
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SALTWATER_WRITE_FAILED",
+            message=f"could not write saltwater intrusion FlatGeobuf: {exc}",
+            details={"run_id": run_id},
+        ) from exc
+
+
+def postprocess_saltwater_intrusion(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    transect_endpoints: tuple[
+        tuple[float, float], tuple[float, float]
+    ] | None = None,
+) -> SaltwaterWedgeLayerURI:
+    """Convert a MODFLOW BUY variable-density run's UCN output into a
+    ``SaltwaterWedgeLayerURI``.
+
+    Reads the FINAL-timestep GWT concentration output (``gwt_model.ucn``,
+    the Henry-style saltwater archetype deck, salinity in ppt), computes the
+    50%-isochlor toe penetration (the headline scalar), writes a FlatGeobuf in
+    EPSG:4326 with the coastal transect LINE (A->B) and a toe POINT, uploads it
+    to the runs bucket, and returns the typed ``SaltwaterWedgeLayerURI``.
+
+    The PRIMARY product of this archetype is a Vega-Lite cross-section heatmap
+    chart (the salinity field vs. distance inland / depth) built via
+    ``build_saltwater_wedge_chart`` and stashed as the runtime attribute
+    ``_chart_payload`` on the returned ``SaltwaterWedgeLayerURI``.  The composer
+    (``model_saltwater_intrusion_scenario``) reads this attribute via
+    ``getattr(layer, "_chart_payload", None)`` and emits it through
+    ``emit_chart_payloads`` -- no second UCN read is needed.
+
+    The MAP element (the FlatGeobuf transect + toe) geo-contextualizes the cross-
+    section on the map.  The chart carries the physics.  Neither should be over-
+    interpreted as a calibrated result (see ``SaltwaterWedgeLayerURI`` docstring).
+
+    Georegistration: the saltwater intrusion grid is a nrow=1 vertical cross-
+    section.  There is no plan-view UTM; the transect endpoints (lat, lon) from
+    the manifest / the caller locate the cross-section.  ``model_crs`` is accepted
+    for signature compatibility but is NOT used for reprojection (no raster COG
+    is written; the FlatGeobuf is built directly in EPSG:4326).
+
+    Args:
+        run_outputs_uri: the run output location (local dir / ``file://``) that
+            contains ``gwt_model.ucn``.
+        run_id: run identifier for the FlatGeobuf filename in the runs bucket.
+        model_crs: the deck's projected CRS string (accepted for signature
+            compatibility; not used for this vector-only archetype).
+        deck_dir: optional on-disk deck directory.  Used to read the DeckManifest
+            JSON (``manifest.json``) for the transect endpoints and grid parameters
+            (si_nlay, si_ncol, si_delr, si_delv, seawater_salinity_ppt) when they
+            are not supplied directly.
+        runs_bucket: optional override for the S3 / GCS runs bucket name.
+        transect_endpoints: optional explicit ``((lat_a, lon_a), (lat_b, lon_b))``
+            coastal transect endpoints in EPSG:4326 (lat-first, A=seaward,
+            B=inland).  Preferred over reading from the deck manifest.  When both
+            this argument and the manifest are absent / zero, the FlatGeobuf
+            transect is omitted and only the toe-distance scalar is returned.
+
+    Returns:
+        ``SaltwaterWedgeLayerURI`` with:
+          - ``layer_type='vector'``
+          - ``style_preset='saltwater_intrusion'``
+          - ``uri``: FlatGeobuf artifact URI (or ``file://`` in offline mode)
+          - ``bbox``: EPSG:4326 ``(min_lon, min_lat, max_lon, max_lat)``
+          - ``intrusion_length_m``: bottom-layer 50%-isochlor toe penetration, m
+          - ``toe_distance_m``: alias for ``intrusion_length_m``
+          - ``seaward_salinity_ppt``: the boundary salinity applied, ppt
+          - ``transect_endpoints``: A->B (lat, lon) pairs
+
+        The attribute ``_chart_payload`` (NOT a Pydantic field) is set on the
+        returned object as the cross-section heatmap chart payload dict (or
+        ``None`` when the grid is too small to chart).  The composer reads it
+        via ``getattr(layer, "_chart_payload", None)``.
+
+    Raises:
+        PostprocessMODFLOWError:
+          - ``SALTWATER_OUTPUT_READ_FAILED`` -- UCN not found / unreadable.
+          - ``SALTWATER_OUTPUT_EMPTY`` -- UCN has no timesteps / all NaN.
+          - ``SALTWATER_WRITE_FAILED`` -- FlatGeobuf write or upload failed.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    del model_crs  # no raster COG to reproject; accepted for signature compat only.
+
+    # --- Step 1: locate + read the salinity UCN ----------------------------
+    ucn_path = _resolve_si_ucn_path(run_outputs_uri)
+    salinity_2d = _read_si_salinity_grid(ucn_path)
+    nlay, ncol = salinity_2d.shape
+
+    logger.info(
+        "postprocess_saltwater_intrusion run_id=%s ucn=%s shape=(%d,%d)",
+        run_id, ucn_path, nlay, ncol,
+    )
+
+    # --- Step 2: grid parameters (prefer manifest, fall back to UCN shape) ---
+    params = _si_grid_params_from_deck(deck_dir)
+    delr = float(params["si_delr"]) if float(params["si_delr"]) > 0.0 else 10.0
+    delv = float(params["si_delv"]) if float(params["si_delv"]) > 0.0 else 2.5
+    seawater_ppt = float(params["seawater_salinity_ppt"])
+
+    # Distance-INLAND from the seaward edge to each column centre.  The deck
+    # convention is col 0 = INLAND (WEL fresh), col ncol-1 = SEAWARD (GHB salt),
+    # so distance-inland(j) = (ncol - j - 0.5) * delr: the seaward column ncol-1
+    # maps to ~0 m (the coast) and the inland column 0 to ~transect_length.  This
+    # keeps the chart's 'distance inland (m)' x-axis honest (salt at the coast,
+    # fresh inland) and consistent with the seaward-referenced toe metric.
+    distances_m = np.array(
+        [(ncol - j - 0.5) * delr for j in range(ncol)], dtype="float64"
+    )
+    # Layer depths (sea level=0, positive downward): centre of each layer.
+    depths_m = np.array(
+        [(k + 0.5) * delv for k in range(nlay)], dtype="float64"
+    )
+    transect_length_m = float(ncol) * delr
+
+    # --- Step 3: 50%-isochlor toe -------------------------------------------
+    intrusion_m, toe_m = compute_saltwater_intrusion_metrics(
+        salinity_2d,
+        seawater_salinity_ppt=seawater_ppt,
+        delr=delr,
+    )
+    isochlor_value = 0.5 * seawater_ppt
+
+    logger.info(
+        "postprocess_saltwater_intrusion run_id=%s intrusion_length_m=%.3g "
+        "toe_distance_m=%.3g seawater_ppt=%.3g",
+        run_id, intrusion_m, toe_m, seawater_ppt,
+    )
+
+    # --- Step 4: transect endpoints (caller > manifest > sentinel zeros) ------
+    if transect_endpoints is not None:
+        ep_a, ep_b = transect_endpoints
+    else:
+        manifest_eps = _transect_endpoints_from_deck(deck_dir)
+        if manifest_eps is not None:
+            ep_a, ep_b = manifest_eps
+        else:
+            # No transect supplied and no manifest.  Use sentinel zero-endpoints so
+            # the FGB still contains the geometry skeleton with the toe distance
+            # encoded (Invariant 1: never silently skip the artifact, but also never
+            # fabricate real coordinates -- zero lat/lon near the equator is honest
+            # placeholder behaviour; the composer's honesty gate should have raised
+            # InputError upstream if no transect was given).
+            ep_a = (0.0, 0.0)
+            ep_b = (0.0, float(transect_length_m) / 111_320.0)  # approx 1 deg lat
+            logger.warning(
+                "postprocess_saltwater_intrusion run_id=%s: no transect endpoints "
+                "available; using sentinel zeros (the composer honesty gate "
+                "should have raised InputError upstream)",
+                run_id,
+            )
+
+    toe_latlon = _interpolate_toe_point(ep_a, ep_b, toe_m, transect_length_m)
+
+    # --- Step 5: write FlatGeobuf -----------------------------------------
+    fgb_path = _write_si_fgb(
+        ep_a,
+        ep_b,
+        toe_latlon,
+        intrusion_length_m=intrusion_m,
+        seaward_salinity_ppt=seawater_ppt,
+        run_id=run_id,
+    )
+
+    # Bounding box from the transect line (lon, lat order for the tuple).
+    a_lon, a_lat = float(ep_a[1]), float(ep_a[0])
+    b_lon, b_lat = float(ep_b[1]), float(ep_b[0])
+    bbox_4326: tuple[float, float, float, float] | None = (
+        min(a_lon, b_lon),
+        min(a_lat, b_lat),
+        max(a_lon, b_lon),
+        max(a_lat, b_lat),
+    )
+
+    # --- Step 6: upload FlatGeobuf to runs bucket --------------------------
+    try:
+        fgb_uri = _upload_fgb(
+            fgb_path, run_id, runs_bucket, fgb_filename="saltwater_intrusion_4326.fgb"
+        )
+    except PostprocessMODFLOWError as exc:
+        # Remap the _upload_fgb error code (CAPTURE_ZONE_WRITE_FAILED) to the
+        # Wave-5 surface for clean error narration.
+        raise PostprocessMODFLOWError(
+            "SALTWATER_WRITE_FAILED",
+            message=exc.args[0] if exc.args else str(exc),
+            details=exc.details,
+        ) from exc
+
+    logger.info(
+        "postprocess_saltwater_intrusion run_id=%s fgb_uri=%s "
+        "intrusion_length_m=%.3g bbox=%s",
+        run_id, fgb_uri, intrusion_m, bbox_4326,
+    )
+
+    # --- Step 7: build the cross-section chart (stash on the result) --------
+    # The chart builder does NOT read the UCN again - it uses the in-memory
+    # salinity_2d grid.  Stashed as ``_chart_payload`` (a runtime attribute, not
+    # a Pydantic field) so the composer can emit it without a second UCN read.
+    chart_payload: dict[str, Any] | None = None
+    try:
+        from ..tools.chart_tools import build_saltwater_wedge_chart
+
+        chart_payload = build_saltwater_wedge_chart(
+            salinity_grid=salinity_2d,
+            distances_m=distances_m,
+            depths_m=depths_m,
+            isochlor_value=isochlor_value,
+            seawater_salinity_ppt=seawater_ppt,
+            intrusion_length_m=intrusion_m,
+            source_layer_uri=fgb_uri,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort: a chart build failure is non-fatal; the LayerURI is still
+        # returned with a None chart payload.
+        logger.warning(
+            "postprocess_saltwater_intrusion: chart build failed (non-fatal): %s",
+            exc,
+        )
+
+    layer_id = f"saltwater-intrusion-{run_id}"
+    result = SaltwaterWedgeLayerURI(
+        layer_id=layer_id,
+        name="Saltwater Intrusion Wedge (Henry-style variable-density cross-section)",
+        layer_type="vector",
+        uri=fgb_uri,
+        style_preset=SALTWATER_INTRUSION_STYLE_PRESET,
+        role="primary",
+        bbox=bbox_4326,
+        intrusion_length_m=intrusion_m,
+        toe_distance_m=toe_m,
+        seaward_salinity_ppt=seawater_ppt,
+        transect_endpoints=(ep_a, ep_b),
+    )
+
+    # Stash the chart payload as a runtime attribute the composer picks up via
+    # ``getattr(layer, "_chart_payload", None)``.  Pydantic v2 ignores non-field
+    # attributes on serialisation (model_dump / model_dump_json) so this does not
+    # contaminate the contract boundary.
+    object.__setattr__(result, "_chart_payload", chart_payload)
+
+    return result

@@ -69,6 +69,7 @@ __all__ = [
     "ASRLayerURI",
     "HydroperiodLayerURI",
     "CaptureZoneLayerURI",
+    "SaltwaterWedgeLayerURI",
     "DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY",
     "DEFAULT_STREAMBED_THICKNESS_M",
     "DEFAULT_AQUIFER_SY",
@@ -306,6 +307,30 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
         specific_yield: wetland-soil specific yield for the unconfined seasonal
             response, dimensionless in (0, 1]. Demo default ``DEFAULT_WETLAND_SY``
             (0.2).
+
+    Archetype fields (Wave-5 - ADDITIVE, all optional/defaulted; a run-args with
+    none of them is byte-identical to all prior paths):
+
+        --- saltwater_intrusion (Henry-style variable-density GWF+GWT wedge) ---
+        A nrow=1 vertical cross-section with ModflowGwfbuy coupling solute
+        concentration to fluid density; GHB+AUX supplies salt at the seaward
+        column and WEL+AUX injects freshwater at the inland column. The Henry
+        (1964) analytic benchmark is the canonical demo target. LOCAL-ONLY (the
+        Henry demo grid is small + fast; no Batch submit). The composer MUST
+        raise an InputError (Invariant 9 honesty gate) when
+        ``coastal_transect_latlon`` is None -- a coastline can NEVER be fabricated.
+        coastal_transect_latlon: two ``(lat, lon)`` endpoints (A=seaward, B=inland)
+            defining the cross-section axis, EPSG:4326 (lat-first). REQUIRED for
+            this archetype -- None triggers an InputError. When None and the
+            archetype is NOT saltwater_intrusion this field is ignored (additive).
+        seawater_salinity_ppt: salinity at the seaward GHB+AUX boundary, ppt. Demo
+            default 35.0 (open ocean); estuarine problems may use lower values. > 0.
+        n_vertical_layers: number of vertical layers (nlay) in the cross-section
+            grid. More layers resolve the density interface more sharply. Default 20;
+            bounds [4, 80].
+        freshwater_inflow_m3_day: freshwater inflow at the inland WEL+AUX boundary,
+            m^3/day (POSITIVE magnitude). When None the adapter auto-derives from
+            the transect geometry + aquifer K (Henry-representative flux). > 0.
     """
 
     schema_version: Literal["v1", "v2"] = "v2"
@@ -330,11 +355,13 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
     river_dem_uri: str | None = None
     along_river_source: bool = False
 
-    # --- Archetype selector (sprint-18 Wave-1 + Wave-2 + Wave-4; ADDITIVE, optional) -- #
+    # --- Archetype selector (sprint-18 Wave-1 + Wave-2 + Wave-4 + Wave-5; ADDITIVE, optional) -- #
     # None = the EXISTING spill/seepage path (deck byte-identical). Wave-4 adds
     # "capture_zone" (zone-of-contribution via MF6 PRT backward particle tracking)
     # and "wellhead_protection" (EPA-style fixed-travel-time tiers via the same PRT
     # mechanism). Both are LOCAL-ONLY runs (PRT is fast; no Batch submit).
+    # Wave-5 adds "saltwater_intrusion" (Henry-style variable-density GWF+GWT
+    # wedge via ModflowGwfbuy). LOCAL-ONLY (the Henry demo grid is small + fast).
     archetype: (
         Literal[
             "sustainable_yield",
@@ -346,6 +373,7 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             "multi_species",
             "capture_zone",
             "wellhead_protection",
+            "saltwater_intrusion",
         ]
         | None
     ) = None
@@ -457,6 +485,73 @@ class MODFLOWRunArgs(EngineRunArgsMixin):
             "travel-time tier (e.g. max(capture_zone_travel_time_years) * 1.5). "
             "Set explicitly to override the auto-derived limit (e.g. to cap runtime "
             "for a large domain). Must be > 0."
+        ),
+    )
+
+    # --- saltwater_intrusion: Henry-style variable-density wedge (Wave-5) ----- #
+    # A coastal vertical cross-section (nrow=1 slice) with a seaward GHB+AUX
+    # supplying salt, a freshwater WEL+AUX on the inland boundary, and the
+    # ModflowGwfbuy variable-density term coupling solute concentration to fluid
+    # density. The Henry (1964) analytic benchmark is the canonical demo target.
+    # ALL fields are optional/defaulted -> additive; ``None`` => byte-identical
+    # to all prior paths. The user MUST supply coastal_transect_latlon; the
+    # composer raises an InputError otherwise (Invariant 9 honesty gate -- a
+    # coastline can NEVER be fabricated).
+    coastal_transect_latlon: tuple[tuple[float, float], tuple[float, float]] | None = Field(
+        default=None,
+        description=(
+            "Two ``(lat, lon)`` endpoints defining the coastal transect, EPSG:4326 "
+            "(lat-first, same point convention as ``spill_location_latlon``). "
+            "Endpoint A is the seaward (ocean) end of the transect; endpoint B is "
+            "the inland end. The transect line A->B is the cross-section axis for "
+            "the Henry-style variable-density GWT solve; the model grid runs from "
+            "the inland boundary (WEL+AUX fresh) at column 0 to the seaward "
+            "boundary (GHB+AUX salt) at the last column, and the intrusion length "
+            "is measured from the seaward edge inland. "
+            "REQUIRED for the saltwater_intrusion archetype -- the composer MUST "
+            "raise an InputError (Invariant 9) if this is None when the archetype "
+            "is 'saltwater_intrusion'. A coastline can NEVER be fabricated. "
+            "When None (the default) the field is ignored and the deck is byte-"
+            "identical to all prior paths."
+        ),
+    )
+    seawater_salinity_ppt: float = Field(
+        default=35.0,
+        gt=0.0,
+        description=(
+            "Seawater salinity at the seaward (GHB+AUX) boundary, ppt (parts per "
+            "thousand, g/kg). Applied as the initial concentration in the seaward "
+            "column (IC) and as the AUX auxiliary variable on the GHB boundary "
+            "package to supply salt into the domain. 35.0 ppt is the open-ocean "
+            "demo default (narrated as a demo value). Estuarine or coastal lagoon "
+            "problems may use lower values (e.g. 25 ppt). Must be > 0."
+        ),
+    )
+    n_vertical_layers: int = Field(
+        default=20,
+        ge=4,
+        le=80,
+        description=(
+            "Number of vertical model layers in the cross-section grid, nlay. The "
+            "horizontal nrow is always 1 (a 2-D vertical slice); ncol is derived "
+            "from the transect length and a target cell width. More layers resolve "
+            "the density interface (saltwater toe) more sharply at the cost of "
+            "longer GWT solve times. Demo default 20 is adequate for the Henry "
+            "benchmark; increase to 40-80 for a sharper wedge interface in longer "
+            "transects. Bounds: [4, 80]."
+        ),
+    )
+    freshwater_inflow_m3_day: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Freshwater inflow rate applied at the inland WEL+AUX boundary, m^3/day "
+            "(POSITIVE magnitude; the adapter applies the MF6 WEL sign). When None "
+            "the adapter derives a Henry-benchmark-representative inflow from the "
+            "transect geometry and the aquifer hydraulic conductivity (Q = K * i * A "
+            "with a gentle demo gradient). Supplying an explicit value overrides the "
+            "auto-derived flux, allowing the user to explore how terrestrial freshwater "
+            "discharge pushes back the saltwater wedge toe. Must be > 0."
         ),
     )
 
@@ -822,5 +917,107 @@ class CaptureZoneLayerURI(LayerURI):
             "solve. Normally equals ``MODFLOWRunArgs.n_particles``; may be slightly "
             "lower if the well cell was near the domain boundary and some release "
             "positions were clipped to valid grid cells."
+        ),
+    )
+
+
+class SaltwaterWedgeLayerURI(LayerURI):
+    """A ``LayerURI`` for a MODFLOW Henry-style variable-density saltwater intrusion
+    cross-section (Wave-5 - ADDITIVE).
+
+    The headline output of the ``"saltwater_intrusion"`` archetype. A GWF+GWT
+    single-simulation sequence on a nrow=1 vertical cross-section (the Henry 1964
+    benchmark geometry) with the ModflowGwfbuy variable-density term coupling the
+    GWT salinity field to the GWF fluid density. The seaward boundary (GHB+AUX)
+    supplies salt; the inland boundary (WEL+AUX) injects freshwater; the steady-
+    state concentration field reveals the saltwater wedge and its toe penetration.
+
+    IMPORTANT PRECISION CAVEAT -- this is a DEMO Henry-style variable-density
+    cross-section on a structured rectilinear grid with demo aquifer parameters,
+    NOT a site-calibrated saltwater intrusion model. The intrusion_length_m is
+    the bottom-layer 50%-isochlor (50% of seawater_salinity_ppt) toe penetration
+    measured from the seaward boundary; it is a qualitative planning metric, NOT
+    a regulatory or engineering delineation. The agent must narrate this caveat
+    when presenting the layer to the user (invariant 1, FR-AS-7).
+
+    The PRIMARY product is a Vega-Lite cross-section heatmap chart (emitted via
+    pipeline_emitter.emit_chart_payloads) showing salinity vs. distance inland
+    and depth, with the 50% isochlor as an overlaid rule/line. This
+    ``SaltwaterWedgeLayerURI`` carries the MAP element: a FlatGeobuf VECTOR in
+    EPSG:4326 containing the coastal transect line (A->B from the manifest
+    transect endpoints) and a toe POINT at the 50%-isochlor penetration along
+    that line. The vector geo-contextualizes the cross-section on the map;
+    the chart carries the physics. Neither the chart nor the vector should be
+    over-interpreted as a calibrated result.
+
+    ``layer_type`` defaults to ``'vector'`` (a FlatGeobuf transect line + toe
+    point, NOT a raster COG). This is the second vector MODFLOW ``LayerURI``
+    after ``CaptureZoneLayerURI``.
+
+    Extends ``LayerURI`` field-for-field so it still maps onto
+    ``map-command load-layer`` with no translation (same as every other layer).
+    Adds the structured numbers the agent narrates so the LLM cites typed fields,
+    never invents them (invariant 1, FR-AS-7):
+
+        intrusion_length_m: bottom-layer 50%-isochlor toe penetration measured
+            inland from the seaward boundary, m (>= 0). This is the HEADLINE
+            SCALAR: how far salt has pushed into the aquifer at the base of the
+            domain where the wedge toe is deepest. Narrated as a demo metric;
+            do NOT oversell calibration accuracy.
+        toe_distance_m: distance from the seaward boundary to the 50%-isochlor
+            toe in the BOTTOM model layer, m (>= 0). Alias for
+            ``intrusion_length_m`` retained for downstream compatibility;
+            both fields are populated from the same measurement.
+        seaward_salinity_ppt: actual peak salinity in the domain at the seaward
+            boundary (the GHB+AUX applied concentration), ppt. Recorded from the
+            run manifest; matches ``MODFLOWRunArgs.seawater_salinity_ppt`` unless
+            the adapter applied a cap. The 50%-isochlor threshold is derived from
+            this value (threshold = 0.5 * seaward_salinity_ppt).
+        transect_endpoints: the A->B coastal transect endpoints as two ``(lat,
+            lon)`` pairs, EPSG:4326 (lat-first, same point convention as
+            ``MODFLOWRunArgs.coastal_transect_latlon``). Endpoint A is seaward;
+            endpoint B is inland. Recorded from the run manifest so the
+            postprocessor can geolocate the cross-section and toe point without
+            re-reading the run args.
+    """
+
+    layer_type: Literal["raster", "vector"] = "vector"
+
+    intrusion_length_m: float = Field(
+        ge=0.0,
+        description=(
+            "Bottom-layer 50%-isochlor toe penetration measured inland from the "
+            "seaward boundary, m (>= 0). Headline scalar: how far salt has pushed "
+            "into the aquifer at the deepest part of the wedge. Demo Henry-style "
+            "result; narrate as a qualitative planning metric, not a calibrated "
+            "delineation (see class docstring caveat)."
+        ),
+    )
+    toe_distance_m: float = Field(
+        ge=0.0,
+        description=(
+            "Distance from the seaward boundary to the 50%-isochlor toe in the "
+            "BOTTOM model layer, m (>= 0). Alias for ``intrusion_length_m`` "
+            "retained for downstream compatibility; both fields carry the same "
+            "measurement. >= 0."
+        ),
+    )
+    seaward_salinity_ppt: float = Field(
+        description=(
+            "Peak salinity applied at the seaward GHB+AUX boundary, ppt. Recorded "
+            "from the run manifest; matches ``MODFLOWRunArgs.seawater_salinity_ppt`` "
+            "unless the adapter applied a cap. The 50%-isochlor threshold is "
+            "0.5 * seaward_salinity_ppt. Narrated alongside intrusion_length_m so "
+            "the user knows which salinity level defines the wedge toe."
+        ),
+    )
+    transect_endpoints: tuple[tuple[float, float], tuple[float, float]] = Field(
+        description=(
+            "A->B coastal transect endpoints as two ``(lat, lon)`` pairs, "
+            "EPSG:4326 (lat-first). Endpoint A is the seaward (ocean) end; "
+            "endpoint B is the inland end. Recorded from the run manifest so the "
+            "postprocessor can geolocate the transect LINE and the toe POINT on "
+            "the map without re-reading the run args. Must match "
+            "``MODFLOWRunArgs.coastal_transect_latlon`` exactly."
         ),
     )

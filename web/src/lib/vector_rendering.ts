@@ -323,6 +323,10 @@ export function presetColorFor(stylePreset: string | null | undefined): string |
   // (sprint-18 Wave-4). Violet protection-zone colour so these planning-level
   // envelopes read visually distinct from hydro-blue rivers and mesh-cyan grids.
   if (key === "capture_zone" || key === "wellhead_protection") return "#9B59B6";
+  // MODFLOW Wave-5 saltwater-intrusion transect + toe point (sprint-18 Wave-5).
+  // Teal #1ABC9C: distinct from capture-zone violet, hydro-blue rivers, mesh-cyan,
+  // and roads-amber; reads as a coastal/saltwater boundary on the map.
+  if (key === "saltwater_intrusion") return "#1ABC9C";
   return undefined;
 }
 
