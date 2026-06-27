@@ -2776,5 +2776,26 @@
     "description": "Workflow wf_b0fe88a5 (8 agents): MODFLOW Wave-4 capture_zone + wellhead_protection (native PRT backward tracking -> FIRST vector MODFLOW output). 6 phases contracts/adapter/postprocess/compose/prove/review. Real mf6 proof + 3-dim adversarial review caught 2 BLOCKING (equator-polygon georef + discarded tiers) + 1 MAJOR (wrong 40 CFR cite); all fixed by orchestrator. Commit ed7fd50. Plus a read-only seam scout (Explore, ~est 40k, folded here).",
     "model": "opus-4.8",
     "subagent_tokens": 1025759
+  },
+  {
+    "job_id": "modflow-wave5-buy-research",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 109949,
+    "description": "MF6 BUY saltwater-intrusion method research agent: proved a Henry-style variable-density deck live on mf6 6.7.0 (GWF+GWT+BUY, two-IMS GWF-first, GHB+AUX seaward / WEL+AUX inland / SSM-AUX, UPSTREAM ADV). Pinned the recipe + the vertical-slice grid + the cross-section-chart deliverable. Script /tmp/henry_buy_proof.py."
+  },
+  {
+    "job_id": "modflow-wave5-build",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 874762,
+    "description": "Workflow wf_65a31679 (8 agents): MODFLOW Wave-5 (FINAL) saltwater_intrusion via MF6 BUY variable-density flow -> cross-section salinity heatmap chart + transect/toe vector. 6 phases + real-mf6 proof + 3-dim review. Caught a BLOCKING inverted column-convention defect (np.max picked the seaward GHB cell -> intrusion collapsed; chart x-axis inverted), fixed by orchestrator (Opus). Commit b4173bc. NOTE: workflow build agents were mis-set to Sonnet (NATE corrected: dev-plane = Opus always); reviewers were Opus."
+  },
+  {
+    "job_id": "modflow-waves-2-5-deploy",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 0,
+    "description": "Deploy Waves 2-5 (agent-side) to the box via grace2-runshell SSM. Found + fixed a deploy-mechanism gap: the bundle did not ship services/workers/modflow/gwt_adapter.py (the agent imports it for local mf6 runs), so the box ran a stale gwt_adapter -> archetypes raised unknown-archetype. Extended deploy_agent_{bundle,onbox}.sh to ship/swap it (commit 5a7c957). Verified all 11 archetypes + flopy 3.10 resolve on box; mf6 6.5.0. No subagents (dev-plane bash). NATE prod-tests via Haiku."
   }
 ]
