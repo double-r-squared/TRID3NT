@@ -716,6 +716,81 @@ describe("LayerLegend  -  Show-legend pill position vs mobile composer (#157)", 
   });
 });
 
+// --- DESKTOP SCRUBBER CLEARANCE (NATE 2026-06-27): the desktop docked legend
+// strip (LANE D) must LIFT above the sequence scrubber's footprint while the
+// scrubber is active so the scrubber (z51) never paints over the strip (z15).
+// With the scrubber INACTIVE the strip stays at the bare DESKTOP_DOCK_BOTTOM_PX
+// (16). This is the DESKTOP-ONLY (!isMobile) path; the mobile keys reserve the
+// bottom band via excludeBottom and are unaffected. ------------------------- //
+describe("LayerLegend  -  desktop docked strip clears the active scrubber", () => {
+  /** Stub useIsMobile's media query (max-width:767px) match for one render. */
+  function mockIsMobile(mobile: boolean): () => void {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("max-width") ? mobile : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    return () => {
+      window.matchMedia = original;
+    };
+  }
+
+  // Drive the shared AnimationController so the legend's useAnimationState()
+  // reports an active group (scrubberActive === true), exactly as the live app.
+  function activateScrubber(): void {
+    const c = getAnimationController();
+    c.setGroups([
+      {
+        key: "seq-d",
+        label: "HRRR precip",
+        layerIds: ["f01", "f03", "f06"],
+        frameLabels: ["F+01h", "F+03h", "F+06h"],
+      },
+    ]);
+    c.setActiveGroup("seq-d");
+  }
+
+  it("with NO scrubber, the desktop strip stays at bottom 16px", () => {
+    const restore = mockIsMobile(false);
+    try {
+      render(<LayerLegend layers={[makeLayer()]} />);
+      const strip = screen.getByTestId("grace2-layer-legend");
+      expect(strip).toHaveAttribute("data-legend-docked", "desktop");
+      expect(strip.style.bottom).toBe("16px");
+    } finally {
+      restore();
+    }
+  });
+
+  it("with the scrubber ACTIVE, the desktop strip lifts to bottom 76px (clears the scrubber)", () => {
+    const restore = mockIsMobile(false);
+    try {
+      activateScrubber();
+      // A standalone (non-frame) raster so it still emits ONE legend key while a
+      // separate sequence group drives the scrubber-active signal.
+      render(
+        <LayerLegend
+          layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        />,
+      );
+      const strip = screen.getByTestId("grace2-layer-legend");
+      expect(strip).toHaveAttribute("data-legend-docked", "desktop");
+      // 16 (DESKTOP_DOCK_BOTTOM_PX) + 60 (52 footprint + 8 gap) = 76: the strip's
+      // bottom edge sits at the top of the scrubber's reserved band (above its
+      // ~66px top), so the z51 scrubber no longer covers the z15 legend.
+      expect(strip.style.bottom).toBe("76px");
+    } finally {
+      restore();
+    }
+  });
+});
+
 // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
 // top-edge Y (sheetTopPx), the mobile legend (colorbar keys + collapsed pill)
 // must dock just ABOVE the sheet top - a clean band at the chat-panel top -

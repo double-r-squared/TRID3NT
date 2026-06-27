@@ -365,6 +365,18 @@ const FALLBACK_STACK_GAP = 10;
 // BAR flexes to absorb slack so the value+unit labels never wrap.
 const DESKTOP_DOCK_BOTTOM_PX = 16;
 const DESKTOP_DOCK_GAP_PX = 8;
+// desktop-only: the scrubber's reserved footprint (its height + its own 12px gap,
+// the SAME value the mobile bottom-reserve uses as SCRUBBER_FOOTPRINT_PX).
+const DESKTOP_DOCK_SCRUBBER_FOOTPRINT_PX = 52;
+// desktop-only: extra bottom lift applied to the docked legend strip WHILE the
+// sequence scrubber is active so the strip clears the scrubber's reserved
+// footprint. The scrubber pins bottom-center (bottom 24, ~42 tall -> top ~66, z51);
+// the legend strip sits at z15, so without this lift the scrubber paints over it.
+// Lift = the scrubber footprint PLUS an explicit DESKTOP_DOCK_GAP_PX so the
+// separation is intentional and survives a future scrubber-size change:
+// 16 + (52 + 8) = 76, which sits at the top of the scrubber's reserved band.
+const DESKTOP_DOCK_SCRUBBER_CLEARANCE_PX =
+  DESKTOP_DOCK_SCRUBBER_FOOTPRINT_PX + DESKTOP_DOCK_GAP_PX;
 const DESKTOP_DOCK_KEY_WIDTH = 200;
 const DESKTOP_DOCK_TITLE_FONT = 11;
 const DESKTOP_DOCK_LABEL_FONT = 10;
@@ -974,7 +986,12 @@ export function LayerLegend({
         data-legend-docked="desktop"
         style={{
           position: "fixed",
-          bottom: DESKTOP_DOCK_BOTTOM_PX,
+          // desktop-only: lift the docked legend strip above the active scrubber
+          // footprint so the scrubber (z51) does not overlay the legend (z15);
+          // mobile reserves the bottom band via excludeBottom, untouched.
+          bottom: scrubberActive
+            ? DESKTOP_DOCK_BOTTOM_PX + DESKTOP_DOCK_SCRUBBER_CLEARANCE_PX
+            : DESKTOP_DOCK_BOTTOM_PX,
           // Center in the gutter between the left rail and the right chat: shift
           // right by half the left-rail width, left by half the chat width.
           left: `calc(50% + ${Math.round((dockLeftInsetPx - dockRightInsetPx) / 2)}px)`,
