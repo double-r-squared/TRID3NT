@@ -48,9 +48,9 @@ def test_empty_overrides_returns_empty_dict() -> None:
 
 def test_valid_overrides_resolve_and_coerce() -> None:
     r = validate_and_resolve_physics(
-        "sfincs", {"alpha": 0.5, "advection": 2}
+        "sfincs", {"alpha": 0.5, "advection": 1}
     )
-    assert r == {"alpha": 0.5, "advection": 2}
+    assert r == {"alpha": 0.5, "advection": 1}
     assert isinstance(r["alpha"], float) and isinstance(r["advection"], int)
 
 
@@ -76,25 +76,29 @@ def test_out_of_range_raises() -> None:
 def test_int_key_rejects_non_integer_float() -> None:
     with pytest.raises(PhysicsRegistryError):
         validate_and_resolve_physics("sfincs", {"advection": 1.5})
-    # an integral float is accepted + coerced to int.
-    assert validate_and_resolve_physics("sfincs", {"advection": 2.0}) == {"advection": 2}
+    # an integral float is accepted + coerced to int (advection range is (0,1)).
+    assert validate_and_resolve_physics("sfincs", {"advection": 1.0}) == {"advection": 1}
 
 
 def test_bool_key_coerces_strings() -> None:
-    assert validate_and_resolve_physics("sfincs", {"coriolis": "false"}) == {
-        "coriolis": False
+    # NATE 2026-06-26: sfincs `coriolis` (bool) was re-spec'd to `coriolis_latitude`
+    # (float -> sfincs.inp:latitude) since SFINCS has no `coriolis` key. The
+    # bool-coercion contract is exercised here via swan's `quadruplets` bool key.
+    assert validate_and_resolve_physics("swan", {"quadruplets": "false"}) == {
+        "quadruplets": False
     }
-    assert validate_and_resolve_physics("sfincs", {"coriolis": "on"}) == {
-        "coriolis": True
+    assert validate_and_resolve_physics("swan", {"quadruplets": "on"}) == {
+        "quadruplets": True
     }
-    assert validate_and_resolve_physics("sfincs", {"coriolis": True}) == {
-        "coriolis": True
+    assert validate_and_resolve_physics("swan", {"quadruplets": True}) == {
+        "quadruplets": True
     }
 
 
 def test_bool_key_rejects_garbage() -> None:
+    # NATE 2026-06-26: swan `quadruplets` bool key (sfincs `coriolis` bool removed).
     with pytest.raises(PhysicsRegistryError):
-        validate_and_resolve_physics("sfincs", {"coriolis": "maybe"})
+        validate_and_resolve_physics("swan", {"quadruplets": "maybe"})
 
 
 def test_str_literal_key_enforces_allowed_values() -> None:

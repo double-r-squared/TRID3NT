@@ -80,6 +80,7 @@ __all__ = [
     "DischargeForcing",
     "WindForcing",
     "PressureForcing",
+    "InfiltrationForcing",
     "BuildOptions",
     "build_sfincs_model",
     "load_manning_mapping",
@@ -395,6 +396,36 @@ class PressureForcing:
 
 
 @dataclass(frozen=True)
+class InfiltrationForcing:
+    """Soil-infiltration LOSS term (SFINCS ``scsfile`` / ``qinffile`` / ``qinf``).
+
+    NATE 2026-06-26: the missing forcing archetype. Infiltration is a loss, not
+    a driver, so it is emitted whenever set but is NOT counted by
+    ``has_surge_forcing`` (a pure-infiltration deck still needs a precip/surge
+    driver to flood). Three mutually-exclusive emission paths, in precedence:
+
+    - ``cn_uri`` -> ``setup_cn_infiltration(cn=, antecedent_moisture=)`` writes
+      ``scsfile`` (SCS curve-number method). For a SINGLE-BAND GCN250 raster
+      ``antecedent_moisture`` MUST be ``None`` (emitted as YAML ``null``): the
+      default ``'avg'`` looks for a ``cn_avg`` data_var inside a Dataset and
+      ValueErrors on a bare DataArray band. CN WINS over a constant (HydroMT's
+      setup_cn_infiltration pops the default ``qinf`` config).
+    - ``lulc_uri`` + ``reclass_table_uri`` -> ``setup_constant_infiltration(
+      lulc=, reclass_table=)`` writes ``qinffile`` (per-class constant mm/hr map).
+    - ``constant_mm_per_hr`` -> a bare scalar ``qinf`` (mm/hr) via the
+      setup_config passthrough (setup_constant_infiltration REQUIRES a raster /
+      lulc, so a spatially-uniform constant routes through sfincs.inp:qinf).
+    """
+
+    cn_uri: str | None = None
+    antecedent_moisture: str | None = None
+    constant_mm_per_hr: float | None = None
+    lulc_uri: str | None = None
+    reclass_table_uri: str | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ForcingSpec:
     """Compact specification of the design-storm forcing for SFINCS.
 
@@ -454,15 +485,35 @@ class ForcingSpec:
     # COASTAL SFINCS surge / compound-flood members (None → block not emitted).
     waterlevel: WaterlevelForcing | None = None
     discharge: DischargeForcing | None = None
+    # NATE 2026-06-26: ``breach`` is an INTERIOR levee-breach point source (reuses
+    # DischargeForcing with timeseries_uri+locations_uri set at the breach point,
+    # rivers_uri/hydrography_uri left None). Distinct from ``discharge`` (a
+    # domain-EDGE river inflow) so a compound run can carry BOTH; emitted as a
+    # SECOND setup_discharge_forcing(merge: true) with NO setup_river_inflow.
+    breach: DischargeForcing | None = None
     wind: WindForcing | None = None
     pressure: PressureForcing | None = None
+    # NATE 2026-06-26: infiltration is a LOSS term (scsfile/qinffile/qinf), not a
+    # driver -> emitted when set but NOT counted by has_surge_forcing().
+    infiltration: InfiltrationForcing | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def has_surge_forcing(self) -> bool:
-        """True iff any non-precip (surge/tide/discharge/wind/pressure) member is set."""
+        """True iff any non-precip (surge/tide/discharge/breach/wind/pressure) member is set.
+
+        NATE 2026-06-26: ``breach`` is a DRIVER (an interior discharge jet) so it
+        joins the any(); ``infiltration`` is a loss term and is deliberately
+        excluded (it never drives a flood on its own).
+        """
         return any(
             m is not None
-            for m in (self.waterlevel, self.discharge, self.wind, self.pressure)
+            for m in (
+                self.waterlevel,
+                self.discharge,
+                self.breach,
+                self.wind,
+                self.pressure,
+            )
         )
 
 
@@ -533,6 +584,13 @@ class BuildOptions:
     subgrid_nr_subgrid_pixels: int = 20
     building_obstacle_uri: str | None = None
     building_obstacle_mode: str = "exclude"
+    # NATE 2026-06-26: advanced-physics overrides (advection/theta/alpha/huthresh
+    # /coriolis_latitude/wind_drag) resolved via physics_registry.
+    # validate_and_resolve_physics('sfincs', overrides). The composer passes the
+    # RESOLVED dict (single resolve point); ``_emit_physics_config`` writes each
+    # present key into the setup_config passthrough -> sfincs.inp. ``None`` (the
+    # default) emits nothing, so a deck without overrides is byte-identical.
+    advanced_physics: dict[str, Any] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1816,6 +1874,23 @@ def _emit_surge_forcing_blocks(
                 f"  locations: '{_stage_gcs_local(dq.locations_uri)}'"
             )
 
+    # --- 2b. Levee-breach INTERIOR point source (NATE 2026-06-26) ---
+    # An interior breach hydrograph injected via setup_discharge_forcing with an
+    # explicit ``locations`` Point at the breach cell (ARBITRARY interior cell --
+    # NOT a domain-edge inflow, so NO setup_river_inflow). ``merge: true`` lets
+    # hydromt COMPOSE this dis forcing with any river discharge emitted above, so
+    # a compound run can carry BOTH an edge river inflow AND an interior breach.
+    br = forcing.breach
+    if br is not None and br.timeseries_uri and br.locations_uri:
+        components.append("setup_discharge_forcing:")
+        components.append(
+            f"  timeseries: '{_stage_gcs_local(br.timeseries_uri)}'"
+        )
+        components.append(
+            f"  locations: '{_stage_gcs_local(br.locations_uri)}'"
+        )
+        components.append("  merge: true  # breach point-source merges with river dis")
+
     # --- 3. Wind (uniform OR gridded) ---
     wind = forcing.wind
     if wind is not None:
@@ -1836,6 +1911,90 @@ def _emit_surge_forcing_blocks(
         components.append(f"  press: '{_stage_gcs_local(press.grid_uri)}'")
         if press.fill_value is not None:
             components.append(f"  fill_value: {press.fill_value}")
+
+    # --- 5. Infiltration LOSS term (NATE 2026-06-26) ---
+    # CN (scsfile) WINS over a constant: hydromt's setup_cn_infiltration pops the
+    # default ``qinf`` config, so emitting both is ambiguous. A bare scalar
+    # constant has NO setup_* method (setup_constant_infiltration REQUIRES a
+    # raster/lulc), so it routes through the setup_config ``qinf`` float instead
+    # -- emitted in _emit_physics_config alongside the physics keys.
+    inf = forcing.infiltration
+    if inf is not None:
+        if inf.cn_uri:
+            components.append("setup_cn_infiltration:")
+            components.append(f"  cn: '{_stage_gcs_local(inf.cn_uri)}'")
+            # SINGLE-BAND GCN250 -> antecedent_moisture MUST be null, else the
+            # cn_avg-VAR lookup ValueErrors on a bare DataArray band.
+            am = inf.antecedent_moisture
+            components.append(
+                f"  antecedent_moisture: {('null' if am is None else repr(am))}"
+            )
+        elif inf.lulc_uri and inf.reclass_table_uri:
+            components.append("setup_constant_infiltration:")
+            components.append(f"  lulc: '{_stage_gcs_local(inf.lulc_uri)}'")
+            components.append(
+                f"  reclass_table: '{_stage_gcs_local(inf.reclass_table_uri)}'"
+            )
+        # A bare ``constant_mm_per_hr`` (no raster/lulc) is emitted as the scalar
+        # sfincs.inp:qinf inside the setup_config block (_emit_physics_config).
+
+
+def _emit_physics_config(
+    components: list[str],
+    physics: dict[str, Any] | None,
+    *,
+    infiltration: "InfiltrationForcing | None" = None,
+) -> None:
+    """Append advanced-physics + bare-constant-infiltration lines into setup_config.
+
+    NATE 2026-06-26: ``setup_config`` is a HydroMT passthrough (any key -> a
+    ``key = value`` line in sfincs.inp), so each resolved physics override lands
+    directly in the deck. ``physics`` is the dict resolved by
+    ``physics_registry.validate_and_resolve_physics('sfincs', overrides)`` (keys
+    a subset of advection/theta/alpha/huthresh/coriolis_latitude/wind_drag). The
+    caller appends these AFTER the existing crs/tref/tstart/tstop/dtout lines but
+    still inside the same ``setup_config:`` block, so they merge into one dict.
+
+    Key mapping (deck_target):
+      - advection/theta/alpha/huthresh -> the same sfincs.inp key verbatim.
+      - coriolis_latitude (float deg)  -> ``latitude`` (the constant-f plane;
+        physics_registry FIX -- there is no sfincs.inp:coriolis key).
+      - wind_drag (cd > 0)             -> a flat ``cdval: [cd,cd,cd]`` curve with
+        ``cdnrb: 3`` (physics_registry FIX -- cdwnd is the speed-breakpoint axis,
+        cdval is the coefficients). cd == 0 keeps the SFINCS default formula.
+
+    ``infiltration.constant_mm_per_hr`` (a bare scalar with no raster/lulc) is
+    ALSO emitted here as ``qinf: <v>`` -- the only setup_config-routed loss term
+    (CN/lulc paths go through setup_*_infiltration steps in
+    _emit_surge_forcing_blocks and take precedence; this fires only when neither
+    a cn_uri nor a lulc_uri+reclass_table_uri is set).
+    """
+    if physics:
+        for key in ("advection",):
+            if key in physics:
+                components.append(f"  {key}: {int(physics[key])}")
+        for key in ("theta", "alpha", "huthresh"):
+            if key in physics:
+                components.append(f"  {key}: {float(physics[key])}")
+        # Coriolis: a latitude float -> sfincs.inp:latitude (the constant-f plane).
+        if "coriolis_latitude" in physics:
+            components.append(f"  latitude: {float(physics['coriolis_latitude'])}")
+        # Wind drag: a constant cd > 0 -> a flat cdval [cd,cd,cd] curve (cdnrb=3).
+        cd = physics.get("wind_drag")
+        if cd is not None and float(cd) > 0.0:
+            cd_f = float(cd)
+            components.append("  cdnrb: 3")
+            components.append("  cdwnd: [0.0, 28.0, 50.0]")
+            components.append(f"  cdval: [{cd_f}, {cd_f}, {cd_f}]")
+
+    # Bare-constant infiltration (no raster) -> the scalar sfincs.inp:qinf (mm/hr).
+    if (
+        infiltration is not None
+        and not infiltration.cn_uri
+        and not (infiltration.lulc_uri and infiltration.reclass_table_uri)
+        and infiltration.constant_mm_per_hr is not None
+    ):
+        components.append(f"  qinf: {float(infiltration.constant_mm_per_hr)}")
 
 
 def _generate_hydromt_yaml_config(
@@ -1973,6 +2132,13 @@ def _generate_hydromt_yaml_config(
         dtout_seconds = max(600, int(_total_seconds / 24))
     components.append(f"  dtout: {dtout_seconds}")
     components.append(f"  dtmaxout: {dtout_seconds}")
+    # NATE 2026-06-26: advanced-physics overrides + a bare-constant infiltration
+    # qinf land in THIS setup_config block (HydroMT passthrough -> sfincs.inp).
+    # ``None`` advanced_physics + no bare-constant infiltration emit nothing, so a
+    # plain pluvial deck stays byte-identical.
+    _emit_physics_config(
+        components, options.advanced_physics, infiltration=forcing.infiltration
+    )
     components.append("setup_grid_from_region:")
     components.append(
         f"  region: {{ bbox: [{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}] }}"

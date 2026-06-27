@@ -62,47 +62,78 @@ PHYSICS_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {
     # --- SFINCS (the reference engine; snapwave_inp_overrides already proves the
     # shape). advection / alpha / theta / huthresh / Coriolis / wind-drag. ---
     "sfincs": {
+        # NATE 2026-06-26 (doc-grounding, sfincs.readthedocs.io parameters.html):
+        # SFINCS advection has ONLY values 0 (SFINCS-LIE local-inertial) or 1
+        # (SFINCS-SSWE advection-on). There is NO value 2 ("2nd order") - the
+        # solver would silently clamp/reject it (Invariant 7). Range is (0,1).
         "advection": {
             "type": int,
-            "range": (0, 2),
+            "range": (0, 1),
             "default": 1,
             "deck_target": "sfincs.inp:advection",
-            "doc": "Momentum advection scheme (0=off, 1=1st order, 2=2nd order).",
+            "doc": "Momentum advection scheme (0=SFINCS-LIE local-inertial, 1=SFINCS-SSWE advection-on); recommended on. No value 2.",
         },
+        # NATE 2026-06-26: manual default alpha=0.5, recommended band 0.1-0.75
+        # (CFL dt-reduction). Was 0.75 default / (0.1,1.0) range = wrong baseline.
         "alpha": {
             "type": float,
-            "range": (0.1, 1.0),
-            "default": 0.75,
+            "range": (0.1, 0.75),
+            "default": 0.5,
             "deck_target": "sfincs.inp:alpha",
-            "doc": "CFL-based time-step safety factor (lower = smaller dt).",
+            "doc": "CFL-based time-step safety factor (manual default 0.5; lower = smaller dt).",
         },
+        # NATE 2026-06-26: manual default theta=1.0 (= no smoothing). Was 0.9,
+        # which mislabels the engine baseline for the applied_physics_delta
+        # narration (would report a false "from 0.9" when the deck baseline is 1.0).
         "theta": {
             "type": float,
             "range": (0.8, 1.0),
-            "default": 0.9,
+            "default": 1.0,
             "deck_target": "sfincs.inp:theta",
-            "doc": "Semi-implicit time-integration weighting (1.0 = fully implicit).",
+            "doc": "Semi-implicit time-integration weighting (manual default 1.0 = no smoothing; range 0.8-1.0).",
         },
+        # NATE 2026-06-26: manual default huthresh=0.05 m (parameters.html); a
+        # pluvial deck omits the line so the binary's 0.05 default applies. Was
+        # 0.01 default / (0.001,0.5) range; corrected to 0.05 / (0.001,0.1).
         "huthresh": {
             "type": float,
-            "range": (0.001, 0.5),
-            "default": 0.01,
+            "range": (0.001, 0.1),
+            "default": 0.05,
             "deck_target": "sfincs.inp:huthresh",
-            "doc": "Wet/dry threshold water depth (m) for momentum.",
+            "doc": "Wet/dry threshold water depth (m) for momentum (manual default 0.05).",
         },
-        "coriolis": {
-            "type": bool,
-            "range": (True, False),
-            "default": True,
-            "deck_target": "sfincs.inp:coriolis",
-            "doc": "Enable the Coriolis force term (large-domain surge).",
+        # NATE 2026-06-26 (doc-grounding): SFINCS DOES have a `coriolis` keyword
+        # (default True), but it is INERT while `latitude`==0.0 on a projected CRS
+        # - so `latitude` is the effective lever, not the bool. The old registry
+        # entry was a bool `coriolis` -> "sfincs.inp:coriolis" that we'd narrate as
+        # flipping Coriolis while actually leaving latitude=0.0 (silent no-effect,
+        # Invariant 7). Re-spec to a float `coriolis_latitude` (deg) ->
+        # sfincs.inp:latitude (the real activation knob; crsgeo=1 is the alt
+        # grid-aware-f path, both real keys per hydromt_sfincs SfincsInput).
+        "coriolis_latitude": {
+            "type": float,
+            "range": (-90.0, 90.0),
+            "default": 0.0,
+            "deck_target": "sfincs.inp:latitude",
+            "doc": (
+                "Constant-plane Coriolis latitude (deg) -> sfincs.inp:latitude "
+                "(0 = no Coriolis; set the AOI-centre latitude for large-domain surge)."
+            ),
         },
+        # NATE 2026-06-26: was deck_target "sfincs.inp:cdwnd", but `cdwnd` is the
+        # wind-SPEED breakpoint vector [0,28,50] m/s, NOT a drag coefficient. The
+        # drag COEFFICIENTS live in `cdval` [0.001,0.0025,0.0015]. A constant-drag
+        # override rewrites `cdval` to a flat list [cd,cd,cd] (with cdnrb=3). Fixed
+        # deck_target -> "sfincs.inp:cdval"; see _emit_physics_config list semantics.
         "wind_drag": {
             "type": float,
             "range": (0.0, 0.01),
             "default": 0.0,
-            "deck_target": "sfincs.inp:cdwnd",
-            "doc": "Constant wind-drag coefficient override (0 = default formula).",
+            "deck_target": "sfincs.inp:cdval",
+            "doc": (
+                "Constant wind-drag coefficient override written as a flat cdval "
+                "curve [cd,cd,cd] with cdnrb=3 (0 = keep SFINCS default formula)."
+            ),
         },
     },
     # --- SWAN: whitecapping / breaking-gamma / bottom-friction / quadruplets. ---

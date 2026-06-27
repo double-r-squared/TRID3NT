@@ -1,5 +1,21 @@
 # SFINCS scenario-coverage - implementation design (NATE 2026-06-26)
 
+> DOC-GROUNDING RECONCILIATION (2026-06-26, supersedes the body where they conflict):
+> after grounding in the SFINCS user manual (sfincs.readthedocs.io parameters.html), the
+> as-built code corrects four physics values this design doc states wrongly. The CODE is the
+> source of truth; ignore the body's `advection: 2` / old-default text:
+> - advection has ONLY values 0 (SFINCS-LIE) or 1 (SFINCS-SSWE) - there is NO value 2. Every
+>   `advection==2` / "set 2 for 2nd-order" / "advection SHOULD be 2" below (lines ~69, 87, 124,
+>   226) is invalid; the registry range is now (0,1) and all archetypes use advection=1.
+> - manual engine-baseline defaults (registry `default` fields, used for honest delta narration):
+>   theta 1.0 (was 0.9), alpha 0.5 (was 0.75, range 0.1-0.75), huthresh 0.05 (was 0.01, range
+>   0.001-0.1). These are documentation/narration baselines (validate_and_resolve_physics emits
+>   ONLY user-overridden keys, so deck bytes are unchanged unless the user pins the key).
+> - coriolis IS a real sfincs.inp keyword (default True) but inert while latitude==0.0; the
+>   wind-archetype composer now pins coriolis_latitude=AOI-centre so Coriolis actually activates.
+> All reconciled + 151 tests green against the real Mexico Beach fixture. See
+> reports/inflight/engine-docs-grounding.md for the full manual findings.
+
 Empirically validated against the installed hydromt_sfincs 1.2.2 in services/agent/.venv. Local proof uses the REAL fixture services/agent/tests/fixtures/sfincs_aoi/{dem.tif,landcover.tif} (Mexico Beach 3DEP+NLCD) - NOT synthetic - per NATE. Build order: physics-switches -> fluvial+compound auto-wire -> infiltration -> wind -> levee-breach -> tsunami. Agent-side only (ships in the agent bundle, no worker rebuild).
 
 

@@ -119,6 +119,7 @@ __all__ = [
     "waterlevel_forcing_from_fgb",
     "discharge_forcing_from_fgb",
     "discharge_forcing_from_cama_cog",
+    "synthesize_tsunami_bzs",
     "build_surge_forcing",
     "SFINCS_TREF",
     "SFINCS_TIME_FMT",
@@ -1068,6 +1069,160 @@ def discharge_forcing_from_cama_cog(
         "locations_uri": loc_path,
         "_prov_n_cells": len(points),
         "_prov_source": "cama_flood_time_mean",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Tsunami waveform synthesizer (NATE 2026-06-26)
+# --------------------------------------------------------------------------- #
+
+
+def synthesize_tsunami_bzs(
+    bbox: tuple[float, float, float, float],
+    *,
+    eta_max_m: float,
+    period_s: float,
+    wave_type: str = "ldn",
+    lead_depression: bool = True,
+    window_hours: float | None = None,
+    stage_dir: str | None = None,
+    timeseries_format: str = "datetime",
+) -> dict[str, Any]:
+    """Synthesize a TSUNAMI water-level (``bzs``) timeseries on the waterlevel seam.
+
+    NATE 2026-06-26: a pure synthesizer PARALLEL to
+    ``model_flood_scenario._synthesize_parametric_surge_forcing`` -- it does NOT
+    reuse the storm raised-cosine. Two waveforms, both anchored at ``tref`` and
+    driven onto the SAME 4-edge boundary points the surge synth uses (HydroMT
+    selects the seaward boundary cells; setup_mask_bounds btype=waterlevel makes
+    them msk==2 so the bzs is not inert):
+
+      * ``"ldn"`` (LEADING-DEPRESSION N-WAVE) -- the canonical tsunami signature:
+        a derivative-of-Gaussian (trough THEN crest) so the sea first WITHDRAWS
+        then surges. ``lead_depression=True`` puts the trough first (the physical
+        leading-depression case); ``False`` flips to a leading-elevation N-wave.
+      * ``"solitary"`` -- a single ``sech^2`` crest of half-width ~ ``period_s``
+        (the classic solitary-wave bump), no leading trough.
+
+    Returns the SAME dict shape ``waterlevel_forcing_from_fgb`` produces
+    (``{"timeseries_uri": <bzs.csv>, "locations_uri": <bnd.fgb>, ...}``) so it
+    flows verbatim through ``_build_surge_forcing_members`` -> a non-None
+    ``WaterlevelForcing``. Files are written via the SAME
+    ``write_bzs_timeseries_csv`` / ``write_locations_fgb`` writers the fetcher
+    adapter uses, so the deck consumes them unchanged.
+
+    Args:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)``.
+        eta_max_m: peak surface elevation amplitude (m); also the trough depth.
+        period_s: characteristic wave period (s) -- sets the pulse half-width.
+        wave_type: ``"ldn"`` (default) or ``"solitary"``.
+        lead_depression: for ``"ldn"``, trough-first (True) vs crest-first.
+        window_hours: deck simulation length (h); the series spans this window so
+            ``get_dataframe`` does not clip it (defaults to ~ 6 periods, min 1 h).
+        stage_dir: directory the bzs CSV + bnd FGB are written to (local).
+        timeseries_format: ``"datetime"`` (default) or ``"seconds"``.
+
+    Raises:
+        SFINCSForcingAdapterError("FORCING_SERIES_EMPTY"): non-finite / non-positive
+            ``eta_max_m`` or ``period_s``.
+    """
+    eta = float(eta_max_m)
+    T = float(period_s)
+    if not math.isfinite(eta) or eta <= 0.0 or not math.isfinite(T) or T <= 0.0:
+        raise SFINCSForcingAdapterError(
+            "FORCING_SERIES_EMPTY",
+            message=(
+                "synthesize_tsunami_bzs requires finite positive eta_max_m + "
+                f"period_s (got eta={eta_max_m!r}, period_s={period_s!r})"
+            ),
+        )
+
+    wt = str(wave_type).strip().lower()
+    # Window: cover several periods so the full pulse + return-to-rest is in the
+    # deck window (and the deck's tstop never clips the tail to empty).
+    if window_hours is not None and window_hours > 0:
+        win_s = float(window_hours) * 3600.0
+    else:
+        win_s = max(3600.0, 6.0 * T)
+
+    # Centre the pulse: leave a lead-in so the leading trough is fully sampled,
+    # then place the crest about one period later.
+    t0 = max(T, 0.15 * win_s)  # time of the primary feature (trough or crest)
+
+    # FINE sampling so the wave shape (period_s) resolves; >= 2 samples.
+    _sample_s = max(5.0, T / 40.0)
+    n_steps = max(int(round(win_s / _sample_s)), 2)
+    secs = [float(i) * win_s / float(n_steps) for i in range(n_steps + 1)]
+
+    values: list[float] = []
+    for s in secs:
+        if wt == "solitary":
+            # Single sech^2 crest of half-width ~ period_s, centred at t0.
+            # sech(x) = 1/cosh(x); width scaled so the bump spans ~ one period.
+            x = (s - t0) / (T / 3.5)
+            sech = 1.0 / math.cosh(max(-50.0, min(50.0, x)))
+            eta_t = eta * sech * sech
+        else:
+            # Leading-depression N-wave: derivative-of-Gaussian (trough -> crest).
+            # f(t) = A * (t-t0)/sigma * exp(-((t-t0)/sigma)^2): at u<0 (t<t0)
+            # the term u*exp(-u^2) is NEGATIVE -> a TROUGH first, then a crest
+            # after t0 (the leading-depression signature). The extremum amplitude
+            # of u*exp(-u^2) is 1/sqrt(2e), so scale to hit eta.
+            sigma = T / 2.0
+            u = (s - t0) / sigma
+            shape = u * math.exp(-(u * u))  # trough (neg, t<t0) then crest (pos)
+            norm = 1.0 / math.sqrt(2.0 * math.e)  # |extremum| of u*exp(-u^2)
+            eta_t = eta * (shape / norm)
+            if not lead_depression:
+                eta_t = -eta_t  # flip to leading-elevation (crest first)
+        values.append(round(eta_t, 5))
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    inset_lon = 0.02 * (max_lon - min_lon)
+    inset_lat = 0.02 * (max_lat - min_lat)
+    mid_lon = 0.5 * (min_lon + max_lon)
+    mid_lat = 0.5 * (min_lat + max_lat)
+    edge_pts: list[tuple[float, float]] = [
+        (min_lon + inset_lon, mid_lat),  # west edge
+        (max_lon - inset_lon, mid_lat),  # east edge
+        (mid_lon, min_lat + inset_lat),  # south edge
+        (mid_lon, max_lat - inset_lat),  # north edge
+    ]
+
+    times = [SFINCS_TREF + _dt.timedelta(seconds=s) for s in secs]
+    stations: list[StationHydrograph] = []
+    series_by_id: dict[int, ReanchoredSeries] = {}
+    for i, (lon, lat) in enumerate(edge_pts, start=1):
+        stations.append(
+            StationHydrograph(
+                point_id=i,
+                lon=float(lon),
+                lat=float(lat),
+                times=list(times),
+                values=list(values),
+                source_id=f"tsunami-{wt}-{i}",
+                provenance={"_prov_tsunami": True, "_prov_wave_type": wt},
+            )
+        )
+        series_by_id[i] = ReanchoredSeries(
+            seconds=list(secs),
+            datetimes=list(times),
+            values=list(values),
+        )
+
+    stage = _staging_dir(stage_dir)
+    csv_path = write_bzs_timeseries_csv(
+        series_by_id, _unique(stage, "bzs", "csv"), timeseries_format=timeseries_format
+    )
+    loc_path = write_locations_fgb(stations, _unique(stage, "bnd", "fgb"))
+    return {
+        "timeseries_uri": csv_path,
+        "locations_uri": loc_path,
+        "_prov_tsunami": True,
+        "_prov_wave_type": wt,
+        "_prov_eta_max_m": eta,
+        "_prov_period_s": T,
+        "_prov_lead_depression": bool(lead_depression),
     }
 
 

@@ -420,3 +420,345 @@ async def test_inland_call_unchanged_no_surge_no_quadtree() -> None:
     # forcing_type stays the design-storm pluvial path.
     assert spec.forcing_type == "pluvial_synthetic"
     assert spec.precip_inches == pytest.approx(12.1)
+
+
+# --------------------------------------------------------------------------- #
+# 4. NATE 2026-06-26 — SFINCS scenario-coverage composer auto-wire tests
+#    (fluvial / compound / wind / infiltration / levee-breach / tsunami).
+#    Each test mocks the relevant fetchers + patches build_sfincs_model to
+#    capture the ForcingSpec + BuildOptions it receives, then asserts per-flag
+#    the right member is set. The magnitude gates assert a typed failed envelope.
+# --------------------------------------------------------------------------- #
+
+
+def _coverage_patches(*, bbox, run_id, emitter, capture):
+    """Patch the fetch+build+solve chain for the scenario-coverage tests.
+
+    Captures BOTH the ForcingSpec and the BuildOptions handed to
+    ``build_sfincs_model``. Does NOT force the surge fetchers to raise (each test
+    controls its own fetcher mocks via ``extra`` patches). The fluvial / breach /
+    tsunami archetypes drive the INLAND (run_solver) solve path by default; tests
+    that need a coastal solve patch ``run_sfincs_quadtree`` separately.
+    """
+
+    def _capture_build(**kw):  # noqa: ANN003
+        capture["forcing"] = kw.get("forcing")
+        capture["options"] = kw.get("options")
+        return _model_setup(bbox)
+
+    def _run_solver(*_a, **_k):  # noqa: ANN002  (sync dispatch)
+        return _make_handle(run_id)
+
+    async def _wait(*_a, **_k):  # noqa: ANN002
+        return _run_result_ok(run_id)
+
+    async def _run_quadtree(*_a, **_k):  # noqa: ANN002
+        return _run_result_ok(run_id)
+
+    def _fake_resolve(surge_forcing, _bbox, *, window_hours=None, data_sources=None):
+        """Materialise RAW fetcher sub-dicts WITHOUT hitting the real geo adapter.
+
+        The real ``_resolve_surge_forcing_from_fetchers`` reads the FlatGeobuf at
+        ``fetch_uri`` (network / file I/O on a fake URI -> FORCING_FGB_READ_FAILED).
+        For the composer-level auto-wire unit we only need the RAW ``fetch_uri`` to
+        become a materialised ``timeseries_uri`` so ``_build_surge_forcing_members``
+        yields a non-None member. Pre-materialised sub-dicts pass through unchanged.
+        """
+        if not surge_forcing:
+            return surge_forcing
+        out = dict(surge_forcing)
+        for key in ("waterlevel", "discharge"):
+            sub = out.get(key)
+            if isinstance(sub, dict):
+                fetch = sub.get("fetch_uri") or sub.get("fgb_uri")
+                already = sub.get("timeseries_uri") or sub.get("geodataset_uri")
+                if fetch and not already:
+                    out[key] = {
+                        "timeseries_uri": f"/tmp/{key}_materialised.csv",
+                        "locations_uri": f"/tmp/{key}_materialised.fgb",
+                        "rivers_uri": sub.get("rivers_uri"),
+                    }
+        return out
+
+    return (
+        patch.object(mfs, "fetch_topobathy", return_value=_topobathy_result()),
+        patch.object(mfs, "fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch.object(mfs, "fetch_landcover", return_value=_landcover_result()),
+        patch.object(
+            mfs, "fetch_river_geometry", return_value=_mock_layer_uri("rivers")
+        ),
+        patch.object(
+            mfs, "lookup_precip_return_period", return_value=_precip_result()
+        ),
+        patch.object(mfs, "build_sfincs_model", side_effect=_capture_build),
+        patch.object(mfs, "_resolve_building_obstacle_uri", return_value=None),
+        patch.object(mfs, "_resolve_quadtree_rivers_uri", return_value=None),
+        patch.object(
+            mfs,
+            "_compose_and_upload_deckbuild_spec",
+            return_value="s3://test-cache/cache/static-30d/sfincs_deck/x/spec.json",
+        ),
+        patch.object(mfs, "make_sfincs_mesh_layer_uri", return_value=None),
+        patch.object(
+            mfs, "postprocess_flood", return_value=(_depth_layers(run_id), _DEPTH_METRICS)
+        ),
+        patch.object(
+            mfs, "postprocess_waves", MagicMock(return_value=([], _DEPTH_METRICS))
+        ),
+        patch.object(
+            mfs,
+            "publish_layer",
+            side_effect=lambda **kw: f"https://cf.example.net/tiles/{kw['layer_id']}",
+        ),
+        patch.object(mfs, "current_emitter", return_value=emitter),
+        patch.object(mfs, "run_solver", side_effect=_run_solver),
+        patch.object(mfs, "wait_for_completion", side_effect=_wait),
+        patch.object(mfs, "run_sfincs_quadtree", side_effect=_run_quadtree),
+        patch.object(
+            mfs, "_resolve_surge_forcing_from_fetchers", side_effect=_fake_resolve
+        ),
+    )
+
+
+async def _drive(bbox, *extra_patches, **kwargs):
+    """Run model_flood_scenario under the coverage patches; return (envelope, capture)."""
+    run_id = new_ulid()
+    emitter = _FakeEmitter()
+    capture: dict = {}
+    patches = _coverage_patches(
+        bbox=bbox, run_id=run_id, emitter=emitter, capture=capture
+    )
+    started = list(patches) + list(extra_patches)
+    for p in started:
+        p.start()
+    try:
+        env = await model_flood_scenario(bbox=bbox, **kwargs)
+    finally:
+        for p in reversed(started):
+            p.stop()
+    return env, capture
+
+
+# --- FLUVIAL ---------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_river_autowires_discharge_no_topobathy() -> None:
+    """river=True -> NWM discharge wired; is_coastal stays False (fetch_dem)."""
+    nwm = patch(
+        "grace2_agent.tools.fetch_noaa_nwm_streamflow.fetch_noaa_nwm_streamflow",
+        return_value=_mock_layer_uri("nwm"),
+    )
+    dem_mock = MagicMock(return_value=_mock_layer_uri("dem"))
+    topo_mock = MagicMock(return_value=_topobathy_result())
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        nwm,
+        patch.object(mfs, "fetch_dem", dem_mock),
+        patch.object(mfs, "fetch_topobathy", topo_mock),
+        river=True,
+    )
+    spec = capture.get("forcing")
+    assert spec is not None
+    assert spec.discharge is not None, "river run must auto-wire a discharge boundary"
+    assert spec.discharge.timeseries_uri  # materialised from the NWM fetch
+    # Fluvial-only stays INLAND: fetch_dem ran, fetch_topobathy did NOT.
+    assert dem_mock.called
+    assert not topo_mock.called, "a fluvial-only run must NOT route through topobathy"
+
+
+# --- COMPOUND --------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_compound_autowires_waterlevel_discharge_and_precip() -> None:
+    """compound=True -> ONE spec with waterlevel AND discharge AND precip."""
+    # Surge fetchers raise -> parametric waterlevel; NWM provides discharge.
+    coops = patch(
+        "grace2_agent.tools.fetch_noaa_coops_tides.fetch_noaa_coops_tides",
+        side_effect=RuntimeError("no station"),
+    )
+    gtsm = patch(
+        "grace2_agent.tools.fetch_gtsm_tide_surge.fetch_gtsm_tide_surge",
+        side_effect=RuntimeError("no key"),
+    )
+    nwm = patch(
+        "grace2_agent.tools.fetch_noaa_nwm_streamflow.fetch_noaa_nwm_streamflow",
+        return_value=_mock_layer_uri("nwm"),
+    )
+    env, capture = await _drive(_COASTAL_BBOX, coops, gtsm, nwm, compound=True)
+    spec = capture.get("forcing")
+    assert spec is not None
+    assert spec.waterlevel is not None, "compound must carry a surge waterlevel"
+    assert spec.discharge is not None, "compound must carry a river discharge"
+    assert spec.precip_inches is not None, "compound must keep the design-storm precip"
+
+
+# --- WIND ------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_wind_sets_windforcing_and_advanced_physics_default() -> None:
+    """wind={...} -> WindForcing set AND advanced_physics defaults to advection=1."""
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        wind={"magnitude": 45.0, "direction": 170.0},
+    )
+    spec = capture.get("forcing")
+    opts = capture.get("options")
+    assert spec is not None and spec.wind is not None
+    assert spec.wind.magnitude == pytest.approx(45.0)
+    assert spec.wind.direction == pytest.approx(170.0)
+    # The composer injects advanced_physics={"advection":1} for a wind run so the
+    # momentum scheme flips (resolved through the registry onto BuildOptions).
+    assert opts is not None
+    assert opts.advanced_physics is not None
+    assert opts.advanced_physics.get("advection") == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_advanced_physics_resolves_onto_options() -> None:
+    """advanced_physics overrides are validated + threaded onto BuildOptions."""
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        advanced_physics={"advection": 1, "coriolis_latitude": 29.9},
+    )
+    opts = capture.get("options")
+    assert opts is not None and opts.advanced_physics is not None
+    assert opts.advanced_physics.get("advection") == 1
+    assert opts.advanced_physics.get("coriolis_latitude") == pytest.approx(29.9)
+
+
+@pytest.mark.asyncio
+async def test_invalid_advanced_physics_returns_failed_envelope() -> None:
+    """An unknown physics key -> a typed ADVANCED_PHYSICS_INVALID failed envelope."""
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        advanced_physics={"not_a_real_key": 1},
+    )
+    assert env.layers == []
+    assert env.flood.metrics.solver_version == "failed:ADVANCED_PHYSICS_INVALID"
+
+
+# --- INFILTRATION ----------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_infiltration_true_autowires_cn_uri() -> None:
+    """infiltration=True -> GCN250 CN raster wired onto ForcingSpec.infiltration."""
+    gcn = patch(
+        "grace2_agent.tools.fetch_gcn250_curve_numbers.fetch_gcn250_curve_numbers",
+        return_value=_mock_layer_uri("gcn250"),
+    )
+    env, capture = await _drive(_INLAND_BBOX, gcn, infiltration=True)
+    spec = capture.get("forcing")
+    assert spec is not None and spec.infiltration is not None
+    assert spec.infiltration.cn_uri  # the GCN250 raster URI
+    # Single-band GCN250 -> antecedent_moisture None (avoids the cn_avg ValueError).
+    assert spec.infiltration.antecedent_moisture is None
+
+
+# --- LEVEE-BREACH ----------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_breach_without_peak_returns_user_input_gate() -> None:
+    """breach_point given but peak missing -> USER_INPUT_REQUIRED (no fabrication)."""
+    capture: dict = {}
+
+    def _capture_build(**kw):  # noqa: ANN003
+        capture["forcing"] = kw.get("forcing")
+        return _model_setup(_INLAND_BBOX)
+
+    # build_sfincs_model must NOT be reached -- the gate fires first.
+    with patch.object(mfs, "build_sfincs_model", side_effect=_capture_build):
+        env = await model_flood_scenario(
+            bbox=_INLAND_BBOX,
+            breach_point=(-116.2, 43.6),
+            breach_peak_discharge_m3s=None,
+        )
+    assert env.layers == []
+    assert env.flood.metrics.solver_version == "failed:USER_INPUT_REQUIRED"
+    assert "forcing" not in capture, "the breach gate must fire BEFORE the build"
+
+
+@pytest.mark.asyncio
+async def test_breach_with_peak_builds_breach_member() -> None:
+    """breach_point + peak -> a DischargeForcing on ForcingSpec.breach."""
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        breach_point=(-116.2, 43.6),
+        breach_peak_discharge_m3s=250.0,
+        breach_arrival_hr=4.0,
+    )
+    spec = capture.get("forcing")
+    assert spec is not None and spec.breach is not None
+    assert spec.breach.timeseries_uri  # the breach dis CSV
+    assert spec.breach.locations_uri  # the 1-point breach src FGB
+    # The breach is an INTERIOR jet, not a domain-edge river: no rivers_uri.
+    assert spec.breach.rivers_uri is None
+
+
+# --- TSUNAMI ---------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_tsunami_without_height_returns_user_input_gate() -> None:
+    """tsunami=True without a height -> USER_INPUT_REQUIRED (no fabrication)."""
+    env = await model_flood_scenario(
+        bbox=_COASTAL_BBOX,
+        tsunami=True,
+        tsunami_wave_height_m=None,
+    )
+    assert env.layers == []
+    assert env.flood.metrics.solver_version == "failed:USER_INPUT_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_tsunami_with_height_wires_waterlevel_not_storm_surge() -> None:
+    """tsunami=True + height -> waterlevel from the N-wave synth; storm synth NOT called."""
+    storm_mock = MagicMock(wraps=mfs._synthesize_parametric_surge_forcing)
+    env, capture = await _drive(
+        _COASTAL_BBOX,
+        patch.object(mfs, "_synthesize_parametric_surge_forcing", storm_mock),
+        tsunami=True,
+        tsunami_wave_height_m=3.0,
+        tsunami_period_min=15.0,
+    )
+    spec = capture.get("forcing")
+    assert spec is not None and spec.waterlevel is not None
+    assert spec.waterlevel.timeseries_uri  # the tsunami bzs CSV
+    # A tsunami is NOT a storm surge: the parametric storm synth must NOT fire.
+    assert not storm_mock.called, "tsunami must NOT also wire the storm surge synth"
+
+
+# --- REGRESSION ------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_all_flags_default_regress_to_pluvial() -> None:
+    """All scenario-coverage flags default OFF -> byte-identical pluvial spec."""
+    river_wire = MagicMock(wraps=mfs._autowire_river_discharge_forcing)
+    inf_wire = MagicMock(wraps=mfs._resolve_infiltration_uri)
+    env, capture = await _drive(
+        _INLAND_BBOX,
+        patch.object(mfs, "_autowire_river_discharge_forcing", river_wire),
+        patch.object(mfs, "_resolve_infiltration_uri", inf_wire),
+    )
+    spec = capture.get("forcing")
+    opts = capture.get("options")
+    assert spec is not None
+    assert spec.waterlevel is None
+    assert spec.discharge is None
+    assert spec.breach is None
+    assert spec.wind is None
+    assert spec.infiltration is None
+    assert spec.forcing_type == "pluvial_synthetic"
+    # advanced_physics stays None for a pluvial run (deck byte-identical).
+    assert opts is not None and opts.advanced_physics is None
+    # The fluvial auto-wire helper was NEVER called (river defaults False).
+    assert not river_wire.called
+    # _resolve_infiltration_uri IS called with infiltration=False -> returns None.
+    assert inf_wire.called
+    inf_wire.assert_called_once()
+    assert inf_wire.call_args.args[0] is False

@@ -123,6 +123,8 @@ from .sfincs_builder import (
     BuildOptions,
     DischargeForcing,
     ForcingSpec,
+    # NATE 2026-06-26: infiltration-loss member (scenario coverage).
+    InfiltrationForcing,
     PressureForcing,
     SFINCSSetupError,
     WaterlevelForcing,
@@ -130,6 +132,7 @@ from .sfincs_builder import (
     _to_vsigs,
     build_sfincs_model,
 )
+from .physics_registry import PhysicsRegistryError, validate_and_resolve_physics
 from .sfincs_forcing_adapter import SFINCSForcingAdapterError
 
 __all__ = [
@@ -2310,6 +2313,352 @@ def _resolve_building_obstacle_uri(
         return None
 
 
+# --------------------------------------------------------------------------- #
+# NATE 2026-06-26 -- SFINCS scenario-coverage composer auto-wiring
+# (fluvial / compound / wind / infiltration / levee-breach / tsunami).
+# Each helper mirrors the existing _autowire_coastal_surge_forcing /
+# _resolve_building_obstacle_uri patterns: best-effort fetch + honest degrade
+# per the data-source fallback norm, EXCEPT the breach + tsunami magnitude
+# gates, which HARD-FAIL (never fabricate model inputs).
+# --------------------------------------------------------------------------- #
+
+
+def _autowire_river_discharge_forcing(
+    bbox: tuple[float, float, float, float],
+    *,
+    duration_hr: float,
+    data_sources: list[DataSource] | None = None,
+    river_layer_uri: str | None = None,
+) -> dict[str, Any] | None:
+    """Auto-wire a FLUVIAL river-discharge boundary for a fluvial / compound run.
+
+    NATE 2026-06-26: the fluvial archetype. A ``river=True`` (or ``compound``)
+    run needs a domain-EDGE river-inflow hydrograph driving the SFINCS ``dis``
+    boundary. Unlike the coastal surge there is NO parametric last-resort synth
+    (a fabricated discharge would violate Invariant 7), so the ladder degrades to
+    SKIP -- the run proceeds pluvial-only when no real discharge is available.
+
+    Degrade ladder (data-source fallback norm: primary -> fallback -> honest skip):
+
+    1. PRIMARY  -  NOAA National Water Model (``fetch_noaa_nwm_streamflow``):
+       CONUS, KEY-FREE, the canonical operational streamflow. Returns a point
+       FlatGeobuf carrying ``streamflow_cms`` (m^3/s) -> handed back as
+       ``{"discharge": {"fetch_uri": <uri>, "value_unit": "cms"}}`` so the
+       EXISTING ``_resolve_surge_forcing_from_fetchers`` adapter materialises the
+       dis files. ``rivers_uri`` (the already-fetched NHDPlus river layer) is
+       threaded so ``setup_river_inflow`` gets inflow points.
+    2. FALLBACK  -  USGS NWIS gauges (``fetch_usgs_nwis_gauges``): observed
+       instrument-record hydrograph. NWIS discharge is in cfs (ft^3/s), so
+       ``value_unit`` is set to ``"cfs"`` (the resolve converts; without it the
+       series would be ~35.3x too large -- silent-wrong-physics).
+    3. LAST-RESORT  -  SKIP: return ``None`` (the run proceeds pluvial-only). The
+       composer logs the honest degrade; NO fabricated hydrograph.
+
+    Returns a partial ``{"discharge": {...}}`` dict to merge into ``surge_forcing``
+    BEFORE ``_resolve_surge_forcing_from_fetchers``, or ``None`` when neither
+    source yields a hydrograph. Never raises (a fetcher exception logs + falls
+    through to the next rung).
+    """
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+
+    # --- 1) PRIMARY: NOAA NWM streamflow (key-free, CONUS) ------------------ #
+    try:
+        from ..tools.fetch_noaa_nwm_streamflow import fetch_noaa_nwm_streamflow
+
+        layer = fetch_noaa_nwm_streamflow(bbox)
+        uri = getattr(layer, "uri", None)
+        if uri:
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="NOAA NWM streamflow (auto-wired fluvial boundary)",
+                        uri=str(uri),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+            logger.info(
+                "model_flood_scenario: auto-wired fluvial discharge via NOAA NWM "
+                "streamflow for bbox=%s -> %s",
+                bbox,
+                uri,
+            )
+            return {
+                "discharge": {
+                    "fetch_uri": str(uri),
+                    "value_unit": "cms",  # NWM streamflow_cms is m^3/s
+                    "rivers_uri": river_layer_uri,
+                }
+            }
+    except Exception as exc:  # noqa: BLE001  -  degrade to the next rung
+        logger.warning(
+            "model_flood_scenario: NOAA NWM auto-wire failed for bbox=%s (%s)  -  "
+            "trying USGS NWIS fallback.",
+            bbox,
+            exc,
+        )
+
+    # --- 2) FALLBACK: USGS NWIS gauges (observed hydrograph, cfs) ----------- #
+    try:
+        import math as _math
+
+        from ..tools.fetch_usgs_nwis_gauges import fetch_usgs_nwis_gauges
+
+        period_days = max(1, int(_math.ceil(win_hr / 24.0)))
+        layer = fetch_usgs_nwis_gauges(bbox=bbox, period=f"P{period_days}D")
+        uri = getattr(layer, "uri", None)
+        if uri:
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="USGS NWIS gauges (auto-wired fluvial boundary)",
+                        uri=str(uri),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+            logger.info(
+                "model_flood_scenario: auto-wired fluvial discharge via USGS NWIS "
+                "gauges for bbox=%s -> %s",
+                bbox,
+                uri,
+            )
+            return {
+                "discharge": {
+                    "fetch_uri": str(uri),
+                    "value_unit": "cfs",  # NWIS discharge is ft^3/s
+                    "rivers_uri": river_layer_uri,
+                }
+            }
+    except Exception as exc:  # noqa: BLE001  -  degrade to the honest skip
+        logger.warning(
+            "model_flood_scenario: USGS NWIS auto-wire failed for bbox=%s (%s)  -  "
+            "no fluvial discharge available; the run proceeds PLUVIAL-only.",
+            bbox,
+            exc,
+        )
+
+    # --- 3) LAST-RESORT: honest skip (no fabricated discharge) -------------- #
+    logger.info(
+        "model_flood_scenario: no fluvial discharge source for bbox=%s (NWM + "
+        "NWIS both unavailable)  -  skipping the discharge boundary (pluvial-only).",
+        bbox,
+    )
+    return None
+
+
+def _resolve_infiltration_uri(
+    infiltration: bool | str,
+    bbox: tuple[float, float, float, float],
+    data_sources: list[DataSource],
+) -> str | None:
+    """Resolve the GCN250 curve-number raster URI for the SFINCS infiltration loss.
+
+    NATE 2026-06-26: the infiltration archetype. Tri-state (mirrors
+    ``building_obstacles``):
+
+    - ``False`` / falsy -> no infiltration loss (``None``).
+    - a ``str`` -> used verbatim as the CN raster URI (caller already has a
+      single-band GCN250 GeoTIFF).
+    - ``True`` -> BEST-EFFORT fetch of the GCN250 global SCS curve-number raster
+      for ``bbox`` via ``fetch_gcn250_curve_numbers`` (key-free, global). A fetch
+      failure logs + returns ``None`` (the flood proceeds WITHOUT an infiltration
+      loss, never aborts -- same degrade policy as building obstacles).
+
+    Returns the CN raster URI, or ``None`` when there is nothing to wire.
+    """
+    if not infiltration:
+        return None
+    if isinstance(infiltration, str):
+        return infiltration
+    # infiltration is True -> fetch the GCN250 CN raster (best-effort).
+    try:
+        from ..tools.fetch_gcn250_curve_numbers import fetch_gcn250_curve_numbers
+
+        layer = fetch_gcn250_curve_numbers(bbox, antecedent_moisture="average")
+        uri = getattr(layer, "uri", None)
+        if uri:
+            data_sources.append(
+                DataSource(
+                    name="GCN250 SCS curve numbers (SFINCS infiltration loss)",
+                    uri=str(uri),
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+        return uri
+    except Exception as exc:  # noqa: BLE001 — infiltration is optional for the flood
+        logger.warning(
+            "model_flood_scenario: fetch_gcn250_curve_numbers failed for bbox=%s "
+            "(%s) — proceeding WITHOUT an infiltration loss (the flood still runs).",
+            bbox,
+            exc,
+        )
+        return None
+
+
+def _synthesize_breach_discharge_forcing(
+    breach_point: tuple[float, float],
+    *,
+    peak_m3s: float,
+    arrival_hr: float | None,
+    duration_hr: float,
+) -> dict[str, Any]:
+    """Synthesize an INTERIOR levee-breach discharge hydrograph -> dis files dict.
+
+    NATE 2026-06-26: the levee-breach archetype. The breach is an interior
+    point-source ``dis`` jet (NOT a domain-edge river inflow), so it reuses the
+    discharge seam with explicit ``locations`` at the drawn breach point and NO
+    ``rivers_uri``/``hydrography_uri`` (the deck emits a SECOND
+    ``setup_discharge_forcing(merge: true)`` with no ``setup_river_inflow``).
+
+    HONESTY GATE (caller-enforced): the breach PEAK + LOCATION are USER inputs --
+    the composer NEVER fabricates them. This synth only runs when the caller has
+    already validated both are present (the magnitude gate fires upstream).
+
+    Hydrograph: a triangular pulse rising from 0 to ``peak_m3s`` at
+    ``arrival_hr`` (defaults to ~25% of the window) then receding linearly to a
+    small residual by the window end. Materialised to a dis CSV + a 1-point
+    locations FGB at ``breach_point`` via the SAME writers the fetcher adapter
+    uses, so the deck consumes them unchanged.
+
+    Returns ``{"timeseries_uri": <dis.csv>, "locations_uri": <src.fgb>, ...}`` --
+    the pre-materialised discharge shape (carried onto ``ForcingSpec.breach``).
+    """
+    from .sfincs_forcing_adapter import (
+        SFINCS_TREF,
+        ReanchoredSeries,
+        StationHydrograph,
+        _staging_dir,
+        _unique,
+        write_dis_timeseries_csv,
+        write_locations_fgb,
+    )
+
+    lon, lat = float(breach_point[0]), float(breach_point[1])
+    peak = float(peak_m3s)
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+    # Time-to-peak (breach arrival). Default ~25% of the window so the jet builds
+    # then drains within the run; clamp into (0, win_hr) so the triangle is valid.
+    if arrival_hr is not None and arrival_hr > 0:
+        t_peak_hr = min(float(arrival_hr), 0.95 * win_hr)
+    else:
+        t_peak_hr = 0.25 * win_hr
+    t_peak_hr = max(t_peak_hr, 0.05 * win_hr)
+    residual = max(0.0, 0.02 * peak)  # small non-zero tail (avoids a hard zero)
+
+    # FINE sampling (~6 min) so the triangular rise/recession resolves on the
+    # minute-scale output cadence (>= 2 samples for set_forcing_1d).
+    _sample_s = 360.0
+    n_steps = max(int(round(win_hr * 3600.0 / _sample_s)), 2)
+    secs = [float(i) * (win_hr * 3600.0) / float(n_steps) for i in range(n_steps + 1)]
+    values: list[float] = []
+    for s in secs:
+        hr = s / 3600.0
+        if hr <= t_peak_hr:
+            frac = hr / t_peak_hr if t_peak_hr > 0 else 1.0
+            q = peak * frac
+        else:
+            # Linear recession from the peak to the residual by the window end.
+            denom = max(win_hr - t_peak_hr, 1e-6)
+            frac = (win_hr - hr) / denom
+            frac = max(0.0, min(1.0, frac))
+            q = residual + (peak - residual) * frac
+        values.append(round(q, 4))
+
+    times = [SFINCS_TREF + _timedelta_s(s) for s in secs]
+    stations = [
+        StationHydrograph(
+            point_id=1,
+            lon=lon,
+            lat=lat,
+            times=times,
+            values=list(values),
+            source_id="levee-breach-1",
+            provenance={"_prov_breach": True},
+        )
+    ]
+    series_by_id = {
+        1: ReanchoredSeries(
+            seconds=list(secs),
+            datetimes=list(times),
+            values=list(values),
+        )
+    }
+
+    stage = _staging_dir(None)
+    csv_path = write_dis_timeseries_csv(series_by_id, _unique(stage, "breach_dis", "csv"))
+    loc_path = write_locations_fgb(stations, _unique(stage, "breach_src", "fgb"))
+    logger.info(
+        "model_flood_scenario: synthesised LEVEE-BREACH discharge hydrograph at "
+        "(%.5f, %.5f): peak=%.1f m^3/s at %.1f hr, %d steps over %.0f hr "
+        "-> dis=%s src=%s",
+        lon,
+        lat,
+        peak,
+        t_peak_hr,
+        len(secs),
+        win_hr,
+        csv_path,
+        loc_path,
+    )
+    return {
+        "timeseries_uri": csv_path,
+        "locations_uri": loc_path,
+        "_prov_breach": True,
+        "_prov_peak_m3s": peak,
+        "_prov_arrival_hr": t_peak_hr,
+    }
+
+
+def _synthesize_tsunami_waterlevel_forcing(
+    bbox: tuple[float, float, float, float],
+    *,
+    wave_height_m: float,
+    period_min: float | None,
+    duration_hr: float,
+) -> dict[str, Any]:
+    """Synthesize a TSUNAMI water-level boundary -> materialised bzs files dict.
+
+    NATE 2026-06-26: the tsunami archetype. Delegates the waveform GENERATION to
+    the forcing adapter's ``synthesize_tsunami_bzs`` (a leading-depression N-wave
+    -- trough THEN crest -- NOT the storm raised-cosine), driven onto the SAME
+    seaward boundary points the surge synth uses. Reuses the ENTIRE existing
+    waterlevel ``bzs`` deck seam (``setup_mask_bounds`` + ``setup_waterlevel_forcing``)
+    with zero new deck code.
+
+    HONESTY GATE (caller-enforced): the wave HEIGHT is a USER input -- the
+    composer NEVER fabricates it. This synth only runs when the caller has already
+    validated ``wave_height_m`` is present (the magnitude gate fires upstream).
+
+    ``period_min`` defaults to ~15 min (a representative tsunami period) when the
+    user did not supply it -- a SHAPE default, not a magnitude fabrication.
+
+    Returns the materialised ``{"timeseries_uri": <bzs.csv>, "locations_uri":
+    <bnd.fgb>, ...}`` dict (carried onto ``ForcingSpec.waterlevel``).
+    """
+    from .sfincs_forcing_adapter import synthesize_tsunami_bzs
+
+    period_s = float(period_min) * 60.0 if period_min and period_min > 0 else 15.0 * 60.0
+    win_hr = float(duration_hr) if duration_hr and duration_hr > 0 else 24.0
+    out = synthesize_tsunami_bzs(
+        bbox,
+        eta_max_m=float(wave_height_m),
+        period_s=period_s,
+        wave_type="ldn",
+        lead_depression=True,
+        window_hours=win_hr,
+    )
+    logger.info(
+        "model_flood_scenario: synthesised TSUNAMI N-wave bzs boundary for "
+        "bbox=%s (height=%.2f m, period=%.0f s over %.0f hr) -> bzs=%s bnd=%s",
+        bbox,
+        float(wave_height_m),
+        period_s,
+        win_hr,
+        out.get("timeseries_uri"),
+        out.get("locations_uri"),
+    )
+    return out
+
+
 def _resolve_quadtree_rivers_uri(
     *,
     bbox: tuple[float, float, float, float],
@@ -2370,6 +2719,20 @@ async def model_flood_scenario(
     coastal: bool = False,
     quadtree: bool = False,
     output_interval_min: float | None = None,
+    # NATE 2026-06-26: SFINCS scenario-coverage intents (fluvial / compound /
+    # wind / infiltration / levee-breach / tsunami). All default to today's
+    # behaviour so a pluvial run is byte-identical (Invariant 7).
+    river: bool = False,
+    compound: bool = False,
+    wind: dict[str, Any] | None = None,
+    advanced_physics: dict[str, Any] | None = None,
+    infiltration: bool | str = False,
+    breach_point: tuple[float, float] | None = None,
+    breach_peak_discharge_m3s: float | None = None,
+    breach_arrival_hr: float | None = None,
+    tsunami: bool = False,
+    tsunami_wave_height_m: float | None = None,
+    tsunami_period_min: float | None = None,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -2491,6 +2854,42 @@ async def model_flood_scenario(
             count is bounded by ``MAX_FLOOD_FRAMES`` in postprocess so a fine
             cadence over the full window can't balloon the payload. ``None``
             (default) lets the sim-type default apply.
+        river: FLUVIAL run -- auto-wire a river-discharge boundary (NOAA NWM ->
+            USGS NWIS -> honest skip). Does NOT imply coastal (stays on
+            ``fetch_dem``). ``False`` (default) -> no discharge boundary.
+        compound: COMPOUND flood -- auto-wire waterlevel AND discharge AND precip
+            together (implies ``coastal`` + ``river``). ``False`` (default).
+        wind: optional uniform/gridded WIND forcing -- ``{"magnitude": <m/s>,
+            "direction": <deg-from>}`` OR ``{"grid_uri": <nc>}`` (user/ERA5
+            supplied, never fabricated). When set, defaults ``advanced_physics`` to
+            ``{"advection": 1}`` (the registry exposes ``coriolis_latitude`` +
+            ``wind_drag`` for the user to lift). ``None`` (default) -> no wind.
+        advanced_physics: optional SFINCS physics overrides validated via
+            ``physics_registry`` (keys subset of ``{advection, theta, alpha,
+            huthresh, coriolis_latitude, wind_drag}``) and threaded onto
+            ``BuildOptions.advanced_physics`` -> the deck ``setup_config`` block.
+            ``None`` (default) -> deck physics byte-identical to today.
+        infiltration: SOIL-INFILTRATION loss (GCN250 curve numbers). ``True`` ->
+            auto-fetch GCN250; a ``str`` -> verbatim CN raster URI; ``False``
+            (default) -> no infiltration loss. Best-effort (a fetch failure
+            degrades to no loss, never aborts).
+        breach_point: ``(lon, lat)`` of a DRAWN levee-breach point. USER-GATED:
+            if given WITHOUT ``breach_peak_discharge_m3s`` the run returns a typed
+            ``USER_INPUT_REQUIRED`` failed envelope (the composer NEVER fabricates
+            a breach hydrograph). ``None`` (default) -> no breach.
+        breach_peak_discharge_m3s: peak breach discharge (m^3/s, USER-supplied).
+            Paired with ``breach_point`` to synthesize a triangular interior
+            point-source jet. ``None`` (default).
+        breach_arrival_hr: optional time-to-peak (hr) for the breach hydrograph;
+            defaults to ~25% of the window. ``None`` (default).
+        tsunami: TSUNAMI run (implies ``coastal``). USER-GATED: if ``True``
+            WITHOUT ``tsunami_wave_height_m`` the run returns a typed
+            ``USER_INPUT_REQUIRED`` failed envelope (the composer NEVER fabricates
+            a wave height). ``False`` (default).
+        tsunami_wave_height_m: peak tsunami wave amplitude (m, USER-supplied) ->
+            a leading-depression N-wave waterlevel boundary. ``None`` (default).
+        tsunami_period_min: tsunami characteristic period (min); defaults to ~15
+            min (a SHAPE default, not a magnitude). ``None`` (default).
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -2534,6 +2933,13 @@ async def model_flood_scenario(
     # ``quadtree`` (the cht_sfincs quadtree+SnapWave deck-build North Star) is a
     # coastal-only path — a wave-coupled run needs the merged topo-bathymetry
     # surface — so it implies coastal regardless of the explicit flag.
+    # NATE 2026-06-26: scenario-coverage couplings. A ``compound`` run is BOTH a
+    # coastal-surge AND a fluvial-discharge driver (plus the always-present
+    # precip), so it lifts both ``coastal`` and ``river``. A ``tsunami`` run needs
+    # the seaward bed + msk==2 boundary, so it implies ``coastal`` too. These are
+    # additive — a pluvial run (all flags off) is byte-identical.
+    coastal = bool(coastal) or bool(compound) or bool(tsunami)
+    river = bool(river) or bool(compound)
     is_coastal = bool(coastal) or bool(surge_forcing) or bool(quadtree)
     logger.info(
         "model_flood_scenario coastal=%s (explicit=%s, surge_forcing=%s, "
@@ -2589,6 +2995,61 @@ async def model_flood_scenario(
                 uri=f"nominatim:{geocode_result.get('osm_type','')}/{geocode_result.get('osm_id','')}",
                 accessed_at=datetime.now(timezone.utc),
             )
+        )
+
+    # --- NATE 2026-06-26: USER-INPUT honesty gates (never fabricate magnitudes) ---
+    # feedback_never_fabricate_model_inputs_user_gate: the levee-breach peak +
+    # the tsunami wave height are PHYSICAL magnitudes the user MUST supply. If a
+    # breach/tsunami intent is detected WITHOUT its magnitude, return a typed
+    # USER_INPUT_REQUIRED failed envelope (honest gate) rather than inventing a
+    # hydrograph / wave height. The drawn breach POINT alone is not enough — the
+    # peak discharge governs the flood, so it must be explicit.
+    if breach_point is not None and breach_peak_discharge_m3s is None:
+        logger.info(
+            "model_flood_scenario: breach_point given without "
+            "breach_peak_discharge_m3s — returning USER_INPUT_REQUIRED (no "
+            "fabricated breach hydrograph)."
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code="USER_INPUT_REQUIRED",
+            error_detail=(
+                "A levee-breach scenario needs the peak breach discharge "
+                "(breach_peak_discharge_m3s, m^3/s) — please supply it; the "
+                "breach hydrograph is not fabricated."
+            ),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=None,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
+    if tsunami and tsunami_wave_height_m is None:
+        logger.info(
+            "model_flood_scenario: tsunami=True without tsunami_wave_height_m — "
+            "returning USER_INPUT_REQUIRED (no fabricated wave height)."
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code="USER_INPUT_REQUIRED",
+            error_detail=(
+                "A tsunami scenario needs the peak wave height "
+                "(tsunami_wave_height_m, m) — please supply it; the wave form "
+                "is not fabricated."
+            ),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=None,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
         )
 
     # --- Zoom-on-area-first (job-0160): emit ``map-command(zoom-to)`` BEFORE
@@ -2963,22 +3424,142 @@ async def model_flood_scenario(
         # on ``is_coastal`` so the inland / pluvial path is byte-identical (no
         # surge boundary, branch never taken). The fetcher fan-out does sync
         # network I/O, so it runs off the loop alongside the resolve.
-        if is_coastal and not surge_forcing:
-            surge_forcing = await asyncio.to_thread(
+        # NATE 2026-06-26: scenario-coverage auto-wire precedence ladder. Each
+        # branch fills the SAME ``surge_forcing`` dict so compound combinations
+        # compose; all run BEFORE ``_resolve_surge_forcing_from_fetchers`` so any
+        # ``fetch_uri`` gets materialised. Order: tsunami -> coastal storm-surge
+        # (only if no waterlevel yet) -> fluvial/breach discharge -> wind merge.
+        surge_forcing = dict(surge_forcing) if surge_forcing else {}
+
+        # 1) TSUNAMI waterlevel (pre-materialised N-wave) — the magnitude gate
+        #    already fired above, so a height is present here. Sets a sentinel so
+        #    the coastal storm-surge synth below does NOT also fire (a tsunami is
+        #    NOT a storm surge).
+        if tsunami and tsunami_wave_height_m is not None and not surge_forcing.get(
+            "waterlevel"
+        ):
+            _tsu = await asyncio.to_thread(
+                _synthesize_tsunami_waterlevel_forcing,
+                resolved_bbox,
+                wave_height_m=float(tsunami_wave_height_m),
+                period_min=tsunami_period_min,
+                duration_hr=float(duration_hr),
+            )
+            surge_forcing["waterlevel"] = _tsu
+            data_sources.append(
+                DataSource(
+                    name=(
+                        "Tsunami N-wave water level (auto-wired; "
+                        f"height {tsunami_wave_height_m} m)"
+                    ),
+                    uri="synthetic:tsunami-nwave",
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+
+        # 2) COASTAL storm-surge auto-wire — only when no waterlevel is present
+        #    yet (a tsunami / explicit surge already wins). Gated on is_coastal so
+        #    the inland/pluvial path is byte-identical.
+        if is_coastal and not surge_forcing.get("waterlevel"):
+            _surge = await asyncio.to_thread(
                 _autowire_coastal_surge_forcing,
                 resolved_bbox,
                 duration_hr=float(duration_hr),
                 return_period_yr=return_period_yr,
                 data_sources=data_sources,
             )
+            if _surge:
+                surge_forcing = {**surge_forcing, **_surge}
+
+        # 3a) LEVEE-BREACH discharge (pre-materialised interior jet) — distinct
+        #     from a domain-edge river discharge; carried onto ForcingSpec.breach
+        #     so a compound run can have BOTH. The magnitude gate already fired.
+        breach_member = None
+        if breach_point is not None and breach_peak_discharge_m3s is not None:
+            _br = await asyncio.to_thread(
+                _synthesize_breach_discharge_forcing,
+                (float(breach_point[0]), float(breach_point[1])),
+                peak_m3s=float(breach_peak_discharge_m3s),
+                arrival_hr=breach_arrival_hr,
+                duration_hr=float(duration_hr),
+            )
+            breach_member = DischargeForcing(
+                timeseries_uri=_br.get("timeseries_uri"),
+                locations_uri=_br.get("locations_uri"),
+            )
+            data_sources.append(
+                DataSource(
+                    name=(
+                        "Levee-breach discharge (auto-wired; "
+                        f"peak {breach_peak_discharge_m3s} m^3/s)"
+                    ),
+                    uri="synthetic:levee-breach",
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+
+        # 3b) FLUVIAL river discharge auto-wire (NWM -> NWIS -> honest skip).
+        #     Gated on ``river`` (lifted by ``compound``); does NOT force
+        #     is_coastal. Skipped when a discharge boundary is already present.
+        if river and not surge_forcing.get("discharge"):
+            _dq_wire = await asyncio.to_thread(
+                _autowire_river_discharge_forcing,
+                resolved_bbox,
+                duration_hr=float(duration_hr),
+                data_sources=data_sources,
+                river_layer_uri=(river_layer.uri if river_layer is not None else None),
+            )
+            if _dq_wire:
+                surge_forcing = {**surge_forcing, **_dq_wire}
+
+        # 4) WIND merge (user/ERA5-supplied; never fabricated).
+        if wind:
+            surge_forcing = {**surge_forcing, "wind": dict(wind)}
+
         surge_forcing = await asyncio.to_thread(
             _resolve_surge_forcing_from_fetchers,
-            surge_forcing,
+            surge_forcing or None,
             resolved_bbox,
             window_hours=float(duration_hr),
             data_sources=data_sources,
         )
         _wl, _dq, _wind, _press = _build_surge_forcing_members(surge_forcing)
+
+        # NATE 2026-06-26: INFILTRATION loss + ADVANCED-PHYSICS resolution.
+        # Infiltration auto-fetches the GCN250 CN raster (best-effort) into an
+        # InfiltrationForcing member. advanced_physics defaults to {"advection":1}
+        # when WIND forcing is present (so a wind run flips the momentum scheme
+        # rather than emitting wind with the deck default); validated via
+        # physics_registry and threaded onto BuildOptions below.
+        infiltration_member = None
+        _inf_uri = await asyncio.to_thread(
+            _resolve_infiltration_uri,
+            infiltration,
+            resolved_bbox,
+            data_sources,
+        )
+        if _inf_uri:
+            # Single-band GCN250 raster -> antecedent_moisture None (the deck
+            # emits YAML null; the default 'avg' ValueErrors on a bare band).
+            infiltration_member = InfiltrationForcing(
+                cn_uri=_inf_uri,
+                antecedent_moisture=None,
+                provenance={"_prov_source": "gcn250"},
+            )
+
+        resolved_advanced_physics = advanced_physics
+        if resolved_advanced_physics is None and wind:
+            # NATE 2026-06-26 (doc-grounding): SFINCS coriolis is on-by-default but
+            # INERT while latitude==0.0 on a projected CRS, so a wind deck that omits
+            # latitude silently runs WITHOUT Coriolis (parameters.html). Pin the
+            # AOI-centre latitude alongside advection=1 so a wind run flips the
+            # momentum scheme AND activates Coriolis. Never overrides an explicit
+            # advanced_physics dict (that path leaves the user fully in control).
+            _aoi_centre_lat = 0.5 * (float(resolved_bbox[1]) + float(resolved_bbox[3]))
+            resolved_advanced_physics = {
+                "advection": 1,
+                "coriolis_latitude": _aoi_centre_lat,
+            }
         if forcing_raster_uri is not None:
             # Observed-precip netamt path: carry the pre-computed magnitude.
             forcing_spec = ForcingSpec(
@@ -2987,8 +3568,12 @@ async def model_flood_scenario(
                 precip_magnitude_mm_per_hr=precip_magnitude_mm_per_hr,
                 waterlevel=_wl,
                 discharge=_dq,
+                # NATE 2026-06-26: scenario-coverage members (breach jet +
+                # infiltration loss). None on a pluvial run (byte-identical).
+                breach=breach_member,
                 wind=_wind,
                 pressure=_press,
+                infiltration=infiltration_member,
                 provenance=dict(forcing_summary.parameters if forcing_summary else {}),
             )
         else:
@@ -2999,8 +3584,12 @@ async def model_flood_scenario(
                 return_period_years=return_period_yr,
                 waterlevel=_wl,
                 discharge=_dq,
+                # NATE 2026-06-26: scenario-coverage members (breach jet +
+                # infiltration loss). None on a pluvial run (byte-identical).
+                breach=breach_member,
                 wind=_wind,
                 pressure=_press,
+                infiltration=infiltration_member,
                 provenance=dict(forcing_summary.parameters if forcing_summary else {}),
             )
         # COASTAL SFINCS — building-obstacle URI. ``building_obstacles=True``
@@ -3015,6 +3604,13 @@ async def model_flood_scenario(
             building_obstacles,
             resolved_bbox,
             data_sources,
+        )
+        # NATE 2026-06-26: resolve the advanced-physics overrides ONCE (a single
+        # resolve point) via the registry so an unknown key / out-of-range value
+        # raises a typed error here (caught below as a failed envelope) rather
+        # than emitting a silently-wrong deck. None -> {} (deck byte-identical).
+        _resolved_physics = validate_and_resolve_physics(
+            "sfincs", resolved_advanced_physics
         )
         options = BuildOptions(
             grid_resolution_m=grid_resolution_m,
@@ -3035,6 +3631,10 @@ async def model_flood_scenario(
             # Drives dtout/dtmaxout in the regular-grid deck (the quadtree path
             # threads the same value into the remote deck-build output_dt below).
             output_interval_min=resolved_output_interval_min,
+            # NATE 2026-06-26: resolved advanced-physics dict (advection / theta /
+            # alpha / huthresh / coriolis_latitude / wind_drag) -> setup_config
+            # block. None/{} -> no physics override (byte-identical pluvial deck).
+            advanced_physics=(_resolved_physics or None),
         )
         # ``build_sfincs_model`` is SYNCHRONOUS with no overall timeout
         # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off
@@ -3137,6 +3737,29 @@ async def model_flood_scenario(
             project_id=proj_id,
             session_id=sess_id,
             error_code=exc.error_code,
+            error_detail=str(exc),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
+    except PhysicsRegistryError as exc:
+        # NATE 2026-06-26: an invalid ``advanced_physics`` override (unknown key
+        # or out-of-range value) surfaces as a typed failed envelope rather than
+        # an uncaught exception or a silently-wrong deck (Invariant 7).
+        logger.warning(
+            "model_flood_scenario: invalid advanced_physics override (%s) — "
+            "returning ADVANCED_PHYSICS_INVALID failed envelope.",
+            exc,
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code="ADVANCED_PHYSICS_INVALID",
             error_detail=str(exc),
             workflow_name=workflow_name,
             data_sources=data_sources,
@@ -4077,6 +4700,20 @@ async def run_model_flood_scenario(
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
     output_interval_min: float | None = None,
+    # NATE 2026-06-26: SFINCS scenario-coverage intents (fluvial / compound /
+    # wind / infiltration / levee-breach / tsunami). All default to today's
+    # behaviour so a pluvial run is byte-identical.
+    river: bool = False,
+    compound: bool = False,
+    wind: dict[str, Any] | None = None,
+    advanced_physics: dict[str, Any] | None = None,
+    infiltration: bool | str = False,
+    breach_point: tuple[float, float] | None = None,
+    breach_peak_discharge_m3s: float | None = None,
+    breach_arrival_hr: float | None = None,
+    tsunami: bool = False,
+    tsunami_wave_height_m: float | None = None,
+    tsunami_period_min: float | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
@@ -4218,6 +4855,32 @@ async def run_model_flood_scenario(
             lifts the footprint bed elevation via the SFINCS subgrid so flow is
             impeded without disconnecting the domain (higher fidelity; auto-uses
             subgrid). Leave ``"exclude"`` unless higher fidelity is requested.
+        river: set ``True`` for a FLUVIAL / river-flooding run -- auto-wires a
+            river-discharge boundary (NOAA NWM -> USGS NWIS -> honest skip).
+            Stays inland (``fetch_dem``). Default ``False``.
+        compound: set ``True`` for a COMPOUND flood (coastal surge AND river
+            discharge AND rain together; implies ``coastal`` + ``river``).
+            Default ``False``.
+        wind: optional WIND forcing ``{"magnitude": <m/s>, "direction":
+            <deg-from>}`` or ``{"grid_uri": <nc>}`` (user/ERA5 supplied, never
+            invented). Default ``None``.
+        advanced_physics: optional SFINCS physics overrides (keys: advection,
+            theta, alpha, huthresh, coriolis_latitude, wind_drag), validated +
+            threaded into the deck. Default ``None`` (deck unchanged).
+        infiltration: ``True`` -> auto-fetch GCN250 curve numbers; a ``str`` ->
+            verbatim CN raster URI; ``False`` (default) -> no infiltration loss.
+        breach_point: ``(lon, lat)`` of a drawn levee breach. USER-GATED: needs
+            ``breach_peak_discharge_m3s`` or the run returns a typed input gate
+            (never fabricated). Default ``None``.
+        breach_peak_discharge_m3s: peak breach discharge (m^3/s, user-supplied).
+            Default ``None``.
+        breach_arrival_hr: optional breach time-to-peak (hr). Default ``None``.
+        tsunami: ``True`` for a TSUNAMI run (implies ``coastal``). USER-GATED:
+            needs ``tsunami_wave_height_m`` or the run returns a typed input gate.
+            Default ``False``.
+        tsunami_wave_height_m: tsunami peak wave height (m, user-supplied).
+            Default ``None``.
+        tsunami_period_min: tsunami period (min); defaults to ~15 min. ``None``.
         project_id / session_id: ULID identifiers from the WS session, forwarded
             for provenance / artifact namespacing. When ``None`` (default), the
             internal workflow mints fresh ULIDs (direct-call / smoke path).
@@ -4271,6 +4934,18 @@ async def run_model_flood_scenario(
         building_obstacles=building_obstacles,
         building_obstacle_mode=building_obstacle_mode,
         output_interval_min=output_interval_min,
+        # NATE 2026-06-26: SFINCS scenario-coverage intents threaded through.
+        river=river,
+        compound=compound,
+        wind=wind,
+        advanced_physics=advanced_physics,
+        infiltration=infiltration,
+        breach_point=breach_point,
+        breach_peak_discharge_m3s=breach_peak_discharge_m3s,
+        breach_arrival_hr=breach_arrival_hr,
+        tsunami=tsunami,
+        tsunami_wave_height_m=tsunami_wave_height_m,
+        tsunami_period_min=tsunami_period_min,
         project_id=project_id,
         session_id=session_id,
     )
