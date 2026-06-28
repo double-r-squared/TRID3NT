@@ -96,6 +96,7 @@ __all__ = [
     "begin_substeps",
     "emit_chart_payloads",
     "ChartPersistHook",
+    "ToolCardPersistHook",
     "bind_turn_case",
     "current_turn_case",
     "mint_dispatch_and_sim_cards",
@@ -538,6 +539,19 @@ EmissionSink = Callable[[str], Awaitable[None]]
 #: path uses (the hook closes over ``state``; the emitter does not hold it).
 ChartPersistHook = Callable[[dict], Awaitable[None]]
 
+#: task-208 (sim-card durability): type of the optional sim/compute-card
+#: persistence hook ``server`` wires into the emitter so a terminal ``compute``
+#: card (the Batch-bound SIM card minted by ``mint_dispatch_and_sim_cards``)
+#: persists a ``role="tool"`` ``CaseChatMessage`` through the SAME
+#: ``server._persist_tool_card(state, ...)`` path the on-box atomic-tool cards
+#: use. Unlike the tool path, the SIM compute card was NEVER persisted, so a WS
+#: reconnect / Case reopen replayed an EMPTY pipeline and the green/red solve
+#: card vanished. The hook receives the SAME kwargs ``_persist_tool_card``
+#: takes (minus ``state``, which the closure holds) so the persisted row is
+#: byte-identical to a tool card's and round-trips through the existing
+#: ``chat_history`` replay. ``None`` on the verify/CI/direct-call paths.
+ToolCardPersistHook = Callable[..., Awaitable[None]]
+
 
 # --------------------------------------------------------------------------- #
 # PipelineEmitter
@@ -897,6 +911,7 @@ class PipelineEmitter:
         pipeline_history: list[dict] | None = None,
         map_view: dict | None = None,
         chart_persist: "ChartPersistHook | None" = None,
+        tool_card_persist: "ToolCardPersistHook | None" = None,
     ) -> None:
         self.session_id = session_id
         self._sink = sink
@@ -907,6 +922,17 @@ class PipelineEmitter:
         #: ``_persist_chart_record``), keeping the persist logic in ONE place.
         #: ``None`` on the verify/CI/direct-call paths (send-only, no persist).
         self._chart_persist: "ChartPersistHook | None" = chart_persist
+
+        #: task-208 (sim-card durability): optional async hook ``server`` wires
+        #: at construction so a terminal SIM ``compute`` card persists a
+        #: ``role="tool"`` ``CaseChatMessage`` through the SAME
+        #: ``server._persist_tool_card`` path the on-box atomic-tool cards use.
+        #: The hook closes over ``state``; ``route_sim_terminal`` calls it with
+        #: the terminal compute step's tool_name/label/state/started_at/duration
+        #: so the persisted row round-trips through the existing ``chat_history``
+        #: replay (case-open AND bare-reconnect). ``None`` on the
+        #: verify/CI/direct-call paths (send-only, no persist).
+        self._tool_card_persist: "ToolCardPersistHook | None" = tool_card_persist
 
         #: Current pipeline id; ``None`` when no pipeline is running.
         self._pipeline_id: str | None = None
@@ -1594,6 +1620,56 @@ class PipelineEmitter:
         # J-B-part-i: terminal emit is best-effort on a dead socket + snapshots
         # for replay-on-rebind so the yellow card survives a WS cycle.
         await self._emit_terminal_pipeline_state()
+
+    async def persist_terminal_compute_card(self, step_id: str) -> None:
+        """task-208: persist the SIM ``compute`` card as a replayable tool-card.
+
+        Called by ``route_sim_terminal`` AFTER the terminal ``mark_complete`` /
+        ``mark_failed`` transition so the green/red SIM card survives a WS
+        reconnect / Case reopen exactly like an on-box atomic-tool card. The
+        two-card sim observability (task-149) minted this ``role="compute"`` card
+        via ``add_compute_step``; unlike the on-box tool path it was NEVER
+        persisted (the live card lived only on the wire), so a bare reconnect
+        replayed an EMPTY pipeline and the user's solve card vanished.
+
+        Routes through the ``_tool_card_persist`` hook ``server`` wired at
+        construction, which closes over ``state`` and calls the SAME
+        ``server._persist_tool_card`` the tool cards use -> a ``role="tool"``
+        ``CaseChatMessage`` + ``ToolCardRecord`` row in ``chat_history`` that
+        round-trips through the existing replay (case-open AND bare-reconnect).
+
+        Persisted ONLY for the two terminal states ``ToolCardRecord`` accepts —
+        ``complete`` / ``failed``. A ``cancelled`` SIM card persists NOTHING
+        (Invariant 8: cancelled dispatches leave no row), matching the on-box
+        tool path. No-op (never raises) when the hook is unbound (verify/CI/
+        direct call), the step is unknown, or the step is non-terminal — the
+        live SIM-card flow is untouched either way. Best-effort: a hook failure
+        is swallowed (the underlying ``_persist_tool_card`` is itself
+        never-raises) so persistence can never break the solve loop.
+        """
+        if self._tool_card_persist is None:
+            return
+        step = self._steps.get(step_id)
+        if step is None:
+            return
+        if step.state not in ("complete", "failed"):
+            return
+        started_at = step.started_at or self._now_fn()
+        duration_ms = step.duration_ms if step.duration_ms is not None else 0
+        try:
+            await self._tool_card_persist(
+                tool_name=step.tool_name,
+                label=step.name,
+                card_state=step.state,
+                started_at_fallback=started_at,
+                duration_ms_fallback=duration_ms,
+            )
+        except Exception as exc:  # noqa: BLE001 — persistence, never break solve
+            logger.warning(
+                "persist_terminal_compute_card failed (non-fatal) step=%s: %s",
+                step_id,
+                exc,
+            )
 
     # ------------------------------------------------------------------ #
     # session-state — current_pipeline + loaded_layers
@@ -2377,9 +2453,13 @@ async def route_sim_terminal(
     try:
         status = str(getattr(run_result, "status", "") or "") if run_result is not None else ""
         if run_result is None or status == "cancelled":
+            # Invariant 8: a cancelled SIM card persists NOTHING (no replay row).
             await emitter.mark_cancelled(sim_step_id)
         elif status == "complete":
             await emitter.mark_complete(sim_step_id)
+            # task-208: persist the green SIM compute card so it replays on a
+            # WS reconnect / Case reopen like an on-box tool card (best-effort).
+            await emitter.persist_terminal_compute_card(sim_step_id)
         else:
             error_code = (
                 getattr(run_result, "error_code", None) or (status.upper() if status else "SOLVER_FAILED")
@@ -2392,5 +2472,8 @@ async def route_sim_terminal(
             await emitter.mark_failed(
                 sim_step_id, error_code=str(error_code), error_message=str(error_message)
             )
+            # task-208: persist the red SIM compute card too (honesty floor: a
+            # terminal solve FAILURE must SURFACE across a socket cycle).
+            await emitter.persist_terminal_compute_card(sim_step_id)
     except Exception as exc:  # noqa: BLE001 — observability, never break the solve
         logger.warning("route_sim_terminal failed (non-fatal): %s", exc)

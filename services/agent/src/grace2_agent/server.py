@@ -7108,11 +7108,25 @@ def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
         # generate_histogram chart. Best-effort inside _persist_chart_record.
         await _persist_chart_record(state, payload)
 
+    async def _tool_card_persist(**kwargs: Any) -> None:
+        # task-208 (sim-card durability): a terminal SIM ``compute`` card
+        # (the Batch-bound card minted by ``mint_dispatch_and_sim_cards``)
+        # persists through the SAME ``_persist_tool_card`` the on-box atomic
+        # tool cards use, so the green/red solve card replays on a WS reconnect
+        # / Case reopen like any other tool card. The emitter passes the
+        # terminal step's tool_name/label/state/started_at/duration; this
+        # closure supplies ``state`` (which the emitter does not hold). The
+        # Case is pinned via the live turn context (``_turn_case_id`` inside
+        # ``_persist_tool_card``) so a cancel-and-redispatch race cannot
+        # re-aim the write. Best-effort inside ``_persist_tool_card``.
+        await _persist_tool_card(state, **kwargs)
+
     state.emitter = PipelineEmitter(
         session_id=state.session_id,
         sink=_sink,
         chat_history=state.chat_history,
         chart_persist=_chart_persist,
+        tool_card_persist=_tool_card_persist,
     )
 
 
