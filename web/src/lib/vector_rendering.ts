@@ -299,6 +299,10 @@ export function presetColorFor(stylePreset: string | null | undefined): string |
   // Fire data
   if (key.includes("burn_perimeter") || key.includes("mtbs")) return "#FF4444";
   if (key.includes("firms") || key.includes("active_fire")) return "#FF4444";
+  // Seismic fault traces (#207 input-layer surfacing): geologic fault lines in a
+  // strong crimson so they read as the source structure feeding the PGA map,
+  // distinct from the alert/fire red and the water blue.
+  if (key.includes("fault")) return "#D7263D";
   // Roads / infrastructure
   if (key.includes("osm_road") || key === "roads" || key === "osm_roads") return "#FFD700";
   // Computational mesh wireframe (NATE #156): a cool cyan/grey scaffold colour
