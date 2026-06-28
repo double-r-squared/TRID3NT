@@ -39,10 +39,27 @@ import { useIsMobile } from "../hooks/useIsMobile";
 // STATIC WIDTH (NATE 2026-06-26): a fixed, comfortable pill width - no longer
 // tracks the AOI bbox. Clamped to the open desktop gutter (and the mobile
 // viewport) so it never runs off-screen or under the side panels.
-const SCRUBBER_WIDTH_DEFAULT = 420;
+// Exported so the mobile LayerLegend BAND form can match the scrubber width
+// exactly (NATE 2026-06-28: the band must stay the SAME WIDTH AS THE SCRUBBER).
+export const SCRUBBER_WIDTH_DEFAULT = 420;
 const SCRUBBER_MIN_WIDTH = 200; // floor so the buttons stay tappable in a narrow gutter.
 // Side margin reserved on each edge (mobile viewport / desktop gutter).
-const SCRUBBER_EDGE_MARGIN_PX = 16;
+export const SCRUBBER_EDGE_MARGIN_PX = 16;
+
+/**
+ * MOBILE SCRUBBER WIDTH (NATE 2026-06-28) - the resolved on-screen scrubber pill
+ * width on MOBILE for a given viewport width: the fixed default (420) clamped to
+ * the viewport minus a side margin on each edge, floored at the min width. This is
+ * the SAME math the mobile branch of this component uses for `widthPx`; it is
+ * exported so the mobile LayerLegend band form can render at the EXACT scrubber
+ * width (so the docked band reads as one bar in line with the scrubber, and does
+ * NOT rescale with the AOI bbox). `viewportW` null/unknown (SSR) => the default.
+ */
+export function scrubberMobileWidthPx(viewportW: number | null | undefined): number {
+  if (viewportW == null || !Number.isFinite(viewportW)) return SCRUBBER_WIDTH_DEFAULT;
+  const avail = viewportW - 2 * SCRUBBER_EDGE_MARGIN_PX;
+  return Math.max(SCRUBBER_MIN_WIDTH, Math.min(SCRUBBER_WIDTH_DEFAULT, avail));
+}
 
 // Desktop bottom offset - lifts the pill off the very viewport edge.
 const SCRUBBER_BOTTOM_DESKTOP_PX = 24;
@@ -204,9 +221,10 @@ export function SequenceScrubber({
 
   if (isMobile) {
     // Mobile: viewport-centered, clamped to the viewport minus side margins.
+    // Shared helper (scrubberMobileWidthPx) is the single source of truth so the
+    // mobile LayerLegend band form can match this width exactly.
     if (viewportW != null) {
-      const avail = viewportW - 2 * SCRUBBER_EDGE_MARGIN_PX;
-      widthPx = Math.max(SCRUBBER_MIN_WIDTH, Math.min(SCRUBBER_WIDTH_DEFAULT, avail));
+      widthPx = scrubberMobileWidthPx(viewportW);
     }
     // TASK E (NATE 2026-06-26): DOCK to the chat SHEET's top edge and TRACK it.
     // The sheet's top is given in viewport px (from the top); convert to a CSS

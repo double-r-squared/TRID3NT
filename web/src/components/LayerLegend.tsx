@@ -72,7 +72,10 @@ import {
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAnimationState } from "../lib/use_animation_controller";
 import { IconClose } from "./icons";
-import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./SequenceScrubber";
+import {
+  SCRUBBER_SHEET_DOCK_GAP_PX,
+  scrubberMobileWidthPx,
+} from "./SequenceScrubber";
 
 // JOB WEB-AOI-LEGEND (#157)  -  the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
@@ -196,6 +199,29 @@ export function legendBandDockBottomPx(
     ? MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX
     : 0;
   return Math.max(0, scrubberTop + reserve);
+}
+
+/**
+ * CHAT-OVERLAP HIDE (NATE 2026-06-28): true when an AOI-edge-snapped legend key
+ * (its ABSOLUTE viewport top + height) would dip into the bottom HUD region --
+ * the chat panel, plus the scrubber stacked above it when active. When a tall
+ * AOI bbox extends down behind the chat, the right/left vertical key snaps over
+ * the chat bar; NATE wants it to DISAPPEAR, not overlay. The caller hides such a
+ * key on mobile. Pure + window-free (callers pass the measured chat-top px).
+ *
+ * `hudTopPx` = `sheetTopPx` minus the scrubber footprint (the scrubber sits
+ * above the chat, so the legend must clear it too). Returns false when the
+ * chat-top is unknown (SSR / desktop) so nothing is hidden off this path.
+ */
+export function legendKeyOverlapsBottomHud(
+  keyTopPx: number,
+  keyHeightPx: number,
+  sheetTopPx: number | null,
+  scrubberFootprintPx: number,
+): boolean {
+  if (sheetTopPx == null) return false;
+  const hudTopPx = sheetTopPx - Math.max(0, scrubberFootprintPx);
+  return keyTopPx + keyHeightPx > hudTopPx;
 }
 
 // Item a (Z-HIERARCHY, NATE 2026-06-20)  -  the legend must render BEHIND the chat
@@ -520,12 +546,11 @@ const KEY_HEIGHT_VERTICAL = 220;
 const VERTICAL_KEY_WIDTH = 76;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
-// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. A compact card width
-// for each key in the single horizontal legend ROW so several keys read as one
-// clean line; the row scrolls horizontally (overflowX:auto) if the keys exceed the
-// row's max-width. Slightly above KEY_MIN_WIDTH so the title + min/bar/max still
-// fit legibly. Only used on the mobile band-dock path.
-const MOBILE_BAND_KEY_WIDTH = 150;
+// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-28) - mobile-only. The BAND form's keys
+// no longer use a compact fixed width; each fills the SCRUBBER WIDTH
+// (scrubberMobileWidthPx) so the single common-case key reads as one clean bar in
+// line with the scrubber and the band never rescales with the AOI bbox. The row
+// scrolls horizontally (overflowX:auto) if multiple keys exceed the scrubber width.
 // MOBILE ONE-ROW BAND DOCK - the horizontal gap (px) between key cards in the row.
 const MOBILE_BAND_KEY_GAP_PX = 8;
 
@@ -906,13 +931,23 @@ export function LayerLegend({
     () =>
       keyModels.map((k, idx) => {
         const side = resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset);
-        const height =
-          orientationForSide(side) === "vertical"
-            ? KEY_HEIGHT_VERTICAL
-            : KEY_HEIGHT_FLAT;
-        return { width: widthFor(k.layerId), height };
+        const vertical = orientationForSide(side) === "vertical";
+        const height = vertical ? KEY_HEIGHT_VERTICAL : KEY_HEIGHT_FLAT;
+        // LEFT-SNAP OFFSET FIX (NATE 2026-06-28): legend_snap places a LEFT-side
+        // key at `aoi.left - gap - size.width`, so size.width MUST equal the key's
+        // ACTUAL rendered width or the key lands too far left (the right side uses
+        // `aoi.right + gap`, width-independent, which is why only the LEFT bar
+        // drifted). A vertical (left/right) NON-categorical key renders as a
+        // NARROW bar (VERTICAL_KEY_WIDTH*scale), not the full horizontal card --
+        // mirror the render's `cardWidth` here so placement matches what paints.
+        const isCategorical = k.data?.kind === "categorical";
+        const width =
+          vertical && !isCategorical
+            ? Math.round(VERTICAL_KEY_WIDTH * scale)
+            : widthFor(k.layerId);
+        return { width, height };
       }),
-    [keyModels, widthFor, resolvedSides, sideStartOffset, orientationForSide],
+    [keyModels, widthFor, resolvedSides, sideStartOffset, orientationForSide, scale],
   );
 
   // Item f  -  extra px to push bottom-side keys past the scrubber's footprint
@@ -1193,18 +1228,57 @@ export function LayerLegend({
       ? legendBandDockBottomPx(sheetTopPx, scrubberActive)
       : null;
 
+  // BAND FORM WIDTH (NATE 2026-06-28) - the band must be the SAME WIDTH AS THE
+  // SCRUBBER and NOT rescale with the AOI bbox ("when it is snapped it changes
+  // scale -- that should not be; it should stay the same width as the scrubber").
+  // We size the band ROW (and the single common-case key inside it) to the exact
+  // mobile scrubber width (scrubberMobileWidthPx, the shared source of truth), NOT
+  // the AOI `aoiScaleFactor` scale. Read the live viewport width; SSR/no-window ->
+  // the helper falls back to the default. Only meaningful on the mobile band path.
+  const bandWidthPx = scrubberMobileWidthPx(
+    typeof window !== "undefined" && Number.isFinite(window.innerWidth)
+      ? window.innerWidth
+      : null,
+  );
+
+  // BAND-vs-EDGE GATE (NATE 2026-06-28) - on mobile, when the AOI bbox IS on screen
+  // and would normally corner-attach, an AOI-edge-snapped key can still dip DOWN
+  // behind the bottom HUD (the chat panel, plus the scrubber stacked above it when
+  // active) - e.g. a tall bbox extending past the chat, where the left/right
+  // VERTICAL key rails over the chat bar. NATE: "do not make it disappear, snap to
+  // above the scrubber if it is intersecting the chat panel." So we detect any
+  // snapped key whose ABSOLUTE viewport span crosses the HUD top and, when one
+  // does, switch to the BAND form (docked above the scrubber) instead of the edge
+  // form. `snapped` + `sizes` are the same arrays the edge render uses, so the
+  // overlap check matches exactly what would paint. Mobile-only + only when a band
+  // bottom is placeable (sheetTopPx present); desktop never reaches here.
+  const aoiSnapOverlapsHud =
+    isMobile &&
+    aoiRect != null &&
+    bandRowBottomPx != null &&
+    snapped.some((pos, idx) =>
+      legendKeyOverlapsBottomHud(
+        pos.top,
+        sizes[idx]?.height ?? 0,
+        sheetTopPx,
+        scrubberActive ? MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX : 0,
+      ),
+    );
+
   // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. Dock the single
-  // horizontal legend row above the chat panel when EITHER there is no AOI bbox on
-  // screen (the prior fallback) OR the AOI corner attach is no longer useful
+  // horizontal legend row above the chat panel when ANY of: there is no AOI bbox on
+  // screen (the prior fallback); the AOI corner attach is no longer useful
   // (aoiCornerPlaceable === false: zoomed too far in/out, AOI off-screen / a tiny
-  // dot / filling the viewport). When aoiCornerPlaceable is true AND an AOI rect is
-  // on screen we KEEP the existing corner-attach (AOI snap) behavior below. Gated
+  // dot / filling the viewport); OR an AOI-edge snap would INTERSECT the bottom HUD
+  // (aoiSnapOverlapsHud, NATE 2026-06-28 - "snap to above the scrubber if it is
+  // intersecting the chat panel"). When the corner attach IS useful AND no snapped
+  // key overlaps the HUD we KEEP the AOI-edge (corner-attach) behavior below. Gated
   // on a known band bottom (sheetTopPx present) so we only dock when we can place
   // the row; else the legacy AOI-snap / bottom-center fallback holds.
   const bandDockActive =
     isMobile &&
     bandRowBottomPx != null &&
-    (!aoiRect || aoiCornerPlaceable === false);
+    (!aoiRect || aoiCornerPlaceable === false || aoiSnapOverlapsHud);
 
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
   // Portal to document.body so it appears above the mobile chat panel.
@@ -1467,9 +1541,13 @@ export function LayerLegend({
         // laid out in a row); a vertical card stacks max/bar/min in a column, so
         // it only needs a slim fixed width (scaled). Snapping is untouched.
         const cardWidth = bandDockActive
-          ? // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): a compact fixed width so
-            // several keys fit as one horizontal line (the row scrolls if needed).
-            MOBILE_BAND_KEY_WIDTH
+          ? // BAND FORM (NATE 2026-06-28): the band key fills the SCRUBBER WIDTH so
+            // the docked band reads as ONE clean bar in line with the scrubber, and
+            // does NOT change scale with the AOI bbox (we deliberately do NOT apply
+            // the aoiScaleFactor `scale` here). The single common-case key IS the
+            // row; with multiple keys each stays scrubber-width and the row scrolls
+            // horizontally (overflowX:auto on the band-row container).
+            bandWidthPx
           : // CATEGORICAL keys render swatch+label ROWS, never a vertical gradient
             // rail, so they always need the horizontal card width even when docked
             // to a left/right AOI edge (orientation 'vertical') -- a narrow vertical
@@ -1552,6 +1630,13 @@ export function LayerLegend({
                   justifyContent: "space-between",
                   marginBottom: 5,
                   gap: 6,
+                  // minWidth:0 lets the title span shrink below its content width in
+                  // this flex row so its ellipsis actually engages (a flex item
+                  // defaults to min-content width, which would let nowrap text
+                  // OVERFLOW instead of truncate). Required for the BAND form (NATE
+                  // 2026-06-28: the title must be on ONE line, truncated, never
+                  // wrapping); harmless for the horizontal edge form.
+                  minWidth: 0,
                 }}
               >
                 <span
@@ -1561,6 +1646,12 @@ export function LayerLegend({
                     fontWeight: 600,
                     letterSpacing: "0.03em",
                     color: "#ddd",
+                    // ONE-LINE TRUNCATION (NATE 2026-06-28): never wrap the title to a
+                    // new line; truncate with an ellipsis. minWidth:0 + flex:1 lets the
+                    // span shrink within the (scrubber-width) card so the ellipsis
+                    // engages instead of the text overflowing or new-lining.
+                    flex: 1,
+                    minWidth: 0,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -1829,10 +1920,18 @@ export function LayerLegend({
                 flexWrap: "nowrap",
                 alignItems: "flex-end",
                 gap: MOBILE_BAND_KEY_GAP_PX,
+                // BAND FORM WIDTH (NATE 2026-06-28): the row is the SAME WIDTH AS
+                // THE SCRUBBER (scrubberMobileWidthPx) so the single common-case key
+                // fills it as one clean bar and the band never rescales with the AOI
+                // bbox. With multiple keys the row STAYS scrubber-width and scrolls
+                // horizontally (overflowX:auto). The width is already viewport-
+                // clamped by the scrubber math; we keep maxWidth as a belt-and-braces
+                // cap so a very narrow phone still never spans past the window.
+                width: bandWidthPx,
                 // VIEWPORT CLAMP: never wider than the window; scroll the row
-                // horizontally if the compact keys exceed the clamp. The row is one
-                // short line so height is rarely at risk, but cap max-height to the
-                // band above the dock so a tall key can never run off the top of the
+                // horizontally if the keys exceed the clamp. The row is one short
+                // line so height is rarely at risk, but cap max-height to the band
+                // above the dock so a tall key can never run off the top of the
                 // window (respecting the notch via env()).
                 maxWidth: MOBILE_LEGEND_MAX_WIDTH_CSS,
                 maxHeight: mobileLegendMaxHeightCss(bandRowBottomPx),

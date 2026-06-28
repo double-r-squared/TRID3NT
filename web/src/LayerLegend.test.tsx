@@ -35,7 +35,10 @@ import {
 // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the legend's new mobile dock math
 // composes on top of the SequenceScrubber's chat-clearance gap (20), so the band
 // row clears the scrubber. Import the canonical value so the two stay in lockstep.
-import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./components/SequenceScrubber";
+import {
+  SCRUBBER_SHEET_DOCK_GAP_PX,
+  scrubberMobileWidthPx,
+} from "./components/SequenceScrubber";
 import { ProjectLayerSummary } from "./contracts";
 import { getStylePreset } from "./lib/style-presets";
 // ITEM 5 (NATE 2026-06-22)  -  the legend reads the shared AnimationController to
@@ -1236,6 +1239,145 @@ describe("LayerLegend  -  mobile one-row band dock above the scrubber (NATE 2026
   });
 });
 
+// BAND-vs-EDGE GATE + SCRUBBER-WIDTH BAND (NATE 2026-06-28): on mobile, when the
+// AOI bbox IS on screen but an AOI-edge-snapped key would INTERSECT the bottom HUD
+// (the chat panel, plus the scrubber above it when active), the legend must NOT
+// disappear behind the chat - it switches to the BAND form docked above the
+// scrubber ("snap to above the scrubber if it is intersecting the chat panel").
+// The band must be the SAME WIDTH AS THE SCRUBBER and NOT rescale with the bbox,
+// and its title must stay on ONE line (truncated, never new-lining). beforeEach
+// stubs mobile=true; jsdom innerWidth is 1024, innerHeight 768. Desktop early-
+// returns to the static docked strip (LANE D block, byte-for-byte unchanged).
+describe("LayerLegend  -  AOI-snap-overlaps-chat -> band form (NATE 2026-06-28)", () => {
+  // An AOI whose BOTTOM edge sits deep down the screen: the single bottom-snapped
+  // key (top = bottom + SIDE_GAP_PX(10), height KEY_HEIGHT_FLAT(56)) lands at
+  // ~bottom+66, which is below sheetTopPx=500 -> overlaps the chat HUD.
+  const overlappingTall = { left: 100, top: 50, right: 400, bottom: 700 };
+  // An AOI whose bottom edge sits high up: the same snapped key clears the HUD.
+  const clearingShort = { left: 100, top: 50, right: 400, bottom: 300 };
+
+  // --- (a) overlap -> BAND row (not the absolute AOI-snapped key) ------------ //
+  it("renders the BAND row (not the absolute AOI-snap) when a snapped key overlaps the chat HUD", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={overlappingTall}
+        sheetTopPx={500}
+        // Corner attach IS nominally useful; the OVERLAP is what forces the band.
+        aoiCornerPlaceable={true}
+      />,
+    );
+    // The one-row band container is present (the overlap forced the band form).
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    // Docked above the chat sheet (no scrubber active -> gap only).
+    expect(row.style.bottom).toBe(`${768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
+    // The key is IN the row, horizontal, in flow - NOT an absolute AOI-edge rail.
+    const key = within(row).getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.style.position).toBe("relative");
+    // It did NOT rail the bbox bottom edge (would be an absolute top below 700).
+    expect(key.style.top).toBe("");
+    expect(key.style.bottom).toBe("");
+  });
+
+  it("KEEPS the AOI corner-attach (no band) when the snapped key CLEARS the chat HUD", () => {
+    // The bbox bottom is high enough that the bottom-snapped key clears sheetTopPx,
+    // so there is NO overlap -> the edge form holds (no band row).
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={clearingShort}
+        sheetTopPx={500}
+        aoiCornerPlaceable={true}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // An absolute AOI-edge rail below the bbox bottom (300), NOT a band.
+    expect(key.style.left).not.toBe("50%");
+    expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
+  });
+
+  // --- (b) band width = scrubber width + does NOT change with bbox scale ----- //
+  it("the band row is the SCRUBBER WIDTH and does NOT rescale when the bbox scale changes", () => {
+    // jsdom innerWidth is 1024 -> scrubberMobileWidthPx(1024) clamps to the 420
+    // default (1024 - 32 = 992 > 420). The band must be that exact width.
+    const expectedWidth = scrubberMobileWidthPx(1024);
+    expect(expectedWidth).toBe(420);
+
+    // SMALL overlapping bbox -> aoiScaleFactor clamps LOW (0.6).
+    const small = { left: 100, top: 600, right: 250, bottom: 780 };
+    // LARGE overlapping bbox -> aoiScaleFactor clamps HIGH (1.6). Different scale,
+    // SAME band width (the band must NOT track the bbox).
+    const large = { left: 0, top: 0, right: 700, bottom: 780 };
+
+    const { rerender } = render(
+      <LayerLegend layers={[makeLayer()]} aoiRect={small} sheetTopPx={500} />,
+    );
+    const rowSmall = screen.getByTestId("grace2-layer-legend-band-row");
+    expect(rowSmall.style.width).toBe(`${expectedWidth}px`);
+    const keySmall = within(rowSmall).getByTestId("grace2-layer-legend-key");
+    expect(keySmall.style.width).toBe(`${expectedWidth}px`);
+
+    rerender(<LayerLegend layers={[makeLayer()]} aoiRect={large} sheetTopPx={500} />);
+    const rowLarge = screen.getByTestId("grace2-layer-legend-band-row");
+    // Same scrubber width despite the much larger bbox (no aoiScaleFactor applied).
+    expect(rowLarge.style.width).toBe(`${expectedWidth}px`);
+    const keyLarge = within(rowLarge).getByTestId("grace2-layer-legend-key");
+    expect(keyLarge.style.width).toBe(`${expectedWidth}px`);
+  });
+
+  // --- (c) band title is ONE line (nowrap + ellipsis) ----------------------- //
+  it("the band-form title is a single non-wrapping line (nowrap + ellipsis)", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer({ name: "A very long flood depth legend title that must truncate" })]}
+        aoiRect={overlappingTall}
+        sheetTopPx={500}
+      />,
+    );
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    const title = within(row).getByTestId("layer-legend-title");
+    // ONE line: never wrap; truncate with an ellipsis; shrink within the flex row.
+    expect(title.style.whiteSpace).toBe("nowrap");
+    expect(title.style.textOverflow).toBe("ellipsis");
+    expect(title.style.overflow).toBe("hidden");
+    // happy-dom stores a unitless 0 as "0" (mirrors the desktop-bar minWidth test).
+    expect(title.style.minWidth).toBe("0");
+  });
+
+  it("with the scrubber ACTIVE, an overlap-forced band still clears the scrubber footprint", () => {
+    // Drive the shared AnimationController so scrubberActive === true.
+    const c = getAnimationController();
+    c.setGroups([
+      {
+        key: "seq-overlap",
+        label: "HRRR precip",
+        layerIds: ["f01", "f03", "f06"],
+        frameLabels: ["F+01h", "F+03h", "F+06h"],
+      },
+    ]);
+    c.setActiveGroup("seq-overlap");
+    // A standalone raster still emits ONE legend key; the bbox bottom is deep so the
+    // (scrubber-offset) snapped key overlaps the chat+scrubber HUD -> band form.
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        aoiRect={overlappingTall}
+        sheetTopPx={500}
+        aoiCornerPlaceable={true}
+      />,
+    );
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    const scrubberTop = 768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX;
+    // The band sits a full scrubber footprint (52) + legend gap above the scrubber.
+    expect(row.style.bottom).toBe(
+      `${scrubberTop + MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX}px`,
+    );
+  });
+});
+
 // ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY): when the AOI bbox has zoomed OUT
 // to a tiny dot on screen, Map.tsx threads `aoiTooSmallToShow` and the MOBILE
 // legend HIDES entirely (renders null) - the speck carries no useful colorbar
@@ -2088,6 +2230,26 @@ describe("LayerLegend  -  desktop docked strip (LANE D)", () => {
     render(<LayerLegend layers={[makeLayer()]} hidden suppressShowPill />);
     expect(screen.queryByTestId("grace2-layer-legend")).toBeNull();
     expect(screen.queryByTestId("grace2-layer-legend-show")).toBeNull();
+  });
+
+  it("the mobile BAND props (sheetTopPx + overlapping AOI) are IGNORED on desktop", () => {
+    // BAND-vs-EDGE GATE (NATE 2026-06-28) is mobile-only. With a deep bbox that
+    // would force the mobile band form, desktop STILL renders the static docked
+    // strip at bottom 16px and NEVER a one-row band. Desktop is byte-for-byte
+    // unchanged (it early-returns before the band gate is read).
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 700 }}
+        sheetTopPx={500}
+        aoiCornerPlaceable={true}
+      />,
+    );
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-docked", "desktop");
+    expect(root.style.bottom).toBe("16px");
+    // No mobile one-row band on desktop, ever.
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
   });
 });
 
