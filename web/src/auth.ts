@@ -621,7 +621,10 @@ function demoTokenUrl(): string | null {
       : `https://${normalized}`;
     return `${withScheme.replace(/\/+$/, "")}/demo-token`;
   }
-  return null;
+  // Default: the live autostop API-Gateway demo-token route (verified 2026-06-28).
+  // Baked in so the code-gate works without a Vercel env var -- the wake-api host
+  // is a public endpoint, not a secret. VITE_GRACE2_DEMO_TOKEN_URL overrides it.
+  return "https://9ib093sis6.execute-api.us-west-2.amazonaws.com/demo-token";
 }
 
 /**
