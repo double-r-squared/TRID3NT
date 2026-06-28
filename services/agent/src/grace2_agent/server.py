@@ -5117,6 +5117,82 @@ def _maybe_default_fetch_bbox_to_pinned_aoi(
     return new_params
 
 
+def _maybe_default_solver_bbox_to_pinned_aoi(
+    tool_name: str,
+    params: dict,
+    pinned_bbox: Any,
+) -> dict:
+    """Pin an expensive SOLVER's bbox to the active Case AOI (#183 / #159 lineage).
+
+    NATE DIRECTIVE (#183): the SFINCS solve must compute ONLY within the active
+    AOI bbox "unless something requires it to expand". The fetch-default rule
+    (``_maybe_default_fetch_bbox_to_pinned_aoi``) snapped FETCHES onto the pinned
+    AOI, but expensive SOLVERS (``run_model_flood_scenario`` / ``run_swmm_*`` /
+    ``run_modflow_*`` -- anything ``scenario_type_for_tool`` recognizes) were
+    EXEMPT, so a follow-up / re-entry solve still ran on whatever bbox the LLM
+    free-handed. The #159 lineage: the displayed AOI snapped smaller (the pinned
+    ``state.case_bbox``) while the LLM handed the solver a DRIFTED / wider
+    same-area box, so the SFINCS grid (built directly from that bbox via
+    ``setup_grid_from_region: region: { bbox }``, no padding) computed OUTSIDE the
+    displayed AOI. This snaps the SOLVE domain back onto the active AOI by the
+    SAME conservative rule the fetch default uses.
+
+    PRECISE RULE (identical to the fetch default -- honor real expansion, fix the
+    drifted same-area box; "required expansion is allowed, only UN-required
+    expansion is the bug"):
+      * Only applies to recognized expensive solvers (``scenario_type_for_tool``).
+      * No pinned AOI -> no-op. The FIRST solve in a Case (no AOI pinned yet)
+        DEFINES the domain from the LLM's bbox; the pin is written AFTER it.
+      * No / invalid ``bbox`` supplied -> inject the pin (solve the active AOI).
+      * Supplied bbox that OVERLAPS the pin but does NOT enclose it (a wider /
+        drifted same-area box that pokes outside the displayed AOI) -> REPLACE
+        with the pin: solve ONLY within the active AOI.
+      * Supplied bbox that already ENCLOSES the pin (an explicit larger area the
+        user asked to model) -> HONOR it. REQUIRED expansion is allowed.
+      * Supplied bbox DISJOINT from the pin (a genuinely different place) ->
+        HONOR it.
+
+    Archetype byte-identity (#194): the SFINCS scenario-coverage archetypes
+    (fluvial / compound / wind / infiltration / levee / tsunami) and coastal runs
+    are selected by FORCING FLAGS (``coastal=`` / ``river=`` / ``tsunami=`` ...),
+    NOT by an enclosing-wider bbox, and an explicit enclose / disjoint bbox is
+    always honored -- so none of those decks are clipped by this guard.
+
+    Pure + conservative: returns a NEW dict only when it changes ``bbox``; never
+    mutates the input dict in place. Shares the exact tolerance / enclose / overlap
+    semantics of the fetch default for a single, auditable AOI-snap policy.
+    """
+    if scenario_type_for_tool(tool_name) is None:
+        return params
+    pin = _coerce_bbox4(pinned_bbox)
+    if pin is None:
+        return params
+    supplied = _coerce_bbox4(params.get("bbox"))
+    if supplied is not None:
+        # Already (essentially) the active AOI -> no needless copy.
+        if bbox_equivalent(supplied, pin, quant=_AOI_DEFAULT_EQ_TOL_DEG):
+            return params
+        # A genuinely DIFFERENT place (disjoint) is the user's intent -> honor it.
+        if not _bbox_overlaps(supplied, pin):
+            return params
+        # An explicit WIDEN (encloses the pin on all four edges) is REQUIRED
+        # expansion the user asked for -> honor it (NATE: "unless something
+        # requires it to expand").
+        if bbox_encloses(supplied, pin, quant=_AOI_DEFAULT_EQ_TOL_DEG):
+            return params
+    # Bare follow-up OR a drifted / wider same-area box that pokes outside the
+    # displayed AOI -> snap the SOLVE domain to the active AOI bbox.
+    new_params = dict(params)
+    new_params["bbox"] = list(pin)
+    logger.info(
+        "aoi-solve-default: %s solve bbox -> active Case AOI %s (was %s)",
+        tool_name,
+        list(pin),
+        list(supplied) if supplied is not None else None,
+    )
+    return new_params
+
+
 @dataclass
 class _ReuseEntry:
     """A drop-in ``RegisteredTool``-shaped shim for the reuse short-circuit
@@ -8553,6 +8629,19 @@ async def _invoke_tool_via_emitter(
     # (encloses the pin) is honored. Runs BEFORE the fetcher reuse guard so the
     # reuse comparison sees the snapped bbox. No-op when no AOI is pinned.
     params = _maybe_default_fetch_bbox_to_pinned_aoi(
+        tool_name, params, _turn_case_bbox(state)
+    )
+
+    # #183 (NATE compute-domain guard): pin an expensive SOLVER's bbox to the
+    # active Case AOI too. The SFINCS grid is built directly from this bbox via
+    # setup_grid_from_region (no padding), so a follow-up / re-entry solve handed
+    # a drifted / wider same-area box would compute OUTSIDE the displayed AOI (the
+    # #159 lineage). Mirror the fetch rule: solve ONLY within the active AOI,
+    # honoring an explicit WIDEN (encloses the pin) or a DIFFERENT place
+    # (disjoint). No-op on the first solve (no AOI pinned yet) and on archetypes
+    # / coastal (selected by forcing flags, never an enclosing-wider bbox). Runs
+    # BEFORE the scenario reuse guard so the reuse comparison sees the snap.
+    params = _maybe_default_solver_bbox_to_pinned_aoi(
         tool_name, params, _turn_case_bbox(state)
     )
 
