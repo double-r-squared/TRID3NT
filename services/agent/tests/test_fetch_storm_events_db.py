@@ -39,8 +39,11 @@ from grace2_agent.tools.fetch_storm_events_db import (
     StormEventsUpstreamError,
     _normalize_state,
     _resolve_csv_url,
+    _validate_bbox,
     _validate_inputs,
     _parse_filter_and_serialize,
+    _window_years,
+    estimate_payload_mb,
     fetch_storm_events_db,
 )
 
@@ -321,7 +324,7 @@ def test_full_name_and_iso_share_cache_key():
 
     with patch(
         "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
-        side_effect=lambda y, s, e: fake_fetch(),
+        side_effect=lambda *a, **k: fake_fetch(),
     ), patch(
         "grace2_agent.tools.fetch_storm_events_db.read_through",
         side_effect=_make_read_through_injector(fake_gcs),
@@ -581,7 +584,7 @@ def test_cache_miss_invokes_fetch_and_writes():
 
     with patch(
         "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
-        side_effect=lambda y, s, e: fake_fetch(),
+        side_effect=lambda *a, **k: fake_fetch(),
     ), patch(
         "grace2_agent.tools.fetch_storm_events_db.read_through",
         side_effect=_make_read_through_injector(fake_gcs),
@@ -611,7 +614,7 @@ def test_cache_hit_skips_fetch():
 
     with patch(
         "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
-        side_effect=lambda y, s, e: fake_fetch(),
+        side_effect=lambda *a, **k: fake_fetch(),
     ), patch(
         "grace2_agent.tools.fetch_storm_events_db.read_through",
         side_effect=_make_read_through_injector(fake_gcs),
@@ -640,7 +643,7 @@ def test_event_types_order_does_not_split_cache():
 
     with patch(
         "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
-        side_effect=lambda y, s, e: fake_fetch(),
+        side_effect=lambda *a, **k: fake_fetch(),
     ), patch(
         "grace2_agent.tools.fetch_storm_events_db.read_through",
         side_effect=_make_read_through_injector(fake_gcs),
@@ -653,6 +656,436 @@ def test_event_types_order_does_not_split_cache():
         )
 
     assert fetch_count["n"] == 1, "reordered list must reuse cache key"
+    assert r1.uri == r2.uri
+
+
+# ---------------------------------------------------------------------------
+# bbox + date-window upgrade — synthetic builder with the structured NOAA date
+# columns (BEGIN_YEARMONTH / BEGIN_DAY / BEGIN_TIME) + the new retained props.
+# ---------------------------------------------------------------------------
+
+
+# Header mirroring the real NOAA file's relevant columns: the structured date
+# columns the window filter prefers, plus MAGNITUDE + DEATHS_* added in the
+# upgrade.
+_CSV_HEADER_FULL = (
+    "EVENT_ID,EVENT_TYPE,STATE,BEGIN_YEARMONTH,BEGIN_DAY,BEGIN_TIME,"
+    "BEGIN_DATE_TIME,END_DATE_TIME,BEGIN_LAT,BEGIN_LON,"
+    "INJURIES_DIRECT,DEATHS_DIRECT,DEATHS_INDIRECT,DAMAGE_PROPERTY,"
+    "MAGNITUDE,EPISODE_NARRATIVE"
+)
+
+_MONTH_ABBR = {
+    1: "JAN", 2: "FEB", 3: "MAR", 4: "APR", 5: "MAY", 6: "JUN",
+    7: "JUL", 8: "AUG", 9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC",
+}
+
+
+def _synth_event_row(
+    eid: int,
+    event_type: str,
+    state: str,
+    year: int,
+    month: int,
+    day: int,
+    lat: float,
+    lon: float,
+    *,
+    hour: int = 12,
+    minute: int = 0,
+    deaths_direct: int = 0,
+    deaths_indirect: int = 0,
+    magnitude: str = "",
+) -> str:
+    """Build one CSV row in the full-column layout (structured date + props)."""
+    yearmonth = f"{year:04d}{month:02d}"
+    begin_time = f"{hour:02d}{minute:02d}"
+    bdt = (
+        f"{day:02d}-{_MONTH_ABBR[month]}-{year % 100:02d} "
+        f"{hour:02d}:{minute:02d}:00"
+    )
+    return (
+        f"{eid},{event_type},{state},{yearmonth},{day},{begin_time},"
+        f"{bdt},{bdt},{lat:.4f},{lon:.4f},"
+        f"0,{deaths_direct},{deaths_indirect},25000,{magnitude},"
+        f"\"{event_type} near {state}\""
+    )
+
+
+def _make_window_bbox_csv() -> bytes:
+    """A synthetic year-2022 CSV exercising bbox + date-window slices.
+
+    Composition (all Tornado unless noted):
+    - 4 OK tornadoes in May (inside an OK bbox).
+    - 3 TX tornadoes in May (inside the SAME bbox — bbox crosses state lines).
+    - 2 FL tornadoes in May (OUTSIDE the OK bbox).
+    - 5 OK tornadoes in September (inside bbox, outside a May window).
+    - 1 OK Hail event in May (inside bbox; different EVENT_TYPE).
+    """
+    rows = [_CSV_HEADER_FULL]
+    eid = 5000
+    # OK tornadoes, May. lon ~ -97.5, lat ~ 35.4 (inside OK bbox).
+    for i in range(4):
+        rows.append(_synth_event_row(
+            eid, "Tornado", "OKLAHOMA", 2022, 5, 10 + i,
+            35.4 + i * 0.02, -97.5 - i * 0.02, magnitude="EF2",
+            deaths_direct=i,
+        ))
+        eid += 1
+    # TX tornadoes, May. lat ~ 34.0, lon ~ -99.0 (inside OK bbox span).
+    for i in range(3):
+        rows.append(_synth_event_row(
+            eid, "Tornado", "TEXAS", 2022, 5, 12 + i,
+            34.0 + i * 0.05, -99.0 - i * 0.05,
+        ))
+        eid += 1
+    # FL tornadoes, May. lat ~ 27.5, lon ~ -81.5 (OUTSIDE OK bbox).
+    for i in range(2):
+        rows.append(_synth_event_row(
+            eid, "Tornado", "FLORIDA", 2022, 5, 20 + i,
+            27.5 + i * 0.02, -81.5 - i * 0.02,
+        ))
+        eid += 1
+    # OK tornadoes, September (inside bbox, outside May window).
+    for i in range(5):
+        rows.append(_synth_event_row(
+            eid, "Tornado", "OKLAHOMA", 2022, 9, 5 + i,
+            35.5 + i * 0.02, -97.6 - i * 0.02,
+        ))
+        eid += 1
+    # OK Hail, May (inside bbox, different EVENT_TYPE).
+    rows.append(_synth_event_row(
+        eid, "Hail", "OKLAHOMA", 2022, 5, 15, 35.45, -97.55, magnitude="1.75",
+    ))
+    eid += 1
+    return _csv_to_gzip_bytes("\n".join(rows) + "\n")
+
+
+# OK-region bbox (W, S, E, N) spanning the OK + bordering TX rows above.
+_OK_BBOX = (-103.0, 33.6, -94.4, 37.0)
+
+
+def _read_fgb(fgb_bytes: bytes):
+    import geopandas as gpd  # type: ignore[import-not-found]
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        f.write(fgb_bytes)
+        path = f.name
+    try:
+        return gpd.read_file(path, engine="pyogrio")
+    finally:
+        os.unlink(path)
+
+
+def test_bbox_filter_keeps_only_points_inside_box():
+    """A bbox keeps every event inside it and drops everything outside.
+
+    The OK bbox spans OK + bordering TX tornadoes but excludes the FL rows;
+    bbox is a SPATIAL filter, so it crosses state lines.
+    """
+    gz = _make_window_bbox_csv()
+    fgb = _parse_filter_and_serialize(
+        gz, state=None, event_types=["Tornado"], bbox=_OK_BBOX
+    )
+    gdf = _read_fgb(fgb)
+    # 4 OK May + 3 TX May + 5 OK Sep = 12 tornadoes inside the box; 2 FL out.
+    assert len(gdf) == 12
+    assert set(gdf["STATE"].str.upper().unique()) == {"OKLAHOMA", "TEXAS"}
+    west, south, east, north = _OK_BBOX
+    for geom in gdf.geometry:
+        assert west <= geom.x <= east, f"lon {geom.x} outside bbox"
+        assert south <= geom.y <= north, f"lat {geom.y} outside bbox"
+
+
+def test_bbox_excludes_florida_rows():
+    """The FL tornadoes fall outside the OK bbox and must not appear."""
+    gz = _make_window_bbox_csv()
+    fgb = _parse_filter_and_serialize(
+        gz, state=None, event_types=["Tornado"], bbox=_OK_BBOX
+    )
+    gdf = _read_fgb(fgb)
+    assert "FLORIDA" not in set(gdf["STATE"].str.upper().unique())
+
+
+def test_date_window_filter_narrows_to_may():
+    """A May 2022 window keeps May rows and drops the September rows."""
+    gz = _make_window_bbox_csv()
+    fgb = _parse_filter_and_serialize(
+        gz,
+        state=None,
+        event_types=["Tornado"],
+        begin_date="2022-05-01",
+        end_date="2022-05-31",
+    )
+    gdf = _read_fgb(fgb)
+    # 4 OK May + 3 TX May + 2 FL May = 9 tornadoes in May; the 5 Sep dropped.
+    assert len(gdf) == 9
+    # Every retained row's BEGIN_DATE_TIME is in May ("-MAY-").
+    assert gdf["BEGIN_DATE_TIME"].str.contains("-MAY-").all()
+
+
+def test_bbox_and_window_combine():
+    """bbox AND window AND event_type compose to the intersection."""
+    gz = _make_window_bbox_csv()
+    fgb = _parse_filter_and_serialize(
+        gz,
+        state=None,
+        event_types=["Tornado"],
+        bbox=_OK_BBOX,
+        begin_date="2022-05-01",
+        end_date="2022-05-31",
+    )
+    gdf = _read_fgb(fgb)
+    # Inside box AND May AND Tornado = 4 OK + 3 TX = 7 (Sep + FL + Hail gone).
+    assert len(gdf) == 7
+    assert set(gdf["STATE"].str.upper().unique()) == {"OKLAHOMA", "TEXAS"}
+
+
+def test_window_end_is_inclusive_bare_date():
+    """A bare-date end_date includes events on that whole day."""
+    gz = _make_window_bbox_csv()
+    # The latest OK September row is day 9 (5..9). End on exactly 2022-09-09.
+    fgb = _parse_filter_and_serialize(
+        gz,
+        state="OK",
+        event_types=["Tornado"],
+        begin_date="2022-09-01",
+        end_date="2022-09-09",
+    )
+    gdf = _read_fgb(fgb)
+    # 5 OK Sept tornadoes, days 5..9 — all inside [09-01, 09-09].
+    assert len(gdf) == 5
+
+
+def test_retained_columns_include_magnitude_and_deaths():
+    """The output carries MAGNITUDE + DEATHS_DIRECT/DEATHS_INDIRECT."""
+    gz = _make_window_bbox_csv()
+    fgb = _parse_filter_and_serialize(
+        gz, state="OK", event_types=["Tornado"],
+        begin_date="2022-05-01", end_date="2022-05-31",
+    )
+    gdf = _read_fgb(fgb)
+    for col in ("MAGNITUDE", "DEATHS_DIRECT", "DEATHS_INDIRECT"):
+        assert col in gdf.columns, f"{col} missing from output"
+    # The May OK tornadoes carry EF2 magnitude + an increasing death count.
+    assert (gdf["MAGNITUDE"] == "EF2").all()
+    assert sorted(gdf["DEATHS_DIRECT"].astype(int).tolist()) == [0, 1, 2, 3]
+
+
+def test_empty_window_raises_typed_error():
+    """A window with no matching events raises StormEventsEmptyError."""
+    gz = _make_window_bbox_csv()
+    with pytest.raises(StormEventsEmptyError):
+        _parse_filter_and_serialize(
+            gz,
+            state=None,
+            event_types=["Tornado"],
+            begin_date="2022-12-01",
+            end_date="2022-12-31",  # no December rows
+        )
+
+
+def test_bbox_with_no_events_inside_raises_empty():
+    """A bbox over open ocean (no synthetic rows) raises StormEventsEmptyError."""
+    gz = _make_window_bbox_csv()
+    with pytest.raises(StormEventsEmptyError):
+        _parse_filter_and_serialize(
+            gz,
+            state=None,
+            event_types=["Tornado"],
+            bbox=(-160.0, 0.0, -150.0, 10.0),  # mid-Pacific
+        )
+
+
+# ---------------------------------------------------------------------------
+# Input-validation tests for the new params.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_rejects_malformed_bbox():
+    """A bad bbox raises StormEventsArgError (not retryable)."""
+    for bad in [
+        (1.0, 2.0, 3.0),               # wrong arity
+        (-200.0, 0.0, 10.0, 10.0),     # lon out of range
+        (-100.0, 40.0, -90.0, 30.0),   # south >= north
+        (10.0, 0.0, -10.0, 10.0),      # west >= east
+        "not-a-bbox",                  # wrong type
+    ]:
+        with pytest.raises(StormEventsArgError):
+            _validate_bbox(bad)  # type: ignore[arg-type]
+
+
+def test_validate_rejects_malformed_dates():
+    """Non-ISO begin_date/end_date raise StormEventsArgError."""
+    with pytest.raises(StormEventsArgError, match="begin_date"):
+        _validate_inputs(year=2022, state=None, event_types=None,
+                         begin_date="May 2022", end_date=None)
+    with pytest.raises(StormEventsArgError, match="end_date"):
+        _validate_inputs(year=2022, state=None, event_types=None,
+                         begin_date=None, end_date="not-a-date")
+
+
+def test_validate_rejects_reversed_window():
+    """begin_date after end_date raises StormEventsArgError."""
+    with pytest.raises(StormEventsArgError, match="after"):
+        _validate_inputs(year=2022, state=None, event_types=None,
+                         begin_date="2022-06-01", end_date="2022-05-01")
+
+
+def test_validate_accepts_good_bbox_and_window():
+    """A valid bbox + window passes validation cleanly (no raise)."""
+    _validate_inputs(
+        year=2022, state="OK", event_types=["Tornado"],
+        bbox=_OK_BBOX, begin_date="2022-05-01", end_date="2022-05-31",
+    )
+
+
+# ---------------------------------------------------------------------------
+# _window_years — multi-year spanning.
+# ---------------------------------------------------------------------------
+
+
+def test_window_years_single_year_default():
+    """No window -> only the anchor year is fetched (backward compatible)."""
+    assert _window_years(2022, None, None) == [2022]
+
+
+def test_window_years_spans_year_boundary():
+    """A window crossing New Year fetches both annual CSVs."""
+    assert _window_years(2022, "2021-12-15", "2022-01-10") == [2021, 2022]
+
+
+def test_window_years_spans_multiple_years():
+    """A multi-year window fetches every annual CSV it touches."""
+    assert _window_years(2022, "2020-06-01", "2023-03-01") == [
+        2020, 2021, 2022, 2023
+    ]
+
+
+def test_window_years_only_begin_includes_anchor():
+    """A begin-only window still includes the anchor year."""
+    assert _window_years(2019, "2018-11-01", None) == [2018, 2019]
+
+
+# ---------------------------------------------------------------------------
+# Payload estimator.
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_payload_mb_full_year_is_large():
+    """A full national year estimate is in the tens of MB."""
+    mb = estimate_payload_mb(year=2022)
+    assert mb > 10.0, f"full-year estimate {mb} unexpectedly small"
+
+
+def test_estimate_payload_mb_narrow_filter_is_small():
+    """A single state + type + 1-month window shrinks the estimate sharply."""
+    mb = estimate_payload_mb(
+        year=2022, state="OK", event_types=["Tornado"],
+        begin_date="2022-05-01", end_date="2022-05-31",
+    )
+    assert mb < estimate_payload_mb(year=2022)
+    assert mb > 0.0
+
+
+def test_estimate_payload_mb_scales_with_window_years():
+    """A 3-year window estimates more than a single year."""
+    one = estimate_payload_mb(year=2022)
+    three = estimate_payload_mb(
+        year=2022, begin_date="2020-01-01", end_date="2022-12-31"
+    )
+    assert three > one
+
+
+# ---------------------------------------------------------------------------
+# Cache-key tests for the new params.
+# ---------------------------------------------------------------------------
+
+
+def test_bbox_splits_cache_key():
+    """Two different bboxes do NOT share a cache entry."""
+    fake_gcs = FakeStorageClient()
+    fetch_count = {"n": 0}
+    fake_fgb = b"fgb" + b"\x00" * 32 + b"_BBOX"
+
+    def fake_fetch() -> bytes:
+        fetch_count["n"] += 1
+        return fake_fgb
+
+    with patch(
+        "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
+        side_effect=lambda *a, **k: fake_fetch(),
+    ), patch(
+        "grace2_agent.tools.fetch_storm_events_db.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r1 = fetch_storm_events_db(
+            year=2022, event_types=["Tornado"], bbox=(-103.0, 33.6, -94.4, 37.0)
+        )
+        r2 = fetch_storm_events_db(
+            year=2022, event_types=["Tornado"], bbox=(-90.0, 30.0, -80.0, 35.0)
+        )
+
+    assert fetch_count["n"] == 2, "different bboxes must not share a cache key"
+    assert r1.uri != r2.uri
+
+
+def test_window_splits_cache_key_but_repeats_hit():
+    """Same (year, type, window) hits cache; a different window misses."""
+    fake_gcs = FakeStorageClient()
+    fetch_count = {"n": 0}
+    fake_fgb = b"fgb" + b"\x00" * 32 + b"_WIN"
+
+    def fake_fetch() -> bytes:
+        fetch_count["n"] += 1
+        return fake_fgb
+
+    with patch(
+        "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
+        side_effect=lambda *a, **k: fake_fetch(),
+    ), patch(
+        "grace2_agent.tools.fetch_storm_events_db.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r1 = fetch_storm_events_db(
+            year=2022, event_types=["Tornado"],
+            begin_date="2022-05-01", end_date="2022-05-31",
+        )
+        r2 = fetch_storm_events_db(
+            year=2022, event_types=["Tornado"],
+            begin_date="2022-05-01", end_date="2022-05-31",
+        )
+        assert fetch_count["n"] == 1, "identical window must hit cache"
+        r3 = fetch_storm_events_db(
+            year=2022, event_types=["Tornado"],
+            begin_date="2022-06-01", end_date="2022-06-30",
+        )
+
+    assert fetch_count["n"] == 2, "different window must miss cache"
+    assert r1.uri == r2.uri
+    assert r1.uri != r3.uri
+
+
+def test_no_window_no_bbox_is_backward_compatible_cache_key():
+    """Omitting bbox/window keeps the old (year,state,type) cache behavior."""
+    fake_gcs = FakeStorageClient()
+    fetch_count = {"n": 0}
+    fake_fgb = b"fgb" + b"\x00" * 32 + b"_COMPAT"
+
+    def fake_fetch() -> bytes:
+        fetch_count["n"] += 1
+        return fake_fgb
+
+    with patch(
+        "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
+        side_effect=lambda *a, **k: fake_fetch(),
+    ), patch(
+        "grace2_agent.tools.fetch_storm_events_db.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r1 = fetch_storm_events_db(year=2022, state="FL", event_types=["Hurricane"])
+        r2 = fetch_storm_events_db(year=2022, state="FL", event_types=["Hurricane"])
+
+    assert fetch_count["n"] == 1
     assert r1.uri == r2.uri
 
 

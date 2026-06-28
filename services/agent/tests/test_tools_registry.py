@@ -176,7 +176,8 @@ def test_global_query_scope_audit():
         "fetch_usgs_volcano_alerts",    # HANS alert list is ~70 volcanoes, tiny/bounded
         "fetch_chirps_precipitation",   # quasi-global 0.05deg rainfall grid (~14MB), bounded like ERA5
         "fetch_fault_sources",          # GEM Global Active Faults is one bounded worldwide GeoJSON, bbox-filtered to AOI; no-bbox returns the global fault set (task #199)
-        "list_categories",              # meta-tool, no spatial input
+        "fetch_storm_events_db",        # national NCEI severe-weather DB; bbox/state-less = legit CONUS-year sweep
+        "fetch_tsunami_events",         # NCEI global historical tsunami DB is a bounded event list        "list_categories",              # meta-tool, no spatial input
         "list_tools_in_category",       # meta-tool, no spatial input
     }
 

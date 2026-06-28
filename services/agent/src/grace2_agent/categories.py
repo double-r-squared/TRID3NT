@@ -523,6 +523,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_ghsl_population": "land_cover_development",
     "fetch_jrc_global_surface_water": "hydrology",
     "fetch_soilgrids": "hydrology",
+    # batch5 (2026-06-27)
+    "fetch_epa_ejscreen": "damage_assessment",
+    "fetch_tsunami_events": "coastal",
+    "fetch_climate_normals": "weather_atmosphere",
+    "fetch_noaa_coops_currents": "coastal",
+    "fetch_airnow_air_quality": "weather_atmosphere",
+    "fetch_openaq_measurements": "weather_atmosphere",
 }
 
 
@@ -639,8 +646,15 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "fetch_chirps_precipitation": ('hydrology', 'conservation_ecology',),
     "fetch_ghsl_population": ('damage_assessment', 'geographic_primitives',),
     "fetch_jrc_global_surface_water": ('coastal', 'conservation_ecology', 'terrain_elevation',),
-    "fetch_soilgrids": ('land_cover_development', 'terrain_elevation',),}
-
+    "fetch_soilgrids": ('land_cover_development', 'terrain_elevation',),
+    # batch5 (2026-06-27)
+    "fetch_epa_ejscreen": ('land_cover_development', 'weather_atmosphere',),
+    "fetch_tsunami_events": ('hazard_modeling',),
+    "fetch_climate_normals": ('hydrology',),
+    "fetch_noaa_coops_currents": ('hydrology', 'geographic_primitives',),
+    "fetch_airnow_air_quality": ('news_events', 'damage_assessment', 'fire',),
+    "fetch_openaq_measurements": ('conservation_ecology', 'news_events',),
+}
 
 # ---------------------------------------------------------------------------
 # Hot set - always-on tools surfaced before any category has been opened.

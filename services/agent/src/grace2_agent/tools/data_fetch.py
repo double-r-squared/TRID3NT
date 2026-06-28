@@ -3203,6 +3203,102 @@ _OVERPASS_QL_TIMEOUT = 60
 #: hydrologic-modeling value).
 _WATERWAY_CLASSES: tuple[str, ...] = ("river", "stream", "canal")
 
+#: The full set of OSM ``waterway`` tag values this tool will let a caller
+#: request via ``waterway_type``. ``river``/``stream``/``canal`` are the
+#: default channel network; ``ditch``/``drain`` are the small artificial
+#: drainage channels that dominate drained-agriculture and tiled-field
+#: landscapes (Imperial Valley, the Fens) — opt-in because they explode
+#: feature counts elsewhere. Anything outside this set is rejected so an
+#: LLM-invented value cannot inject arbitrary text into the Overpass regex.
+_WATERWAY_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
+    # Convenience labels that map to a class set.
+    "default": ("river", "stream", "canal"),
+    "rivers": ("river", "stream", "canal"),
+    "channels": ("river", "stream", "canal"),
+    "drainage": ("ditch", "drain"),
+    "ditches": ("ditch", "drain"),
+    "all": ("river", "stream", "canal", "ditch", "drain"),
+}
+
+#: Individual OSM ``waterway`` values a caller may name directly (singular or
+#: comma/plus-joined). Kept separate from the aliases so both forms validate
+#: against the same closed vocabulary.
+_WATERWAY_ALLOWED_VALUES: tuple[str, ...] = (
+    "river",
+    "stream",
+    "canal",
+    "ditch",
+    "drain",
+)
+
+
+def _resolve_waterway_classes(
+    waterway_type: str | tuple[str, ...] | list[str] | None,
+) -> tuple[str, ...]:
+    """Resolve a caller ``waterway_type`` to a validated tuple of OSM classes.
+
+    Accepts:
+      * ``None`` -> the default ``_WATERWAY_CLASSES`` (backward compatible).
+      * A convenience alias string in ``_WATERWAY_TYPE_ALIASES``
+        (e.g. ``"all"``, ``"drainage"``).
+      * A single OSM value (e.g. ``"ditch"``).
+      * A comma- or plus-separated string of OSM values
+        (e.g. ``"ditch,drain"`` or ``"river+ditch"``).
+      * A list/tuple of OSM values (e.g. ``["ditch", "drain"]``).
+
+    De-duplicates while preserving order and validates every resolved token
+    against ``_WATERWAY_ALLOWED_VALUES`` so an LLM-invented value cannot inject
+    arbitrary text into the Overpass ``~"^(...)$"`` regex. Raises
+    ``BboxInvalidError`` (the tool's input-validation error type) on any
+    unknown token. Returns the default tuple when the input resolves to empty.
+    """
+    if waterway_type is None:
+        return _WATERWAY_CLASSES
+
+    # Normalize the input into a flat list of lowercase tokens.
+    raw_tokens: list[str] = []
+    if isinstance(waterway_type, str):
+        text = waterway_type.strip().lower()
+        if not text:
+            return _WATERWAY_CLASSES
+        if text in _WATERWAY_TYPE_ALIASES:
+            return _WATERWAY_TYPE_ALIASES[text]
+        # Split on commas / plus / whitespace so "ditch,drain" and "ditch drain"
+        # both work.
+        for chunk in re.split(r"[,+\s]+", text):
+            if chunk:
+                raw_tokens.append(chunk)
+    elif isinstance(waterway_type, (list, tuple)):
+        for item in waterway_type:
+            if not isinstance(item, str):
+                raise BboxInvalidError(
+                    f"waterway_type list entries must be strings; got "
+                    f"{type(item).__name__}"
+                )
+            tok = item.strip().lower()
+            if tok:
+                raw_tokens.append(tok)
+    else:
+        raise BboxInvalidError(
+            f"waterway_type must be a str or list of str; got "
+            f"{type(waterway_type).__name__}"
+        )
+
+    resolved: list[str] = []
+    for tok in raw_tokens:
+        if tok not in _WATERWAY_ALLOWED_VALUES:
+            raise BboxInvalidError(
+                f"unsupported waterway_type token {tok!r}; allowed OSM waterway "
+                f"values: {', '.join(_WATERWAY_ALLOWED_VALUES)} (or an alias: "
+                f"{', '.join(sorted(_WATERWAY_TYPE_ALIASES))})."
+            )
+        if tok not in resolved:
+            resolved.append(tok)
+
+    if not resolved:
+        return _WATERWAY_CLASSES
+    return tuple(resolved)
+
 
 def _build_overpass_waterway_ql(
     bbox: tuple[float, float, float, float],
@@ -3385,24 +3481,31 @@ def _waterway_records_to_clipped_fgb_bytes(
 
 def _fetch_osm_waterway_geometry_bytes(
     bbox: tuple[float, float, float, float],
+    waterway_classes: tuple[str, ...] = _WATERWAY_CLASSES,
 ) -> bytes:
     """PRIMARY river-geometry fetcher — OSM Overpass waterway query over the bbox.
 
-    Queries Overpass for ``waterway`` ways (river/stream/canal) inside the
-    bbox, projects each to a LineString, clips to the bbox, and returns
-    FlatGeobuf bytes. Fills the WHOLE bbox (true per-bbox query — not a
-    seed-connected sub-network like NLDI). Raises ``UpstreamAPIError`` on any
-    failure so ``fetch_river_geometry`` can fall through to NHDPlus HR.
+    Queries Overpass for ``waterway`` ways (``waterway_classes``, default
+    river/stream/canal) inside the bbox, projects each to a LineString, clips
+    to the bbox, and returns FlatGeobuf bytes. Fills the WHOLE bbox (true
+    per-bbox query — not a seed-connected sub-network like NLDI). Raises
+    ``UpstreamAPIError`` on any failure so ``fetch_river_geometry`` can fall
+    through to NHDPlus HR.
+
+    ``waterway_classes`` lets the caller widen/narrow the OSM ``waterway`` tag
+    set (e.g. add ``ditch``/``drain`` over drained agriculture). The default
+    preserves the original river/stream/canal behavior exactly.
     """
     _validate_bbox(bbox)
-    ql = _build_overpass_waterway_ql(bbox, _WATERWAY_CLASSES)
+    classes = tuple(waterway_classes) if waterway_classes else _WATERWAY_CLASSES
+    ql = _build_overpass_waterway_ql(bbox, classes)
     payload = _post_overpass_waterways(ql)
     records = _extract_overpass_waterway_records(payload)
     logger.info(
         "fetch_river_geometry[osm]: extracted %d waterway(s) for bbox=%s classes=%s",
         len(records),
         bbox,
-        _WATERWAY_CLASSES,
+        classes,
     )
     return _waterway_records_to_clipped_fgb_bytes(records, bbox)
 
@@ -3410,6 +3513,7 @@ def _fetch_osm_waterway_geometry_bytes(
 def _fetch_river_geometry_bytes(
     bbox: tuple[float, float, float, float],
     huc4: str | None,
+    waterway_classes: tuple[str, ...] = _WATERWAY_CLASSES,
 ) -> bytes:
     """Internal fallback chain for river geometry (data-source-fallback norm).
 
@@ -3422,12 +3526,18 @@ def _fetch_river_geometry_bytes(
       3. Typed honest error (``UpstreamAPIError``) if every path fails — never
          a silent dead-end or a hallucinated success.
 
+    ``waterway_classes`` controls the OSM ``waterway`` tag set on the PRIMARY
+    path (default river/stream/canal). The NHDPlus HR FALLBACK is the NHDPlus
+    NHDFlowline channel network and is unaffected by ``waterway_classes``
+    (NHDPlus does not carry an OSM ``waterway`` tag), so a non-default
+    ``waterway_classes`` only changes the OSM result.
+
     Returns FlatGeobuf bytes. The caller (``fetch_river_geometry``) routes
     these through ``read_through`` so the 30-day cache absorbs repeat calls.
     """
     primary_exc: Exception | None = None
     try:
-        return _fetch_osm_waterway_geometry_bytes(bbox)
+        return _fetch_osm_waterway_geometry_bytes(bbox, waterway_classes)
     except Exception as exc:  # noqa: BLE001 — fall through to NHDPlus HR
         primary_exc = exc
         logger.warning(
@@ -3608,6 +3718,7 @@ def _fetch_nhdplushr_geometry_bytes(
 def fetch_river_geometry(
     bbox: tuple[float, float, float, float],
     source: str = "nhdplus_hr",
+    waterway_type: str | list[str] | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -3655,6 +3766,20 @@ def fetch_river_geometry(
       fallback chain (OSM primary, NHDPlus HR fallback) runs regardless so the
       tool stays reliable across all bboxes. Unsupported labels (e.g.
       ``"merit_hydro"``) raise ``BboxInvalidError``.
+    - ``waterway_type`` (str | list[str] | None, default ``None``): widens or
+      narrows the OSM ``waterway`` tag set on the PRIMARY (OSM Overpass) path.
+      ``None`` keeps the default channel network (``river``/``stream``/
+      ``canal``). Pass individual OSM values (``"river"``, ``"stream"``,
+      ``"canal"``, ``"ditch"``, ``"drain"``) singly, comma/plus-joined
+      (``"ditch,drain"``), or as a list (``["ditch", "drain"]``); or a
+      convenience alias: ``"all"`` (every class incl. ditch+drain),
+      ``"drainage"`` / ``"ditches"`` (ditch+drain only — the artificial
+      drainage channels that dominate drained-agriculture / tiled-field
+      landscapes), or ``"default"`` / ``"rivers"`` / ``"channels"``
+      (river+stream+canal). ``ditch``/``drain`` are opt-in because they
+      explode feature counts in agricultural/urban areas. Unknown tokens raise
+      ``BboxInvalidError``. Distinct ``waterway_type`` values get distinct
+      cache keys. The NHDPlus HR fallback is unaffected (no OSM waterway tag).
 
     **Returns:**
     A ``LayerURI`` pointing at a FlatGeobuf of river/stream LineStrings in the
@@ -3675,6 +3800,11 @@ def fetch_river_geometry(
             "or 'osm' (Overpass waterway). The internal fallback chain runs "
             "OSM-primary regardless of which label you pass."
         )
+
+    # Resolve + validate the OSM waterway class set BEFORE any bbox work so an
+    # unknown waterway_type token fails fast with a typed error. None -> the
+    # default river/stream/canal tuple (fully backward compatible).
+    waterway_classes = _resolve_waterway_classes(waterway_type)
 
     _validate_bbox(bbox)
     quantized = round_bbox_to_resolution(bbox, 10)
@@ -3702,11 +3832,19 @@ def fetch_river_geometry(
         "source": "river_geometry",  # provider-agnostic; chain decides at fetch time
         "huc4": huc4,
     }
+    # Only fold waterway_type into the cache key when it deviates from the
+    # default so existing default-source artifacts keep their current keys
+    # (backward-compatible dedup). A non-default class set is a DISTINCT query
+    # (different OSM features) and must NOT alias the default artifact.
+    if waterway_classes != _WATERWAY_CLASSES:
+        params["waterway_classes"] = list(waterway_classes)
     result = read_through(
         metadata=_FETCH_RIVER_GEOMETRY_METADATA,
         params=params,
         ext="fgb",
-        fetch_fn=lambda: _fetch_river_geometry_bytes(quantized, huc4),
+        fetch_fn=lambda: _fetch_river_geometry_bytes(
+            quantized, huc4, waterway_classes
+        ),
     )
     assert result.uri is not None
     return LayerURI(
