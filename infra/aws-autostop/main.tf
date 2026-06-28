@@ -553,6 +553,155 @@ resource "aws_lambda_permission" "apigw_invoke_view_sign" {
   source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DEMO-TOKEN Lambda — POST /demo-token (reuses the wake API above).
+#
+# The "code-gate" public-demo sign-in. The web access-code surface POSTs a single
+# shared demo CODE; on a constant-time match this Lambda exchanges the (server-
+# held) demo user's password for a real Cognito token set and returns it, so the
+# browser signs in as the demo user WITHOUT the password ever reaching the client.
+#
+# DESIGN INVARIANTS (read before modifying):
+#
+#   1. CODE-GATE FIRST. The handler ssm:GetParameter's the stored access code,
+#      hmac.compare_digest's the submitted code, and on a MISMATCH returns 403
+#      with NO Cognito call. Only a correct code reaches AdminInitiateAuth. The
+#      code + password parameters are SecureStrings; their VALUES are set
+#      out-of-band by NATE at cutover (NOT created in Terraform) and referenced
+#      here by name only.
+#
+#   2. LEAST PRIVILEGE. The role can cognito-idp:AdminInitiateAuth on THIS pool
+#      ARN, ssm:GetParameter on arn .../parameter/grace2/demo-* ONLY (+
+#      kms:Decrypt for the aws/ssm-managed SecureString CMK), and CloudWatch logs
+#      on its own group — nothing else (no S3, no DynamoDB, no EC2).
+#
+#   3. NO THIRD-PARTY DEPS. Unlike the view-signer (PyJWT + requests), this
+#      handler is boto3-only, so the archive is a direct zip of the source dir —
+#      no null_resource pip-install step.
+# ─────────────────────────────────────────────────────────────────────────────
+
+locals {
+  demo_token_src_dir = "${path.module}/lambda/demo_token"
+}
+
+data "archive_file" "demo_token" {
+  type        = "zip"
+  source_dir  = local.demo_token_src_dir
+  output_path = "${path.module}/build/demo_token.zip"
+  # Exclude the bytecode cache so the artifact hash is stable across machines.
+  excludes = ["__pycache__", "tests"]
+}
+
+resource "aws_iam_role" "demo_token" {
+  name = "${local.name_prefix}-demo-token-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "demo_token" {
+  name = "${local.name_prefix}-demo-token"
+  role = aws_iam_role.demo_token.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # The token exchange: AdminInitiateAuth (ADMIN_USER_PASSWORD_AUTH) on the
+        # one demo pool. Scoped to the pool ARN — no other Cognito action.
+        Sid      = "DemoInitiateAuth"
+        Effect   = "Allow"
+        Action   = ["cognito-idp:AdminInitiateAuth"]
+        Resource = "arn:aws:cognito-idp:${var.region}:${var.account_id}:userpool/${var.cognito_user_pool_id}"
+      },
+      {
+        # Read the access code + demo password SecureStrings — scoped to the
+        # /grace2/demo-* prefix ONLY. Their values are set by NATE at cutover.
+        Sid      = "ReadDemoSecrets"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = "arn:aws:ssm:${var.region}:${var.account_id}:parameter/grace2/demo-*"
+      },
+      {
+        # Decrypt the SecureString values. The SSM-managed key (alias/aws/ssm)
+        # is the default for SecureString; scope to it via the kms:ViaService
+        # condition so this Lambda can only use the key THROUGH SSM.
+        Sid      = "DecryptDemoSecrets"
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.${var.region}.amazonaws.com"
+          }
+        }
+      },
+      {
+        Sid      = "Logs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/lambda/${local.name_prefix}-demo-token:*"
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "demo_token" {
+  name              = "/aws/lambda/${local.name_prefix}-demo-token"
+  retention_in_days = var.lambda_log_retention_days
+}
+
+resource "aws_lambda_function" "demo_token" {
+  function_name    = "${local.name_prefix}-demo-token"
+  role             = aws_iam_role.demo_token.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.demo_token.output_path
+  source_code_hash = data.archive_file.demo_token.output_base64sha256
+  # Two SSM gets + one AdminInitiateAuth; small headroom.
+  timeout     = 15
+  memory_size = 256
+
+  environment {
+    variables = {
+      COGNITO_USER_POOL_ID     = var.cognito_user_pool_id
+      GRACE2_COGNITO_CLIENT_ID = var.cognito_client_id
+      DEMO_USERNAME            = "grace2-demo@example.com"
+      SSM_CODE_PARAM           = "/grace2/demo-access-code"
+      SSM_PW_PARAM             = "/grace2/demo-user-password"
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.demo_token]
+}
+
+resource "aws_apigatewayv2_integration" "demo_token" {
+  api_id                 = aws_apigatewayv2_api.wake.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.demo_token.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "demo_token" {
+  api_id    = aws_apigatewayv2_api.wake.id
+  route_key = "POST /demo-token"
+  target    = "integrations/${aws_apigatewayv2_integration.demo_token.id}"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_demo_token" {
+  statement_id  = "AllowAPIGatewayInvokeDemoToken"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.demo_token.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
+}
+
 # --------------------------------------------------------------------------- #
 # CASE-LIST Lambda -- GET /case-list (reuses the wake API above).
 #
