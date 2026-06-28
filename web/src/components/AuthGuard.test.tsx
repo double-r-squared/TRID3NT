@@ -16,7 +16,14 @@
 // from `../auth`, so mocking that module drives the hook deterministically.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, act, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  act,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import type { AuthUser } from "../auth";
 
 // ── Mock the auth module. The mock holds a single subscriber + a current
@@ -25,6 +32,7 @@ let currentUser: AuthUser | null = null;
 let authSubscriber: ((u: AuthUser | null) => void) | null = null;
 const signInMock = vi.fn<() => Promise<void>>();
 const signOutMock = vi.fn<() => Promise<void>>();
+const signInWithAccessCodeMock = vi.fn<(code: string) => Promise<void>>();
 
 vi.mock("../auth", () => ({
   // useAuth reads status synchronously after each onAuthChanged callback.
@@ -43,6 +51,8 @@ vi.mock("../auth", () => ({
   // intent fired.
   signIn: () => signInMock(),
   signOut: () => signOutMock(),
+  // Code-gate (JUDGE-visible) access-code sign-in.
+  signInWithAccessCode: (code: string) => signInWithAccessCodeMock(code),
 }));
 
 // Drives both isFirebaseConfigured() (via the mock) and is passed explicitly
@@ -85,6 +95,10 @@ beforeEach(() => {
   signInMock.mockResolvedValue(undefined);
   signOutMock.mockReset();
   signOutMock.mockResolvedValue(undefined);
+  signInWithAccessCodeMock.mockReset();
+  signInWithAccessCodeMock.mockResolvedValue(undefined);
+  // Reset the URL query string (the ?admin escape-hatch reads it).
+  window.history.replaceState({}, "", "/");
 });
 
 afterEach(() => {
@@ -135,7 +149,7 @@ describe("AuthGuard — MODE 1: Firebase disabled (pass-through)", () => {
 // ──────────────────────── MODE 2: enabled + signed-out ──────────────────── //
 
 describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)", () => {
-  it("renders the minimal Cognito sign-in surface; children NOT rendered", () => {
+  it("renders the code-entry surface (JUDGE-visible default); children NOT rendered", () => {
     mockConfigured = true;
     currentUser = null;
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
@@ -143,9 +157,13 @@ describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)"
     expect(screen.getByTestId("grace2-auth-guard-wordmark")).toHaveTextContent(
       "TRID3NT",
     );
-    const signInBtn = screen.getByTestId("grace2-auth-guard-signin-btn");
-    expect(signInBtn).toBeInTheDocument();
-    expect(signInBtn).toHaveTextContent(/sign in/i);
+    // The default surface is the access-code form, NOT the Hosted-UI button.
+    const codeInput = screen.getByTestId("grace2-code-input");
+    expect(codeInput).toBeInTheDocument();
+    expect(codeInput).toHaveAttribute("type", "password");
+    expect(screen.getByTestId("grace2-code-submit")).toBeInTheDocument();
+    // No Hosted-UI sign-in button on the default (non-admin) surface.
+    expect(screen.queryByTestId("grace2-auth-guard-signin-btn")).toBeNull();
     expect(screen.getByTestId("grace2-auth-guard-privacy")).toHaveAttribute(
       "href",
       "/privacy",
@@ -170,11 +188,49 @@ describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)"
     expect(screen.queryByTestId("app-children")).toBeNull();
   });
 
-  it("clicking 'Sign in / Sign up' invokes the auth signIn helper (Hosted UI redirect)", () => {
+  it("typing a code + submit invokes signInWithAccessCode with the entered code", async () => {
     mockConfigured = true;
     currentUser = null;
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
-    fireEvent.click(screen.getByTestId("grace2-auth-guard-signin-btn"));
+    fireEvent.change(screen.getByTestId("grace2-code-input"), {
+      target: { value: "let-me-in" },
+    });
+    fireEvent.click(screen.getByTestId("grace2-code-submit"));
+    await waitFor(() => {
+      expect(signInWithAccessCodeMock).toHaveBeenCalledWith("let-me-in");
+    });
+    // The Hosted-UI redirect helper is NOT used on the code path.
+    expect(signInMock).not.toHaveBeenCalled();
+  });
+
+  it("a rejected code shows an inline error and does NOT mount children", async () => {
+    mockConfigured = true;
+    currentUser = null;
+    signInWithAccessCodeMock.mockRejectedValueOnce(new Error("Invalid code"));
+    render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
+    fireEvent.change(screen.getByTestId("grace2-code-input"), {
+      target: { value: "nope" },
+    });
+    fireEvent.click(screen.getByTestId("grace2-code-submit"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("grace2-auth-guard-error"),
+      ).toHaveTextContent(/invalid code/i);
+    });
+    expect(screen.queryByTestId("app-children")).toBeNull();
+  });
+
+  it("?admin renders the ORIGINAL Hosted-UI sign-in button (NATE admin login), not the code form", () => {
+    mockConfigured = true;
+    currentUser = null;
+    window.history.replaceState({}, "", "/app?admin=1");
+    render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
+    const signInBtn = screen.getByTestId("grace2-auth-guard-signin-btn");
+    expect(signInBtn).toBeInTheDocument();
+    expect(signInBtn).toHaveTextContent(/sign in/i);
+    // The code form is suppressed in admin mode.
+    expect(screen.queryByTestId("grace2-code-input")).toBeNull();
+    fireEvent.click(signInBtn);
     expect(signInMock).toHaveBeenCalledOnce();
   });
 

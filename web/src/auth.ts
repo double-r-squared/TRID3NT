@@ -591,6 +591,92 @@ export async function handleRedirectCallback(): Promise<AuthUser | null> {
   }
 }
 
+/**
+ * Resolve the demo-token (code-gate) endpoint URL, or null when unconfigured.
+ *
+ * Precedence (mirrors the wake-api base precedence in lib/case_list.ts):
+ *   1. `VITE_GRACE2_DEMO_TOKEN_URL` -- an explicit full URL to the demo-token
+ *      Lambda / API-Gateway route (e.g.
+ *      "https://abc123.execute-api.us-west-2.amazonaws.com/demo-token").
+ *      Used verbatim (trailing slashes trimmed). This is the production path:
+ *      the autostop API-Gateway is a SEPARATE origin from the CloudFront edge,
+ *      so it must be supplied explicitly.
+ *   2. `VITE_GRACE2_PUBLIC_BASE` + "/demo-token" -- a convenience for a future
+ *      world where the route is folded behind the same edge as the agent.
+ *   3. null -- nothing configured (the code-entry submit then fails closed with
+ *      the generic "Invalid code" error, no oracle).
+ */
+function demoTokenUrl(): string | null {
+  const explicit =
+    (import.meta.env.VITE_GRACE2_DEMO_TOKEN_URL as string | undefined) ?? null;
+  if (explicit != null && explicit.trim() !== "") {
+    return explicit.trim().replace(/\/+$/, "");
+  }
+  const base =
+    (import.meta.env.VITE_GRACE2_PUBLIC_BASE as string | undefined) ?? null;
+  const normalized = base == null || base.trim() === "" ? null : base.trim();
+  if (normalized) {
+    const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)
+      ? normalized
+      : `https://${normalized}`;
+    return `${withScheme.replace(/\/+$/, "")}/demo-token`;
+  }
+  return null;
+}
+
+/**
+ * Code-gate sign-in (JUDGE-visible access-code path). POSTs the entered access
+ * code to the demo-token endpoint, which returns a Cognito token set minted for
+ * the shared demo identity. On success the session is established CLIENT-SIDE
+ * exactly as the OAuth /callback exchange does (handleRedirectCallback) -- the
+ * init-settle fields are stamped BEFORE setSession so any concurrent
+ * `await initAuth()` subscriber settles against this signed-in identity instead
+ * of re-running the restore (it can never observe a pre-session null user), and
+ * setSession writes SS_TOKENS + the durable LS_REFRESH mirror + fires
+ * onAuthChanged (which flips the AuthGuard to MODE 3 -> children mount).
+ *
+ * On ANY failure (unconfigured endpoint, non-200, network error, missing
+ * id_token) this throws a GENERIC `Error("Invalid code")` -- deliberately no
+ * oracle that distinguishes a wrong code from a server/transport fault.
+ */
+export async function signInWithAccessCode(code: string): Promise<void> {
+  const endpoint = demoTokenUrl();
+  if (!endpoint) throw new Error("Invalid code");
+
+  let data: {
+    id_token?: string;
+    access_token?: string;
+    refresh_token?: string;
+  };
+  try {
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!resp.ok) throw new Error("Invalid code");
+    data = (await resp.json()) as typeof data;
+  } catch {
+    // Generic — never leak whether the code was wrong vs the transport failed.
+    throw new Error("Invalid code");
+  }
+
+  if (!data.id_token) throw new Error("Invalid code");
+
+  const tokens: TokenSet = {
+    idToken: data.id_token,
+    accessToken: data.access_token ?? null,
+    refreshToken: data.refresh_token ?? null,
+    expiresAt: expiresAtFromIdToken(data.id_token),
+  };
+  // Stamp the init-settle fields EXACTLY as handleRedirectCallback does, BEFORE
+  // setSession, so the session is fully established synchronously here.
+  initialized = true;
+  initPromise = Promise.resolve();
+  cachedInitStatus = "ready";
+  setSession(tokens);
+}
+
 /** Mint a fresh token set via the refresh_token grant. Returns null on failure. */
 async function refreshTokens(refreshToken: string): Promise<TokenSet | null> {
   const c = readConfig();

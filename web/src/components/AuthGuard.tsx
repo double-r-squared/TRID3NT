@@ -39,7 +39,7 @@
 
 import { useCallback, useState, type ReactNode } from "react";
 import { useAuth } from "../hooks/useAuth";
-import { isFirebaseConfigured } from "../auth";
+import { isFirebaseConfigured, signInWithAccessCode } from "../auth";
 
 export interface AuthGuardProps {
   /** The app tree to render once auth allows it (or always, when disabled). */
@@ -123,6 +123,28 @@ const googleButtonStyle: React.CSSProperties = {
   lineHeight: 1.2,
 };
 
+const codeFormStyle: React.CSSProperties = {
+  width: "100%",
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+};
+
+const codeInputStyle: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "12px 14px",
+  borderRadius: 8,
+  fontSize: 15,
+  fontFamily: SANS,
+  letterSpacing: "0.18em",
+  textAlign: "center",
+  border: "1px solid #2a3240",
+  background: "rgba(11,16,24,0.9)",
+  color: "#e8eaf0",
+  outline: "none",
+};
+
 const expiredNoteStyle: React.CSSProperties = {
   color: "#f0b24a",
   fontSize: 12.5,
@@ -161,9 +183,25 @@ export function AuthGuard({
   const { user, resolved, signIn } = useAuth();
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  // Code-gate (JUDGE-visible) entry state. These hooks live INSIDE AuthGuard,
+  // whose own early returns (MODE 1 / pending / MODE 2) are consistent across
+  // renders, so adding hooks here is SAFE (unlike a hook below App.tsx's auth
+  // early-return, which would trip React #310 and blank the authed app).
+  const [code, setCode] = useState<string>("");
 
   const configured =
     forceConfigured !== undefined ? forceConfigured : isFirebaseConfigured();
+
+  // ADMIN ESCAPE HATCH: ?admin in the query string surfaces the ORIGINAL
+  // Cognito Hosted-UI sign-in button instead of the code form, so
+  // https://trid3nt.vercel.app/app?admin=1 reaches NATE's admin login.
+  const adminMode = (() => {
+    try {
+      return new URLSearchParams(window.location.search).has("admin");
+    } catch {
+      return false;
+    }
+  })();
 
   const handleSignIn = useCallback(async (): Promise<void> => {
     setBusy(true);
@@ -179,6 +217,22 @@ export function AuthGuard({
       setBusy(false);
     }
   }, [signIn]);
+
+  const handleCodeSubmit = useCallback(async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // POSTs the access code to the demo-token endpoint; on success setSession
+      // fires onAuthChanged -> useAuth flips `user` non-null -> MODE 3 mounts
+      // children. No browser redirect (unlike the Hosted-UI path).
+      await signInWithAccessCode(code);
+    } catch (e) {
+      setError((e as Error).message || "Invalid code");
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, code]);
 
   // ── MODE 1: Firebase disabled. Transparent pass-through (load-bearing). ──
   // No wrapper element, no extra DOM — the children render exactly as if the
@@ -223,19 +277,59 @@ export function AuthGuard({
             </p>
           )}
 
-          <button
-            data-testid="grace2-auth-guard-signin-btn"
-            disabled={busy}
-            onClick={() => void handleSignIn()}
-            style={{
-              ...googleButtonStyle,
-              opacity: busy ? 0.55 : 1,
-              cursor: busy ? "not-allowed" : "pointer",
-            }}
-            aria-label="Sign in or sign up"
-          >
-            Sign in / Sign up
-          </button>
+          {adminMode ? (
+            // ── ADMIN: original Cognito Hosted-UI sign-in (NATE's login). ──
+            <button
+              data-testid="grace2-auth-guard-signin-btn"
+              disabled={busy}
+              onClick={() => void handleSignIn()}
+              style={{
+                ...googleButtonStyle,
+                opacity: busy ? 0.55 : 1,
+                cursor: busy ? "not-allowed" : "pointer",
+              }}
+              aria-label="Sign in or sign up"
+            >
+              Sign in / Sign up
+            </button>
+          ) : (
+            // ── JUDGE-visible: access-code entry form (the default surface). ──
+            <form
+              data-testid="grace2-code-form"
+              style={codeFormStyle}
+              onSubmit={(e) => {
+                e.preventDefault();
+                void handleCodeSubmit();
+              }}
+            >
+              <input
+                data-testid="grace2-code-input"
+                type="password"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                autoComplete="off"
+                value={code}
+                disabled={busy}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Access code"
+                aria-label="Access code"
+                style={codeInputStyle}
+              />
+              <button
+                data-testid="grace2-code-submit"
+                type="submit"
+                disabled={busy}
+                style={{
+                  ...googleButtonStyle,
+                  opacity: busy ? 0.55 : 1,
+                  cursor: busy ? "not-allowed" : "pointer",
+                }}
+                aria-label="Enter"
+              >
+                Enter
+              </button>
+            </form>
+          )}
 
           {error && (
             <p data-testid="grace2-auth-guard-error" role="alert" style={errorStyle}>
