@@ -350,6 +350,12 @@ from . import fetch_chirps_precipitation  # noqa: F401
 from . import fetch_ghsl_population  # noqa: F401
 from . import fetch_jrc_global_surface_water  # noqa: F401
 from . import fetch_soilgrids  # noqa: F401
+from . import fetch_epa_ejscreen  # noqa: F401
+from . import fetch_tsunami_events  # noqa: F401
+from . import fetch_climate_normals  # noqa: F401
+from . import fetch_noaa_coops_currents  # noqa: F401
+from . import fetch_airnow_air_quality  # noqa: F401
+from . import fetch_openaq_measurements  # noqa: F401
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged

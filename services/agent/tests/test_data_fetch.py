@@ -2338,7 +2338,7 @@ def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
     monkeypatch.setattr(
         data_fetch,
         "_fetch_osm_waterway_geometry_bytes",
-        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
+        lambda bbox, *a, **kw: b"FAKE_FLATGEOBUF_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -2377,7 +2377,7 @@ def test_fetch_river_geometry_cache_key_distinct_per_bbox(monkeypatch):
     monkeypatch.setattr(
         data_fetch,
         "_fetch_osm_waterway_geometry_bytes",
-        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
+        lambda bbox, *a, **kw: b"FAKE_FLATGEOBUF_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -2413,7 +2413,7 @@ def test_fetch_river_geometry_works_outside_huc4_envelope_via_osm(monkeypatch):
     monkeypatch.setattr(
         data_fetch,
         "_fetch_osm_waterway_geometry_bytes",
-        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
+        lambda bbox, *a, **kw: b"FAKE_FLATGEOBUF_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -2563,7 +2563,7 @@ def test_fetch_river_geometry_falls_back_to_nhdplus_when_osm_fails(monkeypatch):
 
     calls = []
 
-    def _osm_boom(bbox):
+    def _osm_boom(bbox, *a, **kw):
         calls.append("osm")
         raise UpstreamAPIError("simulated Overpass outage")
 
@@ -2598,7 +2598,7 @@ def test_fetch_river_geometry_typed_error_when_all_sources_fail(monkeypatch):
     fake_storage = FakeStorageClient()
     from grace2_agent.tools import cache as cache_mod
 
-    def _osm_boom(bbox):
+    def _osm_boom(bbox, *a, **kw):
         raise UpstreamAPIError("simulated Overpass outage")
 
     def _nhd_boom(bbox, huc4):
@@ -2620,7 +2620,7 @@ def test_fetch_river_geometry_typed_error_when_all_sources_fail(monkeypatch):
 
 def test_fetch_river_geometry_osm_only_when_no_huc4_and_osm_fails(monkeypatch):
     """OSM fails AND no HUC4 fallback available → typed UpstreamAPIError (no dead-end)."""
-    def _osm_boom(bbox):
+    def _osm_boom(bbox, *a, **kw):
         raise UpstreamAPIError("simulated Overpass outage")
 
     monkeypatch.setattr(data_fetch, "_fetch_osm_waterway_geometry_bytes", _osm_boom)
@@ -2630,6 +2630,237 @@ def test_fetch_river_geometry_osm_only_when_no_huc4_and_osm_fails(monkeypatch):
         data_fetch._fetch_river_geometry_bytes(
             data_fetch.round_bbox_to_resolution(KANSAS_BBOX, 10), None
         )
+
+
+# ---------------------------------------------------------------------------
+# waterway_type upgrade — selectable OSM waterway classes (ditch/drain widen).
+# Drained-agriculture landscapes (Imperial Valley, the Fens) are dominated by
+# artificial ditch/drain channels that the default river/stream/canal set
+# excludes; waterway_type opts them in. PROTOTYPED live over the Imperial
+# Valley + Lincolnshire Fens bboxes (default returned 1 river; +ditch+drain
+# surfaced 5 drains + 2 ditches) — these tests mock Overpass to stay hermetic.
+# ---------------------------------------------------------------------------
+
+
+# Imperial Valley, CA — heavily drained agriculture (dense canal + ditch/drain
+# network). Outside every v0.1 HUC4 envelope, so the OSM-primary path is used.
+IMPERIAL_VALLEY_BBOX = (-115.58, 32.78, -115.52, 32.84)
+
+
+def test_resolve_waterway_classes_default_and_aliases():
+    """waterway_type resolver: None -> default; aliases + tokens normalize."""
+    # None / empty / whitespace -> the default river/stream/canal tuple.
+    assert data_fetch._resolve_waterway_classes(None) == ("river", "stream", "canal")
+    assert data_fetch._resolve_waterway_classes("") == ("river", "stream", "canal")
+    assert data_fetch._resolve_waterway_classes("   ") == ("river", "stream", "canal")
+    # Convenience aliases.
+    assert data_fetch._resolve_waterway_classes("all") == (
+        "river",
+        "stream",
+        "canal",
+        "ditch",
+        "drain",
+    )
+    assert data_fetch._resolve_waterway_classes("drainage") == ("ditch", "drain")
+    assert data_fetch._resolve_waterway_classes("ditches") == ("ditch", "drain")
+    # Single value, case/space-insensitive.
+    assert data_fetch._resolve_waterway_classes("  Ditch ") == ("ditch",)
+    # Comma- and plus-joined strings.
+    assert data_fetch._resolve_waterway_classes("ditch,drain") == ("ditch", "drain")
+    assert data_fetch._resolve_waterway_classes("river+ditch") == ("river", "ditch")
+    # List form, with order-preserving de-duplication.
+    assert data_fetch._resolve_waterway_classes(
+        ["ditch", "drain", "ditch"]
+    ) == ("ditch", "drain")
+
+
+def test_resolve_waterway_classes_rejects_unknown_tokens():
+    """Unknown waterway tokens raise BboxInvalidError (closed vocabulary).
+
+    A closed vocabulary is what keeps an LLM-invented value from injecting
+    arbitrary text into the Overpass ``~"^(...)$"`` regex.
+    """
+    with pytest.raises(BboxInvalidError):
+        data_fetch._resolve_waterway_classes("sewer")
+    with pytest.raises(BboxInvalidError):
+        data_fetch._resolve_waterway_classes("river,sewer")
+    with pytest.raises(BboxInvalidError):
+        data_fetch._resolve_waterway_classes(["ditch", 5])  # type: ignore[list-item]
+    with pytest.raises(BboxInvalidError):
+        data_fetch._resolve_waterway_classes(42)  # type: ignore[arg-type]
+
+
+def test_build_overpass_waterway_ql_threads_selected_classes():
+    """The resolved classes flow into the Overpass QL regex alternation."""
+    bbox = IMPERIAL_VALLEY_BBOX
+    ql_default = data_fetch._build_overpass_waterway_ql(
+        bbox, data_fetch._WATERWAY_CLASSES
+    )
+    assert 'waterway"~"^(river|stream|canal)$"' in ql_default
+    assert "ditch" not in ql_default
+
+    ql_drainage = data_fetch._build_overpass_waterway_ql(
+        bbox, data_fetch._resolve_waterway_classes("drainage")
+    )
+    assert 'waterway"~"^(ditch|drain)$"' in ql_drainage
+
+    ql_all = data_fetch._build_overpass_waterway_ql(
+        bbox, data_fetch._resolve_waterway_classes("all")
+    )
+    assert "ditch|drain" in ql_all and "river|stream|canal" in ql_all
+
+
+def test_fetch_osm_waterway_threads_ditch_classes_into_query(monkeypatch):
+    """End-to-end OSM path with waterway_type='drainage' surfaces ditch/drain.
+
+    Mocks Overpass with a synthetic drained-ag response (a canal that the
+    default query would catch PLUS a ditch + drain only the widened query
+    asks for). Asserts (a) the POSTed QL carries the ditch|drain regex, and
+    (b) the decoded FlatGeobuf contains the ditch/drain features, proving the
+    selected classes flow all the way through to the serialized layer.
+    """
+    import geopandas as gpd
+
+    captured = {}
+
+    def _fake_post(url, data=None, headers=None, timeout=None, **_kw):
+        captured["ql"] = (data or {}).get("data")
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self_inner):
+                min_lon, min_lat, max_lon, max_lat = IMPERIAL_VALLEY_BBOX
+                mid_lat = 0.5 * (min_lat + max_lat)
+                return {
+                    "elements": [
+                        {
+                            "type": "way",
+                            "id": 2001,
+                            "tags": {"waterway": "ditch", "name": "Field Ditch"},
+                            "geometry": [
+                                {"lat": mid_lat, "lon": min_lon + 0.005},
+                                {"lat": mid_lat, "lon": max_lon - 0.005},
+                            ],
+                        },
+                        {
+                            "type": "way",
+                            "id": 2002,
+                            "tags": {"waterway": "drain", "name": "Tile Drain"},
+                            "geometry": [
+                                {"lat": min_lat + 0.01, "lon": min_lon + 0.01},
+                                {"lat": max_lat - 0.01, "lon": min_lon + 0.01},
+                            ],
+                        },
+                    ]
+                }
+
+        return _Resp()
+
+    monkeypatch.setattr(data_fetch.requests, "post", _fake_post)
+
+    quantized = data_fetch.round_bbox_to_resolution(IMPERIAL_VALLEY_BBOX, 10)
+    classes = data_fetch._resolve_waterway_classes("drainage")
+    fgb_bytes = data_fetch._fetch_osm_waterway_geometry_bytes(quantized, classes)
+    assert isinstance(fgb_bytes, bytes) and len(fgb_bytes) > 0
+
+    # The widened classes reached the Overpass QL regex (NOT the default set).
+    assert "ditch|drain" in captured["ql"]
+    assert "river|stream|canal" not in captured["ql"]
+
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        f.write(fgb_bytes)
+        fgb_path = f.name
+    try:
+        gdf = gpd.read_file(fgb_path)
+    finally:
+        os.unlink(fgb_path)
+
+    assert len(gdf) >= 2
+    waterway_vals = set(gdf["waterway"].tolist())
+    assert "ditch" in waterway_vals
+    assert "drain" in waterway_vals
+
+
+def test_fetch_river_geometry_waterway_type_distinct_cache_key(monkeypatch):
+    """Distinct waterway_type -> distinct cache key; default stays unchanged.
+
+    The default waterway_type (None) must NOT fold a waterway_classes field
+    into the cache key (backward-compatible artifacts), while a non-default
+    set MUST produce a distinct key so it can't alias the default artifact.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    seen_classes = []
+
+    def _fake_osm(bbox, waterway_classes=data_fetch._WATERWAY_CLASSES):
+        seen_classes.append(tuple(waterway_classes))
+        return b"FAKE_FLATGEOBUF_BYTES"
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_waterway_geometry_bytes", _fake_osm)
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    default_layer = fetch_river_geometry(IMPERIAL_VALLEY_BBOX)
+    drainage_layer = fetch_river_geometry(
+        IMPERIAL_VALLEY_BBOX, waterway_type="drainage"
+    )
+    all_layer = fetch_river_geometry(IMPERIAL_VALLEY_BBOX, waterway_type="all")
+
+    # Same bbox, three class sets -> three distinct cache keys.
+    assert default_layer.uri != drainage_layer.uri
+    assert default_layer.uri != all_layer.uri
+    assert drainage_layer.uri != all_layer.uri
+
+    # The default call passed the river/stream/canal set, while the widened
+    # calls passed the ditch-bearing sets.
+    assert seen_classes[0] == ("river", "stream", "canal")
+    assert seen_classes[1] == ("ditch", "drain")
+    assert seen_classes[2] == ("river", "stream", "canal", "ditch", "drain")
+
+
+def test_fetch_river_geometry_default_cache_key_unchanged_by_upgrade(monkeypatch):
+    """Backward compat: waterway_type=None and the OLD no-arg call share a key.
+
+    The upgrade must not change the cache path of existing default callers, so
+    a None waterway_type must hash identically to omitting the param entirely.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_osm_waterway_geometry_bytes",
+        lambda bbox, *a, **kw: b"FAKE_FLATGEOBUF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    no_arg = fetch_river_geometry(FORT_MYERS_BBOX)
+    explicit_none = fetch_river_geometry(FORT_MYERS_BBOX, waterway_type=None)
+    assert no_arg.uri == explicit_none.uri
+
+
+def test_fetch_river_geometry_rejects_unknown_waterway_type():
+    """Unknown waterway_type at the public boundary -> BboxInvalidError."""
+    with pytest.raises(BboxInvalidError):
+        fetch_river_geometry(FORT_MYERS_BBOX, waterway_type="sewer")
 
 
 # ---------------------------------------------------------------------------

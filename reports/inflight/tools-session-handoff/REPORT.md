@@ -7,7 +7,7 @@
 ---
 
 ## TL;DR
-This session added **~29 new tools + 1 tool upgrade** (registry **129 -> 158**, with ~6 more landing from batch 5), proved a **coalesced QGIS Processing worker**, and produced **2 worker escalations**. Everything is additive on branch `tools-work` (pushed). To integrate: **(1) merge `tools-work` -> main, (2) deploy the agent, (3) wire the 5 seams in section 3** (none blocking — the tools degrade gracefully without them). Full agent suite is green except 3 pre-existing `swmm-api` failures that are NOT from this work.
+This session added **~29 new tools + 1 tool upgrade** (registry **129 -> 164**, batch 5 included), proved a **coalesced QGIS Processing worker**, and produced **2 worker escalations**. Everything is additive on branch `tools-work` (pushed). To integrate: **(1) merge `tools-work` -> main, (2) deploy the agent, (3) wire the 5 seams in section 3** (none blocking — the tools degrade gracefully without them). Full agent suite is green except 3 pre-existing `swmm-api` failures that are NOT from this work.
 
 ---
 
@@ -24,7 +24,7 @@ All built **local-first vs the REAL source** + **real S3 read_through round-trip
 - **a+b+c** (`2404603`): `digitize_water_body` (Sentinel-2 NDWI water polygons), `fetch_usgs_earthquakes`, `fetch_hifld_critical_infrastructure`, `fetch_cdc_svi`, `fetch_sentinel2_truecolor`, `compute_home_range_kde`, `compute_movement_trajectory`; **UPGRADE** `fetch_usace_dams` (authoritative NID behind the SSM secret-loader, ESRI mirror fallback, hazard/state filters activated).
 - **fetchers2** (`abcc408`): `fetch_epa_frs_facilities`, `fetch_us_drought_monitor`, `fetch_overpass_pois`, `fetch_census_acs`, `fetch_landsat_imagery`, `fetch_noaa_sst`, `fetch_openfema_disasters`, `fetch_esri_landcover_10m`.
 - **batch3+4** (`a82e021`, `c93bdfa`): `fetch_usgs_volcano_alerts`, `fetch_usgs_water_quality`, `fetch_usgs_groundwater_levels`, `fetch_snotel_snow`, `fetch_sentinel1_sar`, `fetch_modis_lst`, `fetch_hifld_transmission_lines`, `fetch_lehd_jobs`, `fetch_nws_river_forecast`, `fetch_copernicus_dem`, `fetch_chirps_precipitation`, `fetch_ghsl_population`, `fetch_jrc_global_surface_water`, `fetch_soilgrids`.
-- **batch5** (IN FLIGHT — will land on this branch): EXTEND `fetch_storm_events_db` (+bbox/date filters), EXTEND `fetch_river_geometry` (+waterway_type); new `fetch_epa_ejscreen`, `fetch_tsunami_events`, `fetch_climate_normals`, `fetch_noaa_coops_currents`, `fetch_airnow_air_quality` (secret), `fetch_openaq_measurements` (secret). **Check the PROJECT_LOG tail for the final landed/blocked status.**
+- **batch5** (LANDED): EXTEND `fetch_storm_events_db` (+bbox/date filters), EXTEND `fetch_river_geometry` (+waterway_type); new `fetch_epa_ejscreen`, `fetch_tsunami_events`, `fetch_climate_normals`, `fetch_noaa_coops_currents`, `fetch_airnow_air_quality` (secret), `fetch_openaq_measurements` (secret). **Check the PROJECT_LOG tail for the final landed/blocked status.**
 
 **Demo tie-ins worth noting:** `fetch_usgs_water_quality` + `fetch_usgs_groundwater_levels` + `fetch_epa_frs_facilities` ground-truth + add exposure to the MODFLOW-GWT contamination-plume demo; `fetch_sentinel1_sar` + `fetch_jrc_global_surface_water` + `digitize_water_body` form a flood/water-mapping spine; `fetch_copernicus_dem` + `fetch_ghsl_population` + `fetch_soilgrids` + `fetch_chirps_precipitation` give global (non-CONUS) coverage.
 
