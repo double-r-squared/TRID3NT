@@ -1408,6 +1408,30 @@ export function routeSessionState(
 ): void {
   adoptRootInto(cs, caseId);
   const s = getStream(cs, owningKey(cs, caseId));
+  // TOOL-CARD REPLAY ON RECONNECT/REFRESH (NATE 2026-06-28, task #208) — the
+  // resume session-state carries the same persisted ``chat_history`` a
+  // case-open does, but historically routeSessionState IGNORED it and only fed
+  // ``current_pipeline`` — so on a bare WS reconnect (or the dual-socket resume
+  // that wins the race on a hard refresh) the replayed tool/pipeline cards were
+  // never rebuilt and flickered out. Rebuild them here through the SAME helper
+  // + the SAME placeholder guard routeCaseOpen uses (~1760): replay ONLY into a
+  // cold EMPTY/placeholder stream so this fires exactly once after a
+  // refresh/reconnect and is a strict NO-OP on every subsequent session-state
+  // once the stream holds real content (session-state envelopes arrive on every
+  // layer/pipeline change — they must NOT re-replay or duplicate cards). This
+  // is captured BEFORE the pipelineReducer session-state feed below so the
+  // current_pipeline force-settle can't perturb the emptiness check; whichever
+  // of case-open / session-state populates first wins, the other no-ops.
+  const isPlaceholder =
+    s.messages.length === 0 &&
+    s.pipeline.live === null &&
+    s.pipeline.history.length === 0;
+  if (isPlaceholder) {
+    const chat = (p.chat_history ?? []) as CaseChatMessageWire[];
+    if (chat.length > 0) {
+      replayStreamFromChatHistory(s, chat);
+    }
+  }
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "session-state",
     payload: p,
