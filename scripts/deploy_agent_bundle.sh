@@ -75,7 +75,12 @@ if [ "${GRACE2_SKIP_COLD_CATALOG:-0}" != "1" ]; then
   AGENT_PY="${GRACE2_AGENT_PY:-$REPO_ROOT/services/agent/.venv/bin/python}"
   [ -x "$AGENT_PY" ] || AGENT_PY="$(command -v python3 || true)"
   CATALOG_JSON="$STAGE/tool-catalog.json"
-  if [ -n "$AGENT_PY" ] && PYTHONPATH="$STAGE${PYTHONPATH:+:$PYTHONPATH}" "$AGENT_PY" -c \
+  # Build from the REAL source tree (not the flat $STAGE) so run_modflow.py's
+  # ``Path(__file__).resolve().parents[5]`` worker-dir walk resolves -- the staged
+  # layout is too shallow (raises IndexError). The registry is identical in both,
+  # and the bundle is built from this same HEAD source, so this matches what ships.
+  CATALOG_PYPATH="$REPO_ROOT/services/agent/src:$REPO_ROOT/packages/contracts/src"
+  if [ -n "$AGENT_PY" ] && PYTHONPATH="$CATALOG_PYPATH${PYTHONPATH:+:$PYTHONPATH}" "$AGENT_PY" -c \
       'import json,sys; from grace2_agent.tool_catalog_http import build_catalog_payload; sys.stdout.write(json.dumps(build_catalog_payload(), separators=(",",":")))' \
       > "$CATALOG_JSON" 2>/dev/null && [ -s "$CATALOG_JSON" ]; then
     if aws s3 cp "$CATALOG_JSON" "s3://$WEB_BUCKET/$CATALOG_KEY" \
