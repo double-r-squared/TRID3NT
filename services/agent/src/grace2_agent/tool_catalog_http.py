@@ -1276,6 +1276,171 @@ async def build_telemetry_summary(
 
 
 # ---------------------------------------------------------------------------
+# Building click-to-enrich detail endpoint (NATE 2026-06-27).
+#
+# The building footprint inline GeoJSON now carries ID-only props (osm_id /
+# osm_type / a composite fid). The full tag bag (building / height / levels /
+# name / addr:*) is persisted in a per-AOI sidecar next to the .fgb
+# (cache/static-30d/buildings/<key>.tags.json) keyed by fid. This endpoint reads
+# that sidecar for a clicked (osm_type, osm_id); if no sidecar carries the fid it
+# falls back to a LIVE Overpass-by-id query. Non-blocking: S3 + Overpass run via
+# asyncio.to_thread so the agent's WS heartbeat is never starved.
+# ---------------------------------------------------------------------------
+
+
+class _BuildingDetailNotFound(Exception):
+    """No tag bag found for the requested building (sidecar miss + live miss)."""
+
+
+class _BuildingDetailBadRequest(Exception):
+    """Malformed /api/building-detail request (missing/invalid osm_type|osm_id)."""
+
+
+def _building_fid(osm_type: str, osm_id: str) -> str:
+    """Mirror ``data_fetch._building_fid``: ``<first-letter-of-type><id>``."""
+    return f"{osm_type[:1]}{osm_id}"
+
+
+def _parse_building_detail_qs(query_string: str) -> tuple[str, str]:
+    """Parse + validate ``osm_type`` + ``osm_id`` from the raw query string.
+
+    Returns ``(osm_type, osm_id)`` with ``osm_type`` normalized to the OSM
+    element kind (``way`` / ``relation`` / ``node``) and ``osm_id`` a digit
+    string. Raises ``_BuildingDetailBadRequest`` on anything malformed (so the
+    handler emits a typed 400, never a fabricated success).
+    """
+    from urllib.parse import parse_qs
+
+    params = parse_qs(query_string, keep_blank_values=False)
+    osm_type_raw = (params.get("osm_type") or [""])[0].strip().lower()
+    osm_id_raw = (params.get("osm_id") or [""])[0].strip()
+    if osm_type_raw not in ("way", "relation", "node"):
+        raise _BuildingDetailBadRequest(
+            f"osm_type must be way|relation|node, got {osm_type_raw!r}"
+        )
+    if not osm_id_raw or not osm_id_raw.isdigit():
+        raise _BuildingDetailBadRequest(
+            f"osm_id must be a positive integer, got {osm_id_raw!r}"
+        )
+    return osm_type_raw, osm_id_raw
+
+
+def _read_tags_from_sidecars(fid: str) -> dict[str, Any] | None:
+    """Scan the buildings tag sidecars for ``fid`` -> its tag bag (or None).
+
+    SYNC (boto3); the caller wraps it in ``asyncio.to_thread``. The detail
+    request carries only ``(osm_type, osm_id)``, not the AOI bbox the sidecar
+    key is derived from, so we list the bounded ``buildings/`` sidecar prefix and
+    check each ``.tags.json`` for the fid. Best-effort: any S3 fault returns None
+    so the handler degrades to the live Overpass-by-id fallback.
+    """
+    try:
+        import boto3
+
+        from .tools.cache import CACHE_BUCKET, cache_path
+        from .tools.data_fetch import (
+            BUILDINGS_TAGS_SIDECAR_EXT,
+            _FETCH_BUILDINGS_METADATA,
+        )
+    except Exception:  # noqa: BLE001 — import wiring fault -> live fallback
+        logger.warning("building-detail: sidecar import wiring failed", exc_info=True)
+        return None
+
+    bucket = os.environ.get("GRACE2_CACHE_BUCKET") or CACHE_BUCKET
+    meta = _FETCH_BUILDINGS_METADATA
+    # Derive the buildings/<...> prefix from cache_path with a placeholder key.
+    sentinel = cache_path(
+        meta.source_class, meta.ttl_class, "KEY", BUILDINGS_TAGS_SIDECAR_EXT
+    )
+    prefix = sentinel.rsplit("KEY", 1)[0]  # cache/static-30d/buildings/
+    suffix = f".{BUILDINGS_TAGS_SIDECAR_EXT}"
+    try:
+        s3 = boto3.client(
+            "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+        )
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []) or []:
+                key = obj.get("Key", "")
+                if not key.endswith(suffix):
+                    continue
+                try:
+                    raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+                    data = json.loads(raw)
+                except Exception:  # noqa: BLE001 — skip an unreadable sidecar
+                    continue
+                if isinstance(data, dict):
+                    bag = data.get(fid)
+                    if isinstance(bag, dict):
+                        return bag
+    except Exception:  # noqa: BLE001 — S3 fault -> live fallback
+        logger.warning("building-detail: sidecar scan degraded", exc_info=True)
+        return None
+    return None
+
+
+def _read_tags_from_overpass(osm_type: str, osm_id: str) -> dict[str, Any] | None:
+    """Live Overpass-by-id fallback for one element -> its tag bag (or None).
+
+    SYNC (httpx); the caller wraps it in ``asyncio.to_thread``. Returns the OSM
+    ``tags`` dict for the element, or None when the element is unknown / has no
+    tags / Overpass is unreachable (the handler then emits a typed 404).
+    """
+    try:
+        import httpx
+    except Exception:  # noqa: BLE001
+        return None
+    ql = f"[out:json][timeout:25];{osm_type}({osm_id});out tags;"
+    try:
+        with httpx.Client(
+            timeout=30.0, headers={"User-Agent": "grace2-building-detail/1.0"}
+        ) as client:
+            resp = client.post(
+                "https://overpass-api.de/api/interpreter", data={"data": ql}
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception:  # noqa: BLE001 — Overpass unreachable / non-JSON
+        logger.warning("building-detail: live Overpass-by-id failed", exc_info=True)
+        return None
+    elements = payload.get("elements") if isinstance(payload, dict) else None
+    if not isinstance(elements, list):
+        return None
+    for el in elements:
+        if not isinstance(el, dict):
+            continue
+        tags = el.get("tags")
+        if isinstance(tags, dict) and tags:
+            return tags
+    return None
+
+
+async def _handle_building_detail(query_string: str) -> bytes:
+    """Resolve the JSON body for ``GET /api/building-detail``.
+
+    Returns the encoded ``{fid, tags:{...}}`` body on success. Raises
+    ``_BuildingDetailBadRequest`` (-> 400) on malformed input and
+    ``_BuildingDetailNotFound`` (-> 404) when neither the sidecar nor live
+    Overpass yields tags. Both the S3 sidecar scan and the live Overpass query
+    run off the event loop via ``asyncio.to_thread``.
+    """
+    osm_type, osm_id = _parse_building_detail_qs(query_string)
+    fid = _building_fid(osm_type, osm_id)
+
+    tags = await asyncio.to_thread(_read_tags_from_sidecars, fid)
+    if tags is None:
+        # Sidecar miss (cold box, evicted, or never written) -> live by-id.
+        tags = await asyncio.to_thread(_read_tags_from_overpass, osm_type, osm_id)
+    if tags is None:
+        raise _BuildingDetailNotFound(
+            f"no tags for {osm_type}/{osm_id} (sidecar + live Overpass both empty)"
+        )
+    return json.dumps(
+        {"fid": fid, "tags": tags}, separators=(",", ":")
+    ).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
 # HTTP server (asyncio, stdlib only)
 # ---------------------------------------------------------------------------
 
@@ -1418,6 +1583,39 @@ async def _handle_http(
             logger.exception("telemetry summary build failed")
             writer.write(
                 _format_response(500, b'{"error":"telemetry summary failed"}')
+            )
+    elif proxy_path == "/api/building-detail":
+        # Click-to-enrich (NATE 2026-06-27): the building footprint inline
+        # GeoJSON is now SLIM (id-only props). The popup fetches the full tag
+        # bag on demand by (osm_type, osm_id) here. Cold/box-off friendly + off
+        # the event loop (S3 + Overpass run via asyncio.to_thread).
+        try:
+            body = await _handle_building_detail(proxy_qs)
+            writer.write(_format_response(200, body))
+        except _BuildingDetailNotFound as exc:
+            writer.write(
+                _format_response(
+                    404,
+                    json.dumps(
+                        {"error": "building detail not found", "detail": str(exc)},
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                )
+            )
+        except _BuildingDetailBadRequest as exc:
+            writer.write(
+                _format_response(
+                    400,
+                    json.dumps(
+                        {"error": "bad request", "detail": str(exc)},
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("building-detail lookup failed")
+            writer.write(
+                _format_response(500, b'{"error":"building detail failed"}')
             )
     elif path == "/api/health":
         # Autostop liveness probe (agent-box auto-stop/wake infra). The idle

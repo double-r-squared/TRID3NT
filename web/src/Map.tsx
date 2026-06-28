@@ -58,8 +58,13 @@ import { AoiPickerCard } from "./components/AoiPickerCard";
 // so nothing here reaches deck.gl in the static module graph.
 import {
   shouldRouteToDeck,
+  isFootprintLayer,
   type DeckRoutableLayer,
 } from "./lib/deck_routing";
+// Click-to-enrich (NATE 2026-06-27): the footprint popup fetches its full tag
+// bag by (osm_type, osm_id) AFTER the slim id-only card paints. Footprint-only;
+// every non-footprint popup path is untouched.
+import { fetchBuildingDetail } from "./lib/building_enrich";
 // Lazily-loaded deck.gl module shapes (the dynamic-import targets). `import type`
 // is type-only (erased at build), so referencing these types does NOT pull deck.gl
 // into the main chunk - only the runtime `await import(...)` below does, lazily.
@@ -2425,6 +2430,10 @@ const HIDDEN_ATTR_KEYS: ReadonlySet<string> = new Set([
   "shape_area",
   "shape__length",
   "shape__area",
+  // Click-to-enrich (NATE 2026-06-27): the slim footprint join-keys are plumbing,
+  // not user-facing attributes - the full tags arrive via the enrich fetch.
+  "osm_id",
+  "osm_type",
 ]);
 
 /** Humanize a raw property key for display: `name_eng` -> "Name Eng", `iucn_cat` -> "Iucn Cat". */
@@ -2596,6 +2605,62 @@ export function buildFeaturePopupData(
   }
 
   return { title, subtitle, attributes, point };
+}
+
+/**
+ * Click-to-enrich (NATE 2026-06-27): merge a fetched OSM tag bag into an open
+ * FOOTPRINT popup's attributes. PURE + exported for unit testing.
+ *
+ * - Humanizes + de-noises each tag the same way buildFeaturePopupData does
+ *   (skips HIDDEN_ATTR_KEYS + null/empty values).
+ * - Does NOT duplicate a row already present (case-insensitive label match), so
+ *   re-merging is idempotent and a slim attr is not shown twice.
+ * - Promotes a real `name`/`addr:*`-derived title when the slim card's title was
+ *   only a geometry-kind / layer-name fallback (so "Polygon" becomes "Maison").
+ *
+ * Returns a NEW FeaturePopupData (never mutates the input).
+ */
+export function mergeTagsIntoAttributes(
+  data: FeaturePopupData,
+  tags: Record<string, unknown>,
+): FeaturePopupData {
+  const existingLabels = new Set(
+    data.attributes.map((a) => a.label.toLowerCase()),
+  );
+  const merged: FeatureAttribute[] = [...data.attributes];
+  // Pull a name out of the tags for a possible title promotion.
+  let tagName: string | undefined;
+  for (const k of Object.keys(tags)) {
+    if (NAME_KEYS.includes(k.toLowerCase())) {
+      const v = stringifyPropertyValue(tags[k]);
+      if (v) {
+        tagName = v;
+        break;
+      }
+    }
+  }
+  for (const key of Object.keys(tags)) {
+    const lk = key.toLowerCase();
+    if (HIDDEN_ATTR_KEYS.has(lk)) continue;
+    // The name became the title (when promoted) - don't also list it as a row.
+    if (tagName && NAME_KEYS.includes(lk)) continue;
+    const v = stringifyPropertyValue(tags[key]);
+    if (v === null) continue;
+    const label = humanizePropertyKey(key);
+    if (existingLabels.has(label.toLowerCase())) continue;
+    existingLabels.add(label.toLowerCase());
+    merged.push({ label, value: v });
+  }
+  // Promote the title only when the slim card had a non-name fallback title.
+  const fallbackTitles = new Set(["feature", "polygon", "point", "line"]);
+  let title = data.title;
+  if (
+    tagName &&
+    (fallbackTitles.has(data.title.toLowerCase()) || data.title === data.subtitle)
+  ) {
+    title = tagName;
+  }
+  return { ...data, title, attributes: merged };
 }
 
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
@@ -4636,6 +4701,64 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       return { width: 0, height: 0 };
     };
 
+    // Click-to-enrich (NATE 2026-06-27). For a FOOTPRINT layer that carries only
+    // id-only props (slim inline GeoJSON), the popup paints immediately with a
+    // "Loading details..." row; this kicks off the async tag fetch by
+    // (osm_type, osm_id) and MERGES the returned tags into the open popup on
+    // resolve. STRICTLY footprint-scoped: returns the slim popup data with
+    // `enriching:false` for any non-footprint layer, so stations / WDPA / admin
+    // popups are byte-for-byte unchanged.
+    const buildPopupWithEnrich = (
+      props: Record<string, unknown> | null,
+      point: { x: number; y: number },
+      opts: { layerName?: string; geomKindLabel?: string },
+      stylePreset: string | null,
+      extra: Partial<FeaturePopupData>,
+    ): FeaturePopupData => {
+      const base = buildFeaturePopupData(props, point, opts);
+      const routable: DeckRoutableLayer = {
+        layer_id: opts.layerName ?? "",
+        name: opts.layerName,
+        style_preset: stylePreset,
+      };
+      const p = props ?? {};
+      // Case-insensitive read of the slim join-keys the agent emits.
+      const lower = new Map<string, unknown>();
+      for (const k of Object.keys(p)) lower.set(k.toLowerCase(), p[k]);
+      const osmType = lower.get("osm_type");
+      const osmId = lower.get("osm_id");
+      const fidVal = lower.get("fid");
+      const isFootprint = isFootprintLayer(routable);
+      const canEnrich =
+        isFootprint &&
+        osmType != null &&
+        String(osmType) !== "" &&
+        osmId != null &&
+        String(osmId) !== "";
+      if (!canEnrich) {
+        return { ...base, ...extra };
+      }
+      const enrichFid =
+        typeof fidVal === "string" && fidVal !== ""
+          ? fidVal
+          : `${String(osmType).slice(0, 1)}${String(osmId)}`;
+      // Fire-and-merge: render the slim card now, fetch + merge on resolve.
+      void fetchBuildingDetail(String(osmType), String(osmId)).then((tags) => {
+        // Merge into the CURRENT popup only if it is still the same footprint
+        // (same enrichFid) and still awaiting enrichment - drop a stale resolve.
+        setFeaturePopup((cur) => {
+          if (!cur || cur.enrichFid !== enrichFid || !cur.enriching) return cur;
+          if (!tags) {
+            // Enrich failed/empty: just clear the loading row, keep the card.
+            return { ...cur, enriching: false };
+          }
+          const merged = mergeTagsIntoAttributes(cur, tags);
+          return { ...merged, enriching: false };
+        });
+      });
+      return { ...base, ...extra, enriching: true, enrichFid };
+    };
+
     const onMapClick = (e: maplibregl.MapMouseEvent): void => {
       const layers = queryableLayerIds();
       if (layers.length === 0) {
@@ -4731,18 +4854,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           /* source gone / not a GeoJSON source - fall back to the single hit */
         }
       }
-      const data: FeaturePopupData = {
-        ...buildFeaturePopupData(
-          (hit.properties ?? null) as Record<string, unknown> | null,
-          { x: e.point.x, y: e.point.y },
-          { layerName: sourceId, geomKindLabel: geomLabel(geomKind) },
-        ),
-        lngLat,
-        refZoom,
-        rawProperties,
-        layerFeatures,
-        stationLayerName,
-      };
+      // buildPopupWithEnrich returns the slim popup immediately and, ONLY for a
+      // footprint layer carrying id-only props, kicks off the async tag enrich +
+      // merge. For stations / WDPA / admin it is a pass-through (canEnrich=false)
+      // so those popups stay byte-for-byte unchanged.
+      const data: FeaturePopupData = buildPopupWithEnrich(
+        (hit.properties ?? null) as Record<string, unknown> | null,
+        { x: e.point.x, y: e.point.y },
+        { layerName: sourceId, geomKindLabel: geomLabel(geomKind) },
+        stationPreset,
+        { lngLat, refZoom, rawProperties, layerFeatures, stationLayerName },
+      );
       setMapCanvasSize(readCanvasSize());
       if (typeof refZoom === "number") setCurrentZoom(refZoom);
       setFeaturePopup(data);
@@ -4784,15 +4906,21 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       } catch {
         refZoom = undefined;
       }
-      const data: FeaturePopupData = {
-        ...buildFeaturePopupData(
-          (i.object.properties ?? null) as Record<string, unknown> | null,
-          { x: px, y: py },
-          { layerName: layerId, geomKindLabel: geomLabel("polygon") },
-        ),
-        lngLat,
-        refZoom,
-      };
+      // The deck-routed layer carries the style_preset + name we need to detect
+      // a footprint (the layer_id alone may not contain "building"). Footprints
+      // route to deck, so this is the PRIMARY click-to-enrich path.
+      const routed = layerId
+        ? deckRoutedLayers.current.get(layerId)
+        : undefined;
+      const deckPreset = routed?.style_preset ?? null;
+      const deckLayerName = routed?.name ?? layerId;
+      const data: FeaturePopupData = buildPopupWithEnrich(
+        (i.object.properties ?? null) as Record<string, unknown> | null,
+        { x: px, y: py },
+        { layerName: deckLayerName, geomKindLabel: geomLabel("polygon") },
+        deckPreset,
+        { lngLat, refZoom },
+      );
       setMapCanvasSize(readCanvasSize());
       if (typeof refZoom === "number") setCurrentZoom(refZoom);
       setFeaturePopup(data);

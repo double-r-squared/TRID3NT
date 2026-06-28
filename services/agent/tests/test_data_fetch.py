@@ -433,7 +433,7 @@ def test_fetch_buildings_default_source_is_osm(monkeypatch):
     fake_storage = FakeStorageClient()
     osm_called: list[Any] = []
 
-    def fake_osm(bbox):
+    def fake_osm(bbox, on_tags=None):
         osm_called.append(bbox)
         return b"FAKE_OSM_FGB"
 
@@ -455,7 +455,9 @@ def test_fetch_buildings_osm_happy_path(monkeypatch):
     """Explicit source='osm' invokes the OSM Overpass fetcher."""
     fake_storage = FakeStorageClient()
     monkeypatch.setattr(
-        data_fetch, "_fetch_osm_buildings_bytes", lambda bbox: b"FAKE_OSM_FGB"
+        data_fetch,
+        "_fetch_osm_buildings_bytes",
+        lambda bbox, on_tags=None: b"FAKE_OSM_FGB",
     )
     _patch_read_through(monkeypatch, fake_storage)
 
@@ -471,7 +473,7 @@ def test_fetch_buildings_falls_back_to_msft_when_osm_fails(monkeypatch):
     """OSM upstream failure → automatic fallback to MS; result is the MS layer."""
     fake_storage = FakeStorageClient()
 
-    def osm_boom(bbox):
+    def osm_boom(bbox, on_tags=None):
         raise UpstreamAPIError("Overpass unreachable")
 
     monkeypatch.setattr(data_fetch, "_fetch_osm_buildings_bytes", osm_boom)
@@ -496,7 +498,9 @@ def test_fetch_buildings_falls_back_to_osm_when_msft_fails(monkeypatch):
 
     monkeypatch.setattr(data_fetch, "_fetch_msft_buildings_bytes", msft_boom)
     monkeypatch.setattr(
-        data_fetch, "_fetch_osm_buildings_bytes", lambda bbox: b"FAKE_OSM_FGB"
+        data_fetch,
+        "_fetch_osm_buildings_bytes",
+        lambda bbox, on_tags=None: b"FAKE_OSM_FGB",
     )
     _patch_read_through(monkeypatch, fake_storage)
 
@@ -510,7 +514,7 @@ def test_fetch_buildings_both_sources_fail_raises_honest_error(monkeypatch):
     """Both sources failing raises an UpstreamAPIError naming BOTH attempts; no sentinel."""
     fake_storage = FakeStorageClient()
 
-    def osm_boom(bbox):
+    def osm_boom(bbox, on_tags=None):
         raise UpstreamAPIError("Overpass returned no footprints")
 
     def msft_boom(bbox):
@@ -604,12 +608,23 @@ def test_extract_building_features_assembles_polygons_and_relations():
             },
         ]
     }
-    features = data_fetch._extract_building_features(payload)
+    features, tags_by_fid = data_fetch._extract_building_features(payload)
     assert len(features) == 2
     geom_types = {g.geom_type for g, _a in features}
     assert geom_types <= {"Polygon", "MultiPolygon"}
     ids = {a["osm_id"] for _g, a in features}
     assert ids == {111, 222}
+    # INLINE props are SLIM (frontend-perf fix): id-only, no building/name.
+    for _g, attrs in features:
+        assert set(attrs) == {"osm_id", "osm_type", "fid"}
+        assert "building" not in attrs
+        assert "name" not in attrs
+    # The composite fid is "<first-letter-of-type><id>".
+    fids = {a["fid"] for _g, a in features}
+    assert fids == {"w111", "r222"}
+    # The FULL tag bag is captured in the sidecar map, keyed by fid.
+    assert tags_by_fid["w111"] == {"building": "yes", "name": "Block A"}
+    assert tags_by_fid["r222"] == {"building": "commercial"}
 
 
 def test_fetch_osm_buildings_bytes_empty_raises_upstream(monkeypatch):
@@ -655,6 +670,103 @@ def test_fetch_osm_buildings_bytes_writes_flatgeobuf(monkeypatch):
     gdf = gpd.read_file(_io.BytesIO(raw))
     assert len(gdf) == 1
     assert gdf.geometry.iloc[0].geom_type in ("Polygon", "MultiPolygon")
+
+
+def test_fetch_osm_buildings_bytes_emits_slim_columns_and_tags_sidecar(monkeypatch):
+    """Inline FGB carries ONLY id-only props; on_tags gets the full tag bag."""
+    pytest.importorskip("geopandas")
+    pytest.importorskip("pyogrio")
+    payload = {
+        "elements": [
+            {
+                "type": "way",
+                "id": 777,
+                "tags": {
+                    "building": "house",
+                    "name": "Maison",
+                    "height": "8",
+                    "addr:street": "Rue X",
+                },
+                "geometry": [
+                    {"lat": 26.60, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.85},
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        data_fetch, "_post_overpass_buildings", lambda ql: payload
+    )
+    captured: list[dict] = []
+    raw = data_fetch._fetch_osm_buildings_bytes(
+        FORT_MYERS_BBOX, on_tags=lambda m: captured.append(m)
+    )
+
+    # The inline FGB columns are SLIM: only the id-only props survive (no
+    # building / name / height inline) so the frontend GeoJSON stays small.
+    import io as _io
+
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    gdf = gpd.read_file(_io.BytesIO(raw))
+    non_geom_cols = {c for c in gdf.columns if c != "geometry"}
+    assert non_geom_cols == {"osm_id", "osm_type", "fid"}
+    assert "building" not in non_geom_cols
+    assert "name" not in non_geom_cols
+    assert gdf["fid"].iloc[0] == "w777"
+
+    # on_tags received the FULL tag bag keyed by fid for the enrich sidecar.
+    assert len(captured) == 1
+    assert captured[0]["w777"] == {
+        "building": "house",
+        "name": "Maison",
+        "height": "8",
+        "addr:street": "Rue X",
+    }
+
+
+def test_fetch_buildings_osm_writes_tags_sidecar(monkeypatch):
+    """End-to-end: fetch_buildings(osm) writes a sibling .tags.json sidecar."""
+    fake_storage = FakeStorageClient()
+    payload_tags = {"w777": {"building": "house", "name": "Maison"}}
+
+    def fake_osm(bbox, on_tags=None):
+        if on_tags is not None:
+            on_tags(payload_tags)
+        return b"FAKE_OSM_FGB"
+
+    sidecar_writes: list[tuple] = []
+
+    def fake_sidecar(bbox, source, tags_by_fid):
+        sidecar_writes.append((source, tags_by_fid))
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_buildings_bytes", fake_osm)
+    monkeypatch.setattr(
+        data_fetch, "_write_buildings_tags_sidecar", fake_sidecar
+    )
+    _patch_read_through(monkeypatch, fake_storage)
+
+    layer = fetch_buildings(FORT_MYERS_BBOX, source="osm")
+    assert layer.name == "Buildings (OSM)"
+    # The sidecar writer was invoked with the osm tag bag.
+    assert len(sidecar_writes) == 1
+    assert sidecar_writes[0][0] == "osm"
+    assert sidecar_writes[0][1] == payload_tags
+
+
+def test_buildings_cache_uri_sidecar_is_sibling_of_fgb():
+    """The .tags.json sidecar URI shares the SAME <key> as the .fgb."""
+    fgb = data_fetch.buildings_cache_uri(FORT_MYERS_BBOX, "osm", "fgb")
+    tags = data_fetch.buildings_cache_uri(
+        FORT_MYERS_BBOX, "osm", data_fetch.BUILDINGS_TAGS_SIDECAR_EXT
+    )
+    assert fgb.endswith(".fgb")
+    assert tags.endswith(".tags.json")
+    # Same directory + same key stem (strip the differing extensions).
+    assert fgb[: -len(".fgb")] == tags[: -len(".tags.json")]
 
 
 def _square_geometry(

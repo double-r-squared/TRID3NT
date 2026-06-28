@@ -92,6 +92,23 @@ export interface FeaturePopupData {
   /** L3-web-station-csv: the station layer's id/name, used to derive a CSV
    *  filename when the tapped feature has no site identifier. */
   stationLayerName?: string;
+  /**
+   * Click-to-enrich (NATE 2026-06-27): true while a FOOTPRINT popup is fetching
+   * its full tag bag by (osm_type, osm_id). When set, the card shows a small
+   * "Loading details..." row beneath the (slim) id-only attributes. Map.tsx
+   * flips it false + merges the returned tags into `attributes` on resolve.
+   * Absent / false for every NON-footprint popup, which stays byte-for-byte
+   * unchanged.
+   */
+  enriching?: boolean;
+  /**
+   * Click-to-enrich: the composite footprint id (e.g. "w123456") the async
+   * detail fetch is keyed to. Used by Map.tsx ONLY to verify the in-flight
+   * enrich still matches the open popup before merging tags (so a stale resolve
+   * for a since-dismissed/replaced popup is dropped). Footprint-only; not
+   * rendered.
+   */
+  enrichFid?: string;
 }
 
 export interface FeaturePopupProps {
@@ -444,6 +461,36 @@ export function FeaturePopup({
               </span>
             </div>
           ))}
+          {/* Click-to-enrich: a small "loading details..." row while the
+              footprint's full tag bag is fetched. Footprint-only; absent for
+              every other popup. */}
+          {data.enriching ? (
+            <div
+              data-testid="feature-popup-enriching"
+              style={{
+                padding: "5px 0 0",
+                fontSize: 11,
+                color: "#8b93a3",
+                fontStyle: "italic",
+              }}
+            >
+              Loading details...
+            </div>
+          ) : null}
+        </div>
+      ) : data.enriching ? (
+        // No slim attributes yet, but a footprint enrich is in flight — show the
+        // loading affordance instead of the "No additional attributes" empty.
+        <div
+          data-testid="feature-popup-enriching"
+          style={{
+            padding: "8px 12px 12px",
+            fontSize: 11,
+            color: "#8b93a3",
+            fontStyle: "italic",
+          }}
+        >
+          Loading details...
         </div>
       ) : (
         <div

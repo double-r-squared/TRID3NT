@@ -66,6 +66,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -775,14 +776,34 @@ def _relation_to_multipolygon(rel: dict[str, Any]) -> Any | None:
     return outer_union
 
 
+def _building_fid(el_type: Any, osm_id: Any) -> str:
+    """Stable composite feature id ``"<first-letter-of-osm_type><osm_id>"``.
+
+    e.g. a ``way`` id ``123456`` -> ``"w123456"``, a ``relation`` id ``222`` ->
+    ``"r222"``. The ``(osm_type, osm_id)`` pair is the Overpass-by-id key; this
+    single string is the slim inline join-key the popup enrich path sends back to
+    ``/api/building-detail`` and the sidecar tag-map is keyed by.
+    """
+    prefix = str(el_type or "")[:1]
+    return f"{prefix}{osm_id}"
+
+
 def _extract_building_features(
     payload: dict[str, Any],
-) -> list[tuple[Any, dict[str, Any]]]:
-    """Walk Overpass ``elements`` → list of ``(geometry, attrs)`` for buildings.
+) -> tuple[list[tuple[Any, dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """Walk Overpass ``elements`` → ``(features, tags_by_fid)`` for buildings.
 
     Ways become ``Polygon``s; multipolygon relations become ``(Multi)Polygon``s.
-    Non-areal / malformed elements are skipped. Attributes carried per feature:
-    ``osm_id``, ``osm_type``, ``building`` (tag value), ``name``.
+    Non-areal / malformed elements are skipped.
+
+    INLINE payload is SLIM (frontend-perf fix, NATE 2026-06-27 "footprint layers
+    store too much in the frontend GeoJSON"): each feature carries ONLY id props
+    — ``osm_id``, ``osm_type``, and a stable composite ``fid`` (e.g. ``"w123456"``)
+    — and DROPS ``building`` + ``name`` from the inline properties. The full tag
+    bag (``building``, ``height``, ``levels``, ``name``, ``addr:*`` ...) is
+    captured separately in the returned ``tags_by_fid`` map for the
+    click-to-enrich sidecar; the popup fetches it on demand by ``(osm_type,
+    osm_id)`` so the inline GeoJSON stays tiny.
     """
     elements = payload.get("elements")
     if not isinstance(elements, list):
@@ -791,6 +812,7 @@ def _extract_building_features(
             f"{type(elements).__name__}"
         )
     features: list[tuple[Any, dict[str, Any]]] = []
+    tags_by_fid: dict[str, dict[str, Any]] = {}
     for el in elements:
         if not isinstance(el, dict):
             continue
@@ -804,22 +826,28 @@ def _extract_building_features(
             geom = None
         if geom is None:
             continue
+        osm_id = el.get("id")
+        fid = _building_fid(el_type, osm_id)
         features.append(
             (
                 geom,
                 {
-                    "osm_id": el.get("id"),
+                    "osm_id": osm_id,
                     "osm_type": el_type,
-                    "building": tags.get("building"),
-                    "name": tags.get("name"),
+                    "fid": fid,
                 },
             )
         )
-    return features
+        # Capture the FULL tag bag for the click-to-enrich sidecar. Only retain
+        # a non-empty bag (a building with no tags contributes nothing to enrich).
+        if tags:
+            tags_by_fid[fid] = dict(tags)
+    return features, tags_by_fid
 
 
 def _fetch_osm_buildings_bytes(
     bbox: tuple[float, float, float, float],
+    on_tags: Callable[[dict[str, dict[str, Any]]], None] | None = None,
 ) -> bytes:
     """Fetch OSM building footprints for ``bbox`` and return FlatGeobuf bytes.
 
@@ -853,7 +881,19 @@ def _fetch_osm_buildings_bytes(
 
     ql = _build_overpass_buildings_ql(bbox)
     payload = _post_overpass_buildings(ql)
-    features = _extract_building_features(payload)
+    features, tags_by_fid = _extract_building_features(payload)
+
+    # Surface the full per-fid tag bag to the caller so it can persist the
+    # click-to-enrich sidecar under the SAME cache key as the .fgb. Best-effort:
+    # a sidecar callback fault must NEVER fail the fetch (the slim layer still
+    # renders; enrich then degrades to a live Overpass-by-id query).
+    if on_tags is not None and tags_by_fid:
+        try:
+            on_tags(tags_by_fid)
+        except Exception as exc:  # noqa: BLE001 — sidecar is best-effort
+            logger.warning(
+                "fetch_buildings(osm): tag-sidecar callback failed: %s", exc
+            )
 
     if not features:
         raise UpstreamAPIError(
@@ -1015,6 +1055,85 @@ def _fetch_msft_buildings_bytes(
     return asset_resp.content
 
 
+# Sidecar suffix for the click-to-enrich tag bag written alongside the buildings
+# .fgb. The detail endpoint (tool_catalog_http /api/building-detail) and the
+# enrich-fallback both derive the same key, so this constant is the single
+# source of truth for the suffix on both the write and read paths.
+BUILDINGS_TAGS_SIDECAR_EXT = "tags.json"
+
+
+def buildings_cache_uri(
+    bbox: tuple[float, float, float, float],
+    source: str,
+    ext: str,
+) -> str:
+    """Resolve the ``s3://`` URI the buildings cache write uses for ``ext``.
+
+    Mirrors ``read_through``'s bucket + key derivation EXACTLY so a sibling
+    artifact (the ``.tags.json`` sidecar) lands under the SAME ``<key>`` as the
+    ``.fgb``. The ``params`` dict + quantization must match the
+    ``_fetch_for_source`` call site (``{"bbox": list(quantized), "source":
+    src}``, 10 m snap) or the keys diverge.
+    """
+    from .cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+    )
+
+    quantized = round_bbox_to_resolution(bbox, 10)
+    params = {"bbox": list(quantized), "source": source}
+    meta = _FETCH_BUILDINGS_METADATA
+    source_id = meta.source_class or meta.name
+    key = compute_cache_key(source_id, params, meta.ttl_class)
+    path = cache_path(meta.source_class, meta.ttl_class, key, ext)
+    bucket = os.environ.get("GRACE2_CACHE_BUCKET") or CACHE_BUCKET
+    return f"s3://{bucket}/{path}"
+
+
+def _write_buildings_tags_sidecar(
+    bbox: tuple[float, float, float, float],
+    source: str,
+    tags_by_fid: dict[str, dict[str, Any]],
+) -> None:
+    """Persist the ``{fid -> full tags}`` sidecar next to the buildings ``.fgb``.
+
+    Best-effort (NATE 2026-06-27 click-to-enrich): a write failure must NOT fail
+    the fetch — the slim layer still renders; the popup enrich path degrades to a
+    live Overpass-by-id query when the sidecar is absent. The sidecar key is the
+    SAME ``<key>`` as the ``.fgb`` with a ``.tags.json`` suffix
+    (``cache/static-30d/buildings/<key>.tags.json``).
+    """
+    try:
+        import boto3
+
+        uri = buildings_cache_uri(bbox, source, BUILDINGS_TAGS_SIDECAR_EXT)
+        rest = uri[len("s3://"):]
+        bucket, _, obj_key = rest.partition("/")
+        body = json.dumps(tags_by_fid, separators=(",", ":")).encode("utf-8")
+        s3 = boto3.client(
+            "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+        )
+        s3.put_object(
+            Bucket=bucket,
+            Key=obj_key,
+            Body=body,
+            ContentType="application/json",
+        )
+        logger.info(
+            "fetch_buildings: wrote tags sidecar key=%s fids=%d bytes=%d",
+            obj_key,
+            len(tags_by_fid),
+            len(body),
+        )
+    except Exception as exc:  # noqa: BLE001 — sidecar is best-effort
+        logger.warning(
+            "fetch_buildings: tags sidecar write degraded (%s); enrich will "
+            "fall back to live Overpass-by-id",
+            exc,
+        )
+
+
 @register_tool(
     _FETCH_BUILDINGS_METADATA,
     # Annotations: readOnlyHint=True, openWorldHint=True (MS Open Maps buildings),
@@ -1098,7 +1217,16 @@ def fetch_buildings(
     def _fetch_for_source(src: str) -> LayerURI:
         params = {"bbox": list(quantized), "source": src}
         if src == "osm":
-            fetch_fn = lambda: _fetch_osm_buildings_bytes(quantized)  # noqa: E731
+            # Click-to-enrich (NATE 2026-06-27): the OSM fetcher surfaces the
+            # full per-fid tag bag so we can persist the sidecar under the SAME
+            # cache key as the .fgb. Best-effort — _write_..._sidecar swallows
+            # its own failures so the fetch never fails on a sidecar write.
+            def _on_tags(tags_by_fid: dict[str, dict[str, Any]]) -> None:
+                _write_buildings_tags_sidecar(quantized, "osm", tags_by_fid)
+
+            fetch_fn = lambda: _fetch_osm_buildings_bytes(  # noqa: E731
+                quantized, on_tags=_on_tags
+            )
         else:
             fetch_fn = lambda: _fetch_msft_buildings_bytes(quantized)  # noqa: E731
         result = read_through(
