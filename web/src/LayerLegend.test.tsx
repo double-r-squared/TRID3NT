@@ -31,6 +31,12 @@ import {
   LEGEND_BAND_DOCK_GAP_PX,
   MobileLegendToggle,
   legendHasContent,
+  LS_DESKTOP_LEGEND_DOCK,
+  DESKTOP_DOCK_BOTTOM_SNAP_BAND_PX,
+  DESKTOP_DOCK_BBOX_GAP_PX,
+  readDesktopDockMode,
+  writeDesktopDockMode,
+  desktopDockModeForDrop,
 } from "./components/LayerLegend";
 // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the legend's new mobile dock math
 // composes on top of the SequenceScrubber's chat-clearance gap (20), so the band
@@ -2399,9 +2405,10 @@ describe("LayerLegend  -  desktop docked strip (LANE D)", () => {
 
   it("the mobile BAND props (sheetTopPx + overlapping AOI) are IGNORED on desktop", () => {
     // BAND-vs-EDGE GATE (NATE 2026-06-28) is mobile-only. With a deep bbox that
-    // would force the mobile band form, desktop STILL renders the static docked
-    // strip at bottom 16px and NEVER a one-row band. Desktop is byte-for-byte
-    // unchanged (it early-returns before the band gate is read).
+    // would force the mobile band form, desktop STILL renders the single desktop
+    // docked strip and NEVER a one-row band. (Desktop position now follows the
+    // bbox-anchored default - see the desktop draggable-dock block below - but the
+    // mobile band machinery is never reached.)
     render(
       <LayerLegend
         layers={[makeLayer()]}
@@ -2412,9 +2419,218 @@ describe("LayerLegend  -  desktop docked strip (LANE D)", () => {
     );
     const root = screen.getByTestId("grace2-layer-legend");
     expect(root).toHaveAttribute("data-legend-docked", "desktop");
-    expect(root.style.bottom).toBe("16px");
     // No mobile one-row band on desktop, ever.
     expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+  });
+});
+
+// --- DESKTOP DRAGGABLE DOCK (NATE 2026-06-28) -------------------------------- //
+//
+// NATE: "it should default to the bbox and then I should be able to also drag it
+// to the bottom and have it static there." The desktop legend strip:
+//   (1) DEFAULTS to the bbox-anchored position (snapped below the AOI bbox);
+//   (2) is DRAGGABLE; a drag to the bottom region snaps it to a STATIC bottom
+//       dock and it STAYS there;
+//   (3) the chosen mode PERSISTS (localStorage) across a remount;
+//   (4) a stored "bottom" preference restores on mount.
+// DESKTOP-ONLY: the mobile path is byte-for-byte unchanged (asserted by the
+// mobile suites above still passing). These force DESKTOP (matchMedia=false) and
+// clear the persisted dock mode before each test so they do not leak.
+describe("LayerLegend  -  desktop draggable dock (bbox default + bottom park)", () => {
+  beforeEach(() => {
+    stubMatchMedia(false); // DESKTOP
+    try {
+      localStorage.removeItem(LS_DESKTOP_LEGEND_DOCK);
+    } catch {
+      /* jsdom always has localStorage; non-fatal */
+    }
+  });
+  afterEach(() => {
+    try {
+      localStorage.removeItem(LS_DESKTOP_LEGEND_DOCK);
+    } catch {
+      /* non-fatal */
+    }
+  });
+
+  // The projected AOI bbox the desktop strip anchors to by default.
+  const aoiRect = { left: 200, top: 100, right: 600, bottom: 400 };
+
+  // (1) DEFAULTS to the bbox-anchored position when an AOI rect is on screen.
+  it("defaults to the bbox-anchored position (below the bbox bottom edge)", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-docked", "desktop");
+    // Default mode is bbox-anchored (not the bottom dock).
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bbox");
+    // Anchored with an absolute top just BELOW the bbox bottom edge (400) + gap,
+    // NOT the static `bottom: 16px` dock.
+    expect(root.style.bottom).toBe("");
+    expect(parseFloat(root.style.top)).toBe(aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX);
+    // Centered on the bbox center X via translateX(-50%); left is an absolute px
+    // (not the gutter `calc(50% ...)` of the bottom dock).
+    expect(root.style.left.endsWith("px")).toBe(true);
+    expect(root.style.transform).toContain("translateX(-50%)");
+    // The key content still renders (only POSITION changed).
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent(
+      "Max flood depth (m)",
+    );
+  });
+
+  // bbox mode with NO AOI rect falls back to the static bottom dock (never vanish).
+  it("falls back to the static bottom dock when bbox mode has no AOI rect", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-docked", "desktop");
+    // No AOI -> bottom dock (the legacy placement), reported as the "bottom" mode.
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bottom");
+    expect(root.style.bottom).toBe("16px");
+  });
+
+  // (2) DRAGGABLE -> a drag to the BOTTOM region snaps to the static bottom dock.
+  it("dragging the strip to the bottom region parks it at the static bottom dock", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    // Starts bbox-anchored.
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bbox");
+    // Grab the strip body (pointerDown at the origin so the pointer offset inside
+    // the zeroed jsdom bbox is 0 -> the drop top == the move clientY) and drag the
+    // pointer deep into the bottom band of the viewport (jsdom innerHeight is 768;
+    // the snap band is the bottom 140px, so 760 is inside it).
+    fireEvent.pointerDown(root, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 760 });
+    fireEvent.pointerUp(window);
+    const after = screen.getByTestId("grace2-layer-legend");
+    // It snapped to the STATIC bottom dock and stays there.
+    expect(after).toHaveAttribute("data-legend-dock-mode", "bottom");
+    expect(after.style.bottom).toBe("16px");
+    expect(after.style.top).toBe("");
+  });
+
+  // A drag that releases HIGHER up re-anchors to the bbox (round-trip).
+  it("dragging the strip back up re-anchors it to the bbox", () => {
+    // Seed the bottom dock so we have somewhere to drag UP from.
+    writeDesktopDockMode("bottom");
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bottom");
+    // Drag the strip up to the top of the viewport (above the bottom band).
+    // pointerDown at the origin (zeroed jsdom bbox) so the drop top == clientY.
+    fireEvent.pointerDown(root, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 120 });
+    fireEvent.pointerUp(window);
+    const after = screen.getByTestId("grace2-layer-legend");
+    expect(after).toHaveAttribute("data-legend-dock-mode", "bbox");
+    expect(parseFloat(after.style.top)).toBe(aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX);
+  });
+
+  // (3) PERSISTS the bottom park across a remount (localStorage).
+  it("the bottom-dock choice persists across a remount (localStorage)", () => {
+    const { unmount } = render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    // Drag to the bottom -> "bottom" mode, persisted. pointerDown at the origin
+    // (zeroed jsdom bbox) so the drop top == the move clientY (in the bottom band).
+    fireEvent.pointerDown(root, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 400, clientY: 760 });
+    fireEvent.pointerUp(window);
+    expect(localStorage.getItem(LS_DESKTOP_LEGEND_DOCK)).toBe("bottom");
+    unmount();
+    // Remount: the persisted "bottom" preference restores (NOT the bbox default).
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const remounted = screen.getByTestId("grace2-layer-legend");
+    expect(remounted).toHaveAttribute("data-legend-dock-mode", "bottom");
+    expect(remounted.style.bottom).toBe("16px");
+  });
+
+  // (4) a stored "bottom" preference restores on mount (even with an AOI on screen).
+  it("restores a stored bottom-dock preference on mount", () => {
+    writeDesktopDockMode("bottom");
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    // Despite the AOI rect (which would otherwise anchor to the bbox) the stored
+    // bottom preference wins, so it stays parked at the bottom dock.
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bottom");
+    expect(root.style.bottom).toBe("16px");
+    expect(root.style.top).toBe("");
+  });
+
+  // The strip is the drag handle (cursor:grab); content/colorbar unchanged.
+  it("the whole strip is grabbable and keeps the key/colorbar contents", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "a" }), makeLayer({ layer_id: "b" })]}
+        aoiRect={aoiRect}
+      />,
+    );
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root.style.cursor).toBe("grab");
+    // One docked root; both keys render as horizontal bottom desktop cards (the
+    // content/colorbar render is unchanged - only position/drag changed).
+    expect(screen.getAllByTestId("grace2-layer-legend")).toHaveLength(1);
+    const keys = screen.getAllByTestId("grace2-layer-legend-key");
+    expect(keys).toHaveLength(2);
+    for (const key of keys) {
+      expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+      expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    }
+    expect(screen.getAllByTestId("layer-legend-bar")).toHaveLength(2);
+  });
+
+  // The bbox-anchored strip stays inside the viewport (does not run off-screen).
+  it("clamps the bbox-anchored strip inside the viewport (does not run off-screen)", () => {
+    // A bbox whose bottom edge is BELOW the viewport (jsdom innerHeight 768): the
+    // anchored top must be clamped so the strip stays on-screen.
+    const offscreen = { left: 200, top: 700, right: 600, bottom: 1200 };
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={offscreen} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bbox");
+    // The clamped top is well within the 768px viewport (not 1200 + gap).
+    const top = parseFloat(root.style.top);
+    expect(top).toBeLessThan(768);
+    expect(top).toBeGreaterThan(0);
+  });
+});
+
+// --- DESKTOP DRAGGABLE DOCK: pure helpers (NATE 2026-06-28) ------------------ //
+describe("desktop dock mode helpers", () => {
+  afterEach(() => {
+    try {
+      localStorage.removeItem(LS_DESKTOP_LEGEND_DOCK);
+    } catch {
+      /* non-fatal */
+    }
+  });
+
+  it("desktopDockModeForDrop: bottom band -> 'bottom', higher -> 'bbox'", () => {
+    const vh = 800;
+    // A drop in the bottom band parks at the bottom dock.
+    expect(desktopDockModeForDrop(vh - 10, vh)).toBe("bottom");
+    expect(desktopDockModeForDrop(vh - DESKTOP_DOCK_BOTTOM_SNAP_BAND_PX, vh)).toBe(
+      "bottom",
+    );
+    // A drop above the band re-anchors to the bbox.
+    expect(
+      desktopDockModeForDrop(vh - DESKTOP_DOCK_BOTTOM_SNAP_BAND_PX - 1, vh),
+    ).toBe("bbox");
+    expect(desktopDockModeForDrop(50, vh)).toBe("bbox");
+    // Degenerate viewport height -> bbox (safe default).
+    expect(desktopDockModeForDrop(100, 0)).toBe("bbox");
+  });
+
+  it("read/write round-trip persists the mode; default is 'bbox'", () => {
+    try {
+      localStorage.removeItem(LS_DESKTOP_LEGEND_DOCK);
+    } catch {
+      /* non-fatal */
+    }
+    // Default when unset.
+    expect(readDesktopDockMode()).toBe("bbox");
+    writeDesktopDockMode("bottom");
+    expect(readDesktopDockMode()).toBe("bottom");
+    expect(localStorage.getItem(LS_DESKTOP_LEGEND_DOCK)).toBe("bottom");
+    writeDesktopDockMode("bbox");
+    expect(readDesktopDockMode()).toBe("bbox");
   });
 });
 

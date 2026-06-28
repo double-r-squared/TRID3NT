@@ -584,6 +584,70 @@ const DESKTOP_DOCK_TITLE_FONT = 11;
 const DESKTOP_DOCK_LABEL_FONT = 10;
 const DESKTOP_DOCK_BAR_THICKNESS = 12;
 
+// DESKTOP DRAGGABLE DOCK (NATE 2026-06-28: "it should default to the bbox and
+// then I should be able to also drag it to the bottom and have it static
+// there.") The desktop legend strip is no longer locked to the bottom. It has
+// TWO snap MODES the user toggles by DRAGGING the strip and releasing:
+//   - "bbox":   the DEFAULT - the strip snaps just BELOW the projected AOI bbox
+//               bottom edge (centered on the bbox), so it reads as the key for
+//               that AOI. When no AOI rect is on screen it falls back to the
+//               bottom dock so the strip never vanishes (and the legacy
+//               no-aoiRect tests still see the bottom placement).
+//   - "bottom": the static bottom-center dock (the prior LANE D behavior,
+//               byte-for-byte) - the user dragged the strip down to the bottom
+//               region and it stays parked there across reconnects/reloads.
+// The chosen mode PERSISTS to localStorage (keyed stably) so "static there"
+// actually sticks; default = "bbox" when nothing is stored. This is DESKTOP-ONLY
+// (mobile keeps its AOI-snap / band-dock pipeline, byte-for-byte unchanged).
+export type DesktopDockMode = "bbox" | "bottom";
+export const LS_DESKTOP_LEGEND_DOCK = "grace2.desktopLegendDock";
+// The viewport BOTTOM band (px from the window bottom): a drag release whose
+// strip top-left falls within this band of the screen snaps to the "bottom"
+// dock; a release above it snaps to the "bbox"-anchored mode. Generous so the
+// user does not have to be pixel-precise to park it at the bottom.
+export const DESKTOP_DOCK_BOTTOM_SNAP_BAND_PX = 140;
+// Px gap kept BELOW the AOI bbox bottom edge when the strip is bbox-anchored
+// (mirrors legend_snap's SIDE_GAP_PX so it rails the bbox consistently).
+export const DESKTOP_DOCK_BBOX_GAP_PX = 10;
+// Margin (px) kept on every viewport edge so the bbox-anchored strip never drags
+// off-screen (NATE: "constrained to the viewport").
+export const DESKTOP_DOCK_VIEWPORT_MARGIN_PX = 8;
+
+/** Read the persisted desktop legend dock mode; default "bbox" on unset/garbage. */
+export function readDesktopDockMode(): DesktopDockMode {
+  try {
+    const raw = localStorage.getItem(LS_DESKTOP_LEGEND_DOCK);
+    return raw === "bottom" ? "bottom" : "bbox";
+  } catch {
+    return "bbox";
+  }
+}
+
+/** Persist the desktop legend dock mode. Non-fatal on failure. */
+export function writeDesktopDockMode(mode: DesktopDockMode): void {
+  try {
+    localStorage.setItem(LS_DESKTOP_LEGEND_DOCK, mode);
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * DESKTOP DRAGGABLE DOCK - which mode a drag RELEASE snaps to, from the dropped
+ * strip's top-left Y (`dropTopPx`) and the viewport height. A release in the
+ * bottom band of the screen parks it at the static bottom dock; anything higher
+ * re-anchors it to the AOI bbox. Pure (window-free) so it is unit-testable.
+ */
+export function desktopDockModeForDrop(
+  dropTopPx: number,
+  viewportHeightPx: number,
+): DesktopDockMode {
+  if (!Number.isFinite(viewportHeightPx) || viewportHeightPx <= 0) return "bbox";
+  return dropTopPx >= viewportHeightPx - DESKTOP_DOCK_BOTTOM_SNAP_BAND_PX
+    ? "bottom"
+    : "bbox";
+}
+
 /**
  * Selects one legend key per eligible raster layer, in stack order
  * (top-of-stack first).
@@ -829,6 +893,34 @@ export function LayerLegend({
     },
     [isControlled, onHiddenChange],
   );
+
+  // DESKTOP DRAGGABLE DOCK (NATE 2026-06-28) - the persisted dock MODE
+  // ("bbox" default vs "bottom" static dock) the user toggles by dragging the
+  // desktop strip. Seeded from localStorage so a prior choice ("static there")
+  // survives a reconnect/refresh; default "bbox". DESKTOP-ONLY (the mobile path
+  // never reads it). Persisted on every change via writeDesktopDockMode.
+  const [desktopDockMode, setDesktopDockModeState] =
+    useState<DesktopDockMode>(readDesktopDockMode);
+  const setDesktopDockMode = useCallback((mode: DesktopDockMode) => {
+    setDesktopDockModeState(mode);
+    writeDesktopDockMode(mode);
+  }, []);
+  // The free screen top-left WHILE the desktop strip is mid-drag (null when idle
+  // / parked). On release this clears and the strip settles into its mode dock.
+  const [desktopDragPos, setDesktopDragPos] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  // Live desktop-drag bookkeeping (pointer offset inside the strip + the latest
+  // top-left), in a ref so the window listeners read fresh values without
+  // re-binding per render.
+  const desktopDragRef = useRef<{
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
+    last: { left: number; top: number };
+  } | null>(null);
 
   // Live drag bookkeeping. Tracks the key being dragged, the pointer offset
   // inside the card, the card size (so release can compute its CENTER for
@@ -1146,6 +1238,77 @@ export function LayerLegend({
     [nearestLegendSide],
   );
 
+  // --- DESKTOP DRAGGABLE DOCK wiring (NATE 2026-06-28) --------------------- //
+  // The WHOLE desktop strip is the drag handle. While dragging it follows the
+  // pointer (free position, viewport-clamped); on release the drop Y decides the
+  // mode: dropped in the bottom band -> "bottom" static dock; higher up ->
+  // "bbox"-anchored. The chosen mode persists (localStorage). Listeners are bound
+  // once and read the live ref (no per-drag rebind). DESKTOP-ONLY usage.
+  const endDesktopDrag = useCallback(() => {
+    const drag = desktopDragRef.current;
+    desktopDragRef.current = null;
+    setDesktopDragPos(null);
+    if (!drag) return;
+    // Snap to a mode from where the strip's top-left landed (its top Y vs the
+    // viewport bottom band). Persist so "static there" sticks across reloads.
+    const vh =
+      typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+        ? window.innerHeight
+        : 0;
+    setDesktopDockMode(desktopDockModeForDrop(drag.last.top, vh));
+  }, [setDesktopDockMode]);
+
+  const onDesktopDragMove = useCallback((ev: PointerEvent) => {
+    const drag = desktopDragRef.current;
+    if (!drag) return;
+    // Clamp the free top-left so the strip never drags off-screen (NATE:
+    // "constrained to the viewport"). Keep at least one margin of the strip on
+    // screen on every edge.
+    const vw =
+      typeof window !== "undefined" && Number.isFinite(window.innerWidth)
+        ? window.innerWidth
+        : drag.width;
+    const vh =
+      typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+        ? window.innerHeight
+        : drag.height;
+    const m = DESKTOP_DOCK_VIEWPORT_MARGIN_PX;
+    const rawLeft = ev.clientX - drag.offsetX;
+    const rawTop = ev.clientY - drag.offsetY;
+    const left = Math.max(m, Math.min(rawLeft, Math.max(m, vw - drag.width - m)));
+    const top = Math.max(m, Math.min(rawTop, Math.max(m, vh - drag.height - m)));
+    drag.last = { left, top };
+    setDesktopDragPos({ left, top });
+  }, []);
+
+  useEffect(() => {
+    const move = (e: PointerEvent) => onDesktopDragMove(e);
+    const up = () => endDesktopDrag();
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [onDesktopDragMove, endDesktopDrag]);
+
+  const startDesktopDrag = useCallback(
+    (ev: React.PointerEvent<HTMLElement>) => {
+      const strip = ev.currentTarget.getBoundingClientRect();
+      desktopDragRef.current = {
+        offsetX: ev.clientX - strip.left,
+        offsetY: ev.clientY - strip.top,
+        width: strip.width,
+        height: strip.height,
+        last: { left: strip.left, top: strip.top },
+      };
+      setDesktopDragPos({ left: strip.left, top: strip.top });
+    },
+    [],
+  );
+
   // --- resize wiring ------------------------------------------------------- //
 
   const resizeRef = useRef<{
@@ -1358,36 +1521,96 @@ export function LayerLegend({
     );
   }
 
-  // LANE D (NATE's explicit DECISION) - on DESKTOP, STOP snapping the legend to
-  // the AOI bbox edges. Render a SINGLE fixed-position docked legend strip at the
-  // BOTTOM CENTER of the map gutter: fixed size, NO scaling, NO drag, NO resize,
-  // NO AOI-snap. It just sticks there. This is the default and we stop developing
-  // legend positioning further. The whole AOI-snap / drag / resize / scale
-  // machinery above stays ONLY for mobile (the `!isMobile` gate). The strip is
-  // centered in the VISIBLE gutter by offsetting half the (right chat - left
-  // rail) panel delta, and z stays under chat/panels (LEGEND_Z_INDEX).
+  // DESKTOP DRAGGABLE DOCK (NATE 2026-06-28: "it should default to the bbox and
+  // then I should be able to also drag it to the bottom and have it static
+  // there.") The desktop legend strip is DRAGGABLE with TWO snap modes:
+  //   - "bbox" (DEFAULT): the strip snaps just BELOW the projected AOI bbox
+  //     bottom edge, centered on the bbox - it reads as the key for that AOI.
+  //     When no AOI rect is on screen we fall back to the bottom dock so the
+  //     strip never vanishes (and the legacy no-aoiRect placement is preserved).
+  //   - "bottom": the static bottom-center dock (the prior LANE D behavior,
+  //     byte-for-byte) - the user dragged the strip to the bottom and it stays.
+  // The mode PERSISTS to localStorage (default "bbox"). While dragging, the strip
+  // follows the pointer (viewport-clamped). The whole AOI-snap / drag / resize /
+  // scale machinery for the per-key MOBILE cards stays ONLY for mobile (the
+  // `!isMobile` gate); this desktop strip uses its OWN drag wiring above.
   if (!isMobile) {
+    // The static bottom-center dock style (the prior LANE D placement) - reused
+    // for the "bottom" mode AND as the fallback when "bbox" mode has no AOI rect.
+    const bottomDockStyle: React.CSSProperties = {
+      position: "fixed",
+      // Lift the strip above the active scrubber footprint so the scrubber (z51)
+      // does not overlay the legend (z15).
+      bottom: scrubberActive
+        ? DESKTOP_DOCK_BOTTOM_PX + DESKTOP_DOCK_SCRUBBER_CLEARANCE_PX
+        : DESKTOP_DOCK_BOTTOM_PX,
+      // Center in the gutter between the left rail and the right chat.
+      left: `calc(50% + ${Math.round((dockLeftInsetPx - dockRightInsetPx) / 2)}px)`,
+      transform: "translateX(-50%)",
+    };
+
+    // Resolve the strip position by mode + drag state.
+    let posStyle: React.CSSProperties;
+    if (desktopDragPos) {
+      // MID-DRAG: free top-left (already viewport-clamped in onDesktopDragMove).
+      posStyle = {
+        position: "fixed",
+        left: desktopDragPos.left,
+        top: desktopDragPos.top,
+        transform: "none",
+      };
+    } else if (desktopDockMode === "bbox" && aoiRect) {
+      // BBOX-ANCHORED (default): center the strip on the AOI bbox center X, just
+      // BELOW the bbox bottom edge, clamped to the viewport so it never drifts
+      // off-screen. translateX(-50%) centers it on that X. We clamp the center X
+      // and the top against an estimated half-width / height so the clamp holds
+      // even before the rendered width is known.
+      const vw =
+        typeof window !== "undefined" && Number.isFinite(window.innerWidth)
+          ? window.innerWidth
+          : 1024;
+      const vh =
+        typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+          ? window.innerHeight
+          : 768;
+      const m = DESKTOP_DOCK_VIEWPORT_MARGIN_PX;
+      // Estimated strip footprint (fixed-metric desktop cards) for the clamp.
+      const estWidth =
+        keyModels.length * DESKTOP_DOCK_KEY_WIDTH +
+        Math.max(0, keyModels.length - 1) * DESKTOP_DOCK_GAP_PX;
+      const estHeight = 64;
+      const half = estWidth / 2;
+      const centerX = Math.max(
+        m + half,
+        Math.min((aoiRect.left + aoiRect.right) / 2, vw - m - half),
+      );
+      const top = Math.max(
+        m,
+        Math.min(aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX, vh - m - estHeight),
+      );
+      posStyle = {
+        position: "fixed",
+        left: centerX,
+        top,
+        transform: "translateX(-50%)",
+      };
+    } else {
+      // BOTTOM dock ("bottom" mode, OR "bbox" with no AOI rect -> never vanish).
+      posStyle = bottomDockStyle;
+    }
+
     // Rendered directly (NOT portaled) so it stays a DESCENDANT of the map
     // container (the job-0321 F43 contract: the legend lives inside grace2-map).
-    // position:fixed still pins it to the viewport; the map container is
-    // position:absolute;inset:0 inside a position:fixed app shell, so fixed
-    // coordinates map 1:1 to the gutter.
     return (
       <div
         data-testid="grace2-layer-legend"
         data-legend-docked="desktop"
+        data-legend-dock-mode={
+          desktopDockMode === "bbox" && aoiRect ? "bbox" : "bottom"
+        }
+        onPointerDown={startDesktopDrag}
         style={{
-          position: "fixed",
-          // desktop-only: lift the docked legend strip above the active scrubber
-          // footprint so the scrubber (z51) does not overlay the legend (z15);
-          // mobile reserves the bottom band via excludeBottom, untouched.
-          bottom: scrubberActive
-            ? DESKTOP_DOCK_BOTTOM_PX + DESKTOP_DOCK_SCRUBBER_CLEARANCE_PX
-            : DESKTOP_DOCK_BOTTOM_PX,
-          // Center in the gutter between the left rail and the right chat: shift
-          // right by half the left-rail width, left by half the chat width.
-          left: `calc(50% + ${Math.round((dockLeftInsetPx - dockRightInsetPx) / 2)}px)`,
-          transform: "translateX(-50%)",
+          ...posStyle,
           display: "flex",
           flexDirection: "row",
           flexWrap: "nowrap",
@@ -1395,6 +1618,10 @@ export function LayerLegend({
           maxWidth: "92vw",
           overflowX: "auto",
           pointerEvents: "auto",
+          // The whole strip is the drag handle.
+          cursor: "grab",
+          touchAction: "none",
+          userSelect: "none",
           // Below the chat (z=32) + panels (z=20); above the map.
           zIndex: LEGEND_Z_INDEX,
         }}
