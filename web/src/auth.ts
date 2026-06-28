@@ -612,18 +612,11 @@ function demoTokenUrl(): string | null {
   if (explicit != null && explicit.trim() !== "") {
     return explicit.trim().replace(/\/+$/, "");
   }
-  const base =
-    (import.meta.env.VITE_GRACE2_PUBLIC_BASE as string | undefined) ?? null;
-  const normalized = base == null || base.trim() === "" ? null : base.trim();
-  if (normalized) {
-    const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)
-      ? normalized
-      : `https://${normalized}`;
-    return `${withScheme.replace(/\/+$/, "")}/demo-token`;
-  }
-  // Default: the live autostop API-Gateway demo-token route (verified 2026-06-28).
-  // Baked in so the code-gate works without a Vercel env var -- the wake-api host
-  // is a public endpoint, not a secret. VITE_GRACE2_DEMO_TOKEN_URL overrides it.
+  // The demo-token route lives on the autostop API-Gateway -- a SEPARATE origin
+  // from the CloudFront edge that VITE_GRACE2_PUBLIC_BASE points at -- so we do
+  // NOT derive it from PUBLIC_BASE (that resolved to <cloudfront>/demo-token,
+  // which has no such route and CORS-fails in the browser). Use the wake-api
+  // route directly. VITE_GRACE2_DEMO_TOKEN_URL still overrides. Host is public.
   return "https://9ib093sis6.execute-api.us-west-2.amazonaws.com/demo-token";
 }
 
