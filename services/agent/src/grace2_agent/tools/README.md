@@ -9,8 +9,10 @@ FR-CE-8, FR-TA-2, Decision O). It owns:
 - **The cache shim** (`cache.py`) — `compute_cache_key`, `cache_path`,
   `read_through`, `is_cacheable`, `ttl_bucket_vintage`. Mediates every
   external-API atomic-tool fetch per FR-DC-3.
-- **Pass-through tools** (`passthroughs.py`) — `mongo_query`, `qgis_process`,
-  both `cacheable=False` + `ttl_class="live-no-cache"` per FR-DC-6.
+- **Pass-through tools** (`passthroughs.py`) — `qgis_process`,
+  `cacheable=False` + `ttl_class="live-no-cache"` per FR-DC-6. (A `mongo_query`
+  pass-through formerly lived here; it was removed when MongoDB Atlas was torn
+  down for DynamoDB, 2026-06-16.)
 
 The `AtomicToolMetadata` model itself is `schema`-owned and lives in
 `grace2_contracts.tool_registry`; this package consumes it.
@@ -55,11 +57,11 @@ The `@register_tool` decorator:
 
 ## Registering a `live-no-cache` tool
 
-`mongo_query` and `qgis_process` are the canonical examples. They declare:
+`qgis_process` is the canonical example. It declares:
 
 ```python
 AtomicToolMetadata(
-    name="mongo_query",
+    name="qgis_process",
     ttl_class="live-no-cache",
     source_class=None,         # uncacheable: no bucket prefix needed
     cacheable=False,
@@ -67,7 +69,7 @@ AtomicToolMetadata(
 ```
 
 The cache shim's `read_through` short-circuits these — it calls `fetch_fn`,
-returns `ReadThroughResult(uri=None, hit=False)`, and writes nothing to GCS.
+returns `ReadThroughResult(uri=None, hit=False)`, and writes nothing.
 The FR-DC-6 enumeration is honored by the metadata declaration plus the
 `AtomicToolMetadata` cross-field validator: `cacheable=False` requires
 `ttl_class == "live-no-cache"`, and vice versa.

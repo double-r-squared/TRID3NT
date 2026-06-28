@@ -700,7 +700,7 @@ def test_cache_miss_invokes_fetch_fn_then_hit_skips():
     fetch_count = {"n": 0}
     fake_bytes = _fake_fgb_bytes("BBOX")
 
-    def patched_fetch_bytes(bbox):
+    def patched_fetch_bytes(bbox, **_kw):
         fetch_count["n"] += 1
         return fake_bytes
 
@@ -876,3 +876,385 @@ def test_live_fort_myers_bbox_returns_dams():
         props = feat.get("properties", {})
         # NIDID is the canonical join key — must be present.
         assert props.get("NIDID"), f"Feature missing NIDID: {props}"
+
+
+# ===========================================================================
+# job-A5 UPGRADE tests — authoritative endpoint behind the credential path,
+# live hazard_potential / state filters, authoritative -> mirror -> error
+# degradation. (Appended; do not interleave with the original block.)
+# ===========================================================================
+
+from grace2_agent.tools.fetch_usace_dams import (  # noqa: E402
+    USACEDAMSAuthError,
+    _NID_AUTHORITATIVE_BASE,
+    _NID_BASE,
+    _build_where_clause,
+    _fetch_nid_bytes,
+    _resolve_nid_token,
+    _validate_hazard_potential,
+    _validate_state,
+    set_persistence_for_secrets,
+)
+
+
+# ---------------------------------------------------------------------------
+# Filter validation + WHERE-clause construction.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_hazard_potential_normalizes_case_and_dedupes():
+    assert _validate_hazard_potential("high") == ["High"]
+    assert _validate_hazard_potential(["HIGH", "significant", "High"]) == [
+        "High",
+        "Significant",
+    ]
+    assert _validate_hazard_potential(None) == []
+
+
+def test_validate_hazard_potential_rejects_unknown():
+    with pytest.raises(USACEDAMSInputError, match="not a valid NID classification"):
+        _validate_hazard_potential("catastrophic")
+
+
+def test_validate_hazard_potential_rejects_non_string_entry():
+    with pytest.raises(USACEDAMSInputError):
+        _validate_hazard_potential([123])  # type: ignore[list-item]
+
+
+def test_validate_state_expands_abbreviation_and_titlecases():
+    assert _validate_state("nv") == ["Nevada"]
+    assert _validate_state("NC") == ["North Carolina"]
+    assert _validate_state("north carolina") == ["North Carolina"]
+    assert _validate_state(["nevada", "AZ"]) == ["Nevada", "Arizona"]
+    assert _validate_state(None) == []
+
+
+def test_validate_state_rejects_empty():
+    with pytest.raises(USACEDAMSInputError):
+        _validate_state("   ")
+
+
+def test_build_where_clause_composes_filters():
+    assert _build_where_clause([], []) == "1=1"
+    assert (
+        _build_where_clause(["High"], [])
+        == "HAZARD_POTENTIAL IN ('High')"
+    )
+    assert (
+        _build_where_clause([], ["Nevada"])
+        == "STATE IN ('Nevada')"
+    )
+    assert (
+        _build_where_clause(["High", "Significant"], ["Nevada"])
+        == "HAZARD_POTENTIAL IN ('High','Significant') AND STATE IN ('Nevada')"
+    )
+
+
+def test_build_where_clause_sql_escapes_single_quote():
+    # Defense-in-depth: a single quote in a (synthetic) value is doubled.
+    assert _build_where_clause([], ["O'Brien County"]) == (
+        "STATE IN ('O''Brien County')"
+    )
+
+
+def test_build_url_threads_where_token_and_base():
+    base, params = _build_nid_url(
+        None,
+        where="HAZARD_POTENTIAL IN ('High')",
+        base_url=_NID_AUTHORITATIVE_BASE,
+        token="TKN",
+    )
+    assert base == _NID_AUTHORITATIVE_BASE
+    assert params["where"] == "HAZARD_POTENTIAL IN ('High')"
+    assert params["token"] == "TKN"
+
+
+def test_build_url_omits_token_when_none():
+    _base, params = _build_nid_url(None)
+    assert "token" not in params
+    assert params["where"] == "1=1"
+
+
+# ---------------------------------------------------------------------------
+# Token resolution (canonical 3-path secret loader).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_token_returns_none_when_no_source(monkeypatch):
+    monkeypatch.delenv("GRACE2_USACE_NID_TOKEN", raising=False)
+    assert _resolve_nid_token(None, None) is None
+
+
+def test_resolve_token_prefers_explicit_kwarg(monkeypatch):
+    monkeypatch.setenv("GRACE2_USACE_NID_TOKEN", "env-tok")
+    assert _resolve_nid_token("kwarg-tok", None) == "kwarg-tok"
+
+
+def test_resolve_token_uses_string_secret_ref(monkeypatch):
+    monkeypatch.delenv("GRACE2_USACE_NID_TOKEN", raising=False)
+    assert _resolve_nid_token(None, "secret-tok") == "secret-tok"
+
+
+def test_resolve_token_falls_back_to_env(monkeypatch):
+    monkeypatch.delenv("GRACE2_USACE_NID_TOKEN", raising=False)
+    monkeypatch.setenv("GRACE2_USACE_NID_TOKEN", "env-tok")
+    assert _resolve_nid_token(None, None) == "env-tok"
+
+
+def test_resolve_token_secret_ref_via_persistence_then_reset():
+    """A non-string secret_ref resolves through the bound Persistence mock."""
+    class _FakePersistence:
+        async def get_secret_value(self, ref):  # noqa: D401
+            return f"resolved::{ref['id']}"
+
+    set_persistence_for_secrets(_FakePersistence())
+    try:
+        tok = _resolve_nid_token(None, {"id": "abc"})
+        assert tok == "resolved::abc"
+    finally:
+        set_persistence_for_secrets(None)
+
+
+def test_resolve_token_persistence_unbound_for_object_ref_raises():
+    """A non-string secret_ref with NO bound Persistence is a credential error."""
+    set_persistence_for_secrets(None)
+    with pytest.raises(USACEDAMSAuthError):
+        _resolve_nid_token(None, {"id": "abc"})
+
+
+# ---------------------------------------------------------------------------
+# Authoritative ESRI token-error envelope -> USACEDAMSAuthError.
+# ---------------------------------------------------------------------------
+
+
+def _token_envelope_client(code: int):
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"error": {"code": code, "message": "Token", "details": []}}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, headers=None):
+            return FakeResponse()
+
+    return FakeClient
+
+
+def test_esri_499_token_required_raises_auth_error():
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams.httpx.Client",
+        _token_envelope_client(499),
+    ):
+        with pytest.raises(USACEDAMSAuthError):
+            _fetch_nid_geojson_page(_NID_AUTHORITATIVE_BASE, {"f": "json"})
+
+
+def test_esri_498_invalid_token_raises_auth_error():
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams.httpx.Client",
+        _token_envelope_client(498),
+    ):
+        with pytest.raises(USACEDAMSAuthError):
+            _fetch_nid_geojson_page(_NID_AUTHORITATIVE_BASE, {"f": "json"})
+
+
+def test_http_401_from_authoritative_raises_auth_error():
+    class FakeResponse:
+        status_code = 401
+        text = "Unauthorized"
+
+        def json(self):
+            return {}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, params=None, headers=None):
+            return FakeResponse()
+
+    with patch("grace2_agent.tools.fetch_usace_dams.httpx.Client", FakeClient):
+        with pytest.raises(USACEDAMSAuthError):
+            _fetch_nid_geojson_page(_NID_AUTHORITATIVE_BASE, {"f": "json"})
+
+
+def test_auth_error_is_credential_shaped_for_generic_card():
+    """The credential pipeline classifies our auth error WITHOUT a registry row."""
+    from grace2_agent.credential_registry import is_credential_shaped_error
+
+    err = USACEDAMSAuthError("USACE NID requires a valid token (ESRI code 498)")
+    assert is_credential_shaped_error("fetch_usace_dams", err) is True
+    # A plain upstream error must NOT trip the credential gate (no false positive).
+    up = USACEDAMSUpstreamError("USACE NID returned HTTP 503 maintenance")
+    assert is_credential_shaped_error("fetch_usace_dams", up) is False
+
+
+# ---------------------------------------------------------------------------
+# authoritative -> mirror -> error orchestration (synthetic, no network).
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_bytes_no_token_uses_mirror_only():
+    """No token => only the mirror base is ever queried (never authoritative)."""
+    seen: list[str] = []
+
+    def recording_page(url, params):
+        seen.append(url)
+        # Short page so pagination stops immediately.
+        return {"type": "FeatureCollection", "features": []}
+
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams._fetch_nid_geojson_page",
+        side_effect=recording_page,
+    ):
+        _fetch_nid_bytes(None, where="1=1", token=None)
+
+    assert seen, "expected at least one page fetch"
+    assert all(_NID_BASE in u for u in seen)
+    assert all(_NID_AUTHORITATIVE_BASE not in u for u in seen)
+
+
+def test_fetch_bytes_token_attempts_authoritative_then_degrades_to_mirror():
+    """Token set: authoritative tried first; on non-auth failure -> mirror."""
+    calls: list[str] = []
+
+    def page(url, params):
+        calls.append(url)
+        if _NID_AUTHORITATIVE_BASE in url:
+            # Simulate a non-auth authoritative failure (wrong service path 404).
+            raise USACEDAMSUpstreamError("USACE NID returned HTTP 404 (service not found)")
+        # Mirror returns a short page.
+        return {"type": "FeatureCollection", "features": []}
+
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams._fetch_nid_geojson_page",
+        side_effect=page,
+    ):
+        _fetch_nid_bytes(None, where="1=1", token="some-token")
+
+    assert any(_NID_AUTHORITATIVE_BASE in u for u in calls), "authoritative attempted"
+    assert any(_NID_BASE in u for u in calls), "mirror used as fallback"
+
+
+def test_fetch_bytes_token_auth_rejection_does_not_degrade():
+    """A REJECTED token surfaces the credential error (NO silent mirror mask)."""
+    calls: list[str] = []
+
+    def page(url, params):
+        calls.append(url)
+        if _NID_AUTHORITATIVE_BASE in url:
+            raise USACEDAMSAuthError("ESRI code 498 Invalid Token")
+        return {"type": "FeatureCollection", "features": []}
+
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams._fetch_nid_geojson_page",
+        side_effect=page,
+    ):
+        with pytest.raises(USACEDAMSAuthError):
+            _fetch_nid_bytes(None, where="1=1", token="bad-token")
+
+    # The mirror must NOT have been queried — a bad token is a credential signal.
+    assert all(_NID_BASE not in u or _NID_AUTHORITATIVE_BASE in u for u in calls)
+    assert not any(u == _NID_BASE for u in calls)
+
+
+# ---------------------------------------------------------------------------
+# Honest-empty path: an empty filtered result serializes a valid (empty) FGB.
+# ---------------------------------------------------------------------------
+
+
+def test_empty_filtered_result_serializes_valid_empty_fgb():
+    """A filter matching nothing yields a header-only FGB, not an error."""
+    import geopandas as gpd  # noqa: PLC0415
+
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams._fetch_nid_geojson_page",
+        side_effect=lambda url, params: {"type": "FeatureCollection", "features": []},
+    ):
+        fgb = _fetch_nid_bytes(
+            None,
+            where="HAZARD_POTENTIAL IN ('High') AND STATE IN ('Nowhere')",
+            token=None,
+        )
+    assert isinstance(fgb, bytes) and len(fgb) > 0  # valid FGB header
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        f.write(fgb)
+        path = f.name
+    try:
+        gdf = gpd.read_file(path)
+        assert len(gdf) == 0
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Tool-level: filters reach the cache key + layer id (mocked read_through).
+# ---------------------------------------------------------------------------
+
+
+def test_filters_distinguish_layer_id_and_cache_key():
+    """Different hazard/state filters produce distinct layer ids + cache keys."""
+    fake_gcs = FakeStorageClient()
+    with patch(
+        "grace2_agent.tools.fetch_usace_dams._fetch_nid_bytes",
+        side_effect=lambda *a, **k: _geojson_to_fgb(_sample_nid_geojson(2)),
+    ), patch(
+        "grace2_agent.tools.fetch_usace_dams.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        l_all = fetch_usace_dams(bbox=(-115.4, 35.8, -114.3, 36.5))
+        l_high = fetch_usace_dams(
+            bbox=(-115.4, 35.8, -114.3, 36.5), hazard_potential="High"
+        )
+        l_high_nv = fetch_usace_dams(
+            bbox=(-115.4, 35.8, -114.3, 36.5),
+            hazard_potential="High",
+            state="Nevada",
+        )
+
+    ids = {l_all.layer_id, l_high.layer_id, l_high_nv.layer_id}
+    assert len(ids) == 3, f"filtered layers must differ: {ids}"
+    assert "high" in l_high.layer_id
+    assert "high" in l_high_nv.layer_id and "nevada" in l_high_nv.layer_id
+    uris = {l_all.uri, l_high.uri, l_high_nv.uri}
+    assert len(uris) == 3, "distinct filters must produce distinct cache keys"
+
+
+@pytest.mark.skipif(
+    not _LIVE,
+    reason="Set GRACE2_TEST_LIVE_USACE_DAMS=1 to run live NID tests",
+)
+def test_live_state_and_hazard_filter_applies():
+    """LIVE: hazard_potential='High' + state='Nevada' returns only matching dams."""
+    where = _build_where_clause(
+        _validate_hazard_potential("High"), _validate_state("Nevada")
+    )
+    url, params = _build_nid_url(
+        (-115.4, 35.8, -114.3, 36.5),
+        where=where,
+        result_record_count=200,
+    )
+    body = _fetch_nid_geojson_page(url, params)
+    feats = body.get("features", [])
+    assert len(feats) >= 1
+    for f in feats:
+        props = f.get("properties", {})
+        assert props.get("HAZARD_POTENTIAL") == "High"
+        assert props.get("STATE") == "Nevada"

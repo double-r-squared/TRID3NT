@@ -8235,6 +8235,26 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         # (completion.json -> manifest_uri -> parse) -- sync network I/O. Emit-free
         # (returns the listing dict), so off-load it for the same reason.
         "list_run_frames",
+        # tools-work integration (2026-06-27): the new heavy raster/vector
+        # fetchers do multi-second sync work (STAC sign + windowed /vsicurl warp
+        # read + COG/FlatGeobuf write), the SAME shape as compute_ndvi/fetch_naip
+        # above. Their bodies are emit-free (the emit_tool_call wrapper emits), so
+        # off-load them so they never stall the WS heartbeat
+        # (feedback_no_sync_blocking_on_asyncio_loop). digitize_water_body was
+        # flagged heavy by its building agent (Sentinel-2 NDWI raster + vectorize).
+        # _assert_sync_offload_safe still gates each at arm time.
+        "digitize_water_body",
+        "fetch_sentinel2_truecolor",
+        "fetch_sentinel1_sar",
+        "fetch_landsat_imagery",
+        "fetch_modis_lst",
+        "fetch_copernicus_dem",
+        "fetch_chirps_precipitation",
+        "fetch_ghsl_population",
+        "fetch_jrc_global_surface_water",
+        "fetch_soilgrids",
+        "fetch_esri_landcover_10m",
+        "fetch_noaa_sst",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /

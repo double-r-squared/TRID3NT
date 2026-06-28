@@ -774,7 +774,7 @@ def compute_hillshade(
         name=name,
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # closest existing preset; hillshade-specific QML deferred
+        style_preset="continuous_dem",  # grayscale via the F51 terrain passthrough -- CORRECT for shaded relief (tools-backlog #3: no colormap wanted)
         role="context",
         units="intensity",  # 0–255 uint8 luminance
     )

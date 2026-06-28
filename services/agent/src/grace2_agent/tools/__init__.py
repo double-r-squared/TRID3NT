@@ -287,6 +287,8 @@ from . import fetch_gridmet  # noqa: E402,F401 - job-A8 (Wave 4.10): registers f
 from . import fetch_noaa_coops_tides  # noqa: E402,F401 - job-A9 (Wave 4.10): registers fetch_noaa_coops_tides (NOAA CO-OPS tide-station water-level observations + predictions; SFINCS coastal boundary forcing for US/territory basins)
 from . import fetch_usace_dams  # noqa: E402,F401 - job-A5 (Wave 4.10): registers fetch_usace_dams (USACE National Inventory of Dams point inventory via public ESRI Living Atlas mirror; dam-break / hazard-overlay substrate)
 from . import fetch_noaa_slr_scenarios  # noqa: E402,F401 - job-A10 (Wave 4.10): registers fetch_noaa_slr_scenarios (NOAA OCM SLR Viewer bathtub inundation polygons for 0-10 ft scenarios; CONUS coastal planning-level overlay)
+from . import fetch_noaa_slr_confidence  # noqa: E402,F401 - tools-backlog #1: registers fetch_noaa_slr_confidence (NOAA OCM SLR Viewer conf_* mapping-confidence raster; RGBA overlay via MapServer export -> georeferenced COG)
+from . import fetch_noaa_slr_marsh  # noqa: E402,F401 - tools-backlog #2: registers fetch_noaa_slr_marsh (NOAA OCM SLR Viewer marsh_* marsh-migration raster; RGBA overlay via MapServer export -> georeferenced COG)
 from . import fetch_usfs_canopy_fuels  # noqa: E402,F401 - job-A14 (Wave 4.10): registers fetch_usfs_canopy_fuels (USFS LANDFIRE LF2022 canopy base height + bulk density rasters; crown-fire model inputs CBH/CBD)
 from . import fetch_statsgo_soils  # noqa: E402,F401 - job-A11 (Wave 4.10): registers fetch_statsgo_soils (USGS STATSGO COG collection - KFFACT / THICK - via pfdf.data.usgs.statsgo; post-fire debris-flow + runoff-CN substrate)
 from . import fetch_nhdplus_nldi_navigate  # noqa: E402,F401 - job-A11 (Wave 4.10): registers fetch_nhdplus_nldi_navigate (USGS NLDI navigate over the NHDPlus v2.1 channel network - UM / UT / DM / DD traversal from a seed point or COMID)
@@ -296,8 +298,7 @@ from . import fetch_topobathy  # noqa: E402,F401 - SFINCS North Star P1: registe
 from . import fetch_fault_sources  # noqa: E402,F401 - task #199 (real-fault OpenQuake): registers fetch_fault_sources (REAL active-fault traces + slip rates from the GEM Global Active Faults harmonized GeoJSON; parses the '(best,min,max)' string triples; bbox-filters worldwide faults to the AOI; honest empty-AOI degrade with a typed note; feeds the worker's render_fault_source_model_xml moment-balanced simpleFaultSource builder for fault-aligned PSHA)
 from . import discover_dataset  # noqa: E402,F401 - job-B7 (Wave 4.10 Stage 2): registers discover_dataset (hybrid BM25 + dense retrieval over audited docstrings + tool_query_corpus.yaml; routes free-text user queries to top-k atomic tools via RRF fusion; hot-set tool surfaced by B5 per-turn filter)
 from . import analytical_qa  # noqa: E402,F401 - job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
-from . import chart_tools  # noqa: E402,F401 - job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distribution
-from . import compute_cross_section  # noqa: E402,F401 - cross-section/profile tool: registers compute_cross_section (samples raster value(s) at N stations along a drawn-or-derived line -> Vega-Lite distance-vs-value line chart via the chart-emission chat-card path; multi-layer overlay on one shared distance axis; reuses chart_tools.build_chart_payload + clip_raster_to_polygon's s3-staging/CRS pattern)
+from . import chart_tools  # noqa: E402,F401 - job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distributionfrom . import compute_cross_section  # noqa: E402,F401 - cross-section/profile tool: registers compute_cross_section (samples raster value(s) at N stations along a drawn-or-derived line -> Vega-Lite distance-vs-value line chart via the chart-emission chat-card path; multi-layer overlay on one shared distance axis; reuses chart_tools.build_chart_payload + clip_raster_to_polygon's s3-staging/CRS pattern)
 from . import merge_features  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtMerge): registers merge_features (shapely unary_union dissolve of selected features -> one feature, keeper attrs preserved)
 from . import cut_features_with_polygon  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtCutWithPolygon): registers cut_features_with_polygon (per-feature shapely difference by a cutter, in-place attr preservation, delete_emptied policy)
 from . import fill_gaps  # noqa: E402,F401 - QGIS-wrapping backlog (DigitizingTools DtFillGap): registers fill_gaps (union + interior-ring harvest -> enclosed sliver gaps as new polygons)
@@ -320,6 +321,35 @@ from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_sw
 # no cache shim. Both are deterministic closed-form sanity/post-processing tools.
 from . import compute_wave_nomograph  # noqa: E402,F401 -- registers compute_wave_nomograph (wind+fetch -> Hs/Tp deep-water fetch-limited wave-growth sanity estimate; SPM 1984 / CEM Part II-2; pre-flight reality-check on a SWAN run)
 from . import compute_overtopping  # noqa: E402,F401 -- registers compute_overtopping (EurOtop 2018 Ch.5 mean wave-overtopping discharge over a sloped coastal structure; deterministic post-processor on nearshore Hs/Tp from SWAN/SnapWave)
+from . import digitize_water_body  # noqa: F401  -- NDWI surface-water polygons (land cover)
+from . import fetch_usgs_earthquakes  # noqa: E402,F401 — registers fetch_usgs_earthquakes (REAL recorded USGS FDSN Event Web Service earthquakes as epicenter points; bbox|global + time window (default ~30d) + min_magnitude (default 2.5); props mag/depth_km/mag_type/place/time/url; style_preset='earthquakes'; supports_global_query=True; honest EarthquakesNoEventsError on zero events + EarthquakesResultTooLargeError on the 20000-event FDSN cap)
+from . import fetch_hifld_critical_infrastructure  # noqa: F401
+from . import fetch_cdc_svi  # noqa: E402,F401 — registers fetch_cdc_svi (CDC/ATSDR Social Vulnerability Index 2022 census-tract choropleth: overall RPL_THEMES + 4 theme percentile ranks as FlatGeobuf; CDC/ATSDR OneMap ArcGIS REST FeatureServer layer 2; US-only, public no-key; social-vulnerability/equity exposure overlay)
+from . import fetch_sentinel2_truecolor  # noqa: F401  (registers fetch_sentinel2_truecolor)
+from . import compute_home_range_kde  # noqa: E402,F401 — registers compute_home_range_kde (kernel-density home range / utilization-distribution isopleths from animal-track POINTS: scipy.stats.gaussian_kde over the fetch_movebank_tracks point FGB -> 50%/95% UD isopleth Polygons via skimage contouring in local UTM; vector FGB inline-GeoJSON layer; honest TOO_FEW_POINTS empty; pairs with fetch_movebank_tracks + compute_zonal_statistics)
+from . import compute_movement_trajectory  # noqa: F401
+from . import fetch_epa_frs_facilities  # noqa: F401 — registers fetch_epa_frs_facilities (EPA FRS regulated-facility POINTS by bbox via EPA NEPAssist public ArcGIS REST MapServer; facility_program=frs/tri/superfund/air/water/hazwaste/brownfields; ties the MODFLOW contamination-plume demo to real chemical-facility exposure)
+from . import fetch_us_drought_monitor  # noqa: E402,F401 — registers fetch_us_drought_monitor (US Drought Monitor weekly drought-category polygons D0-D4 from Esri Living Atlas US_Drought_Intensity_v1 ArcGIS REST FeatureServer; current week (layer 3) or past release via optional date param against archive layer 2; dm 0-4 class + label + period + valid_date props as FlatGeobuf; US-only, public no-key; new drought hazard domain with fire/ag relevance)
+from . import fetch_overpass_pois  # noqa: E402,F401 — registers fetch_overpass_pois (generic OSM Overpass key=value POI fetcher -> point/centroid FlatGeobuf; node/way/relation via `out center`; public-mirror fallback chain; honest typed empty; the flexible global exposure-layer complement to the fixed US-only fetch_hifld_critical_infrastructure)
+from . import fetch_census_acs  # noqa: E402,F401 — registers fetch_census_acs (US Census ACS 5-year demographics as a census-tract choropleth FlatGeobuf; KEYLESS two-source join: Census TIGERweb tract geometry ArcGIS REST + Census data.census.gov backend table API for ACS estimates, joined by 11-digit GEOID; friendly variable registry median_income/median_age/median_home_value/poverty_rate/pct_renters/pct_no_vehicle plus raw ACS B-code passthrough; US-only, supports_global_query=False; generalizes population-only fetchers to arbitrary EJ/vulnerability demographics; honest typed errors + empty-FGB outside US)
+from . import fetch_landsat_imagery as _fetch_landsat_imagery  # noqa: F401
+from . import fetch_noaa_sst as _fetch_noaa_sst  # noqa: F401  (registers fetch_noaa_sst via @register_tool)
+from . import fetch_openfema_disasters  # noqa: E402,F401 — registers fetch_openfema_disasters (FEMA OpenFEMA DisasterDeclarationsSummaries aggregated to per-county declaration counts/incident-types/dates, joined to Census TIGERweb county polygons by 5-digit FIPS -> FlatGeobuf county overlay; state_code or bbox selector + optional incident_type/start_year; US-only, supports_global_query=False; semi-static-7d cache)
+from . import fetch_esri_landcover_10m  # noqa: F401  (registers fetch_esri_landcover_10m)
+from . import fetch_usgs_volcano_alerts  # noqa: F401
+from . import fetch_usgs_water_quality  # noqa: F401
+from . import fetch_usgs_groundwater_levels  # noqa: F401
+from . import fetch_snotel_snow  # noqa: F401
+from . import fetch_sentinel1_sar  # noqa: F401
+from . import fetch_modis_lst  # noqa: F401
+from . import fetch_hifld_transmission_lines  # noqa: F401
+from . import fetch_lehd_jobs  # noqa: F401
+from . import fetch_nws_river_forecast  # noqa: F401
+from . import fetch_copernicus_dem  # noqa: F401
+from . import fetch_chirps_precipitation  # noqa: F401
+from . import fetch_ghsl_population  # noqa: F401
+from . import fetch_jrc_global_surface_water  # noqa: F401
+from . import fetch_soilgrids  # noqa: F401
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged

@@ -400,6 +400,8 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_gtsm_tide_surge": "coastal",
     "fetch_noaa_coops_tides": "coastal",
     "fetch_noaa_slr_scenarios": "coastal",
+    "fetch_noaa_slr_confidence": "coastal",
+    "fetch_noaa_slr_marsh": "coastal",
     # SFINCS North Star P1: merged coastal topo-bathymetry DEM (NOAA NCEI CUDEM
     # 1/9 arc-sec + USGS 3DEP land) - the bathymetric input the coastal SFINCS
     # bed needs (fetch_dem alone is land-only). EPSG:32616 NAVD88 positive-up.
@@ -489,6 +491,38 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "web_fetch": "news_events",
     "fetch_storm_events_db": "news_events",
     "aggregate_claims_across_sources": "news_events",
+    # a+b+c batch (2026-06-27)
+    "digitize_water_body": "land_cover_development",
+    "fetch_usgs_earthquakes": "hazard_modeling",
+    "fetch_hifld_critical_infrastructure": "flood_infrastructure",
+    "fetch_cdc_svi": "damage_assessment",
+    "fetch_sentinel2_truecolor": "geographic_primitives",
+    "compute_home_range_kde": "conservation_ecology",
+    "compute_movement_trajectory": "conservation_ecology",
+    # fetchers2 batch (2026-06-27)
+    "fetch_epa_frs_facilities": "flood_infrastructure",
+    "fetch_us_drought_monitor": "hazard_modeling",
+    "fetch_overpass_pois": "geographic_primitives",
+    "fetch_census_acs": "land_cover_development",
+    "fetch_landsat_imagery": "land_cover_development",
+    "fetch_noaa_sst": "coastal",
+    "fetch_openfema_disasters": "news_events",
+    "fetch_esri_landcover_10m": "land_cover_development",
+    # batch3+4 (2026-06-27)
+    "fetch_usgs_volcano_alerts": "hazard_modeling",
+    "fetch_usgs_water_quality": "hydrology",
+    "fetch_usgs_groundwater_levels": "hydrology",
+    "fetch_snotel_snow": "hydrology",
+    "fetch_sentinel1_sar": "coastal",
+    "fetch_modis_lst": "weather_atmosphere",
+    "fetch_hifld_transmission_lines": "flood_infrastructure",
+    "fetch_lehd_jobs": "damage_assessment",
+    "fetch_nws_river_forecast": "hydrology",
+    "fetch_copernicus_dem": "terrain_elevation",
+    "fetch_chirps_precipitation": "weather_atmosphere",
+    "fetch_ghsl_population": "land_cover_development",
+    "fetch_jrc_global_surface_water": "hydrology",
+    "fetch_soilgrids": "hydrology",
 }
 
 
@@ -497,6 +531,9 @@ PRIMARY_CATEGORY: dict[str, str] = {
 #: lists. Membership is additive: the validator treats a tool as allowed if it
 #: matches either the primary or any secondary category it carries.
 SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
+    # NOAA SLR marsh-migration is a coastal product (primary) that materially
+    # belongs to conservation/ecology too (it projects wetland habitat transition).
+    "fetch_noaa_slr_marsh": ("conservation_ecology",),
     "run_pelicun_damage_assessment": ("damage_assessment",),
     "run_pelicun_with_buildings": ("damage_assessment",),
     "fetch_usace_nsi": ("damage_assessment",),
@@ -571,7 +608,38 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # lightning/convection animation demo). No news_events cross-list -- it takes
     # an AOI bbox + UTC window DIRECTLY, with no news/geocode front-half.
     "run_model_glm_lightning_animation": ("weather_atmosphere",),
-}
+    # a+b+c batch (2026-06-27)
+    "digitize_water_body": ('hydrology', 'terrain_elevation',),
+    "fetch_usgs_earthquakes": ('news_events', 'geographic_primitives',),
+    "fetch_hifld_critical_infrastructure": ('damage_assessment', 'geographic_primitives',),
+    "fetch_cdc_svi": ('geographic_primitives',),
+    "fetch_sentinel2_truecolor": ('land_cover_development', 'terrain_elevation', 'damage_assessment',),
+    "compute_home_range_kde": ('geographic_primitives',),
+    "compute_movement_trajectory": ('geographic_primitives',),
+    # fetchers2 batch (2026-06-27)
+    "fetch_epa_frs_facilities": ('damage_assessment', 'hazard_modeling',),
+    "fetch_us_drought_monitor": ('fire', 'conservation_ecology',),
+    "fetch_overpass_pois": ('damage_assessment', 'flood_infrastructure',),
+    "fetch_census_acs": ('damage_assessment', 'geographic_primitives',),
+    "fetch_landsat_imagery": ('terrain_elevation', 'weather_atmosphere',),
+    "fetch_noaa_sst": ('weather_atmosphere', 'conservation_ecology',),
+    "fetch_openfema_disasters": ('damage_assessment', 'geographic_primitives',),
+    "fetch_esri_landcover_10m": ('conservation_ecology', 'geographic_primitives',),
+    # batch3+4 (2026-06-27)
+    "fetch_usgs_volcano_alerts": ('news_events',),
+    "fetch_usgs_water_quality": ('conservation_ecology',),
+    "fetch_usgs_groundwater_levels": ('hazard_modeling',),
+    "fetch_snotel_snow": ('weather_atmosphere', 'terrain_elevation',),
+    "fetch_sentinel1_sar": ('hydrology', 'weather_atmosphere',),
+    "fetch_modis_lst": ('hazard_modeling', 'conservation_ecology', 'land_cover_development',),
+    "fetch_hifld_transmission_lines": ('damage_assessment', 'geographic_primitives',),
+    "fetch_lehd_jobs": ('geographic_primitives',),
+    "fetch_nws_river_forecast": ('flood_infrastructure', 'weather_atmosphere',),
+    "fetch_copernicus_dem": ('hydrology', 'coastal', 'hazard_modeling',),
+    "fetch_chirps_precipitation": ('hydrology', 'conservation_ecology',),
+    "fetch_ghsl_population": ('damage_assessment', 'geographic_primitives',),
+    "fetch_jrc_global_surface_water": ('coastal', 'conservation_ecology', 'terrain_elevation',),
+    "fetch_soilgrids": ('land_cover_development', 'terrain_elevation',),}
 
 
 # ---------------------------------------------------------------------------
