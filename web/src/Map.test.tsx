@@ -2462,6 +2462,9 @@ import {
   setAnalysisExtentSimColor,
   clearAnalysisExtent,
   computeBboxBottomAnchor,
+  aoiRectCornerPlaceable,
+  AOI_CORNER_MIN_EXTENT_PX,
+  AOI_CORNER_FILL_FRACTION,
 } from "./Map";
 import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
@@ -2893,6 +2896,71 @@ describe("computeBboxBottomAnchor (job-0321 F43)", () => {
       getCanvas: vi.fn(() => null),
     } as unknown as import("maplibre-gl").Map;
     expect(computeBboxBottomAnchor(m, BBOX)).toBeNull();
+  });
+});
+
+// MOBILE-ONLY HUD (NATE 2026-06-27) - the aoiCornerPlaceable derivation that Map
+// threads to LayerLegend so the mobile legend can pick corner-attach vs
+// dock-above-chat. Deliberately conservative: TRUE in the normal case (preserves
+// the existing corner-attach), FALSE only when clearly too zoomed.
+describe("aoiRectCornerPlaceable (mobile legend corner-attach vs dock decision)", () => {
+  const CW = 1000;
+  const CH = 800;
+
+  it("is FALSE when there is no projected AOI rect (off-screen / not projected)", () => {
+    // null rect mirrors computeBboxScreenRect returning null (bbox center off-canvas).
+    expect(aoiRectCornerPlaceable(null, CW, CH)).toBe(false);
+    expect(aoiRectCornerPlaceable(undefined, CW, CH)).toBe(false);
+  });
+
+  it("is TRUE for a normal AOI that occupies a sane fraction of the screen", () => {
+    // ~400x300 box on a 1000x800 canvas -> clearly placeable.
+    expect(
+      aoiRectCornerPlaceable({ left: 300, top: 250, right: 700, bottom: 550 }, CW, CH),
+    ).toBe(true);
+  });
+
+  it("is FALSE when the AOI is a tiny dot (smaller on-screen extent <= the min)", () => {
+    // height = AOI_CORNER_MIN_EXTENT_PX exactly -> too small (a dot).
+    const h = AOI_CORNER_MIN_EXTENT_PX;
+    expect(
+      aoiRectCornerPlaceable({ left: 480, top: 400, right: 560, bottom: 400 + h }, CW, CH),
+    ).toBe(false);
+    // A hair larger than the min on BOTH axes -> placeable again.
+    expect(
+      aoiRectCornerPlaceable(
+        { left: 480, top: 400, right: 480 + h + 2, bottom: 400 + h + 2 },
+        CW,
+        CH,
+      ),
+    ).toBe(true);
+  });
+
+  it("is FALSE when the AOI fills the viewport on BOTH axes (zoomed in past the box)", () => {
+    const w = CW * AOI_CORNER_FILL_FRACTION;
+    const h = CH * AOI_CORNER_FILL_FRACTION;
+    expect(
+      aoiRectCornerPlaceable({ left: 0, top: 0, right: w, bottom: h }, CW, CH),
+    ).toBe(false);
+  });
+
+  it("STAYS placeable for a wide-but-short AOI (only one axis fills) - has on-screen edges", () => {
+    // Spans 99% of width but only 30% of height -> top/bottom edges on-screen.
+    expect(
+      aoiRectCornerPlaceable(
+        { left: 5, top: 280, right: 5 + CW * 0.99, bottom: 280 + CH * 0.3 },
+        CW,
+        CH,
+      ),
+    ).toBe(true);
+  });
+
+  it("does NOT mark too-large when canvas dims are unknown (test env, dims 0)", () => {
+    // A box bigger than any plausible viewport but with no canvas dims -> we cannot
+    // judge fill, so it stays placeable (size still passes the dot check).
+    expect(
+      aoiRectCornerPlaceable({ left: 0, top: 0, right: 4000, bottom: 4000 }, 0, 0),
+    ).toBe(true);
   });
 });
 

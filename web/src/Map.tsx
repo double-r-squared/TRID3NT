@@ -2114,6 +2114,20 @@ export function computeBboxBottomAnchor(
 export const LEGEND_MIN_WIDTH_PX = 160;
 export const LEGEND_VIEWPORT_MARGIN_PX = 24; // px kept clear on each side.
 
+// MOBILE-ONLY HUD (NATE 2026-06-27) - thresholds for the `aoiCornerPlaceable`
+// signal (Map -> LayerLegend, mobile path only). They decide when a corner
+// attach to the AOI box stops being useful so the mobile legend docks above the
+// chat instead. Conservative on purpose: the normal AOI stays corner-placeable.
+//   - AOI_CORNER_MIN_EXTENT_PX: when the SMALLER on-screen AOI extent is <= this,
+//     the box is a tiny dot (smaller than one legend key row, KEY_HEIGHT_FLAT=56)
+//     so a corner snap is meaningless -> not placeable.
+//   - AOI_CORNER_FILL_FRACTION: when the projected box spans >= this fraction of
+//     BOTH canvas axes the AOI fills the viewport (every edge off-screen) so there
+//     is no usable on-screen corner left -> not placeable. Requiring BOTH axes
+//     keeps a wide-but-short / tall-but-narrow AOI placeable.
+export const AOI_CORNER_MIN_EXTENT_PX = 24;
+export const AOI_CORNER_FILL_FRACTION = 0.92;
+
 export function computeBboxScreenWidth(
   m: MapLibreMap,
   bbox: [number, number, number, number],
@@ -2222,6 +2236,50 @@ export function computeBboxScreenRect(
     /* no canvas in test env  -  return the rect as-is */
   }
   return { left, top, right, bottom };
+}
+
+// MOBILE-ONLY HUD (NATE 2026-06-27) - is the projected AOI rectangle usefully
+// on-screen for a CORNER attach, or has the user zoomed/panned so far that a
+// corner snap is no longer useful (so the mobile legend should dock above the
+// chat instead of clinging to a speck / a fill-the-screen box / nothing)? Pure +
+// directly unit-testable; the live caller (the legendRect recompute effect)
+// passes the freshly-projected `rect` (from computeBboxScreenRect, which already
+// returns null when the bbox center is off-canvas) plus the live canvas size.
+//
+// Deliberately CONSERVATIVE - true in the normal case so the existing
+// corner-attach behavior is preserved; false only in the clearly-too-zoomed
+// cases:
+//   - rect == null  -> false. computeBboxScreenRect already returns null when the
+//     bbox CENTER is off-canvas (zoomed/panned away), so there is no on-screen AOI
+//     to corner-attach to.
+//   - too-small (a dot) -> false. The SMALLER on-screen AOI extent is
+//     <= AOI_CORNER_MIN_EXTENT_PX: the box is a tiny dot (smaller than one legend
+//     key row), so a corner attach is meaningless.
+//   - too-large (fills the viewport) -> false. The box spans
+//     >= AOI_CORNER_FILL_FRACTION of BOTH canvas axes: every AOI edge runs
+//     off-screen, so there is no usable on-screen AOI corner. Requiring BOTH axes
+//     keeps a wide-but-short / tall-but-narrow AOI placeable (it still has
+//     on-screen edges to snap to). Only judged when the canvas dims are known
+//     (> 0); without them (test env) we cannot tell, so we do NOT mark too-large.
+//   - otherwise -> true (the normal corner-attach case).
+export function aoiRectCornerPlaceable(
+  rect: LegendScreenRect | null | undefined,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  if (!rect) return false;
+  const w = Math.abs(rect.right - rect.left);
+  const h = Math.abs(rect.bottom - rect.top);
+  if (Math.min(w, h) <= AOI_CORNER_MIN_EXTENT_PX) return false;
+  const haveCanvas = canvasW > 0 && canvasH > 0;
+  if (
+    haveCanvas &&
+    w >= canvasW * AOI_CORNER_FILL_FRACTION &&
+    h >= canvasH * AOI_CORNER_FILL_FRACTION
+  ) {
+    return false;
+  }
+  return true;
 }
 
 // --- F74b feature-click/tap-to-inspect ---------------------------------- //
@@ -2636,6 +2694,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // each map move/zoom (same listeners as legendAnchor). Null when there is no
   // AOI / the bbox is off-screen -> LayerLegend uses its static 320 fallback.
   const [legendBarWidth, setLegendBarWidth] = useState<number | null>(null);
+  // MOBILE-ONLY HUD (NATE 2026-06-27) - two derived legend signals threaded to
+  // LayerLegend so its MOBILE path can decide corner-attach (snap to the AOI box)
+  // vs dock-above-chat (snap to a clean horizontal row above the scrubber):
+  //   - legendMapZoom: the LIVE map zoom, tracked on every move/zoom by the
+  //     always-on zoom effect below (NOT the popup-only `currentZoom`, which is
+  //     null whenever no feature popup is open). Threaded as the `mapZoom` prop.
+  //     Null until the first projection.
+  //   - aoiCornerPlaceable: true when the AOI box is usefully on-screen for a
+  //     corner attach, false in the clearly-too-zoomed cases (off-screen / fills
+  //     the viewport / projects to a tiny dot). Computed in the legendRect
+  //     recompute below. Conservatively TRUE in the normal case so existing
+  //     corner-attach behavior is preserved; the legend's MOBILE band-dock only
+  //     fires when this is false. DESKTOP ignores both props (byte-for-byte
+  //     unchanged): the legend's desktop path never reads mapZoom /
+  //     aoiCornerPlaceable.
+  const [legendMapZoom, setLegendMapZoom] = useState<number | null>(null);
+  const [aoiCornerPlaceable, setAoiCornerPlaceable] = useState<boolean>(false);
   const isMobile = useIsMobile();
 
   // F74b feature-click/tap-to-inspect. `featurePopup` is the currently-shown
@@ -4217,6 +4292,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // FIX 4  -  no AOI bbox -> drop the projected width so the legend reverts to
       // its static 320 fallback.
       setLegendBarWidth(null);
+      // MOBILE-ONLY HUD - no AOI bbox => not corner-placeable (the mobile legend
+      // band-docks above the chat instead of corner-attaching).
+      setAoiCornerPlaceable(false);
       return undefined;
     }
 
@@ -4268,6 +4346,50 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         setLegendRect(null);
         setLegendAnchor(null);
         setLegendBarWidth(null);
+      }
+      // MOBILE-ONLY HUD (NATE 2026-06-27) - derive `aoiCornerPlaceable`: is the AOI
+      // box usefully on-screen for a CORNER attach, or has the user zoomed/panned
+      // so far that the corner snap is no longer useful and the legend should dock
+      // above the chat instead? Computed from the SAME freshly-projected `rect`
+      // (the per-corner projections already done by computeBboxScreenRect) plus the
+      // live canvas size. Deliberately CONSERVATIVE: true in the normal case so the
+      // existing corner-attach behavior is preserved; false only in the clearly-
+      // too-zoomed cases. This scalar is consumed only by the legend's MOBILE path
+      // (DESKTOP ignores it).
+      //   - rect == null  -> false. computeBboxScreenRect returns null when the
+      //     bbox CENTER falls off-canvas (zoomed/panned away), so there is no AOI
+      //     on-screen to corner-attach to.
+      //   - too-large (fills the viewport) -> false. When the projected box spans
+      //     >= 92% of BOTH the canvas width AND height, every AOI edge runs off-
+      //     screen, so there is no usable on-screen AOI corner left to hang off of.
+      //     Requiring BOTH axes keeps a wide-but-short (or tall-but-narrow) AOI
+      //     placeable - it still has on-screen edges to snap to.
+      //   - too-small (a dot) -> false. When the SMALLER on-screen extent is <= 24px
+      //     the AOI is a tiny dot (smaller than one legend key row), so a corner
+      //     attach is meaningless and would have the legend cling to a speck.
+      //   - otherwise -> true (the normal corner-attach case).
+      // (See aoiRectCornerPlaceable above for the full threshold rationale.)
+      let cw = 0;
+      let ch = 0;
+      try {
+        const c = cur.getCanvas();
+        if (c) {
+          cw = c.clientWidth || c.width || 0;
+          ch = c.clientHeight || c.height || 0;
+        }
+      } catch {
+        /* no canvas in test env - treat as unknown (cw/ch stay 0) */
+      }
+      setAoiCornerPlaceable(aoiRectCornerPlaceable(rect, cw, ch));
+      // Mirror the LIVE map zoom for the legend's mobile dock decision. This is a
+      // continuously-tracked value (move/zoom/render listeners on this effect),
+      // unlike the popup-only `currentZoom`. Guarded read so a torn-down map can't
+      // throw.
+      try {
+        const z = cur.getZoom();
+        if (typeof z === "number" && Number.isFinite(z)) setLegendMapZoom(z);
+      } catch {
+        /* map may be mid-teardown - keep the last zoom */
       }
     };
     const schedule = () => {
@@ -4325,6 +4447,65 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     lastReportedRectRef.current = legendRect;
     onAoiScreenRectChange(legendRect);
   }, [legendRect, onAoiScreenRectChange]);
+
+  // MOBILE-ONLY HUD (NATE 2026-06-27) - track the LIVE map zoom independently of
+  // the AOI projection effect (which only runs while aoiBbox is non-null) and of
+  // the popup-pin effect (which only runs while a feature popup is open). The
+  // mobile legend uses this zoom (threaded as the `mapZoom` prop) alongside
+  // aoiCornerPlaceable to decide corner-attach vs dock-above-chat. rAF-throttled
+  // on move/zoom so a 60fps pan does not thrash setState; equality-guarded so an
+  // unchanged zoom does not re-render. DESKTOP ignores `mapZoom` entirely, so this
+  // adds nothing to the desktop render path.
+  useEffect(() => {
+    // MOBILE-ONLY: the live-zoom signal feeds only the mobile legend dock; gate
+    // the listener attach on isMobile so the DESKTOP render path is byte-for-byte
+    // unchanged (no extra move/zoom listeners, no setState).
+    if (!isMobile) return undefined;
+    const m = map.current;
+    if (!m) return undefined;
+    let rafId: number | null = null;
+    let disposed = false;
+    const recomputeZoom = () => {
+      rafId = null;
+      if (disposed) return;
+      const cur = map.current;
+      if (!cur) return;
+      let z: number;
+      try {
+        z = cur.getZoom();
+      } catch {
+        return;
+      }
+      if (typeof z !== "number" || !Number.isFinite(z)) return;
+      setLegendMapZoom((prev) => (prev === z ? prev : z));
+    };
+    const schedule = () => {
+      if (rafId != null) return;
+      if (typeof requestAnimationFrame === "function") {
+        rafId = requestAnimationFrame(recomputeZoom);
+      } else {
+        recomputeZoom(); // SSR / test env without rAF -> synchronous.
+      }
+    };
+    schedule(); // seed the initial zoom immediately.
+    m.on("move", schedule);
+    m.on("zoom", schedule);
+    return () => {
+      disposed = true;
+      if (rafId != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
+      try {
+        m.off("move", schedule);
+        m.off("zoom", schedule);
+      } catch {
+        /* map may already be torn down */
+      }
+    };
+    // map.current is a ref (stable); re-attach only when the mobile/desktop env
+    // flips so desktop never carries the listeners.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile]);
 
   // F74b feature-click/tap-to-inspect. The agent advertises "click polygons to
   // see name / designation / IUCN", so a click OR a tap on a rendered vector
@@ -4897,6 +5078,25 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     resolvedAnchor = { left: legendAnchor.left, top };
   }
 
+  // MOBILE-ONLY HUD (NATE 2026-06-27) - the two NEW legend signals, bundled into a
+  // typed object and SPREAD onto <LayerLegend> below. This phase OWNS Map.tsx but
+  // NOT LayerLegend.tsx (the Legend phase adds the consuming `mapZoom` /
+  // `aoiCornerPlaceable` props to LayerLegendProps and implements the dock
+  // decision). Spreading a typed variable (rather than passing the props as a JSX
+  // object literal) bypasses TypeScript's excess-property check, so Map.tsx
+  // typechecks GREEN now and stays correct once the Legend phase lands the props.
+  // Contract handed forward:
+  //   - mapZoom: number | null - the LIVE map zoom (continuously tracked on
+  //     move/zoom, null until the first read). Supplementary zoom signal.
+  //   - aoiCornerPlaceable: boolean - true when the AOI box is usefully on-screen
+  //     for a corner attach (the normal case, preserves existing corner-snap);
+  //     false only in the clearly-too-zoomed cases (AOI off-screen / fills the
+  //     viewport / is a tiny dot) so the mobile legend docks above the chat.
+  const legendHudExtras: { mapZoom: number | null; aoiCornerPlaceable: boolean } = {
+    mapZoom: legendMapZoom,
+    aoiCornerPlaceable,
+  };
+
   return (
     <div
       ref={container}
@@ -4925,6 +5125,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
            of floating over the map. Null on desktop (the desktop dock ignores
            it). */
         sheetTopPx={legendSheetTopPx}
+        /* MOBILE-ONLY HUD (NATE 2026-06-27) - mapZoom (live map zoom) +
+           aoiCornerPlaceable (is the AOI usefully on-screen for a corner attach),
+           spread from legendHudExtras above so the legend's MOBILE path can decide
+           corner-attach (snap to the AOI box) vs dock-above-chat (a clean
+           horizontal row above the scrubber). DESKTOP ignores both. Spread (not a
+           JSX literal) so it typechecks before the Legend phase adds the props. */
+        {...legendHudExtras}
         /* LANE D (desktop dock) - center the static bottom-center legend strip
            in the VISIBLE gutter between the left rail + right chat panel. */
         desktopLeftInsetPx={leftPanelWidthPx}

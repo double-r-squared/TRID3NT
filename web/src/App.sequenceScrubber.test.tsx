@@ -33,6 +33,13 @@ import {
 import { useAnimationState } from "./lib/use_animation_controller";
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
 import type { ProjectLayerSummary } from "./contracts";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+// App.tsx boots the full shell (WS / auth / map) and cannot mount in happy-dom,
+// so the App-internal sheet-top derivation is asserted at the source level (the
+// same CHAT_SRC pattern Chat tests use). MEASURED-TOP (NATE 2026-06-27).
+const APP_SRC = readFileSync(resolve("src/App.tsx"), "utf8");
 
 // A controllable fake-timer seam so we can fire the controller's advance tick
 // deterministically without real wall-clock time.
@@ -554,8 +561,8 @@ describe("TASK E - mobile scrubber docks to + tracks the chat sheet top edge", (
     render(<AppScrubberHarness sheetTopPx={520} />);
     pushGroup();
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    // gap is 8 (SCRUBBER_SHEET_DOCK_GAP_PX): 800 - 520 + 8 = 288.
-    expect(el.style.bottom).toBe("288px");
+    // gap is 20 (SCRUBBER_SHEET_DOCK_GAP_PX): 800 - 520 + 20 = 300.
+    expect(el.style.bottom).toBe("300px");
     expect(el.style.left).toBe("50%");
   });
 
@@ -582,5 +589,48 @@ describe("TASK E - mobile scrubber docks to + tracks the chat sheet top edge", (
     const el = screen.getByTestId("grace2-sequence-scrubber");
     expect(el.style.bottom).toBe("24px");
     expect(el.style.top).toBe("");
+  });
+});
+
+// --- MEASURED-TOP (NATE 2026-06-27, mobile-only): App PREFERS the real measured
+// sheet top (Chat's getBoundingClientRect under a ResizeObserver) over the
+// arithmetic COLLAPSED_SHEET_PX estimate, so the scrubber + legend dock above the
+// REAL connecting/bare/collapsed composer instead of floating mid-screen. App
+// boots the full shell (WS/auth/map) so we assert the derivation at the source
+// level. -------------------------------------------------------------------- //
+describe("App.tsx mobile sheetTopPx prefers the measured top (MEASURED-TOP)", () => {
+  it("holds the lifted measured top in its own state", () => {
+    expect(APP_SRC).toContain(
+      "const [sheetTopMeasuredPx, setSheetTopMeasuredPx] = useState<number | null>(",
+    );
+  });
+
+  it("handleSheetGeometryChange consumes topPx and keeps the last non-null measurement", () => {
+    // The geometry callback now also receives topPx (number | null) and only
+    // commits real measurements (a transient null mid-teardown must not pop the
+    // overlays back to center).
+    expect(APP_SRC).toMatch(
+      /handleSheetGeometryChange = useCallback\(\s*\(g: \{\s*expanded: boolean;\s*heightVh: number;\s*topPx: number \| null;\s*\}\): void =>/,
+    );
+    expect(APP_SRC).toContain("if (g.topPx != null) setSheetTopMeasuredPx(g.topPx);");
+  });
+
+  it("sheetTopPx prefers the measured top, falling back to the arithmetic estimate only before the first measurement", () => {
+    // Desktop short-circuits to null first; mobile prefers sheetTopMeasuredPx;
+    // the arithmetic estimate is the last resort (sheetTopMeasuredPx == null).
+    expect(APP_SRC).toMatch(
+      /const sheetTopPx = !isMobile\s*\?\s*null\s*:\s*sheetTopMeasuredPx != null\s*\?\s*sheetTopMeasuredPx\s*:\s*viewportH > 0/,
+    );
+    // The arithmetic fallback is unchanged (expanded vh vs COLLAPSED_SHEET_PX).
+    expect(APP_SRC).toContain(
+      "? Math.round((clampSheetHeight(sheetHeightVh) / 100) * viewportH)",
+    );
+    expect(APP_SRC).toContain(": COLLAPSED_SHEET_PX)");
+  });
+
+  it("DESKTOP keeps sheetTopPx null (no measurement, byte-for-byte unchanged)", () => {
+    // The first ternary arm is `!isMobile ? null`, so desktop never reads either
+    // measured or arithmetic path.
+    expect(APP_SRC).toMatch(/const sheetTopPx = !isMobile\s*\?\s*null/);
   });
 });

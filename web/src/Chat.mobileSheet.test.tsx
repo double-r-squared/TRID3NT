@@ -1671,15 +1671,19 @@ describe("Chat.tsx wake-composer redesign (NATE 2026-06-19)", () => {
   });
 });
 
-// MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - Chat lifts its sheet geometry
-// (expanded? + dragged height vh) up to App via onSheetGeometryChange so the
-// App-root overlays (SequenceScrubber + LayerLegend) can dock to the sheet's
-// TOP edge. Chat can't mount in happy-dom (it opens a WebSocket), so we assert
-// the wiring at the source level (the established CHAT_SRC pattern).
+// MOBILE SHEET-TOP DOCK (NATE 2026-06-24; MEASURED-TOP 2026-06-27) - Chat lifts
+// its sheet geometry (expanded? + dragged height vh) AND the REAL measured
+// top-edge px up to App via onSheetGeometryChange so the App-root overlays
+// (SequenceScrubber + LayerLegend) can dock to the sheet's TRUE TOP edge. Chat
+// can't mount in happy-dom (it opens a WebSocket), so we assert the wiring at the
+// source level (the established CHAT_SRC pattern).
 describe("Chat.tsx mobile sheet-geometry lift (sheetTopPx dock)", () => {
-  it("declares the onSheetGeometryChange prop in ChatProps", () => {
+  it("declares the onSheetGeometryChange prop in ChatProps with measured topPx", () => {
+    // MEASURED-TOP (NATE 2026-06-27): the callback now ALSO carries `topPx`
+    // (number | null) - the real getBoundingClientRect top so App can dock to the
+    // true panel top instead of an arithmetic estimate.
     expect(CHAT_SRC).toMatch(
-      /onSheetGeometryChange\?\s*:\s*\(g:\s*\{\s*expanded:\s*boolean;\s*heightVh:\s*number\s*\}\s*\)\s*=>\s*void/,
+      /onSheetGeometryChange\?\s*:\s*\(g:\s*\{\s*expanded:\s*boolean;\s*heightVh:\s*number;\s*topPx:\s*number\s*\|\s*null;\s*\}\s*\)\s*=>\s*void/,
     );
   });
 
@@ -1690,19 +1694,47 @@ describe("Chat.tsx mobile sheet-geometry lift (sheetTopPx dock)", () => {
     expect(ctorArgs).toContain("onSheetGeometryChange");
   });
 
-  it("fires onSheetGeometryChange from a mobile-gated effect on sheet state/height changes", () => {
-    // The effect publishes { expanded, heightVh } and is gated to mobile + keyed
-    // on sheetExpanded + sheetHeightVh so it re-fires on expand/collapse/drag.
-    expect(CHAT_SRC).toContain(
-      "onSheetGeometryChange?.({ expanded: sheetExpanded, heightVh: sheetHeightVh })",
-    );
-    // The effect bails on desktop (no bottom sheet there).
+  it("publishes geometry + measured topPx from a mobile-gated callback", () => {
+    // The publisher reads the live expanded/height from refs and measures the
+    // container's real top via getBoundingClientRect, then emits all three.
+    expect(CHAT_SRC).toContain("const topPx = el ? el.getBoundingClientRect().top : null;");
     expect(CHAT_SRC).toMatch(
-      /useEffect\(\(\)\s*=>\s*\{\s*if\s*\(!mobile\)\s*return;\s*onSheetGeometryChange/,
+      /onSheetGeometryChange\?\.\(\{\s*expanded:\s*sheetExpandedRef\.current,\s*heightVh:\s*sheetHeightRef\.current,\s*topPx,\s*\}\)/,
     );
-    // Keyed on the sheet geometry deps so it tracks expand/collapse/drag.
+    // The publisher bails on desktop (no bottom sheet there).
     expect(CHAT_SRC).toMatch(
-      /\[mobile,\s*sheetExpanded,\s*sheetHeightVh,\s*onSheetGeometryChange\]/,
+      /const publishSheetGeometry = useCallback\(\(\): void => \{\s*if \(!mobile\) return;/,
     );
+  });
+
+  it("re-publishes on geometry change keyed on the sheet deps (expand/collapse/drag)", () => {
+    // The geometry effect re-runs publishSheetGeometry when expanded/height change
+    // (post-commit, so the rect reflects the just-applied layout).
+    expect(CHAT_SRC).toMatch(
+      /useEffect\(\(\) => \{\s*if \(!mobile\) return;\s*publishSheetGeometry\(\);\s*\}, \[mobile, sheetExpanded, sheetHeightVh, publishSheetGeometry\]\)/,
+    );
+  });
+
+  it("measures the real top under a ResizeObserver - covers connecting/bare/collapsed", () => {
+    // A ResizeObserver on the sheet container re-measures whenever the composer
+    // card's REAL height changes (connecting -> chat composer swap, bare box,
+    // collapsed reflow) - the case the { expanded, heightVh } props cannot see and
+    // where the arithmetic estimate floated the overlays mid-screen.
+    expect(CHAT_SRC).toContain("const sheetContainerRef = useRef<HTMLDivElement | null>(null);");
+    expect(CHAT_SRC).toMatch(
+      /const ro = new ResizeObserver\(\(\) => publishSheetGeometry\(\)\);\s*ro\.observe\(el\);/,
+    );
+    // happy-dom lacks ResizeObserver, so the effect guards on its existence.
+    expect(CHAT_SRC).toContain('typeof ResizeObserver === "undefined"');
+    // The observer effect is mobile-gated and disconnects on cleanup.
+    expect(CHAT_SRC).toMatch(
+      /useEffect\(\(\) => \{\s*if \(!mobile\) return undefined;[\s\S]*?return \(\) => ro\.disconnect\(\);/,
+    );
+  });
+
+  it("attaches the measurement ref to the sheet container ONLY on mobile", () => {
+    // Desktop passes no ref -> byte-for-byte unchanged behavior (the geometry
+    // effects are mobile-gated and never read it anyway).
+    expect(CHAT_SRC).toContain("ref={mobile ? sheetContainerRef : undefined}");
   });
 });

@@ -370,6 +370,15 @@ export function App(): JSX.Element {
   // desktop (the overlays keep their viewport-bottom placement there).
   const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
   const [sheetHeightVh, setSheetHeightVh] = useState<number>(SHEET_HEIGHT_FALLBACK_VH);
+  // MEASURED SHEET TOP (NATE 2026-06-27, mobile-only) - the REAL top-edge screen
+  // Y (px) of the chat sheet/composer, measured in Chat via getBoundingClientRect
+  // under a ResizeObserver and lifted here. null until Chat reports its first
+  // measurement (and always on desktop). When present we PREFER it over the
+  // arithmetic estimate below, so the scrubber + legend dock above the REAL
+  // connecting/bare/collapsed composer instead of floating mid-screen.
+  const [sheetTopMeasuredPx, setSheetTopMeasuredPx] = useState<number | null>(
+    null,
+  );
   // Track viewport height so sheetTopPx recomputes on resize / orientation flip
   // (the sheet height is a vh fraction, and the collapsed estimate is measured
   // from the bottom). Seeded from the live window; updated on resize.
@@ -389,27 +398,45 @@ export function App(): JSX.Element {
     };
   }, []);
   const handleSheetGeometryChange = useCallback(
-    (g: { expanded: boolean; heightVh: number }): void => {
+    (g: {
+      expanded: boolean;
+      heightVh: number;
+      topPx: number | null;
+    }): void => {
       setSheetExpanded(g.expanded);
       setSheetHeightVh(g.heightVh);
+      // MEASURED-TOP (NATE 2026-06-27) - Chat measures the sheet's real top-edge
+      // screen Y under a ResizeObserver. Keep the last non-null measurement: once
+      // we have a real top we never fall back to the arithmetic estimate (a
+      // transient null mid-teardown should not pop the overlays back to center).
+      if (g.topPx != null) setSheetTopMeasuredPx(g.topPx);
     },
     [],
   );
-  // The on-screen Y of the mobile chat sheet's TOP edge. When EXPANDED the sheet
-  // height = clampSheetHeight(heightVh)vh measured up from the bottom; when
-  // COLLAPSED it is the handle + composer card (COLLAPSED_SHEET_PX, the shared
-  // clearance estimate). Both overlays dock their BOTTOM edge just above this Y.
-  // Mobile-only; null on desktop. (The safe-area inset is left to the overlays'
-  // CSS calc fallback when sheetTopPx is unavailable; here the collapsed
-  // estimate already folds in the historical ~clearance band, so we anchor the
-  // overlay bottom relative to this px line.)
-  const sheetTopPx =
-    isMobile && viewportH > 0
-      ? viewportH -
-        (sheetExpanded
-          ? Math.round((clampSheetHeight(sheetHeightVh) / 100) * viewportH)
-          : COLLAPSED_SHEET_PX)
-      : null;
+  // The on-screen Y of the mobile chat sheet's TOP edge. Both overlays
+  // (SequenceScrubber + LayerLegend) dock their BOTTOM edge just above this Y.
+  // Mobile-only; null on desktop (the overlays keep their viewport-bottom
+  // placement there, byte-for-byte unchanged).
+  //
+  // MEASURED-TOP PREFERENCE (NATE 2026-06-27, mobile-only) - we PREFER the REAL
+  // top-edge px Chat measured via getBoundingClientRect (`sheetTopMeasuredPx`).
+  // It is correct even in the connecting / bare / collapsed composer state, where
+  // the arithmetic estimate (COLLAPSED_SHEET_PX=100) was wrong and the overlays
+  // floated mid-screen. We fall back to the arithmetic estimate ONLY before the
+  // first real measurement lands (sheetTopMeasuredPx == null): EXPANDED ->
+  // viewportH - clampSheetHeight(heightVh)vh; COLLAPSED -> viewportH -
+  // COLLAPSED_SHEET_PX. Desktop short-circuits to null first, so it never reads
+  // either path.
+  const sheetTopPx = !isMobile
+    ? null
+    : sheetTopMeasuredPx != null
+      ? sheetTopMeasuredPx
+      : viewportH > 0
+        ? viewportH -
+          (sheetExpanded
+            ? Math.round((clampSheetHeight(sheetHeightVh) / 100) * viewportH)
+            : COLLAPSED_SHEET_PX)
+        : null;
 
   // NATE map/loading-UX polish item 1 - the bbox loading-animation overlay.
   //   - `bboxAnimEnabled` is the user's persisted enable flag (DEFAULT ON; the

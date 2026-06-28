@@ -3019,8 +3019,23 @@ export interface ChatProps {
    * mount) so App can compute one shared "sheet top" Y and dock both overlays to
    * it (a clean band at the chat-panel top, like the desktop dock). Mobile-only;
    * never fires on desktop. Optional - when omitted Chat behaves as before.
+   *
+   * MEASURED-TOP (NATE 2026-06-27) - the arithmetic estimate App derived from
+   * { expanded, heightVh } is wrong in the connecting / bare / collapsed states
+   * (the real composer card height != the COLLAPSED_SHEET_PX guess), so the
+   * scrubber + legend "float in the center" instead of snapping above the chat
+   * panel. We now ALSO carry `topPx` - the sheet container's REAL top-edge
+   * screen Y measured via getBoundingClientRect under a ResizeObserver - so App
+   * can dock to the true panel top. `topPx` is null until the first measurement
+   * (and on desktop, where the sheet is never mounted); App falls back to the
+   * arithmetic estimate only until the first real measurement lands. Pixels,
+   * measured from the viewport top.
    */
-  onSheetGeometryChange?: (g: { expanded: boolean; heightVh: number }) => void;
+  onSheetGeometryChange?: (g: {
+    expanded: boolean;
+    heightVh: number;
+    topPx: number | null;
+  }) => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -3085,10 +3100,61 @@ export function Chat({
   // the overlays keep their viewport-bottom placement). The drag handlers above
   // call setSheetHeightVh on every pointermove, so this re-fires live during a
   // drag and the overlays track the sheet as it grows/shrinks.
+  //
+  // MEASURED-TOP (NATE 2026-06-27, mobile-only) - the { expanded, heightVh }
+  // arithmetic App used to estimate the sheet top is WRONG in the connecting /
+  // bare / collapsed composer state (the real card height != COLLAPSED_SHEET_PX),
+  // so the overlays floated mid-screen instead of snapping above the chat panel.
+  // We measure the sheet container's REAL top-edge screen Y via
+  // getBoundingClientRect and publish it as `topPx`. A ResizeObserver on the
+  // container re-measures whenever the composer card grows/shrinks (connecting ->
+  // chat, single -> multi-line, expand/collapse, drag-resize), so App always
+  // docks to the true panel top. `sheetContainerRef` is attached to the mobile
+  // sheet container div below (desktop never sets it, so this all no-ops there).
+  const sheetContainerRef = useRef<HTMLDivElement | null>(null);
+  // Publish the latest geometry + measured top. Defined as a stable callback so
+  // both the geometry effect and the ResizeObserver can call it. Reads the live
+  // sheetExpanded / sheetHeightVh from refs so the observer (which only binds
+  // once) always carries the current geometry alongside the fresh measurement.
+  const sheetExpandedRef = useRef<boolean>(sheetExpanded);
+  sheetExpandedRef.current = sheetExpanded;
+  const publishSheetGeometry = useCallback((): void => {
+    if (!mobile) return;
+    const el = sheetContainerRef.current;
+    // getBoundingClientRect().top is the container's top edge in viewport px
+    // (the sheet is bottom-anchored, so its top edge IS the overlay dock line).
+    // null when unmounted / not yet attached -> App keeps its arithmetic estimate
+    // until the first real measurement lands.
+    const topPx = el ? el.getBoundingClientRect().top : null;
+    onSheetGeometryChange?.({
+      expanded: sheetExpandedRef.current,
+      heightVh: sheetHeightRef.current,
+      topPx,
+    });
+  }, [mobile, onSheetGeometryChange]);
+  // Re-publish on every geometry change (expand/collapse/drag). The measurement
+  // happens AFTER layout (useEffect runs post-commit), so the rect reflects the
+  // just-applied height/expanded state.
   useEffect(() => {
     if (!mobile) return;
-    onSheetGeometryChange?.({ expanded: sheetExpanded, heightVh: sheetHeightVh });
-  }, [mobile, sheetExpanded, sheetHeightVh, onSheetGeometryChange]);
+    publishSheetGeometry();
+  }, [mobile, sheetExpanded, sheetHeightVh, publishSheetGeometry]);
+  // ResizeObserver on the sheet container - fires whenever the composer card's
+  // real height changes (connecting -> chat composer swap, content reflow, the
+  // bare not-connected box), which the { expanded, heightVh } props CANNOT see.
+  // This is the path that fixes the connecting / bare / collapsed dock. Cleaned
+  // up on unmount / mobile flip. happy-dom lacks ResizeObserver, so we guard it.
+  useEffect(() => {
+    if (!mobile) return undefined;
+    const el = sheetContainerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(() => publishSheetGeometry());
+    ro.observe(el);
+    // Measure once immediately so the first real top lands without waiting for a
+    // resize tick (covers the initial connecting/collapsed paint).
+    publishSheetGeometry();
+    return () => ro.disconnect();
+  }, [mobile, publishSheetGeometry]);
   // F56 (job-0322; reactive fix) — per-user chat-opacity tier. Read lazily from
   // localStorage (the shared key Chat.tsx owns; SettingsPopup writes it).
   // Default MEDIUM. SAME-TAB REACTIVITY: SettingsPopup's writeChatOpacity
@@ -4192,6 +4258,11 @@ export function Chat({
       data-testid="grace2-chat"
       data-stream-key={visibleKey}
       data-sheet-state={mobile ? (sheetExpanded ? "expanded" : "collapsed") : undefined}
+      // MEASURED-TOP (NATE 2026-06-27, mobile-only) - attach the measurement ref
+      // ONLY on mobile so the ResizeObserver above can read this container's real
+      // top-edge Y. Desktop passes no ref (byte-for-byte unchanged: the geometry
+      // effects are mobile-gated and never read it).
+      ref={mobile ? sheetContainerRef : undefined}
       style={containerStyle}
     >
       {/* ux-batch-1 J1 (F10) — desktop left-border resize grab strip. Anchored

@@ -26,9 +26,16 @@ import {
   MOBILE_LEGEND_VIEWPORT_MARGIN_PX,
   mobileLegendMaxHeightCss,
   sheetTopDockBottomPx,
+  legendBandDockBottomPx,
+  MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX,
+  LEGEND_BAND_DOCK_GAP_PX,
   MobileLegendToggle,
   legendHasContent,
 } from "./components/LayerLegend";
+// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the legend's new mobile dock math
+// composes on top of the SequenceScrubber's chat-clearance gap (20), so the band
+// row clears the scrubber. Import the canonical value so the two stay in lockstep.
+import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./components/SequenceScrubber";
 import { ProjectLayerSummary } from "./contracts";
 import { getStylePreset } from "./lib/style-presets";
 // ITEM 5 (NATE 2026-06-22)  -  the legend reads the shared AnimationController to
@@ -826,16 +833,26 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
     expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
   });
 
-  it("docks the colorbar KEYS to the sheet-top band ONLY when NO AOI bbox is on screen (fallback)", () => {
-    // No aoiRect -> the sheet-top band is the fallback so the keys still clear the
-    // composer when no bbox is projected: a bottom-center band just above the sheet.
+  it("docks the colorbar KEYS to the ONE-ROW band ONLY when NO AOI bbox is on screen (fallback)", () => {
+    // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): no aoiRect -> the single
+    // horizontal legend ROW docks just above the chat panel. The ROW container
+    // (grace2-layer-legend-band-row) owns the fixed placement; with NO scrubber
+    // active the row docks at viewportH - sheetTopPx + scrubberGap (no scrubber
+    // footprint reserved). The keys live IN FLOW inside it (position:relative).
     render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
-    const key = screen.getByTestId("grace2-layer-legend-key");
-    // Docked from the BOTTOM at viewportH - sheetTopPx + gap = 768-500+8 = 276.
-    expect(key.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
-    // Centered via left:50% + translate (the band convention), not an AOI-edge
-    // absolute position.
-    expect(key.style.left).toBe("50%");
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    expect(row.style.bottom).toBe(`${768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
+    // Centered via left:50% + translateX(-50%) (the band convention).
+    expect(row.style.left).toBe("50%");
+    // It is one clean horizontal LINE: a flex row, nowrap.
+    expect(row.style.display).toBe("flex");
+    expect(row.style.flexDirection).toBe("row");
+    expect(row.style.flexWrap).toBe("nowrap");
+    // The key sits IN FLOW inside the row (no per-card absolute bottom / left:50%).
+    const key = within(row).getByTestId("grace2-layer-legend-key");
+    expect(key.style.position).toBe("relative");
+    expect(key.style.bottom).toBe("");
+    expect(key.style.left).toBe("");
   });
 
   it("docks the collapsed 'Show legend' PILL to the sheet top", () => {
@@ -845,21 +862,23 @@ describe("LayerLegend  -  docks to the chat sheet top on mobile (sheetTopPx)", (
     expect(pill.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
   });
 
-  it("a HIGHER sheet top (expanded sheet) docks the keys further up the screen", () => {
-    // No aoiRect -> the band-dock path (which tracks the sheet top). With a bbox
-    // on screen the keys snap to the bbox edge instead (covered above).
+  it("a HIGHER sheet top (expanded sheet) docks the one-row band further up the screen", () => {
+    // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): no aoiRect -> the band tracks the
+    // sheet top via the ROW container's bottom. With NO scrubber active the band
+    // bottom = viewportH - sheetTopPx + scrubberGap. With a bbox on screen the keys
+    // snap to the bbox edge instead (covered above).
     const { rerender } = render(
       <LayerLegend layers={[makeLayer()]} sheetTopPx={700} />,
     );
-    // Collapsed: top edge 700 -> bottom = 768-700+8 = 76.
-    expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
-      `${768 - 700 + MOBILE_SHEET_DOCK_GAP_PX}px`,
-    );
-    // Expanded: top edge rises to 300 -> bottom = 768-300+8 = 476 (higher up).
+    // Collapsed: top edge 700 -> bottom = 768-700+20 = 88.
+    expect(
+      screen.getByTestId("grace2-layer-legend-band-row").style.bottom,
+    ).toBe(`${768 - 700 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
+    // Expanded: top edge rises to 300 -> bottom = 768-300+20 = 488 (higher up).
     rerender(<LayerLegend layers={[makeLayer()]} sheetTopPx={300} />);
-    expect(screen.getByTestId("grace2-layer-legend-key").style.bottom).toBe(
-      `${768 - 300 + MOBILE_SHEET_DOCK_GAP_PX}px`,
-    );
+    expect(
+      screen.getByTestId("grace2-layer-legend-band-row").style.bottom,
+    ).toBe(`${768 - 300 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
   });
 });
 
@@ -898,9 +917,11 @@ describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past
     expect(fallback).toContain("env(safe-area-inset-top)");
   });
 
-  it("the docked mobile key carries a viewport-bounded max-width (not a fixed width wider than the viewport)", () => {
-    // A wide barWidth would otherwise fix the card at 520px - wider than a phone.
-    // No aoiRect -> the sheet-top band path (the clamp lives there); with a bbox on
+  it("the docked one-row band carries a viewport-bounded max-width (never spans past the window)", () => {
+    // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): the single horizontal ROW owns
+    // the viewport clamp now (the keys live in flow inside it). A wide barWidth
+    // can no longer fix the band wider than a phone: the row caps max-width to the
+    // window and scrolls horizontally. No aoiRect -> the band path; with a bbox on
     // screen the keys snap to the bbox edge with no band clamp (NATE 2026-06-26).
     render(
       <LayerLegend
@@ -909,27 +930,29 @@ describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past
         sheetTopPx={500}
       />,
     );
-    const key = screen.getByTestId("grace2-layer-legend-key");
-    // The card carries the viewport-bounded max-width clamp so it can never exceed
-    // the window, regardless of the fixed cardWidth.
-    expect(key.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
-    // And it scrolls within the clamp rather than spilling off either edge.
-    expect(key.style.overflowX).toBe("auto");
-    expect(key.style.overflowY).toBe("auto");
-    expect(key.style.boxSizing).toBe("border-box");
-    // Still centered (left:50% + translateX(-50%)) so the clamped card never runs
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    // The ROW carries the viewport-bounded max-width clamp so it can never exceed
+    // the window, regardless of any key's intrinsic width.
+    expect(row.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
+    // And it scrolls horizontally within the clamp rather than spilling off-screen.
+    expect(row.style.overflowX).toBe("auto");
+    expect(row.style.boxSizing).toBe("border-box");
+    // Still centered (left:50% + translateX(-50%)) so the clamped row never runs
     // off the left/right edge.
-    expect(key.style.left).toBe("50%");
-    expect(key.style.transform).toContain("translate");
+    expect(row.style.left).toBe("50%");
+    expect(row.style.transform).toContain("translate");
   });
 
-  it("the docked mobile key carries a viewport-bounded max-height (cannot run off the top)", () => {
-    // No aoiRect -> the sheet-top band path carries the max-height clamp (with a
-    // bbox on screen the keys snap to the bbox edge, no clamp; NATE 2026-06-26).
+  it("the docked one-row band carries a viewport-bounded max-height (cannot run off the top)", () => {
+    // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): the ROW carries the max-height
+    // clamp (capped to the band above the dock) so a tall key can never run off the
+    // top of the window. No aoiRect -> the band path; with a bbox on screen the keys
+    // snap to the bbox edge, no clamp (NATE 2026-06-26).
     render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
-    const key = screen.getByTestId("grace2-layer-legend-key");
-    const bottom = sheetTopDockBottomPx(500)!;
-    expect(key.style.maxHeight).toBe(mobileLegendMaxHeightCss(bottom));
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    // The band bottom (no scrubber active) = viewportH - sheetTopPx + scrubberGap.
+    const bottom = legendBandDockBottomPx(500, false)!;
+    expect(row.style.maxHeight).toBe(mobileLegendMaxHeightCss(bottom));
   });
 
   it("does NOT apply the viewport clamp when NOT docked to the sheet top (AOI-snap path unchanged)", () => {
@@ -953,6 +976,180 @@ describe("LayerLegend  -  mobile legend clamps to the viewport (never spans past
     fireEvent.click(screen.getByTestId("layer-legend-hide"));
     const pill = screen.getByTestId("grace2-layer-legend-show");
     expect(pill.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
+  });
+});
+
+// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the mobile legend is a single
+// horizontal LINE (one row) docked ABOVE the scrubber (order chat -> scrubber ->
+// legend). It pins to a map corner via AOI-snap when the AOI is usefully on screen
+// (aoiCornerPlaceable=true), and SNAPS to the above-chat one-row band when the
+// corner attach is no longer useful (aoiCornerPlaceable=false: zoomed too far
+// in/out / AOI off-screen / tiny dot / fills the viewport). beforeEach stubs
+// mobile=true; jsdom innerHeight is 768. These are MOBILE-ONLY; desktop early-
+// returns to the static docked strip (covered in the LANE D block, unchanged).
+describe("LayerLegend  -  mobile one-row band dock above the scrubber (NATE 2026-06-27)", () => {
+  // Drive the shared AnimationController so scrubberActive === true (the legend
+  // reserves the scrubber footprint above the chat-clearance gap), as the live app.
+  function activateScrubber(): void {
+    const c = getAnimationController();
+    c.setGroups([
+      {
+        key: "seq-band",
+        label: "HRRR precip",
+        layerIds: ["f01", "f03", "f06"],
+        frameLabels: ["F+01h", "F+03h", "F+06h"],
+      },
+    ]);
+    c.setActiveGroup("seq-band");
+  }
+
+  // --- TASK 1: ONE HORIZONTAL ROW ----------------------------------------- //
+  it("renders the keys inside ONE horizontal flex ROW (one clean line)", () => {
+    // No AOI -> band dock. Two distinct preset-only rasters -> two keys; they must
+    // both sit inside the single flex-row container as one line (not a column).
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({ layer_id: "a", name: "Storm surge max" }),
+          makeLayer({ layer_id: "b", name: "Flow velocity" }),
+        ]}
+        sheetTopPx={500}
+      />,
+    );
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    // One clean horizontal line: a flex row, nowrap.
+    expect(row.style.display).toBe("flex");
+    expect(row.style.flexDirection).toBe("row");
+    expect(row.style.flexWrap).toBe("nowrap");
+    // BOTH keys live inside the SAME row container (not stacked in separate cards).
+    const keysInRow = within(row).getAllByTestId("grace2-layer-legend-key");
+    expect(keysInRow).toHaveLength(2);
+    // Each key is a compact HORIZONTAL card sitting in flow (no per-card absolute
+    // bottom / left:50% band centering - the ROW owns the placement).
+    for (const key of keysInRow) {
+      expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+      expect(key.style.position).toBe("relative");
+      expect(key.style.flexShrink).toBe("0");
+      expect(key.style.bottom).toBe("");
+      expect(key.style.left).toBe("");
+    }
+  });
+
+  it("the row scrolls horizontally and is viewport-clamped so it never spans past the window", () => {
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} />);
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    expect(row.style.overflowX).toBe("auto");
+    expect(row.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
+    expect(row.style.boxSizing).toBe("border-box");
+  });
+
+  // --- TASK 2: DOCK ABOVE THE SCRUBBER (footprint reserve) ----------------- //
+  it("legendBandDockBottomPx reserves the scrubber footprint (+52) above the chat-clearance gap when active", () => {
+    const sheetTopPx = 500;
+    // Scrubber's docked top = viewportH - sheetTopPx + scrubberGap (20).
+    const scrubberTop = 768 - sheetTopPx + SCRUBBER_SHEET_DOCK_GAP_PX;
+    // With the scrubber ACTIVE the legend lifts the full footprint (52) + a small
+    // legend gap above the scrubber top, so the order is chat -> scrubber -> legend.
+    expect(legendBandDockBottomPx(sheetTopPx, true)).toBe(
+      scrubberTop + MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX,
+    );
+    // The reserve is exactly the scrubber footprint (52) + the legend gap.
+    expect(MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX).toBe(52);
+    // With NO scrubber the legend docks straight above the chat sheet (gap only).
+    expect(legendBandDockBottomPx(sheetTopPx, false)).toBe(scrubberTop);
+    // Active dock is strictly HIGHER than inactive (clears the scrubber band).
+    expect(legendBandDockBottomPx(sheetTopPx, true)).toBeGreaterThan(
+      legendBandDockBottomPx(sheetTopPx, false)!,
+    );
+  });
+
+  it("with the scrubber ACTIVE, the band row's bottom includes the +52 scrubber reserve", () => {
+    activateScrubber();
+    // A standalone (non-frame) raster so it still emits ONE legend key while a
+    // separate sequence group drives the scrubber-active signal. No AOI -> band.
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        sheetTopPx={500}
+      />,
+    );
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    const scrubberTop = 768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX;
+    // The row sits a full scrubber footprint (52) + legend gap above the scrubber.
+    expect(row.style.bottom).toBe(
+      `${scrubberTop + MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX}px`,
+    );
+  });
+
+  // --- TASK 3: ZOOM-KEYED SWITCH (aoiCornerPlaceable) ---------------------- //
+  it("aoiCornerPlaceable=FALSE forces the above-chat one-row dock EVEN WITH an AOI on screen", () => {
+    // An AOI rect IS projected, but the corner attach is no longer useful (zoomed
+    // too far in/out). The legend must DOCK the one-row band above the chat panel,
+    // NOT rail the AOI edges.
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={500}
+        aoiCornerPlaceable={false}
+      />,
+    );
+    // The one-row band container is present (the band-dock path fired).
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    expect(row.style.bottom).toBe(`${768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
+    // The key is IN the row, horizontal, in flow - NOT AOI-edge absolute-positioned.
+    const key = within(row).getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.style.position).toBe("relative");
+    // It did NOT rail the bbox bottom edge (would be an absolute top >= 300).
+    expect(key.style.top).toBe("");
+  });
+
+  // --- TASK 4: aoiCornerPlaceable=TRUE keeps the corner attach -------------- //
+  it("aoiCornerPlaceable=TRUE + AOI on screen KEEPS the AOI corner-attach (no band)", () => {
+    // The AOI is usefully on screen for a corner attach (the NORMAL case): keep the
+    // existing AOI-snap rail, do NOT dock the one-row band.
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={500}
+        aoiCornerPlaceable={true}
+      />,
+    );
+    // No one-row band container (the corner-attach path held).
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // AOI-edge absolute rail: a real top below the bbox bottom (300), NOT a band.
+    expect(key.style.left).not.toBe("50%");
+    expect(key.style.bottom).toBe("");
+    expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
+  });
+
+  it("an absent aoiCornerPlaceable prop defaults to corner-attach (AOI on screen, no band)", () => {
+    // Default true: an absent prop preserves the prior corner-attach behavior.
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        sheetTopPx={500}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
+  });
+
+  it("the collapsed 'Show legend' pill still docks above the chat sheet (unchanged) when band-dock would apply", () => {
+    // TASK 4: the collapsed pill behavior is preserved - it docks to the sheet top
+    // exactly as before; only the EXPANDED legend follows the one-row dock.
+    render(<LayerLegend layers={[makeLayer()]} sheetTopPx={500} aoiCornerPlaceable={false} />);
+    fireEvent.click(screen.getByTestId("layer-legend-hide"));
+    const pill = screen.getByTestId("grace2-layer-legend-show");
+    expect(pill.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
+    // No one-row band while hidden.
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
   });
 });
 

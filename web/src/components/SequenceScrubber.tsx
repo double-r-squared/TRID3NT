@@ -62,7 +62,9 @@ export const SCRUBBER_MOBILE_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${
 // `sheetTopPx`; the scrubber sits this many px ABOVE that edge. Higher
 // sheetTopPx = the sheet is more collapsed (its top is lower); a LOWER
 // sheetTopPx (sheet expanded, its top moves UP the screen) lifts the scrubber.
-export const SCRUBBER_SHEET_DOCK_GAP_PX = 8;
+// MOBILE-ONLY chat-clearance gap: 20px keeps a clear breathing space between the
+// scrubber and the chat panel (was 8px, almost touching). Desktop is untouched.
+export const SCRUBBER_SHEET_DOCK_GAP_PX = 20;
 
 // MOBILE Z-ORDER (NATE 2026-06-22): on mobile the chat is a bottom sheet at
 // zIndex 32 (Chat.tsx mobileSheetContainerStyle). The scrubber must sit

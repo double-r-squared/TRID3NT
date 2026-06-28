@@ -71,6 +71,7 @@ import {
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAnimationState } from "../lib/use_animation_controller";
 import { IconClose } from "./icons";
+import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./SequenceScrubber";
 
 // JOB WEB-AOI-LEGEND (#157)  -  the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
@@ -146,6 +147,54 @@ export function sheetTopDockBottomPx(sheetTopPx: number): number | null {
     return null;
   }
   return Math.max(0, window.innerHeight - sheetTopPx + MOBILE_SHEET_DOCK_GAP_PX);
+}
+
+// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. The single horizontal
+// legend row docks ABOVE the chat panel AND above the sequence scrubber, so the
+// bottom-to-top HUD order is: chat panel -> scrubber -> legend. The scrubber's own
+// mobile dock bottom is (viewportH - sheetTopPx + SCRUBBER_SHEET_DOCK_GAP_PX); the
+// legend band must clear the FULL scrubber footprint above that, then a small
+// legend gap. So:
+//   legend bottom = (viewportH - sheetTopPx + scrubberGap) + SCRUBBER_FOOTPRINT_PX
+//                   + LEGEND_BAND_DOCK_GAP_PX
+// We reuse the foundation phase's scrubber gap (SCRUBBER_SHEET_DOCK_GAP_PX = 20)
+// so the legend and the scrubber stay consistent, and the scrubber footprint
+// (52, the same value SCRUBBER_FOOTPRINT_PX below uses) so the legend never sits
+// on top of the scrubber.
+//
+// SCRUBBER_FOOTPRINT_PX mirrors the per-instance const in the component body
+// (scrubber height ~40 + its 12px gap). Kept module-level here so the pure dock
+// helper can reference it without the component scope.
+export const MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX = 52;
+// Small gap (px) between the legend row's bottom edge and the top of the
+// scrubber's reserved band, so the separation reads as intentional breathing room.
+export const LEGEND_BAND_DOCK_GAP_PX = 8;
+/**
+ * MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the CSS `bottom` offset that docks
+ * the single horizontal legend row just ABOVE the scrubber (which is itself docked
+ * above the chat sheet). Returns null when the viewport / sheetTopPx is
+ * unavailable (SSR / no window) so the caller falls back. Exported for unit tests.
+ *
+ * `scrubberActive` controls whether the scrubber footprint is reserved: when the
+ * scrubber is showing the legend lifts the full footprint above it; when it is not
+ * showing the legend docks straight above the chat sheet (scrubber gap only),
+ * mirroring the scrubber's own placement so the row stays just above the composer.
+ */
+export function legendBandDockBottomPx(
+  sheetTopPx: number,
+  scrubberActive: boolean,
+): number | null {
+  if (typeof window === "undefined" || !Number.isFinite(window.innerHeight)) {
+    return null;
+  }
+  // The scrubber's docked top edge (the same math the SequenceScrubber uses).
+  const scrubberTop = window.innerHeight - sheetTopPx + SCRUBBER_SHEET_DOCK_GAP_PX;
+  // Reserve the scrubber footprint + a small legend gap ONLY when the scrubber is
+  // actually on screen; otherwise dock straight above the chat sheet top band.
+  const reserve = scrubberActive
+    ? MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX
+    : 0;
+  return Math.max(0, scrubberTop + reserve);
 }
 
 // Item a (Z-HIERARCHY, NATE 2026-06-20)  -  the legend must render BEHIND the chat
@@ -235,6 +284,28 @@ export interface LayerLegendProps {
    * env() pill). Ignored on desktop (the desktop dock is fixed-position).
    */
   sheetTopPx?: number | null;
+  /**
+   * MOBILE-ONLY HUD (NATE 2026-06-27) - the LIVE map zoom (MapLibre getZoom()),
+   * tracked continuously on every move/zoom by Map.tsx (NOT the popup-only
+   * currentZoom). Null until the first read / map teardown. A SUPPLEMENTARY signal
+   * only - `aoiCornerPlaceable` is the primary dock trigger; this is threaded so
+   * the legend can refine its zoom-keyed behavior in future without a new wire.
+   * Ignored entirely on desktop (the desktop dock never reads it).
+   */
+  mapZoom?: number | null;
+  /**
+   * MOBILE-ONLY HUD (NATE 2026-06-27) - is the AOI box usefully on-screen for a
+   * CORNER attach? Computed by Map.tsx (aoiRectCornerPlaceable).
+   *   true  => keep the existing AOI-snap corner-attach behavior (the NORMAL,
+   *            conservative case): the keys rail the real bbox edges.
+   *   false => the corner attach is no longer useful (no AOI on screen / a tiny
+   *            dot / fills the viewport / zoomed-panned away), so DOCK the single
+   *            horizontal legend row above the chat panel (above the scrubber)
+   *            instead of drifting or snapping to the AOI.
+   * Default true so an absent prop preserves the prior corner-attach behavior.
+   * Ignored entirely on desktop.
+   */
+  aoiCornerPlaceable?: boolean;
 }
 
 /**
@@ -358,6 +429,14 @@ const KEY_HEIGHT_VERTICAL = 220;
 const VERTICAL_KEY_WIDTH = 76;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
+// MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. A compact card width
+// for each key in the single horizontal legend ROW so several keys read as one
+// clean line; the row scrolls horizontally (overflowX:auto) if the keys exceed the
+// row's max-width. Slightly above KEY_MIN_WIDTH so the title + min/bar/max still
+// fit legibly. Only used on the mobile band-dock path.
+const MOBILE_BAND_KEY_WIDTH = 150;
+// MOBILE ONE-ROW BAND DOCK - the horizontal gap (px) between key cards in the row.
+const MOBILE_BAND_KEY_GAP_PX = 8;
 
 // LANE D (desktop dock) - FIXED metrics for the static bottom-center desktop
 // legend strip. No scaling: these are constants (NATE: "fixed size, no scaling,
@@ -494,7 +573,16 @@ export function LayerLegend({
   desktopLeftInsetPx = 0,
   desktopRightInsetPx = 0,
   sheetTopPx = null,
+  // MOBILE-ONLY HUD (NATE 2026-06-27) - default aoiCornerPlaceable true so an
+  // absent prop preserves the prior corner-attach behavior; mapZoom defaults null.
+  // Both are consumed ONLY in the mobile path below (desktop early-returns first).
+  mapZoom = null,
+  aoiCornerPlaceable = true,
 }: LayerLegendProps): JSX.Element | null {
+  // mapZoom is a supplementary signal threaded for future zoom-keyed refinement;
+  // aoiCornerPlaceable is the primary dock trigger. Reference mapZoom so the lint
+  // gate does not flag the consumed-but-not-yet-branched prop.
+  void mapZoom;
   const dockLeftInsetPx = Math.max(0, desktopLeftInsetPx);
   const dockRightInsetPx = Math.max(0, desktopRightInsetPx);
   // One key per eligible raster layer, in stack order.
@@ -908,6 +996,30 @@ export function LayerLegend({
   const mobileDockBottomPx =
     isMobile && sheetTopPx != null ? sheetTopDockBottomPx(sheetTopPx) : null;
 
+  // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. The CSS `bottom` for
+  // the single horizontal legend ROW: docked just ABOVE the scrubber (which is
+  // itself docked above the chat sheet), so the bottom-to-top order is
+  // chat -> scrubber -> legend. Null on desktop / SSR / no sheetTopPx. Distinct
+  // from `mobileDockBottomPx` (which docks the collapsed pill straight above the
+  // chat sheet, unchanged); the expanded ROW lifts the scrubber footprint above it.
+  const bandRowBottomPx =
+    isMobile && sheetTopPx != null
+      ? legendBandDockBottomPx(sheetTopPx, scrubberActive)
+      : null;
+
+  // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. Dock the single
+  // horizontal legend row above the chat panel when EITHER there is no AOI bbox on
+  // screen (the prior fallback) OR the AOI corner attach is no longer useful
+  // (aoiCornerPlaceable === false: zoomed too far in/out, AOI off-screen / a tiny
+  // dot / filling the viewport). When aoiCornerPlaceable is true AND an AOI rect is
+  // on screen we KEEP the existing corner-attach (AOI snap) behavior below. Gated
+  // on a known band bottom (sheetTopPx present) so we only dock when we can place
+  // the row; else the legacy AOI-snap / bottom-center fallback holds.
+  const bandDockActive =
+    isMobile &&
+    bandRowBottomPx != null &&
+    (!aoiRect || aoiCornerPlaceable === false);
+
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
   // Portal to document.body so it appears above the mobile chat panel.
   //
@@ -1023,18 +1135,13 @@ export function LayerLegend({
   // position:fixed keys use the SAME snapped coordinates as before because
   // the map container is position:absolute;inset:0 relative to the app shell
   // which is position:fixed;inset:0  -  so map-container coords == viewport coords.
-  return (
-    <div
-      data-testid="grace2-layer-legend"
-      style={{
-        position: "absolute",
-        inset: 0,
-        pointerEvents: "none",
-        // Zero z-index on the anchor wrapper  -  the actual keys are portaled.
-        zIndex: 0,
-      }}
-    >
-      {keyModels.map((model, idx) => {
+  //
+  // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): hoist the per-key render so the
+  // result can be EITHER portaled per-key (AOI snap / free-drag / legacy band) OR
+  // wrapped in a SINGLE horizontal flex ROW container (the band dock). Each entry
+  // is a per-key portal element in the non-band case, or the RAW card in the band
+  // case (collected into the row below).
+  const renderedKeys = keyModels.map((model, idx) => {
         const layerId = model.layerId;
         const preset = model.preset;
         const ui = uiState[layerId] ?? {};
@@ -1066,7 +1173,18 @@ export function LayerLegend({
         // a clamped width never runs off either edge. Empty on every other path
         // (desktop early-returns above; AOI snap / free-drag are unchanged).
         let clampStyle: React.CSSProperties = {};
-        if (ui.free) {
+        if (bandDockActive && !ui.free) {
+          // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. The keys live
+          // in a SINGLE horizontal flex ROW (the bandRow container below), so each
+          // card sits IN FLOW (position:relative) - the row container owns the
+          // fixed dock placement (bottom = bandRowBottomPx, above the scrubber).
+          // We force the compact HORIZONTAL card here (sideLabel/orientation are
+          // pinned to bottom/horizontal in the render below when bandDockActive),
+          // so the row reads as one clean line. No per-card absolute coords.
+          // flexShrink:0 keeps each card's width in the flex row (the row scrolls
+          // horizontally if the keys exceed its max-width).
+          posStyle = { position: "relative", flexShrink: 0 };
+        } else if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
         } else if (mobileDockBottomPx != null && !aoiRect) {
           // SNAP-TO-BBOX FIX (NATE 2026-06-26)  -  gate the sheet-top band dock on
@@ -1126,9 +1244,15 @@ export function LayerLegend({
         // when present, else the CCW index side incl. the scrubber-active start
         // offset). So a key dragged to the right reads as a vertical RIGHT bar.
         // AOI-less fallback stays bottom-horizontal.
-        const sideLabel: AoiSide = aoiRect
-          ? resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset)
-          : "bottom";
+        // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): in the band dock the keys are
+        // a single horizontal ROW (chat -> scrubber -> legend), so EVERY key reads
+        // as a bottom/horizontal compact card regardless of any AOI snap, so the
+        // row is one clean line.
+        const sideLabel: AoiSide = bandDockActive
+          ? "bottom"
+          : aoiRect
+            ? resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset)
+            : "bottom";
 
         // Item g (ORIENTATION, NATE 2026-06-20)  -  the colorbar is VERTICAL (a
         // tall bar) when the key docks on the LEFT or RIGHT side of the AOI, and
@@ -1142,8 +1266,11 @@ export function LayerLegend({
         // The horizontal card needs the full AOI-sized `width` (min .. bar .. max
         // laid out in a row); a vertical card stacks max/bar/min in a column, so
         // it only needs a slim fixed width (scaled). Snapping is untouched.
-        const cardWidth =
-          orientation === "vertical"
+        const cardWidth = bandDockActive
+          ? // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): a compact fixed width so
+            // several keys fit as one horizontal line (the row scrolls if needed).
+            MOBILE_BAND_KEY_WIDTH
+          : orientation === "vertical"
             ? Math.round(VERTICAL_KEY_WIDTH * scale)
             : width;
         const stops = model.colormapStops ?? preset.stops;
@@ -1369,10 +1496,76 @@ export function LayerLegend({
           </div>
         );
 
-        // Portal each key card to document.body so it escapes the map
-        // container's stacking context and renders above the mobile drawer.
-        return createPortal(keyCard, document.body, `legend-key-${layerId}`);
-      })}
+        // The raw card. In the MOBILE ONE-ROW BAND DOCK the cards live IN FLOW
+        // inside the single horizontal ROW container (the map result is wrapped in
+        // it below), so we return the RAW card. Otherwise (AOI snap / free-drag /
+        // legacy sheet-top band) each card portals to document.body so it escapes
+        // the map container's stacking context and renders above the mobile drawer.
+        return bandDockActive
+          ? keyCard
+          : createPortal(keyCard, document.body, `legend-key-${layerId}`);
+      });
+
+  // The wrapper keeps a stable testid so existing tests + Map.tsx mounting
+  // expectations hold. It is a zero-size placeholder; the actual key cards either
+  // portal individually (AOI snap / free-drag / legacy band) OR sit inside the
+  // single horizontal band-row container (the mobile one-row dock), both rendered
+  // here as children of the anchor (the portals escape to document.body anyway).
+  return (
+    <div
+      data-testid="grace2-layer-legend"
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        // Zero z-index on the anchor wrapper  -  the actual keys are portaled.
+        zIndex: 0,
+      }}
+    >
+      {/* MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - mobile-only. When the band
+          dock is active the per-key render returned RAW cards; wrap them in a
+          SINGLE horizontal flex ROW, portaled to document.body and docked just
+          ABOVE the scrubber (bottom = bandRowBottomPx, so the bottom-to-top order
+          is chat -> scrubber -> legend). One clean line: flexDirection row, nowrap,
+          a small gap, horizontal scroll if the keys exceed ~92vw. The row owns the
+          viewport clamp (max-width + scroll) so nothing bleeds past the window
+          edges. Otherwise the renderedKeys are already per-key portals. Desktop
+          never reaches here (it early-returns above). */}
+      {bandDockActive && bandRowBottomPx != null
+        ? createPortal(
+            <div
+              data-testid="grace2-layer-legend-band-row"
+              style={{
+                position: "fixed",
+                left: "50%",
+                bottom: bandRowBottomPx,
+                transform: "translateX(-50%)",
+                display: "flex",
+                flexDirection: "row",
+                flexWrap: "nowrap",
+                alignItems: "flex-end",
+                gap: MOBILE_BAND_KEY_GAP_PX,
+                // VIEWPORT CLAMP: never wider than the window; scroll the row
+                // horizontally if the compact keys exceed the clamp. The row is one
+                // short line so height is rarely at risk, but cap max-height to the
+                // band above the dock so a tall key can never run off the top of the
+                // window (respecting the notch via env()).
+                maxWidth: MOBILE_LEGEND_MAX_WIDTH_CSS,
+                maxHeight: mobileLegendMaxHeightCss(bandRowBottomPx),
+                overflowX: "auto",
+                overflowY: "visible",
+                boxSizing: "border-box",
+                pointerEvents: "auto",
+                // Below the chat (z=32) + Layers/Cases panels (z=20); above the map.
+                zIndex: LEGEND_Z_INDEX,
+              }}
+            >
+              {renderedKeys}
+            </div>,
+            document.body,
+            "legend-band-row",
+          )
+        : renderedKeys}
 
       {/* LEGEND v2 (DROP-ZONE SIGNALS) - while a key is being dragged, paint a
           thin "area signal" along each VALID snap target (left/right/top edges of
