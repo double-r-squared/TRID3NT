@@ -489,6 +489,21 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_noaa_sst": "coastal",
     "fetch_openfema_disasters": "news_events",
     "fetch_esri_landcover_10m": "land_cover_development",
+    # batch3+4 (2026-06-27)
+    "fetch_usgs_volcano_alerts": "hazard_modeling",
+    "fetch_usgs_water_quality": "hydrology",
+    "fetch_usgs_groundwater_levels": "hydrology",
+    "fetch_snotel_snow": "hydrology",
+    "fetch_sentinel1_sar": "coastal",
+    "fetch_modis_lst": "weather_atmosphere",
+    "fetch_hifld_transmission_lines": "flood_infrastructure",
+    "fetch_lehd_jobs": "damage_assessment",
+    "fetch_nws_river_forecast": "hydrology",
+    "fetch_copernicus_dem": "terrain_elevation",
+    "fetch_chirps_precipitation": "weather_atmosphere",
+    "fetch_ghsl_population": "land_cover_development",
+    "fetch_jrc_global_surface_water": "hydrology",
+    "fetch_soilgrids": "hydrology",
 }
 
 
@@ -587,6 +602,21 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "fetch_noaa_sst": ('weather_atmosphere', 'conservation_ecology',),
     "fetch_openfema_disasters": ('damage_assessment', 'geographic_primitives',),
     "fetch_esri_landcover_10m": ('conservation_ecology', 'geographic_primitives',),
+    # batch3+4 (2026-06-27)
+    "fetch_usgs_volcano_alerts": ('news_events',),
+    "fetch_usgs_water_quality": ('conservation_ecology',),
+    "fetch_usgs_groundwater_levels": ('hazard_modeling',),
+    "fetch_snotel_snow": ('weather_atmosphere', 'terrain_elevation',),
+    "fetch_sentinel1_sar": ('hydrology', 'weather_atmosphere',),
+    "fetch_modis_lst": ('hazard_modeling', 'conservation_ecology', 'land_cover_development',),
+    "fetch_hifld_transmission_lines": ('damage_assessment', 'geographic_primitives',),
+    "fetch_lehd_jobs": ('geographic_primitives',),
+    "fetch_nws_river_forecast": ('flood_infrastructure', 'weather_atmosphere',),
+    "fetch_copernicus_dem": ('hydrology', 'coastal', 'hazard_modeling',),
+    "fetch_chirps_precipitation": ('hydrology', 'conservation_ecology',),
+    "fetch_ghsl_population": ('damage_assessment', 'geographic_primitives',),
+    "fetch_jrc_global_surface_water": ('coastal', 'conservation_ecology', 'terrain_elevation',),
+    "fetch_soilgrids": ('land_cover_development', 'terrain_elevation',),
 }
 
 

@@ -336,6 +336,20 @@ from . import fetch_landsat_imagery as _fetch_landsat_imagery  # noqa: F401
 from . import fetch_noaa_sst as _fetch_noaa_sst  # noqa: F401  (registers fetch_noaa_sst via @register_tool)
 from . import fetch_openfema_disasters  # noqa: E402,F401 — registers fetch_openfema_disasters (FEMA OpenFEMA DisasterDeclarationsSummaries aggregated to per-county declaration counts/incident-types/dates, joined to Census TIGERweb county polygons by 5-digit FIPS -> FlatGeobuf county overlay; state_code or bbox selector + optional incident_type/start_year; US-only, supports_global_query=False; semi-static-7d cache)
 from . import fetch_esri_landcover_10m  # noqa: F401  (registers fetch_esri_landcover_10m)
+from . import fetch_usgs_volcano_alerts  # noqa: F401
+from . import fetch_usgs_water_quality  # noqa: F401
+from . import fetch_usgs_groundwater_levels  # noqa: F401
+from . import fetch_snotel_snow  # noqa: F401
+from . import fetch_sentinel1_sar  # noqa: F401
+from . import fetch_modis_lst  # noqa: F401
+from . import fetch_hifld_transmission_lines  # noqa: F401
+from . import fetch_lehd_jobs  # noqa: F401
+from . import fetch_nws_river_forecast  # noqa: F401
+from . import fetch_copernicus_dem  # noqa: F401
+from . import fetch_chirps_precipitation  # noqa: F401
+from . import fetch_ghsl_population  # noqa: F401
+from . import fetch_jrc_global_surface_water  # noqa: F401
+from . import fetch_soilgrids  # noqa: F401
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged

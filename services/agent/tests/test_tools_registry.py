@@ -173,6 +173,8 @@ def test_global_query_scope_audit():
         "fetch_usace_levees",           # NLD CONUS sweep (ArcGIS query)
         "fetch_iucn_red_list_range",    # queried by species name, not bbox
         "fetch_usgs_earthquakes",       # FDSN is global; "recent major quakes worldwide" is bounded (limit=20000, <=366d window)
+        "fetch_usgs_volcano_alerts",    # HANS alert list is ~70 volcanoes, tiny/bounded
+        "fetch_chirps_precipitation",   # quasi-global 0.05deg rainfall grid (~14MB), bounded like ERA5
         "list_categories",              # meta-tool, no spatial input
         "list_tools_in_category",       # meta-tool, no spatial input
     }
