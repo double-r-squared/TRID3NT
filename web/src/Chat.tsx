@@ -3036,6 +3036,15 @@ export interface ChatProps {
     heightVh: number;
     topPx: number | null;
   }) => void;
+  /**
+   * CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - fired whenever the
+   * full-viewport ChartGallery overlay opens/closes (`galleryOpen`). App stores
+   * this and threads it down to the LayerLegend (`chartOpen`), which renders
+   * nothing on mobile while a chart is open so the legend never paints
+   * above/around the chart. Mirrors the onSheetGeometryChange lift (a parallel
+   * minimal signal). Optional - when omitted Chat behaves as before.
+   */
+  onGalleryOpenChange?: (open: boolean) => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -3068,6 +3077,7 @@ export function Chat({
   onWakeTap,
   subscribeCaseOpen,
   onSheetGeometryChange,
+  onGalleryOpenChange,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
@@ -3324,6 +3334,15 @@ export function Chat({
   const [galleryOpen, setGalleryOpen] = useState<boolean>(false);
   const [galleryCharts, setGalleryCharts] = useState<ChartPayload[]>([]);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState<number>(0);
+  // CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - lift the gallery's
+  // open state up so App can thread it to the LayerLegend (which renders nothing
+  // on mobile while a chart is open, so the legend never paints above/around the
+  // full-viewport chart). Parallel minimal signal to onSheetGeometryChange. We
+  // publish a useEffect on `galleryOpen` so the callback stays in lockstep with
+  // the state (and fires once on mount with the initial false).
+  useEffect(() => {
+    onGalleryOpenChange?.(galleryOpen);
+  }, [galleryOpen, onGalleryOpenChange]);
 
   // Region-disambiguation picker ↔ map choropleth sync. The bus is the shared
   // hover/selection state between the in-chat candidate list (here) and the

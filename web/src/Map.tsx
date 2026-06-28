@@ -422,6 +422,15 @@ export interface MapViewProps {
    */
   legendSheetTopPx?: number | null;
   /**
+   * CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - whether Chat's
+   * full-viewport ChartGallery overlay is open. Threaded straight to the
+   * LayerLegend as `chartOpen`: on mobile the legend renders nothing while a
+   * chart is open so the body-portaled colorbar never paints above/around the
+   * chart. Default false; ignored on desktop (the legend already sits below the
+   * gallery's z=10000 overlay).
+   */
+  legendChartOpen?: boolean;
+  /**
    * CASES-ROOT NO-LAYERS GATE (NATE 2026-06-22) - whether a Case is currently
    * ENTERED. NATE: "no case layers should be loaded when we are in the cases
    * section; they should only be rendered when we have entered a Case." When
@@ -2705,7 +2714,7 @@ export function mergeTagsIntoAttributes(
   return { ...data, title, attributes: merged };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, onAoiTooSmallToShowChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, onAoiTooSmallToShowChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, legendChartOpen = false, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -5395,6 +5404,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
            of floating over the map. Null on desktop (the desktop dock ignores
            it). */
         sheetTopPx={legendSheetTopPx}
+        /* CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - when Chat's
+           full-viewport ChartGallery is open, the legend renders nothing on
+           mobile so the body-portaled colorbar never paints above/around the
+           chart. Default false; desktop ignores it (it sits below the gallery's
+           z=10000 overlay anyway). */
+        chartOpen={legendChartOpen}
         /* MOBILE-ONLY HUD (NATE 2026-06-27) - mapZoom (live map zoom) +
            aoiCornerPlaceable (is the AOI usefully on-screen for a corner attach),
            spread from legendHudExtras above so the legend's MOBILE path can decide

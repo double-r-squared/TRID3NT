@@ -378,6 +378,12 @@ export function App(): JSX.Element {
   // desktop (the overlays keep their viewport-bottom placement there).
   const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
   const [sheetHeightVh, setSheetHeightVh] = useState<number>(SHEET_HEIGHT_FALLBACK_VH);
+  // CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - is Chat's full-viewport
+  // ChartGallery overlay open? Lifted out of Chat (onGalleryOpenChange) so we can
+  // thread it to the MAP's LayerLegend, which renders nothing on mobile while a
+  // chart is open (so the body-portaled legend never paints above/around the
+  // chart). Parallel to the sheetTopPx lift. Default false; desktop ignores it.
+  const [chartGalleryOpen, setChartGalleryOpen] = useState<boolean>(false);
   // MEASURED SHEET TOP (NATE 2026-06-27, mobile-only) - the REAL top-edge screen
   // Y (px) of the chat sheet/composer, measured in Chat via getBoundingClientRect
   // under a ResizeObserver and lifted here. null until Chat reports its first
@@ -2066,6 +2072,11 @@ export function App(): JSX.Element {
            colorbar keys + collapsed pill dock to the chat-panel top (a clean
            band) instead of floating over the map. Null on desktop. */
         legendSheetTopPx={sheetTopPx}
+        /* CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - when Chat's
+           full-viewport ChartGallery is open, the LayerLegend renders nothing on
+           mobile so it never paints above/around the chart. Default false;
+           desktop ignores it (the legend sits below the z=10000 overlay). */
+        legendChartOpen={chartGalleryOpen}
         /* LANE B #3 - the desktop left rail (CasesPanel / CaseView) is a fixed
            288px when open; 0 on mobile or when collapsed. Threaded so fitBounds
            pads the occluded left side and the AOI box centers in the visible
@@ -2419,6 +2430,11 @@ export function App(): JSX.Element {
              LayerLegend to the sheet's TOP edge (a clean band) instead of
              floating over the map. Mobile-only; Chat no-ops it on desktop. */
           onSheetGeometryChange={handleSheetGeometryChange}
+          /* CHART-OVERLAY HIDE-LEGEND (NATE 2026-06-28, mobile) - lift the
+             ChartGallery open state so the MAP's LayerLegend hides on mobile
+             while a chart is open (the gallery is a full-viewport overlay; the
+             body-portaled legend would otherwise paint above/around it). */
+          onGalleryOpenChange={setChartGalleryOpen}
         />
       </div>
 

@@ -1345,6 +1345,45 @@ describe("LayerLegend  -  AOI-snap-overlaps-chat -> band form (NATE 2026-06-28)"
     expect(title.style.minWidth).toBe("0");
   });
 
+  // --- (d) ISSUE 2: the band card FITS the row width (no horizontal overflow) - //
+  it("the band card uses border-box so its content fits within bandWidthPx (max label not clipped)", () => {
+    // NATE 2026-06-28 ISSUE 2: the live bug showed a magma bar with the MAX label
+    // cut off the right edge. The band card sets width = bandWidthPx (the full
+    // chat-panel width); WITHOUT box-sizing:border-box the 10px horizontal padding
+    // + 1px border each side ADD ~22px so the card RENDERS WIDER than the row and
+    // the max label spills past the right edge. border-box folds the padding+border
+    // INTO bandWidthPx so the card (incl. the value row's max label) fits exactly.
+    const expectedWidth = window.innerWidth - 2 * MOBILE_LEGEND_VIEWPORT_MARGIN_PX;
+    render(
+      <LayerLegend
+        layers={[makeLayer({ name: "Storm surge depth (NAVD88)" })]}
+        aoiRect={overlappingTall}
+        sheetTopPx={500}
+      />,
+    );
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    const key = within(row).getByTestId("grace2-layer-legend-key");
+    // The card's BORDER-BOX width == bandWidthPx, so padding+border are folded in
+    // and the rendered card never exceeds the row's content width.
+    expect(key.style.boxSizing).toBe("border-box");
+    expect(key.style.width).toBe(`${expectedWidth}px`);
+    // The maxWidth cap is the belt-and-braces window guard.
+    expect(key.style.maxWidth).toBe(MOBILE_LEGEND_MAX_WIDTH_CSS);
+    // The horizontal value row: the gradient BAR flexes (flex:1, minWidth:0) to
+    // absorb slack, and the min/max labels are nowrap + flexShrink:0, so the MAX
+    // label sits at the bar's right end and is never pushed off / clipped.
+    const bar = within(key).getByTestId("layer-legend-bar");
+    const maxLabel = within(key).getByTestId("layer-legend-max-label");
+    // happy-dom expands the `flex:1` shorthand to its longhand "1 1 0%".
+    expect(bar.style.flexGrow).toBe("1");
+    expect(bar.style.minWidth).toBe("0");
+    expect(maxLabel.style.whiteSpace).toBe("nowrap");
+    expect(maxLabel.style.flexShrink).toBe("0");
+    // The band ROW itself is also border-box at bandWidthPx, so card+row agree.
+    expect(row.style.boxSizing).toBe("border-box");
+    expect(row.style.width).toBe(`${expectedWidth}px`);
+  });
+
   it("with the scrubber ACTIVE, an overlap-forced band still clears the scrubber footprint", () => {
     // Drive the shared AnimationController so scrubberActive === true.
     const c = getAnimationController();
@@ -1373,6 +1412,81 @@ describe("LayerLegend  -  AOI-snap-overlaps-chat -> band form (NATE 2026-06-28)"
     expect(row.style.bottom).toBe(
       `${scrubberTop + MOBILE_LEGEND_SCRUBBER_FOOTPRINT_PX + LEGEND_BAND_DOCK_GAP_PX}px`,
     );
+  });
+});
+
+// ISSUE 3 (NATE 2026-06-28): when a key is AOI-snapped to the LEFT edge, the legend
+// must sit fully OUTSIDE the bbox (right edge at aoi.left - gap), NOT encroach
+// inside. legend_snap places a left key at `left = aoi.left - crossOffset -
+// size.width`, so its right edge = left + size.width = aoi.left - crossOffset. This
+// is correct ONLY if the value in `sizes` (size.width) EQUALS the actual RENDERED
+// card width for a vertical key. The fix (the `sizes` useMemo) mirrors the render's
+// cardWidth = Math.round(VERTICAL_KEY_WIDTH * scale) for a vertical non-categorical
+// key, so the reserved width matches what paints and the right edge lands OUTSIDE.
+describe("LayerLegend  -  LEFT-snap sits OUTSIDE the bbox (ISSUE 3)", () => {
+  it("a LEFT-snapped vertical key's rendered right edge (left+width) <= aoi.left (outside, with gap)", () => {
+    // A wide, short AOI so a drag to the LEFT edge snaps left (vertical), and so
+    // the bbox is large enough that aoiScaleFactor clamps high (a real left edge to
+    // sit outside of). No sheetTopPx -> bandDockActive is false -> the AOI edge-snap
+    // path renders (not the band), exercising the real left-snap geometry.
+    const rect = { left: 300, top: 100, right: 700, bottom: 300 };
+    render(<LayerLegend layers={[makeLayer({ layer_id: "L0" })]} aoiRect={rect} />);
+    const key0 = screen.getByTestId("grace2-layer-legend-key");
+    // Drag the card and release near the LEFT edge so nearestSide -> "left".
+    fireEvent.pointerDown(key0, { clientX: 0, clientY: 0 });
+    fireEvent.pointerMove(window, { clientX: 305, clientY: 200 }); // near left edge
+    fireEvent.pointerUp(window);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // It snapped LEFT and went vertical.
+    expect(key.getAttribute("data-legend-side")).toBe("left");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    // The rendered card's absolute left + its rendered width = its RIGHT edge.
+    const left = parseFloat(key.style.left);
+    const width = parseFloat(key.style.width);
+    expect(Number.isFinite(left)).toBe(true);
+    expect(Number.isFinite(width)).toBe(true);
+    const rightEdge = left + width;
+    // OUTSIDE the bbox: the right edge sits at aoi.left - gap (<= aoi.left), so the
+    // card never encroaches inside the bbox (NATE's "encroaching inside" bug).
+    expect(rightEdge).toBeLessThanOrEqual(rect.left);
+    // And it is the reserved gap OUTSIDE, not flush against the edge.
+    expect(rightEdge).toBeLessThan(rect.left);
+  });
+});
+
+// ISSUE 4 (NATE 2026-06-28): a legend that would overlay the chat must re-dock to
+// the BAND even when there is NO scrubber (e.g. OpenQuake's static PGA raster: no
+// animation -> scrubberActive=false). `aoiSnapOverlapsHud` uses hudTop = sheetTopPx
+// (footprint 0 with no scrubber); when it triggers, bandDockActive becomes true and
+// the band docks just above the chat top (bandRowBottomPx). beforeEach stubs
+// mobile=true; the AnimationController is reset (no active group) so scrubberActive
+// is FALSE - the static-raster case.
+describe("LayerLegend  -  overlap re-docks to band with NO scrubber (ISSUE 4)", () => {
+  it("scrubber INACTIVE + a tall AOI whose snap dips below sheetTopPx -> band row, docked above the chat", () => {
+    // No setGroups/setActiveGroup -> scrubberActive === false (static PGA raster).
+    // A tall AOI: the bottom-snapped key (top = bottom + SIDE_GAP_PX(10), height
+    // KEY_HEIGHT_FLAT(56)) lands ~bottom+66 = 766, well below sheetTopPx=500, so it
+    // overlaps the chat HUD and must re-dock to the band.
+    const tall = { left: 100, top: 50, right: 400, bottom: 700 };
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "pga", name: "Peak ground acceleration" })]}
+        aoiRect={tall}
+        sheetTopPx={500}
+        aoiCornerPlaceable={true}
+      />,
+    );
+    // The BAND row is present (not the absolute AOI-snap key) - the overlap forced
+    // the band even though there is NO scrubber.
+    const row = screen.getByTestId("grace2-layer-legend-band-row");
+    // Docked just above the chat top: with no scrubber active the band reserves NO
+    // scrubber footprint, so bottom = viewportH - sheetTopPx + scrubber gap.
+    expect(row.style.bottom).toBe(`${768 - 500 + SCRUBBER_SHEET_DOCK_GAP_PX}px`);
+    // The key is IN the row, horizontal + in flow (not an absolute AOI-edge rail).
+    const key = within(row).getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    expect(key.style.position).toBe("relative");
+    expect(key.style.top).toBe("");
   });
 });
 
@@ -1427,6 +1541,59 @@ describe("LayerLegend  -  zoom-out hide (aoiTooSmallToShow, mobile-only)", () =>
 
   it("defaults to NOT hidden when the prop is omitted (existing callers unaffected)", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+  });
+});
+
+// CHART-OVERLAY HIDE (NATE 2026-06-28, ISSUE 1, MOBILE-ONLY): Chat's full-viewport
+// ChartGallery overlay is open (`galleryOpen` lifted to App -> Map -> legend as
+// `chartOpen`). On MOBILE the legend portals to document.body and would paint
+// above/around the chart, so it renders NOTHING while a chart is open. Default
+// false (absent prop = today's behavior). DESKTOP ignores it (it early-returns to
+// the static docked strip before the prop is read; the gallery's z=10000 overlay
+// covers the legend's z=15 anyway). beforeEach stubs mobile=true.
+describe("LayerLegend  -  chart-open hide (chartOpen, mobile-only)", () => {
+  it("MOBILE: renders NOTHING when chartOpen is true", () => {
+    const { container } = render(
+      <LayerLegend layers={[makeLayer()]} chartOpen={true} />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+
+  it("MOBILE: hide takes precedence over an AOI snap AND the band dock", () => {
+    // An AOI rect IS projected (would normally snap) and a band bottom IS placeable
+    // (sheetTopPx present): chart-open still wins and renders nothing.
+    const { container } = render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 700 }}
+        sheetTopPx={500}
+        aoiCornerPlaceable={false}
+        chartOpen={true}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+  });
+
+  it("MOBILE: renders NORMALLY when chartOpen is false (the normal case)", () => {
+    render(<LayerLegend layers={[makeLayer()]} chartOpen={false} />);
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+  });
+
+  it("MOBILE: an absent chartOpen prop defaults to NOT hidden", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+  });
+
+  it("DESKTOP: ignores chartOpen (still renders the static docked strip)", () => {
+    // Desktop early-returns to the static bottom-center strip before chartOpen is
+    // read, so the legend keeps rendering even with a chart open (the gallery's
+    // z=10000 overlay sits above the legend's z=15, so nothing paints over it).
+    stubMatchMedia(false);
+    render(<LayerLegend layers={[makeLayer()]} chartOpen={true} />);
     expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
   });
 });

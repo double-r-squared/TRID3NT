@@ -341,6 +341,16 @@ export interface LayerLegendProps {
    * desktop dock path early-returns before this is read).
    */
   aoiTooSmallToShow?: boolean;
+  /**
+   * CHART-OVERLAY HIDE (NATE 2026-06-28, MOBILE-ONLY) - Chat's full-viewport
+   * ChartGallery overlay (`galleryOpen`) is open. The legend portals to
+   * document.body and would otherwise paint ABOVE/around the chart on mobile, so
+   * when true the mobile legend HIDES entirely (renders null). Default false so
+   * an absent prop preserves today's behavior. Ignored on desktop (the prop
+   * stays false there, and the gallery's z=10000 overlay already covers the
+   * legend's z=15 anyway). Threaded App.chartGalleryOpen -> Map -> here.
+   */
+  chartOpen?: boolean;
 }
 
 /**
@@ -777,6 +787,10 @@ export function LayerLegend({
   // keeps today's behavior; consumed ONLY in the mobile path below (desktop
   // early-returns first, so it is byte-for-byte unchanged).
   aoiTooSmallToShow = false,
+  // CHART-OVERLAY HIDE (NATE 2026-06-28, mobile-only) - default false so an absent
+  // prop keeps today's behavior; consumed ONLY in the mobile path below (desktop
+  // early-returns first, so it is byte-for-byte unchanged).
+  chartOpen = false,
 }: LayerLegendProps): JSX.Element | null {
   // mapZoom is a supplementary signal threaded for future zoom-keyed refinement;
   // aoiCornerPlaceable is the primary dock trigger. Reference mapZoom so the lint
@@ -1195,6 +1209,15 @@ export function LayerLegend({
   // hidden, not snapped).
   if (isMobile && aoiTooSmallToShow) return null;
 
+  // CHART-OVERLAY HIDE (NATE 2026-06-28, MOBILE-ONLY) - Chat's full-viewport
+  // ChartGallery overlay is open. The legend portals to document.body and would
+  // paint ABOVE/around the chart on mobile, so HIDE it entirely while a chart is
+  // showing. Placed AFTER every hook (stable hook order) and gated to MOBILE so
+  // desktop is byte-for-byte unchanged (desktop keeps the prop false and would
+  // early-return at !isMobile below anyway; the gallery's z=10000 overlay also
+  // already covers the legend's z=15 there).
+  if (isMobile && chartOpen) return null;
+
   // LEGEND v2 (DROP-ZONE SIGNALS)  -  while a key is being dragged, paint a thin
   // "area signal" along each VALID snap target (left/right/top edges of the AOI;
   // never bottom) and highlight the one nearest the dragged card. Computed here
@@ -1441,6 +1464,19 @@ export function LayerLegend({
           // flexShrink:0 keeps each card's width in the flex row (the row scrolls
           // horizontally if the keys exceed its max-width).
           posStyle = { position: "relative", flexShrink: 0 };
+          // BAND FIT (NATE 2026-06-28, ISSUE 2) - the band card sets width =
+          // bandWidthPx (the full chat-panel width); WITHOUT border-box the 10px
+          // horizontal padding + 1px border each side would ADD ~22px so the card
+          // RENDERS WIDER than the row, pushing the MAX label off the right edge
+          // (the live magma-bar clipping bug). border-box folds the padding+border
+          // INTO bandWidthPx so the card content (incl. the max label) fits exactly
+          // within the row's bandWidthPx. The maxWidth cap is the belt-and-braces
+          // window guard. The inner value-row is already flex (bar:flex:1 minWidth:0
+          // + nowrap labels), so the bar absorbs slack and the labels never clip.
+          clampStyle = {
+            maxWidth: MOBILE_LEGEND_MAX_WIDTH_CSS,
+            boxSizing: "border-box",
+          };
         } else if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
         } else if (mobileDockBottomPx != null && !aoiRect) {
