@@ -1,4 +1,4 @@
-# GRACE-2 - Multi-Hazard Modeling Agent
+# TRID3NT - Multi-Hazard Modeling Agent
 
 A web-based AI workbench for multi-hazard modeling and discovery. You describe a
 hazard scenario in natural language; a Claude-powered agent geocodes the area,
@@ -14,11 +14,11 @@ Batch Spot (scale-to-zero); the map serves 24/7 even when the agent is asleep.
 
 **Live - entry points** (frontend on **Vercel**; backends on **AWS behind CloudFront**):
 
-- **Landing page** (the public entry point): <https://grace-2.vercel.app/>
+- **Landing page** (the public entry point): <https://trid3nt.vercel.app/>
   - shown to first-time visitors; returning sessions skip straight to the app.
-  Force the landing page any time at <https://grace-2.vercel.app/landing>.
-- **App**: <https://grace-2.vercel.app/app>
-- **Privacy**: <https://grace-2.vercel.app/privacy>
+  Force the landing page any time at <https://trid3nt.vercel.app/landing>.
+- **App**: <https://trid3nt.vercel.app/app>
+- **Privacy**: <https://trid3nt.vercel.app/privacy>
 
 The static SPA is served by **Vercel** (auto-deployed on every push to `main`; see
 [Deployment](#deployment)). It connects to the AWS backends behind the CloudFront
@@ -79,7 +79,7 @@ The web client talks to a cloud agent over a WebSocket; the agent calls the LLM
 DynamoDB. Raster results render through TiTiler; vector results render inline.
 
 ```
- Browser (React + MapLibre GL JS)  ──  Vercel (static SPA, grace-2.vercel.app)
+ Browser (React + MapLibre GL JS)  ──  Vercel (static SPA, trid3nt.vercel.app)
    │  the SPA reaches the AWS backends via CloudFront d125yfbyjrpbre.cloudfront.net:
    │  WSS /ws: chat, tool calls, pipeline    │  HTTPS /cog + /tiles: COG raster tiles
    │  HTTPS /api: data-source catalog        ▼
@@ -162,7 +162,7 @@ python -m pytest tests/      # acceptance + unit suites
 
 - **Web (frontend):** hosted on **Vercel**, auto-deployed on `git push origin main`
   (Vercel root dir `web/`, `web/vercel.json` runs `npm run build` -> `dist`, live at
-  <https://grace-2.vercel.app>). Vercel env vars (the public `VITE_*`, incl.
+  <https://trid3nt.vercel.app>). Vercel env vars (the public `VITE_*`, incl.
   `VITE_GRACE2_WS_URL`) are set in the **Vercel dashboard**, not the gitignored
   `web/.env.production.local`. (The old `aws s3 sync dist/ s3://grace2-hazard-web-.../`
   + CloudFront invalidation deployed the legacy S3+CloudFront SPA and is no longer
