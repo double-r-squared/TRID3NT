@@ -72,10 +72,7 @@ import {
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAnimationState } from "../lib/use_animation_controller";
 import { IconClose } from "./icons";
-import {
-  SCRUBBER_SHEET_DOCK_GAP_PX,
-  scrubberMobileWidthPx,
-} from "./SequenceScrubber";
+import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./SequenceScrubber";
 
 // JOB WEB-AOI-LEGEND (#157)  -  the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
@@ -1229,17 +1226,17 @@ export function LayerLegend({
       : null;
 
   // BAND FORM WIDTH (NATE 2026-06-28) - the band must be the SAME WIDTH AS THE
-  // SCRUBBER and NOT rescale with the AOI bbox ("when it is snapped it changes
-  // scale -- that should not be; it should stay the same width as the scrubber").
-  // We size the band ROW (and the single common-case key inside it) to the exact
-  // mobile scrubber width (scrubberMobileWidthPx, the shared source of truth), NOT
-  // the AOI `aoiScaleFactor` scale. Read the live viewport width; SSR/no-window ->
-  // the helper falls back to the default. Only meaningful on the mobile band path.
-  const bandWidthPx = scrubberMobileWidthPx(
+  // FULL CHAT-PANEL WIDTH (NATE 2026-06-28): the band legend spans the ENTIRE
+  // width of the mobile chat panel (the bottom sheet is width:100%), NOT the
+  // narrower scrubber pill and NOT the AOI `aoiScaleFactor` scale -- one clean
+  // full-width bar above the scrubber that does not change size with the bbox.
+  // Full content width = the live viewport minus the standard symmetric side
+  // margin (matches the MOBILE_LEGEND_MAX_WIDTH_CSS cap / the full-bleed sheet).
+  // SSR/no-window -> a sane mobile fallback (the band only renders on mobile).
+  const bandWidthPx =
     typeof window !== "undefined" && Number.isFinite(window.innerWidth)
-      ? window.innerWidth
-      : null,
-  );
+      ? Math.max(0, window.innerWidth - 2 * MOBILE_LEGEND_VIEWPORT_MARGIN_PX)
+      : 360;
 
   // BAND-vs-EDGE GATE (NATE 2026-06-28) - on mobile, when the AOI bbox IS on screen
   // and would normally corner-attach, an AOI-edge-snapped key can still dip DOWN

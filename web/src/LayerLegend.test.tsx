@@ -35,10 +35,7 @@ import {
 // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27) - the legend's new mobile dock math
 // composes on top of the SequenceScrubber's chat-clearance gap (20), so the band
 // row clears the scrubber. Import the canonical value so the two stay in lockstep.
-import {
-  SCRUBBER_SHEET_DOCK_GAP_PX,
-  scrubberMobileWidthPx,
-} from "./components/SequenceScrubber";
+import { SCRUBBER_SHEET_DOCK_GAP_PX } from "./components/SequenceScrubber";
 import { ProjectLayerSummary } from "./contracts";
 import { getStylePreset } from "./lib/style-presets";
 // ITEM 5 (NATE 2026-06-22)  -  the legend reads the shared AnimationController to
@@ -1299,12 +1296,13 @@ describe("LayerLegend  -  AOI-snap-overlaps-chat -> band form (NATE 2026-06-28)"
     expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(300);
   });
 
-  // --- (b) band width = scrubber width + does NOT change with bbox scale ----- //
-  it("the band row is the SCRUBBER WIDTH and does NOT rescale when the bbox scale changes", () => {
-    // jsdom innerWidth is 1024 -> scrubberMobileWidthPx(1024) clamps to the 420
-    // default (1024 - 32 = 992 > 420). The band must be that exact width.
-    const expectedWidth = scrubberMobileWidthPx(1024);
-    expect(expectedWidth).toBe(420);
+  // --- (b) band width = FULL chat-panel width + does NOT change with bbox scale - //
+  it("the band row spans the FULL chat-panel width and does NOT rescale when the bbox scale changes", () => {
+    // NATE 2026-06-28: the band legend spans the ENTIRE chat-panel width (the
+    // mobile sheet is width:100%), = innerWidth - 2 * MOBILE_LEGEND_VIEWPORT_MARGIN_PX.
+    // jsdom innerWidth is 1024 -> 1024 - 16 = 1008. It must NOT track the bbox scale.
+    const expectedWidth = window.innerWidth - 2 * MOBILE_LEGEND_VIEWPORT_MARGIN_PX;
+    expect(expectedWidth).toBe(1008);
 
     // SMALL overlapping bbox -> aoiScaleFactor clamps LOW (0.6).
     const small = { left: 100, top: 600, right: 250, bottom: 780 };
