@@ -447,8 +447,8 @@ def test_continuous_dem_preset_is_terrain_passthrough() -> None:
     [
         "continuous_dem",
         "continuous_hillshade",
-        "continuous_slope",
-        "continuous_aspect",
+        # slope/aspect REMOVED from the passthrough (tools-backlog #3) -> they now
+        # carry colormaps; see test_slope_aspect_no_longer_passthrough below.
         "colored_relief",
         "terrain_rgba",
         "elevation",
@@ -456,6 +456,14 @@ def test_continuous_dem_preset_is_terrain_passthrough() -> None:
 )
 def test_terrain_token_presets_match(preset: str) -> None:
     assert _is_terrain_token_preset(preset, "s3://b/x.tif") is True
+
+
+def test_slope_aspect_no_longer_passthrough() -> None:
+    """tools-backlog #3: slope/aspect were removed from the terrain passthrough so
+    they reach the colormap registry. (hillshade/dem/relief/elevation still grayscale.)"""
+    assert _is_terrain_token_preset("continuous_aspect", "s3://b/cache/static-30d/aspect/x.tif") is False
+    assert _is_terrain_token_preset("slope_angle_deg", "s3://b/cache/static-30d/slope/x.tif") is False
+    assert _is_terrain_token_preset("continuous_hillshade", "s3://b/cache/static-30d/hillshade/x.tif") is True
 
 
 def test_non_terrain_preset_does_not_match() -> None:
@@ -482,21 +490,35 @@ def test_resolve_continuous_dem_emits_no_rescale(
     assert out == ""
 
 
-# (c) hillshade / slope / aspect presets -> ''
+# (c) hillshade preset -> '' (slope/aspect now get colormaps; tools-backlog #3)
 @pytest.mark.parametrize(
     "preset",
-    ["continuous_hillshade", "continuous_slope", "continuous_aspect"],
+    ["continuous_hillshade"],
 )
 def test_resolve_terrain_composer_presets_emit_no_rescale(
     preset: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Single-band grayscale terrain composers render correctly with NO rescale
-    (a viridis ramp on a hillshade was the regression)."""
+    (a viridis ramp on a hillshade was the regression). Hillshade stays grayscale;
+    slope/aspect now carry colormaps (tools-backlog #3)."""
     monkeypatch.setattr(
         MOD, "_read_raster_bytes", lambda uri: _continuous_geotiff_bytes(0.0, 255.0)
     )
     out = _resolve_titiler_style_params(preset, "s3://b/shade.tif")
     assert out == ""
+
+
+def test_resolve_slope_aspect_presets_emit_colormap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """tools-backlog #3: slope/aspect presets resolve to their colormaps."""
+    monkeypatch.setattr(
+        MOD, "_read_raster_bytes", lambda uri: _continuous_geotiff_bytes(0.0, 60.0)
+    )
+    assert _resolve_titiler_style_params(
+        "slope_angle_deg", "s3://b/cache/static-30d/slope/x.tif"
+    ) == "&rescale=0,60&colormap_name=ylorrd"
+    assert _resolve_titiler_style_params(
+        "aspect_compass_deg", "s3://b/cache/static-30d/aspect/x.tif"
+    ) == "&rescale=0,360&colormap_name=hsv"
 
 
 # (b) a mocked 3-band / RGBA COG -> '' even with a NON-terrain preset

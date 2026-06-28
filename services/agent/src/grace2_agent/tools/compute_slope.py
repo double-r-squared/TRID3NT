@@ -403,7 +403,7 @@ def compute_slope(
         name=f"Slope ({output_unit}, {algorithm}) [{unit_label}]",
         layer_type="raster",
         uri=result.uri,
-        style_preset="continuous_dem",  # placeholder; slope-specific QML preset deferred
+        style_preset="slope_angle_deg",  # tools-backlog #3: slope-angle ylorrd ramp (deg). Backend colormap here; the Orchestrator wires the frontend legend (NATE 2026-06-24).
         role="context",
         units=output_unit,
     )

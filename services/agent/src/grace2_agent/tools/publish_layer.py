@@ -434,24 +434,40 @@ def _build_vector_wms_url(
 #: Token-boundary matching (not substring) so e.g. a layer_id like
 #: ``"demo-flood"`` does NOT match ``dem``.
 _TERRAIN_STYLE_TOKENS = frozenset(
-    {"dem", "relief", "hillshade", "slope", "aspect", "terrain", "elevation"}
+    # slope/aspect REMOVED 2026-06-24 (tools-backlog #3): they now carry real
+    # colormaps (slope_angle_deg ylorrd / aspect_compass_deg hsv) via the style
+    # registry, routed by _infer_style_preset below. dem/relief/hillshade/terrain/
+    # elevation STAY grayscale -- bare DEM + shaded relief render correctly unstyled.
+    {"dem", "relief", "hillshade", "terrain", "elevation"}
 )
+
+#: tools-backlog #3 -- URI/id token -> the slope/aspect colormap preset, applied
+#: BEFORE the terrain passthrough so an auto-inferred slope/aspect layer is
+#: colormapped (not left grayscale and not mis-defaulted to flood depth).
+_SLOPE_ASPECT_PRESET_BY_TOKEN: dict[str, str] = {
+    "slope": "slope_angle_deg",
+    "aspect": "aspect_compass_deg",
+}
 
 
 def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     """Family-aware default style preset (job-0269b).
 
-    Returns ``""`` (no preset → QGIS default rendering) for terrain-family
-    rasters, else ``"continuous_flood_depth"`` - the pre-0269b default, so
-    flood/plume publishes that relied on it are unchanged. Tokenizes BOTH
-    the resolved URI and the layer_id on non-alphanumerics and matches
-    whole tokens against ``_TERRAIN_STYLE_TOKENS``.
+    Returns the slope/aspect colormap preset for those families (tools-backlog
+    #3), ``""`` (no preset → QGIS default rendering) for the remaining terrain
+    rasters (dem/relief/hillshade/terrain/elevation), else
+    ``"continuous_flood_depth"``  --  the pre-0269b default, so flood/plume
+    publishes that relied on it are unchanged. Tokenizes BOTH the resolved URI
+    and the layer_id on non-alphanumerics and matches    whole tokens against ``_TERRAIN_STYLE_TOKENS``.
     """
     import re as _re
 
     tokens = set(
         _re.split(r"[^a-z0-9]+", f"{layer_uri} {layer_id}".lower())
     )
+    for token, preset in _SLOPE_ASPECT_PRESET_BY_TOKEN.items():
+        if token in tokens:
+            return preset
     if tokens & _TERRAIN_STYLE_TOKENS:
         return ""
     return "continuous_flood_depth"
@@ -595,6 +611,21 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "continuous_ponded_volume": ("0,1000", "blues"),
     "diverging_conduit_flow": ("-10,10", "rdbu"),
     "continuous_conduit_velocity": ("0,5", "viridis"),
+    # tools-backlog #3 -- per-tool colormaps replacing the generic continuous_dem
+    # placeholder. ADDITIVE; entries above stay byte-identical. Impervious surface
+    # is 0..100 percent -> a reds "more paved = redder" ramp; population is
+    # people-per-pixel (WorldPop ~100 m / ACS) -> a magma density ramp. Slope ANGLE
+    # in DEGREES (0..90; most terrain <60) -> a "steep = hot" ylorrd ramp; aspect is
+    # a COMPASS direction (0..360) -> the cyclic hsv ramp so North reads the same
+    # hue at 0 and 360. To reach these, "slope"/"aspect" were removed from
+    # _TERRAIN_STYLE_TOKENS (the terrain passthrough now keeps ONLY dem/relief/
+    # hillshade/terrain/elevation grayscale; hillshade SHOULD stay grayscale as
+    # shaded relief). NATE 2026-06-24: the backend colormaps land HERE; the
+    # Orchestrator finishes by wiring the frontend legends + substrate.
+    "impervious_surface_pct": ("0,100", "reds"),
+    "population_density": ("0,250", "magma"),
+    "slope_angle_deg": ("0,60", "ylorrd"),
+    "aspect_compass_deg": ("0,360", "hsv"),
 }
 
 #: Safe non-empty default - never let a continuous raster fall through to an
@@ -1930,17 +1961,18 @@ def publish_layer(
             attribute carries a SCREAMING_SNAKE_CASE code for the pipeline
             strip.
 
-    FR-DC-6: This tool is uncacheable-by-construction (side-effect tool
-    that mutates GCS state). The cache shim is NOT invoked.
+    FR-DC-6: This tool is uncacheable-by-construction (a side-effect tool
+    that mutates the per-Case ``.qgs`` project state). The cache shim is NOT
+    invoked.
 
-    Invariant 4 (Rendering through QGIS Server): this tool IS the bridge.
-    The COG at ``gs://`` becomes accessible as WMS only after this call
-    mutates the ``.qgs``.
+    Invariant 4 (Rendering): this tool IS the publish bridge. The COG
+    (``s3://`` on the live AWS stack) becomes map-renderable only after this
+    call -- a TiTiler tile template on AWS, or QGIS-Server WMS on the
+    GCP-dormant interim seam.
 
-    Invariant 6 (Metadata-payload pattern): the worker writes the `.qgs`
-    payload to GCS; Pub/Sub notification is the metadata layer. This tool
-    does not write MongoDB directly (a follow-up job wires the
-    ``RunDocument`` update for the published layer).
+    Invariant 6 (Metadata-payload pattern): the published layer is surfaced
+    to the client via the layer-load envelope (``observe_published_layer``);
+    persistence is DynamoDB (MongoDB was torn down 2026-06-16).
 
     Cross-tool dependencies:
         Upstream (consumes):

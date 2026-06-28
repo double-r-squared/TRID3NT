@@ -8,19 +8,42 @@ completed, hazard potential classification, and assorted spillway / storage /
 condition fields downstream tools (Pelicun damage assessment, flood-routing
 workflows, levee/dam infrastructure overlays) consume.
 
-The canonical NID FeatureServer at ``geospatial.sec.usace.army.mil`` requires
-an USACE token for direct REST query. We therefore use the publicly mirrored
-ESRI Living Atlas feature service that the NID program ships for
-unauthenticated public consumption (verified 2026-06-09):
+Source resolution order (authoritative -> mirror -> honest typed error):
 
-    https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/
-        NID_v1/FeatureServer/0/query
+1. AUTHORITATIVE: the USACE NID ArcGIS REST server at
+   ``geospatial.sec.usace.army.mil/server/rest/services/NID`` is the
+   regulatory source-of-truth. The whole ``NID`` folder is token-gated:
+   a request with no token returns the ArcGIS error envelope
+   ``{"error":{"code":499,"message":"Token Required"}}``; a request with a
+   bad/expired token returns ``{"error":{"code":498,"message":"Invalid
+   Token"}}`` (both verified live 2026-06-27). The token is resolved via
+   the canonical 3-path secret loader (kwarg -> per-Case ``secret_ref`` ->
+   ``GRACE2_USACE_NID_TOKEN`` env), the SAME pattern eBird / ERA5 / GTSM
+   use. When NO token resolves we DO NOT raise a missing-key error and
+   strand the user -- we degrade to the public mirror (2). When a token
+   resolves but the server REJECTS it (498), we raise
+   ``USACEDAMSAuthError`` (a credential-shaped typed error the agent's
+   generic credential-card pipeline surfaces) so the user can re-enter a
+   valid token.
+
+2. MIRROR (fallback): the publicly mirrored ESRI Living Atlas feature
+   service the NID program ships for unauthenticated public consumption
+   (verified 2026-06-09 / re-verified 2026-06-27):
+
+       https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/
+           NID_v1/FeatureServer/0/query
 
 Layer 0 is the dam point inventory; ``geometryType=esriGeometryPoint``,
 ``maxRecordCount=2000``. The schema preserves both the dam-condition rollup
 (``HAZARD_POTENTIAL``, ``CONDITION_ASSESSMENT``, ``EAP_PREPARED``) and the
 physical-structure fields the SFINCS / dam-break / inundation engines need
 (``DAM_HEIGHT``, ``NID_STORAGE``, ``MAX_DISCHARGE``, ``DRAINAGE_AREA``).
+
+Server-side ``where``-clause filters (job-A5 upgrade): the previously inert
+``hazard_potential`` and ``state`` params are now live -- they compose into
+an ArcGIS ``where`` clause applied to BOTH the authoritative endpoint and
+the mirror (so "show every high-hazard dam in Nevada" filters server-side
+instead of pulling the whole inventory).
 
 Query parameters used:
     where=1=1
@@ -74,9 +97,15 @@ __all__ = [
     "USACEDAMSInputError",
     "USACEDAMSUpstreamError",
     "USACEDAMSEmptyError",
+    "USACEDAMSAuthError",
     "estimate_payload_mb",
     "_build_nid_url",
     "_bbox_to_envelope",
+    "_build_where_clause",
+    "_validate_hazard_potential",
+    "_validate_state",
+    "_resolve_nid_token",
+    "set_persistence_for_secrets",
     "_validate_bbox",
     "_round_bbox_to_6dp",
     "_fetch_nid_geojson_page",
@@ -85,6 +114,7 @@ __all__ = [
     "_fetch_nid_bytes",
     "CONUS_BBOX",
     "PRESERVED_PROPERTIES",
+    "VALID_HAZARD_POTENTIALS",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_usace_dams")
@@ -132,6 +162,30 @@ class USACEDAMSEmptyError(USACEDAMSError):
     retryable = False
 
 
+class USACEDAMSAuthError(USACEDAMSError):
+    """The AUTHORITATIVE NID endpoint rejected the supplied token.
+
+    Fired when a token resolved (kwarg / secret_ref / env) but the
+    ``geospatial.sec.usace.army.mil`` ArcGIS server returned the ESRI
+    ``code:498 Invalid Token`` envelope (or an HTTP 401/403) — the token is
+    wrong, expired, or revoked. The ``_AUTH_ERROR`` error-code suffix and the
+    ``USACEDAMSAuthError`` class name are both recognised by the agent's
+    provider-agnostic credential pipeline
+    (``credential_registry.is_credential_shaped_error``), so the server
+    surfaces a NAME-ONLY credential card (NATE principle 3) prompting the user
+    to re-enter a valid USACE NID token — no per-provider registry entry is
+    required. ``retryable=False`` because retrying the same bad token is futile;
+    the agent waits for a fresh token.
+
+    NOTE: a MISSING token (no token resolves at all) does NOT raise this — the
+    tool degrades to the public mirror so a key-less user still gets dam data.
+    Only an explicitly-supplied-but-rejected token surfaces the card.
+    """
+
+    error_code = "USACE_DAMS_AUTH_ERROR"
+    retryable = False
+
+
 # ---------------------------------------------------------------------------
 # Constants.
 # ---------------------------------------------------------------------------
@@ -139,11 +193,45 @@ class USACEDAMSEmptyError(USACEDAMSError):
 # Public ESRI Living Atlas mirror of the USACE NID feature service. The
 # authoritative ``geospatial.sec.usace.army.mil`` REST endpoint requires a
 # token, but the NID program publishes this unauthenticated mirror for public
-# consumption. Verified 2026-06-09.
+# consumption. Verified 2026-06-09; re-verified 2026-06-27.
 _NID_BASE = (
     "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/"
     "NID_v1/FeatureServer/0/query"
 )
+
+# AUTHORITATIVE USACE NID ArcGIS REST endpoint. The whole ``NID`` folder is
+# token-gated (verified live 2026-06-27): no token -> ESRI ``code:499 Token
+# Required``; bad token -> ``code:498 Invalid Token``. Used FIRST when a token
+# resolves; otherwise the tool degrades to ``_NID_BASE`` (the public mirror).
+# The exact published layer name under the NID folder is token-gated and so is
+# not enumerable without a key; we target the conventional ``NID/MapServer/0``
+# layer and detect a service-name miss (HTTP 404) as a fallback trigger, while
+# the ``code:498``/``code:499`` envelopes and HTTP 401/403 are auth signals.
+_NID_AUTHORITATIVE_BASE = (
+    "https://geospatial.sec.usace.army.mil/server/rest/services/"
+    "NID/NID/MapServer/0/query"
+)
+
+# Env-var fallback name for the authoritative-endpoint token. Same naming
+# convention the credential pipeline uses for a generic provider scope
+# (UPPER_SNAKE of the credential). Resolution order: kwarg -> secret_ref ->
+# this env var.
+_NID_TOKEN_ENV = "GRACE2_USACE_NID_TOKEN"
+
+# ESRI ArcGIS token error codes. 499 = token required (none supplied),
+# 498 = token invalid/expired. Both indicate the authoritative endpoint
+# needs a (valid) credential.
+_ESRI_TOKEN_REQUIRED_CODE = 499
+_ESRI_TOKEN_INVALID_CODE = 498
+
+# Canonical NID HAZARD_POTENTIAL classification values (USACE controlled
+# vocabulary). Used to validate + normalize the ``hazard_potential`` filter.
+VALID_HAZARD_POTENTIALS: dict[str, str] = {
+    "high": "High",
+    "significant": "Significant",
+    "low": "Low",
+    "undetermined": "Undetermined",
+}
 
 # Properties preserved from each NID feature. The kickoff named the canonical
 # NID dam-identification + physical + regulatory fields; we keep an explicit
@@ -336,6 +424,283 @@ def _bbox_to_envelope(bbox: tuple[float, float, float, float]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Filter validation + WHERE-clause construction (job-A5 upgrade — activate
+# the formerly-inert hazard_potential / state params).
+# ---------------------------------------------------------------------------
+
+
+def _sql_escape(value: str) -> str:
+    """Escape a string literal for an ArcGIS SQL ``where`` clause.
+
+    ArcGIS REST uses standard SQL single-quote literals; a single quote inside
+    the value is escaped by doubling it. We ONLY ever interpolate validated /
+    normalized tokens (see ``_validate_hazard_potential`` / ``_validate_state``)
+    into the clause, so this is defense-in-depth, not the primary guard.
+    """
+    return value.replace("'", "''")
+
+
+def _validate_hazard_potential(
+    hazard_potential: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """Normalize the ``hazard_potential`` filter to canonical NID values.
+
+    Accepts a single value or a list/tuple of values, case-insensitive. Each
+    must be one of the NID controlled vocabulary
+    (``High`` / ``Significant`` / ``Low`` / ``Undetermined``). Returns the
+    normalized canonical-case list (empty list if ``None``).
+
+    Raises ``USACEDAMSInputError`` on an unknown classification.
+    """
+    if hazard_potential is None:
+        return []
+    if isinstance(hazard_potential, str):
+        raw = [hazard_potential]
+    elif isinstance(hazard_potential, (list, tuple)):
+        raw = list(hazard_potential)
+    else:
+        raise USACEDAMSInputError(
+            f"hazard_potential must be a str or list of str; got "
+            f"{type(hazard_potential).__name__}"
+        )
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise USACEDAMSInputError(
+                f"hazard_potential entries must be str; got {item!r}"
+            )
+        key = item.strip().lower()
+        canon = VALID_HAZARD_POTENTIALS.get(key)
+        if canon is None:
+            raise USACEDAMSInputError(
+                f"hazard_potential {item!r} is not a valid NID classification; "
+                f"expected one of {sorted(set(VALID_HAZARD_POTENTIALS.values()))}"
+            )
+        if canon not in out:
+            out.append(canon)
+    return out
+
+
+def _validate_state(
+    state: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """Normalize the ``state`` filter to NID ``STATE`` values (Title Case names).
+
+    The NID ``STATE`` column stores full state NAMES in Title Case
+    (e.g. ``"Nevada"``, ``"North Carolina"``), NOT two-letter abbreviations
+    (verified live 2026-06-27). We accept a single value or a list/tuple, and
+    Title-Case each (so ``"nevada"`` / ``"NEVADA"`` -> ``"Nevada"``). A
+    two-letter abbreviation is expanded via a built-in USPS map so callers can
+    pass either form. Returns the normalized list (empty list if ``None``).
+
+    Raises ``USACEDAMSInputError`` on a non-string / empty entry.
+    """
+    if state is None:
+        return []
+    if isinstance(state, str):
+        raw = [state]
+    elif isinstance(state, (list, tuple)):
+        raw = list(state)
+    else:
+        raise USACEDAMSInputError(
+            f"state must be a str or list of str; got {type(state).__name__}"
+        )
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            raise USACEDAMSInputError(f"state entries must be str; got {item!r}")
+        s = item.strip()
+        if not s:
+            raise USACEDAMSInputError("state entries must be non-empty")
+        # Expand a 2-letter USPS abbreviation to the full NID name.
+        if len(s) == 2 and s.upper() in _USPS_TO_NAME:
+            canon = _USPS_TO_NAME[s.upper()]
+        else:
+            # Title-case full names; preserve interior structure (handles
+            # "north carolina" -> "North Carolina", "district of columbia").
+            canon = " ".join(w.capitalize() for w in s.split())
+        if canon not in out:
+            out.append(canon)
+    return out
+
+
+def _build_where_clause(
+    hazard_potentials: list[str],
+    states: list[str],
+) -> str:
+    """Compose an ArcGIS ``where`` clause from the normalized filters.
+
+    Both filters are applied with ``IN (...)`` lists ANDed together. When no
+    filter is set, returns the ``1=1`` tautology (the original behaviour). All
+    interpolated values are pre-validated + SQL-escaped.
+
+    Example::
+
+        _build_where_clause(["High", "Significant"], ["Nevada"])
+        -> "HAZARD_POTENTIAL IN ('High','Significant') AND STATE IN ('Nevada')"
+    """
+    clauses: list[str] = []
+    if hazard_potentials:
+        ins = ",".join(f"'{_sql_escape(h)}'" for h in hazard_potentials)
+        clauses.append(f"HAZARD_POTENTIAL IN ({ins})")
+    if states:
+        ins = ",".join(f"'{_sql_escape(s)}'" for s in states)
+        clauses.append(f"STATE IN ({ins})")
+    if not clauses:
+        return "1=1"
+    return " AND ".join(clauses)
+
+
+# USPS 2-letter -> NID full state name. Covers the 50 states + DC + the
+# territories the NID inventories. Used so a caller may pass either form.
+_USPS_TO_NAME: dict[str, str] = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut",
+    "DE": "Delaware", "DC": "District Of Columbia", "FL": "Florida",
+    "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
+    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky",
+    "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana",
+    "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
+    "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
+    "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "PR": "Puerto Rico",
+    "GU": "Guam", "VI": "Virgin Islands", "AS": "American Samoa",
+}
+
+
+# ---------------------------------------------------------------------------
+# Authoritative-endpoint token resolution (canonical 3-path secret loader —
+# mirrors fetch_ebird_observations / fetch_era5_reanalysis).
+# ---------------------------------------------------------------------------
+
+# Module-level Persistence binding. The agent service sets this at startup via
+# ``set_persistence_for_secrets`` so this fetcher can resolve a ``secret_ref``
+# without importing the MCP client. Tests inject a mock via the same setter.
+_PERSISTENCE_FOR_SECRETS: Any | None = None
+
+
+def set_persistence_for_secrets(persistence: Any | None) -> None:
+    """Bind the agent-service ``Persistence`` for secret materialization.
+
+    Called once at startup by the agent service (parallels
+    ``fetch_ebird_observations.set_persistence_for_secrets``). Tests call this
+    in a fixture and reset to ``None`` on teardown.
+    """
+    global _PERSISTENCE_FOR_SECRETS
+    _PERSISTENCE_FOR_SECRETS = persistence
+
+
+def _get_persistence_for_secrets() -> Any | None:
+    return _PERSISTENCE_FOR_SECRETS
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an ``asyncio`` coroutine and return its result from sync context.
+
+    Uses ``asyncio.run`` when no loop is running (test / CLI path); falls back
+    to a one-shot worker-thread loop when called from within a running loop
+    (agent-runtime path). Both paths close the loop they create. Mirrors the
+    eBird fetcher's bridge so the secret-loader semantics are identical.
+    """
+    import asyncio
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+        running = True
+    except RuntimeError:
+        running = False
+
+    if not running:
+        return asyncio.run(coro)
+
+    result_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result_box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            error_box["err"] = exc
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in error_box:
+        raise error_box["err"]
+    return result_box["value"]
+
+
+def _materialize_secret(secret_ref: Any) -> str:
+    """Bridge ``Persistence.get_secret_value`` (async) into a sync caller.
+
+    A ``str`` ``secret_ref`` is accepted verbatim (the test surface injects a
+    known token this way without standing up Persistence). Otherwise the bound
+    ``Persistence`` resolves the per-Case vault reference.
+    """
+    if isinstance(secret_ref, str):
+        return secret_ref
+
+    persistence = _get_persistence_for_secrets()
+    if persistence is None:
+        raise USACEDAMSAuthError(
+            "Persistence not bound; cannot resolve secret_ref for the USACE "
+            "NID authoritative endpoint. Pass token=... explicitly in this "
+            "context, or rely on the public mirror."
+        )
+
+    coro = persistence.get_secret_value(secret_ref)
+    return _run_coro_sync(coro)
+
+
+def _resolve_nid_token(
+    token: str | None,
+    secret_ref: Any | None,
+) -> str | None:
+    """Resolve the authoritative-endpoint token, or ``None`` if none is set.
+
+    Priority (canonical 3-path secret loader):
+
+    1. Explicit ``token`` kwarg (live-test / dev override).
+    2. ``secret_ref`` (a ``SecretRecord``) -> ``Persistence.get_secret_value``
+       (the per-Case production path).
+    3. ``GRACE2_USACE_NID_TOKEN`` env var (dev convenience).
+
+    UNLIKE the eBird / ERA5 fetchers (which RAISE a missing-key error when no
+    key resolves), this returns ``None`` when no token is found -- the caller
+    then degrades to the public mirror so a key-less user still gets dam data.
+    A token that resolves but is REJECTED by the server surfaces
+    ``USACEDAMSAuthError`` downstream (the credential-card path).
+    """
+    if token:
+        return token
+    if secret_ref is not None:
+        try:
+            resolved = _materialize_secret(secret_ref)
+        except USACEDAMSAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface as auth error
+            raise USACEDAMSAuthError(
+                f"USACE NID secret_ref lookup failed: {exc}"
+            ) from exc
+        if resolved:
+            return resolved
+    env_token = os.environ.get(_NID_TOKEN_ENV)
+    if env_token:
+        return env_token
+    return None
+
+
+# ---------------------------------------------------------------------------
 # URL building.
 # ---------------------------------------------------------------------------
 
@@ -343,6 +708,9 @@ def _bbox_to_envelope(bbox: tuple[float, float, float, float]) -> str:
 def _build_nid_url(
     bbox: tuple[float, float, float, float] | None,
     *,
+    where: str = "1=1",
+    base_url: str = _NID_BASE,
+    token: str | None = None,
     result_offset: int = 0,
     result_record_count: int = _NID_PAGE_SIZE,
 ) -> tuple[str, dict[str, str]]:
@@ -353,13 +721,19 @@ def _build_nid_url(
     converted to ``esriGeometryEnvelope`` + ``inSR=4326`` server-side spatial
     filter.
 
+    ``where`` carries the hazard/state ``IN (...)`` filter clause (job-A5
+    upgrade); ``"1=1"`` is the unfiltered tautology. ``base_url`` selects the
+    authoritative endpoint (``_NID_AUTHORITATIVE_BASE``) vs the public mirror
+    (``_NID_BASE``). ``token``, when set, is appended for the authoritative
+    ArcGIS token gate.
+
     ``result_offset`` + ``result_record_count`` drive the pagination loop in
     ``_fetch_nid_all_features``. The NID FeatureServer enforces
     ``maxRecordCount=2000``; requesting more is silently truncated.
     """
     out_fields = ",".join(PRESERVED_PROPERTIES)
     params: dict[str, str] = {
-        "where": "1=1",
+        "where": where or "1=1",
         "outFields": out_fields,
         "outSR": "4326",
         "f": "geojson",
@@ -374,7 +748,9 @@ def _build_nid_url(
         params["geometryType"] = "esriGeometryEnvelope"
         params["spatialRel"] = "esriSpatialRelIntersects"
         params["inSR"] = "4326"
-    return _NID_BASE, params
+    if token:
+        params["token"] = token
+    return base_url, params
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +786,13 @@ def _fetch_nid_geojson_page(
             f"USACE NID request failed url={url}: {exc}"
         ) from exc
 
+    # HTTP 401/403 from the authoritative endpoint => credential signal.
+    if resp.status_code in (401, 403):
+        raise USACEDAMSAuthError(
+            f"USACE NID authoritative endpoint rejected the token "
+            f"(HTTP {resp.status_code}) url={url}: {resp.text[:300]!r}"
+        )
+
     if resp.status_code >= 400:
         raise USACEDAMSUpstreamError(
             f"USACE NID returned HTTP {resp.status_code} url={url}: {resp.text[:500]!r}"
@@ -429,8 +812,19 @@ def _fetch_nid_geojson_page(
         )
 
     if "error" in body:
+        err = body["error"]
+        # ESRI token gate: code 499 (token required) / 498 (invalid token).
+        # The authoritative ``geospatial.sec.usace.army.mil`` folder is
+        # token-gated; either code is a credential signal the agent surfaces
+        # as a credential card (via the generic credential pipeline).
+        err_code = err.get("code") if isinstance(err, dict) else None
+        if err_code in (_ESRI_TOKEN_REQUIRED_CODE, _ESRI_TOKEN_INVALID_CODE):
+            raise USACEDAMSAuthError(
+                f"USACE NID authoritative endpoint requires a valid token "
+                f"(ESRI code {err_code}) url={url}: {err}"
+            )
         raise USACEDAMSUpstreamError(
-            f"USACE NID query returned error envelope url={url}: {body['error']}"
+            f"USACE NID query returned error envelope url={url}: {err}"
         )
 
     if body.get("type") != "FeatureCollection":
@@ -450,6 +844,9 @@ def _fetch_nid_geojson_page(
 def _fetch_nid_all_features(
     bbox: tuple[float, float, float, float] | None,
     *,
+    where: str = "1=1",
+    base_url: str = _NID_BASE,
+    token: str | None = None,
     max_features: int = _MAX_TOTAL_FEATURES,
 ) -> dict[str, Any]:
     """Page through the NID FeatureService, accumulating up to ``max_features``.
@@ -459,13 +856,20 @@ def _fetch_nid_all_features(
     ``max_features`` is reached, or when the cumulative feature count
     exceeds the cap.
 
-    Raises ``USACEDAMSUpstreamError`` if any page errors.
+    ``where`` carries the hazard/state filter clause; ``base_url`` + ``token``
+    select the authoritative endpoint vs the mirror.
+
+    Raises ``USACEDAMSUpstreamError`` if any page errors, or
+    ``USACEDAMSAuthError`` if the authoritative endpoint rejects the token.
     """
     accumulated: list[dict[str, Any]] = []
     offset = 0
     while True:
         url, params = _build_nid_url(
             bbox,
+            where=where,
+            base_url=base_url,
+            token=token,
             result_offset=offset,
             result_record_count=_NID_PAGE_SIZE,
         )
@@ -583,9 +987,65 @@ def _geojson_to_fgb(geojson: dict[str, Any]) -> bytes:
 
 def _fetch_nid_bytes(
     bbox: tuple[float, float, float, float] | None,
+    *,
+    where: str = "1=1",
+    token: str | None = None,
 ) -> bytes:
-    """Run pagination + conversion: bbox → FlatGeobuf bytes."""
-    geojson = _fetch_nid_all_features(bbox)
+    """Run pagination + conversion with authoritative -> mirror -> error logic.
+
+    Source resolution order:
+
+    1. AUTHORITATIVE (``geospatial.sec.usace.army.mil``): attempted ONLY when a
+       ``token`` resolved. On a token-rejection (498 / 401 / 403) we raise
+       ``USACEDAMSAuthError`` immediately -- the supplied token is bad and the
+       agent surfaces a credential card rather than silently masking it with
+       mirror data. On a NON-auth authoritative failure (service-name 404,
+       network, 5xx) we log + fall through to the mirror.
+    2. MIRROR (public ESRI Living Atlas): the fallback (and the primary path
+       when no token resolved). On mirror failure we raise the mirror's typed
+       error -- an honest dead-end, never a fabricated success.
+
+    The hazard/state ``where`` clause is applied to whichever endpoint serves.
+    """
+    # 1. Authoritative endpoint — only when a token is present.
+    if token:
+        try:
+            geojson = _fetch_nid_all_features(
+                bbox,
+                where=where,
+                base_url=_NID_AUTHORITATIVE_BASE,
+                token=token,
+            )
+            logger.info(
+                "fetch_usace_dams: served from AUTHORITATIVE NID endpoint "
+                "(%d feature(s))",
+                len(geojson.get("features") or []),
+            )
+            return _geojson_to_fgb(geojson)
+        except USACEDAMSAuthError:
+            # A resolved-but-rejected token is a credential signal — do NOT
+            # mask it with mirror data; surface the card so the user fixes it.
+            raise
+        except USACEDAMSError as exc:
+            # Non-auth authoritative failure (wrong service path / network /
+            # 5xx) — degrade to the mirror honestly.
+            logger.warning(
+                "fetch_usace_dams: authoritative endpoint failed (%s); "
+                "falling back to public mirror",
+                exc,
+            )
+
+    # 2. Public mirror (fallback, or primary when no token).
+    geojson = _fetch_nid_all_features(
+        bbox,
+        where=where,
+        base_url=_NID_BASE,
+        token=None,
+    )
+    logger.info(
+        "fetch_usace_dams: served from public MIRROR (%d feature(s))",
+        len(geojson.get("features") or []),
+    )
     return _geojson_to_fgb(geojson)
 
 
@@ -603,8 +1063,10 @@ def _fetch_nid_bytes(
 )
 def fetch_usace_dams(
     bbox: tuple[float, float, float, float] | None = None,
-    # Reserved for future hazard / state filter wire-side narrowing. v0.1
-    # keeps the surface minimal — the bbox is the canonical narrow knob.
+    hazard_potential: str | list[str] | None = None,
+    state: str | list[str] | None = None,
+    token: str | None = None,
+    secret_ref: Any | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -617,9 +1079,14 @@ def fetch_usace_dams(
         identification, ownership, physical structure (height, length,
         storage, drainage area), hazard potential classification,
         condition assessment, and emergency-action-plan status.
-        Wraps the public ESRI Living Atlas mirror of the NID FeatureService;
-        the authoritative ``geospatial.sec.usace.army.mil`` REST endpoint
-        requires a USACE token and is NOT used at v0.1.
+        Resolves AUTHORITATIVE-first: when a USACE NID token is available
+        (kwarg / per-Case ``secret_ref`` / ``GRACE2_USACE_NID_TOKEN`` env) it
+        queries the regulatory source-of-truth at
+        ``geospatial.sec.usace.army.mil``; otherwise (and on any non-auth
+        authoritative failure) it degrades to the public ESRI Living Atlas
+        mirror of the NID FeatureService. A supplied-but-rejected token
+        raises a credential-shaped error so the agent surfaces a credential
+        card to re-enter a valid token.
 
     When to use:
         - User asks about dams in a region ("what dams are upstream of X?",
@@ -651,6 +1118,27 @@ def fetch_usace_dams(
             (capped at 50k features); the Wave-1.5 chat-warning gate uses
             ``estimate_payload_mb`` to warn the user before a global sweep
             commits.
+        hazard_potential: Optional NID hazard-potential filter. A single value
+            or a list, case-insensitive, each one of ``"High"`` /
+            ``"Significant"`` / ``"Low"`` / ``"Undetermined"``. Applied
+            server-side as ``HAZARD_POTENTIAL IN (...)`` so "show every
+            high-hazard dam in X" pulls only matching dams. Example:
+            ``hazard_potential="High"`` or
+            ``hazard_potential=["High", "Significant"]``.
+        state: Optional NID state filter. A single value or list; full state
+            NAMES (``"Nevada"``, ``"North Carolina"``) or 2-letter USPS
+            abbreviations (``"NV"``) are both accepted and normalized to the
+            NID ``STATE`` column form. Applied server-side as
+            ``STATE IN (...)``.
+        token: Optional explicit USACE NID authoritative-endpoint token
+            (highest-priority resolution path). When set, the authoritative
+            ``geospatial.sec.usace.army.mil`` endpoint is queried first.
+        secret_ref: Optional ``SecretRecord`` (from the per-Case secrets
+            panel) -> resolved to the token via ``Persistence.get_secret_value``
+            at invocation time (the production path). A token that resolves
+            but is rejected by the server raises ``USACEDAMSAuthError`` (the
+            credential-card path); a token that does NOT resolve degrades to
+            the public mirror.
 
     Returns:
         A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
@@ -694,30 +1182,62 @@ def fetch_usace_dams(
         _validate_bbox(bbox)
         q_bbox = _round_bbox_to_6dp(bbox)
 
-    params = {
+    # Filter validation + WHERE-clause construction (job-A5 upgrade).
+    hazard_norm = _validate_hazard_potential(hazard_potential)
+    state_norm = _validate_state(state)
+    where = _build_where_clause(hazard_norm, state_norm)
+
+    # Authoritative-endpoint token resolution (None => mirror-only path).
+    resolved_token = _resolve_nid_token(token=token, secret_ref=secret_ref)
+
+    # Cache-key params. The token is INTENTIONALLY excluded from the key —
+    # the underlying dam inventory does not vary by caller/token (the
+    # authoritative + mirror return the same regulatory records); per-token
+    # keying would needlessly fragment the cache. The filter clause IS part
+    # of the key (different filters yield different result sets).
+    params: dict[str, Any] = {
         "bbox": list(q_bbox) if q_bbox is not None else None,
+        "hazard_potential": hazard_norm or None,
+        "state": state_norm or None,
     }
 
     result = read_through(
         metadata=_METADATA,
         params=params,
         ext="fgb",
-        fetch_fn=lambda: _fetch_nid_bytes(q_bbox),
+        fetch_fn=lambda: _fetch_nid_bytes(
+            q_bbox, where=where, token=resolved_token
+        ),
     )
     assert result.uri is not None, (
         "fetch_usace_dams is cacheable; uri must be set by read_through"
     )
 
+    # Filter suffix so distinct filtered layers get distinct ids/names.
+    filt_bits: list[str] = []
+    if hazard_norm:
+        filt_bits.append("-".join(h.lower() for h in hazard_norm))
+    if state_norm:
+        filt_bits.append("-".join(s.lower().replace(" ", "") for s in state_norm))
+    filt_id = ("-" + "-".join(filt_bits)) if filt_bits else ""
+    filt_name = (
+        " [" + "; ".join(
+            ([", ".join(hazard_norm) + " hazard"] if hazard_norm else [])
+            + ([", ".join(state_norm)] if state_norm else [])
+        ) + "]"
+    ) if filt_bits else ""
+
     if q_bbox is None:
-        name = "USACE National Inventory of Dams — CONUS+AK+HI"
-        layer_id = "usace-nid-dams-global"
+        name = "USACE National Inventory of Dams — CONUS+AK+HI" + filt_name
+        layer_id = "usace-nid-dams-global" + filt_id
     else:
         name = (
             f"USACE National Inventory of Dams — bbox "
             f"({q_bbox[0]:.2f},{q_bbox[1]:.2f},{q_bbox[2]:.2f},{q_bbox[3]:.2f})"
+            + filt_name
         )
         layer_id = (
-            f"usace-nid-dams-{q_bbox[0]:.4f}-{q_bbox[1]:.4f}"
+            f"usace-nid-dams-{q_bbox[0]:.4f}-{q_bbox[1]:.4f}" + filt_id
         )
 
     return LayerURI(
