@@ -557,23 +557,28 @@ resource "aws_lambda_permission" "apigw_invoke_view_sign" {
 # DEMO-TOKEN Lambda — POST /demo-token (reuses the wake API above).
 #
 # The "code-gate" public-demo sign-in. The web access-code surface POSTs a single
-# shared demo CODE; on a constant-time match this Lambda exchanges the (server-
-# held) demo user's password for a real Cognito token set and returns it, so the
-# browser signs in as the demo user WITHOUT the password ever reaching the client.
+# shared demo CODE; on a constant-time match this Lambda MINTS A FRESH EPHEMERAL
+# Cognito user (one per code-entry, uncapped per-judge isolation), sets a random
+# throwaway password, auths as that user, and returns its token set -- so each
+# judge signs in as a private throwaway identity WITHOUT any shared account and
+# WITHOUT any password reaching the client. Distinct Cognito subs => the existing
+# per-user case scoping isolates judges automatically (no web/agent change).
 #
 # DESIGN INVARIANTS (read before modifying):
 #
 #   1. CODE-GATE FIRST. The handler ssm:GetParameter's the stored access code,
 #      hmac.compare_digest's the submitted code, and on a MISMATCH returns 403
-#      with NO Cognito call. Only a correct code reaches AdminInitiateAuth. The
-#      code + password parameters are SecureStrings; their VALUES are set
-#      out-of-band by NATE at cutover (NOT created in Terraform) and referenced
-#      here by name only.
+#      with NO Cognito call (no create, no auth -- no oracle). Only a correct
+#      code reaches the mint path. The access code is a SecureString; its VALUE
+#      is set out-of-band by NATE at cutover (NOT created in Terraform) and
+#      referenced here by name only. There is NO shared user password anymore.
 #
-#   2. LEAST PRIVILEGE. The role can cognito-idp:AdminInitiateAuth on THIS pool
-#      ARN, ssm:GetParameter on arn .../parameter/grace2/demo-* ONLY (+
-#      kms:Decrypt for the aws/ssm-managed SecureString CMK), and CloudWatch logs
-#      on its own group — nothing else (no S3, no DynamoDB, no EC2).
+#   2. LEAST PRIVILEGE. The role can cognito-idp:AdminCreateUser +
+#      AdminSetUserPassword + AdminInitiateAuth on THIS pool ARN, ssm:GetParameter
+#      on the /grace2/demo-access-code parameter ONLY (+ kms:Decrypt for the
+#      aws/ssm-managed SecureString CMK), and CloudWatch logs on its own group —
+#      nothing else (no S3, no DynamoDB, no EC2). Ephemeral users carry the
+#      DEMO_USER_PREFIX cleanup marker so a sweep can find/disable them.
 #
 #   3. NO THIRD-PARTY DEPS. Unlike the view-signer (PyJWT + requests), this
 #      handler is boto3-only, so the archive is a direct zip of the source dir —
@@ -613,20 +618,26 @@ resource "aws_iam_role_policy" "demo_token" {
     Version = "2012-10-17"
     Statement = [
       {
-        # The token exchange: AdminInitiateAuth (ADMIN_USER_PASSWORD_AUTH) on the
-        # one demo pool. Scoped to the pool ARN — no other Cognito action.
-        Sid      = "DemoInitiateAuth"
-        Effect   = "Allow"
-        Action   = ["cognito-idp:AdminInitiateAuth"]
+        # Mint a fresh ephemeral user per code-entry then auth as it:
+        # AdminCreateUser + AdminSetUserPassword + AdminInitiateAuth
+        # (ADMIN_USER_PASSWORD_AUTH) on the one demo pool. Scoped to the pool ARN
+        # — no other Cognito action.
+        Sid    = "DemoEphemeralUser"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:AdminCreateUser",
+          "cognito-idp:AdminSetUserPassword",
+          "cognito-idp:AdminInitiateAuth",
+        ]
         Resource = "arn:aws:cognito-idp:${var.region}:${var.account_id}:userpool/${var.cognito_user_pool_id}"
       },
       {
-        # Read the access code + demo password SecureStrings — scoped to the
-        # /grace2/demo-* prefix ONLY. Their values are set by NATE at cutover.
-        Sid      = "ReadDemoSecrets"
+        # Read the access-code SecureString ONLY (no shared password anymore).
+        # Its value is set by NATE at cutover (NOT created in Terraform).
+        Sid      = "ReadDemoCode"
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
-        Resource = "arn:aws:ssm:${var.region}:${var.account_id}:parameter/grace2/demo-*"
+        Resource = "arn:aws:ssm:${var.region}:${var.account_id}:parameter/grace2/demo-access-code"
       },
       {
         # Decrypt the SecureString values. The SSM-managed key (alias/aws/ssm)
@@ -664,7 +675,7 @@ resource "aws_lambda_function" "demo_token" {
   runtime          = "python3.12"
   filename         = data.archive_file.demo_token.output_path
   source_code_hash = data.archive_file.demo_token.output_base64sha256
-  # Two SSM gets + one AdminInitiateAuth; small headroom.
+  # One SSM get + three Cognito admin calls (create/setpw/auth); small headroom.
   timeout     = 15
   memory_size = 256
 
@@ -672,9 +683,11 @@ resource "aws_lambda_function" "demo_token" {
     variables = {
       COGNITO_USER_POOL_ID     = var.cognito_user_pool_id
       GRACE2_COGNITO_CLIENT_ID = var.cognito_client_id
-      DEMO_USERNAME            = "grace2-demo@example.com"
       SSM_CODE_PARAM           = "/grace2/demo-access-code"
-      SSM_PW_PARAM             = "/grace2/demo-user-password"
+      # Ephemeral-judge naming: PREFIX is the cleanup marker, DOMAIN a
+      # non-deliverable synthetic email domain (the pool keys on email).
+      DEMO_USER_PREFIX  = "trid3nt-judge-"
+      DEMO_EMAIL_DOMAIN = "demo.trident.invalid"
     }
   }
 
