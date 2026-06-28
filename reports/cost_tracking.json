@@ -1,5 +1,22 @@
 [
   {
+    "job_id": "cold-tool-catalog-route",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 0,
+    "subagent_tokens_estimated": 90000,
+    "description": "Orchestrator hands-on + 1 Explore subagent (mapped web fetch site / catalog builder / startup hook / S3+CloudFront+CORS state). Cold agent-less tool-catalog route: web reads static catalog/tool-catalog.json from the public web bucket cold-first (never wakes the box), falls back to live /api/tool-catalog. Deploy script republishes the catalog (778KB, 171 tools) on every agent deploy from dev-machine admin creds (no box-role IAM change). Web-bucket CORS for Vercel + initial upload applied after NATE one-time approval (both classifier-gated). Commit 3124711, pushed. Explore tokens estimated.",
+    "agent": "natealmanza3@gmail.com"
+  },
+  {
+    "job_id": "web-agent-generic-legend-key",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 0,
+    "subagent_tokens_estimated": 900000,
+    "description": "Workflow wf_legend (multi-agent, 3 layers: contracts + agent emit + web render) building the data-driven LegendKey: gradient + numeric range surfaced from the producer (real band percentiles / categorical classes), rendered generically on web; style_preset kept only as fallback. Orchestrator finished review-fixes hands-on (series/group dedup, 5 added colormap ramps, categorical cardWidth, dedup regression tests). subagent_tokens marked estimated (~900k) - exact workflow total not recoverable post-compaction; logged per no-silent-burns norm. Commit b4e8377, pushed (Vercel auto-deploy)."
+  },
+  {
     "job_id": "job-0030-schema-20260606",
     "sprint": 6,
     "description": "Extended Appendix D.6 PipelineStepSummary with progress_percent/error_code/error_message and added AtomicToolMetadata model with 4-class TTL Literal for FunctionTool registration; 91 \u2192 131 contracts tests green; closes OQ-W-26 from sprint-05.",
