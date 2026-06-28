@@ -34,6 +34,7 @@ from the typed ``SWMMDepthLayerURI.max_depth_m`` / ``.flooded_area_km2`` /
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -69,7 +70,7 @@ from .run_swmm import (
 from .solve_progress import drive_live_solve_progress
 from .swmm_mesh_builder import estimate_swmm_solve_seconds
 from .mesh_layer import make_swmm_mesh_layer_uri
-from ..layer_uri_emit import emit_layer_uri
+from ..layer_uri_emit import emit_layer_uri, publish_input_layer
 
 logger = logging.getLogger("grace2_agent.workflows.model_urban_flood_swmm")
 
@@ -248,6 +249,67 @@ def _fetch_buildings_for_urban(
     if isinstance(fc, dict) and fc.get("type") == "FeatureCollection":
         return fc
     return None
+
+
+def make_buildings_input_layer_uri(
+    building_footprints: Any,
+    *,
+    run_id: str,
+    runs_bucket: str | None = None,
+) -> LayerURI | None:
+    """task #207: upload the OSM building footprints + return a role="input" vector.
+
+    The urban-flood deck consumes building footprints as obstructions, but the
+    fetched ``FeatureCollection`` was only ever passed to the mesh builder and
+    discarded as a renderable layer. Mirror :func:`make_swmm_mesh_layer_uri`:
+    upload the FC to the DURABLE runs bucket at
+    ``s3://<runs_bucket>/<run_id>/buildings_input.geojson`` (so the emitter can
+    inline the s3:// vector on every reconnect) and return a ``role="input"``
+    vector ``LayerURI`` with ``bbox=None`` (an input must not emit a competing
+    zoom-to).
+
+    Returns ``None`` (best-effort, never fatal) when the FC is empty/malformed or
+    the S3 upload fails. SYNC compute + boto3 upload -- the caller wraps it in
+    ``asyncio.to_thread`` (never run sync boto3 on the asyncio loop).
+    """
+    if not isinstance(building_footprints, dict):
+        return None
+    feats = building_footprints.get("features")
+    if not isinstance(feats, list) or len(feats) == 0:
+        return None
+
+    try:
+        from ..tools.solver import _get_runs_bucket, _get_s3_client
+
+        bucket = runs_bucket or _get_runs_bucket()
+        key = f"{run_id}/buildings_input.geojson"
+        _get_s3_client().put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(building_footprints).encode("utf-8"),
+            ContentType="application/geo+json",
+        )
+        s3_uri = f"s3://{bucket}/{key}"
+    except Exception as exc:  # noqa: BLE001 - best-effort; S3 put failure non-fatal
+        logger.warning(
+            "make_buildings_input_layer_uri: buildings_input.geojson S3 upload "
+            "failed (non-fatal, buildings input absent; run_id=%s): %s",
+            run_id,
+            exc,
+        )
+        return None
+
+    n = len(feats)
+    plural = "footprint" if n == 1 else "footprints"
+    return LayerURI(
+        layer_id=f"buildings-input-{run_id}",
+        name=f"Building {plural} ({n})",
+        layer_type="vector",
+        uri=s3_uri,
+        style_preset="osm_buildings",
+        role="input",
+        bbox=None,
+    )
 
 
 def _atlas14_total_depth_mm(
@@ -514,6 +576,27 @@ async def model_urban_flood_swmm(
         except Exception as exc:  # noqa: BLE001 - mesh emit is non-fatal
             logger.warning(
                 "model_urban_flood_swmm: mesh layer emit failed (non-fatal): %s",
+                exc,
+            )
+
+        # --- task #207: surface the building footprints as an INPUT layer ----
+        # The OSM footprints fed the mesh as obstructions but were never shown.
+        # Surface them as a role="input" vector (bbox=None) alongside the mesh so
+        # the user sees the buildings the model treated as obstacles. SYNC FC
+        # upload -> OFFLOADED off the loop; BEST-EFFORT (publish_input_layer never
+        # raises) so a failure can NEVER break the solve. No-op when no footprints
+        # were fetched (building_footprints is None / empty).
+        try:
+            buildings_layer = await asyncio.to_thread(
+                make_buildings_input_layer_uri,
+                building_footprints,
+                run_id=staging.run_id,
+            )
+            await publish_input_layer(emitter, buildings_layer)
+        except Exception as exc:  # noqa: BLE001 - input surfacing is NEVER fatal
+            logger.warning(
+                "model_urban_flood_swmm: buildings input emit failed "
+                "(non-fatal): %s",
                 exc,
             )
 

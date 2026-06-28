@@ -66,12 +66,16 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from grace2_contracts.execution import LayerURI
 
+if TYPE_CHECKING:  # pragma: no cover - typing-only import (no runtime cycle)
+    from .pipeline_emitter import PipelineEmitter
+
 logger = logging.getLogger("grace2_agent.layer_uri_emit")
 
-__all__ = ["emit_layer_uri", "signed_urls_enabled"]
+__all__ = ["emit_layer_uri", "publish_input_layer", "signed_urls_enabled"]
 
 # Env var name for the dormant direct-fetch / signed-URL scaffold (Decision 11).
 SIGNED_URLS_ENV = "SIGNED_URLS"
@@ -149,3 +153,76 @@ def emit_layer_uri(layer: LayerURI) -> LayerURI | None:
         return None
 
     return layer
+
+
+async def publish_input_layer(
+    emitter: "PipelineEmitter | None",
+    layer_uri: LayerURI | None,
+    *,
+    role: str = "input",
+) -> bool:
+    """BEST-EFFORT: surface an engine INPUT layer on the map (role="input").
+
+    NATE task #207 (surface engine inputs): every engine run consumes renderable
+    inputs (OpenQuake fault traces, SFINCS DEM / rivers / landcover, SWMM
+    building footprints) but historically only the RESULT layer was published.
+    This is the ONE reusable seam composers call to also surface those inputs:
+    it wraps :func:`emit_layer_uri` (the guardrail) + ``emitter.add_loaded_layer``
+    exactly like the SWMM / SFINCS mesh-layer emit, with two hard rules baked in:
+
+      * ``role`` defaults to ``"input"`` and is FORCED onto the LayerURI (a copy is
+        made if the incoming role differs) so an input renders non-intrusively
+        beneath the primary result, never competing with it for "the answer".
+      * ``bbox`` is FORCED to ``None`` so ``add_loaded_layer`` does NOT emit a
+        competing ``zoom-to`` map-command — an input/context layer must never
+        fight the AOI / result camera for the view (mirrors the mesh-layer rule).
+
+    BEST-EFFORT CONTRACT (the whole point): a failure to surface an input must
+    NEVER fail the solve. This function NEVER raises — every failure path (no
+    emitter bound, a falsy layer, the guardrail dropping a raw-object-store
+    raster, an ``add_loaded_layer`` exception) is swallowed with a WARNING and
+    returns ``False``. Returns ``True`` only when the layer actually reached the
+    emitter. The result-layer publish is untouched; this only ADDS input rows.
+
+    Note: a RASTER input must already carry a renderable (http(s) tile/WMS) uri —
+    the caller round-trips it through ``publish_layer`` FIRST. A raw ``s3://`` /
+    ``gs://`` raster is correctly DROPPED here by the ``emit_layer_uri`` guardrail
+    (MapLibre cannot fetch it); VECTORS carrying ``s3://`` inline server-side and
+    pass straight through (job-0175), so they need no round-trip.
+    """
+    if emitter is None or layer_uri is None:
+        return False
+    try:
+        # Force the input invariants: role="input" + bbox=None. Copy only when a
+        # field actually differs so the common (already-correct) path is a no-op.
+        if layer_uri.role != role or layer_uri.bbox is not None:
+            layer_uri = layer_uri.model_copy(update={"role": role, "bbox": None})
+        safe = emit_layer_uri(layer_uri)
+        if safe is None:
+            # The guardrail dropped it (e.g. a raw-object-store raster that never
+            # round-tripped through publish_layer). Honest no-surface, not fatal.
+            logger.warning(
+                "publish_input_layer: emit_layer_uri DROPPED input layer_id=%s "
+                "(not surfaced; the solve is unaffected).",
+                layer_uri.layer_id,
+            )
+            return False
+        await emitter.add_loaded_layer(safe)
+        logger.info(
+            "publish_input_layer: surfaced engine input layer_id=%s type=%s "
+            "preset=%s role=%s",
+            safe.layer_id,
+            safe.layer_type,
+            safe.style_preset,
+            safe.role,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - input surfacing is NEVER fatal
+        layer_id = getattr(layer_uri, "layer_id", "<unknown>")
+        logger.warning(
+            "publish_input_layer: failed to surface input layer_id=%s "
+            "(non-fatal, input absent; the solve is unaffected): %s",
+            layer_id,
+            exc,
+        )
+        return False

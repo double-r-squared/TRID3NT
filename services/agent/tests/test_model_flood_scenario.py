@@ -2027,28 +2027,39 @@ async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
             ),
         )
 
-    # 1. add_loaded_layer must have been called exactly once.
-    assert len(add_loaded_layer_calls) == 1, (
-        f"job-0060: add_loaded_layer must be called once on success; "
-        f"called {len(add_loaded_layer_calls)} time(s). "
+    # 1. add_loaded_layer must have been called exactly once FOR THE RESULT.
+    # task #207: engine INPUT layers (DEM/landcover, layer_id prefix "input-")
+    # ALSO surface via add_loaded_layer now; this assertion is about the RESULT
+    # wrapper gate, so filter the inputs out.
+    result_layer_calls = [
+        l for l in add_loaded_layer_calls if not l.layer_id.startswith("input-")
+    ]
+    assert len(result_layer_calls) == 1, (
+        f"job-0060: add_loaded_layer must be called once for the result on "
+        f"success; called {len(result_layer_calls)} time(s) (excluding inputs). "
         f"The emit_tool_call gate at pipeline_emitter.py:517 fires only when "
         f"isinstance(result, LayerURI) is True."
     )
     # After job-0062, publish_layer substitutes the WMS URL into LayerURI.uri.
     # Assert the URI is a WMS URL (not gs://) — corrected by job-0071.
-    assert add_loaded_layer_calls[0].uri.startswith("https://"), (
+    assert result_layer_calls[0].uri.startswith("https://"), (
         f"add_loaded_layer called with wrong URI (expected WMS URL after job-0062): "
-        f"{add_loaded_layer_calls[0].uri!r}"
+        f"{result_layer_calls[0].uri!r}"
     )
 
-    # 2. The emitter's _loaded_layers list is non-empty after the call.
-    assert len(emitter._loaded_layers) == 1, (
-        f"_loaded_layers should have 1 entry after the successful run; "
-        f"got {len(emitter._loaded_layers)}."
+    # 2. The emitter's _loaded_layers list carries the RESULT after the call.
+    # task #207: input rows (layer_id prefix "input-") may also be present; the
+    # RESULT-layer contract is one non-input row carrying the WMS URL.
+    result_loaded = [
+        l for l in emitter._loaded_layers if not l.layer_id.startswith("input-")
+    ]
+    assert len(result_loaded) == 1, (
+        f"_loaded_layers should have 1 RESULT entry after the successful run; "
+        f"got {len(result_loaded)} (excluding inputs)."
     )
-    assert emitter._loaded_layers[0].uri.startswith("https://"), (
-        f"_loaded_layers[0].uri should be WMS URL after job-0062; "
-        f"got {emitter._loaded_layers[0].uri!r}"
+    assert result_loaded[0].uri.startswith("https://"), (
+        f"result _loaded_layers uri should be WMS URL after job-0062; "
+        f"got {result_loaded[0].uri!r}"
     )
 
     # 3. A session-state envelope was emitted with non-empty loaded_layers.

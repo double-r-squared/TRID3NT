@@ -39,12 +39,14 @@ import os
 from typing import Any
 
 from grace2_contracts import new_ulid
+from grace2_contracts.execution import LayerURI, LegendClass, LegendKey
 from grace2_contracts.openquake_contracts import (
     DEFAULT_SITE_GRID_SPACING_KM,
     OpenQuakeRunArgs,
     SeismicHazardLayerURI,
 )
 
+from ..layer_uri_emit import publish_input_layer
 from ..pipeline_emitter import (
     begin_substeps,
     current_emitter,
@@ -67,6 +69,9 @@ __all__ = [
     "assemble_build_spec",
     "stage_openquake_build_spec",
     "resolve_fault_sources",
+    "fault_records_to_feature_collection",
+    "make_fault_sources_layer_uri",
+    "FAULT_LINE_STYLE_PRESET",
     "REAL_FAULT_SITE_GRID_SPACING_KM",
 ]
 
@@ -280,6 +285,139 @@ def resolve_fault_sources(
         )
     )
     return [], note
+
+
+# --------------------------------------------------------------------------- #
+# task #207: surface the resolved fault traces as a renderable INPUT layer.
+#
+# The fault sources are resolved in-memory (lon/lat traces) and baked into the
+# OpenQuake XML, then DISCARDED -- no artifact was kept, so the user could never
+# SEE the fault lines the hazard peaks on. We now serialize the records to a
+# GeoJSON FeatureCollection of LineStrings (carrying name / slip-rate / slip-type
+# for click-inspect), upload it next to the run, and emit it as a role="input"
+# vector so the fault traces render under the hazard COG.
+# --------------------------------------------------------------------------- #
+
+#: Style-preset label for the surfaced fault-trace vector. Semantic name (future-
+#: proof for a dedicated web/QGIS preset); today the web renders an unknown LINE
+#: preset in its geometry-family colour, so the traces draw as a distinct line.
+FAULT_LINE_STYLE_PRESET = "fault_line"
+
+
+def fault_records_to_feature_collection(
+    fault_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Serialize resolved fault records to a GeoJSON ``FeatureCollection``.
+
+    Each record's ``geometry`` is the flattened ``[[lon, lat], ...]`` trace the
+    fetcher produced (``trace_coords`` already collapses MultiLineString to one
+    ordered vertex list). A record becomes a ``LineString`` feature carrying the
+    click-inspect properties ``name`` / ``net_slip_rate_mm_yr`` / ``slip_type``
+    (plus ``catalog_name`` when present). Records with fewer than 2 vertices are
+    SKIPPED (a degenerate trace is not a drawable line) -- this mirrors the
+    fetcher's own >=2-distinct-vertex gate, so in practice every resolved record
+    yields a feature.
+
+    Pure dict work (no I/O, no reproject -- the traces are already EPSG:4326
+    lon/lat). Returns a valid (possibly empty) FeatureCollection.
+    """
+    features: list[dict[str, Any]] = []
+    for rec in fault_records or []:
+        coords = rec.get("geometry") or []
+        # Coerce to a clean [[lon, lat], ...] list of >=2 vertices.
+        line: list[list[float]] = []
+        for p in coords:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                line.append([float(p[0]), float(p[1])])
+        if len(line) < 2:
+            continue
+        props: dict[str, Any] = {
+            "name": str(rec.get("name") or "fault"),
+            "net_slip_rate_mm_yr": rec.get("net_slip_rate_mm_yr"),
+            "slip_type": rec.get("slip_type"),
+        }
+        if rec.get("catalog_name"):
+            props["catalog_name"] = str(rec.get("catalog_name"))
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": line},
+                "properties": props,
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def make_fault_sources_layer_uri(
+    fault_records: list[dict[str, Any]],
+    *,
+    run_id: str,
+    runs_bucket: str | None = None,
+) -> LayerURI | None:
+    """Build the fault-trace ``FeatureCollection`` + UPLOAD it to S3 -> LayerURI.
+
+    Mirrors :func:`make_swmm_mesh_layer_uri`: serialize the records, upload to the
+    DURABLE runs bucket at ``s3://<runs_bucket>/<run_id>/fault_sources.geojson``
+    (so ``add_loaded_layer`` can re-inline the s3:// vector on every reconnect,
+    exactly like the mesh), and return a ``role="input"`` vector ``LayerURI`` with
+    ``bbox=None`` (an input must not emit a competing zoom-to). Carries a
+    categorical ``LegendKey`` so the surfaced traces get a legend swatch.
+
+    Returns ``None`` (best-effort, never fatal) when there are no drawable
+    features OR the S3 upload fails. SYNC compute + boto3 upload -- the caller
+    wraps it in ``asyncio.to_thread`` (never run sync boto3 on the asyncio loop).
+    """
+    fc = fault_records_to_feature_collection(fault_records)
+    n_features = len(fc.get("features") or [])
+    if n_features <= 0:
+        logger.info(
+            "make_fault_sources_layer_uri: no drawable fault traces -> no input "
+            "layer (run_id=%s)",
+            run_id,
+        )
+        return None
+
+    # Upload to the DURABLE runs bucket via the SHARED solver S3 seam (the SAME
+    # boto3 instance-role + bucket convention the mesh layer + every run artifact
+    # uses). A put failure -> the input is simply absent, never breaks the solve.
+    try:
+        from ..tools.solver import _get_runs_bucket, _get_s3_client
+
+        bucket = runs_bucket or _get_runs_bucket()
+        key = f"{run_id}/fault_sources.geojson"
+        _get_s3_client().put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(fc).encode("utf-8"),
+            ContentType="application/geo+json",
+        )
+        s3_uri = f"s3://{bucket}/{key}"
+    except Exception as exc:  # noqa: BLE001 - best-effort; S3 put failure non-fatal
+        logger.warning(
+            "make_fault_sources_layer_uri: fault_sources.geojson S3 upload failed "
+            "(non-fatal, fault input absent; run_id=%s): %s",
+            run_id,
+            exc,
+        )
+        return None
+
+    plural = "trace" if n_features == 1 else "traces"
+    return LayerURI(
+        layer_id=f"fault-sources-{run_id}",
+        name=f"Active fault {plural} ({n_features})",
+        layer_type="vector",
+        uri=s3_uri,
+        style_preset=FAULT_LINE_STYLE_PRESET,
+        role="input",
+        bbox=None,
+        legend=LegendKey(
+            kind="categorical",
+            classes=[
+                LegendClass(value="fault", color="#FF6A00", label="Active fault trace")
+            ],
+            label="Active faults (GEM)",
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -594,6 +732,31 @@ async def model_seismic_hazard_scenario(
         len(fault_sources),
         source_model_note,
     )
+
+    # 0.5) task #207: surface the resolved fault traces as a renderable INPUT
+    #      layer so the user can SEE the fault lines the hazard peaks on (they
+    #      were previously baked into the OpenQuake XML and discarded). GATED on
+    #      ``used_real_faults`` (no traces -> nothing to draw). The serialize +
+    #      S3 upload is SYNC boto3, OFFLOADED off the loop; the emit is BEST-
+    #      EFFORT (publish_input_layer never raises) so a failure to surface the
+    #      faults can NEVER fail the solve. role="input" + bbox=None: the traces
+    #      render under the hazard COG and do not fight the AOI camera.
+    # GATED additionally on an emitter being bound: there is no point serializing
+    # + uploading the fault GeoJSON when nothing can surface it (the verify/CI
+    # direct-call path), and skipping it keeps that path free of boto3.
+    if used_real_faults and current_emitter() is not None:
+        try:
+            fault_layer = await asyncio.to_thread(
+                make_fault_sources_layer_uri, fault_sources, run_id=run_id
+            )
+            await publish_input_layer(current_emitter(), fault_layer)
+        except Exception as exc:  # noqa: BLE001 - input surfacing is NEVER fatal
+            logger.warning(
+                "model_seismic_hazard_scenario: fault-trace input surface failed "
+                "(non-fatal) run_id=%s: %s",
+                run_id,
+                exc,
+            )
 
     # 1) Stage the build_spec (sync boto3 off the loop). Thread the resolved
     #    fault sources so a real-fault AOI stages the simpleFaultSource model.
