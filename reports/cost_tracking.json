@@ -1,5 +1,13 @@
 [
   {
+    "job_id": "mobile-legend-band-rework",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 192261,
+    "description": "1 Explore (snap-geometry map) + 1 Opus impl agent + orchestrator follow-ups, all MOBILE-ONLY. Legend live-test refinements: (1) left-snap 'offset too far' fixed (legend_snap places left key at aoi.left-gap-width; sizes.width was the wide horizontal width, not the rendered narrow vertical bar). (2) When an AOI-edge snap would intersect the chat panel, re-dock to a BAND above the scrubber (not hide, not overlay) via legendKeyOverlapsBottomHud -> bandDockActive. (3) Band form spans the FULL chat-panel width, no aoiScaleFactor rescale, title single-line (nowrap+ellipsis). Desktop byte-identical. Commits 3f373a7 + b386c06 (full-width follow-up), pushed (Vercel). 130 LayerLegend tests + tsc green.",
+    "agent": "natealmanza3@gmail.com"
+  },
+  {
     "job_id": "mobile-dock-to-wake-zoom-hide",
     "sprint": 18,
     "model": "opus-4.8",
