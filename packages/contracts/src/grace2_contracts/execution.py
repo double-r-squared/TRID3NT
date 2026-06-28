@@ -32,6 +32,8 @@ __all__ = [
     "ModelSetup",
     "ExecutionHandle",
     "RunResult",
+    "LegendClass",
+    "LegendKey",
     "LayerURI",
 ]
 
@@ -39,6 +41,106 @@ __all__ = [
 # Open enum: compute classes a solver may request. Engine/infra extend as
 # backends are added; the handle shape does not change per backend.
 ComputeClass = Literal["small", "standard", "large", "gpu"]
+
+
+# --------------------------------------------------------------------------- #
+# Data-driven render legend (the colormap KEY that comes from the data)
+# --------------------------------------------------------------------------- #
+
+
+class LegendClass(GraceModel):
+    """One class swatch in a CATEGORICAL ``LegendKey`` (NLCD class, drought
+    D0-D4, Pelicun damage state, etc.).
+
+    A class addresses the data it colors in one of two ways; populate exactly
+    one form per class:
+
+    - ``value`` -- a single discrete value the swatch matches (the GDAL color
+      table entry, the NLCD class code, the ``"D2"`` drought label). May be a
+      number or a string.
+    - ``value_min`` / ``value_max`` -- a half-open / closed numeric bin the
+      swatch covers (graduated buckets, e.g. damage-state mean ``0.5..1.5``).
+
+    ``color`` is an ``#rrggbb`` hex string; ``label`` is the human-readable
+    swatch caption the frontend renders verbatim.
+    """
+
+    value: float | int | str | None = None
+    value_min: float | None = None
+    value_max: float | None = None
+    color: str  # "#rrggbb"
+    label: str
+
+
+class LegendKey(GraceModel):
+    """The DATA-DRIVEN render key for a layer -- the colormap/legend the
+    frontend draws and the raster/vector colors are driven by.
+
+    The principle (NATE): the gradient/key comes FROM THE DATA at fetch time,
+    so it MEANS something rather than being a retroactive hardcoded guess. The
+    producer (``publish_layer``) emits a ``LegendKey`` from values it already
+    computed; the frontend renders ANY key generically, so a new tool that
+    emits a ``LegendKey`` needs ZERO web changes.
+
+    Two split of responsibility for the range:
+
+    - The colormap CHOICE stays the semantic per-variable decision (drought
+      ramps tan->dark-red, temperature ``rdylbu``, seismic PGA ``reds``, ...).
+    - The RANGE (``vmin`` / ``vmax``) is the REAL data range by default -- the
+      p2/p98 percentile read ``publish_layer`` already computes -- UNLESS a
+      variable has a canonical fixed scale (seismic PGA 0-1, temperature K),
+      which a tool/preset may pin. The legend and the raster render MUST agree
+      on the same range, so the legacy hardcoded ``"0,3"``-style guesses are
+      retired as the source of truth (kept only as the canonical-fixed-scale
+      override or the no-data fallback).
+
+    Additive + optional everywhere (``legend=None`` => legacy ``style_preset``
+    rendering: the existing preset + URL-rescale + preset-fallback path stays
+    as the fallback, so legacy layers render exactly as before).
+
+    Fields:
+
+    ``kind``
+        ``"continuous"`` for rasters + graduated vectors (a ramp over a numeric
+        range); ``"categorical"`` for discrete classes (NLCD, drought, damage
+        states).
+    ``colormap`` (continuous)
+        Either a named ramp the frontend resolves to stops (e.g. ``"reds"`` /
+        ``"viridis"``) OR explicit stops as ``[[stop_0to1, "#rrggbb"], ...]``
+        (each stop a float in ``[0, 1]``). ``None`` for purely categorical
+        keys that carry ``classes`` instead.
+    ``vmin`` / ``vmax`` (continuous)
+        The REAL data range the colormap spans (the percentile read by
+        default; a canonical fixed scale when a variable pins one). ``None``
+        when unknown / not applicable.
+    ``classes`` (categorical)
+        The ordered list of ``LegendClass`` swatches. ``None`` for continuous
+        keys.
+    ``value_field``
+        For VECTOR layers: the GeoJSON feature property the color is driven by
+        (e.g. ``"ds_mean"`` on a Pelicun choropleth). ``None`` for rasters
+        (the raster band IS the value).
+    ``units``
+        The data units the legend annotates (e.g. ``"meters"``, ``"mg/L"``).
+        ``None`` for unitless / categorical.
+    ``label``
+        Optional human-readable legend title (e.g. ``"Flood depth"``).
+    """
+
+    kind: Literal["continuous", "categorical"]
+
+    # continuous (rasters + graduated vectors)
+    colormap: str | list[tuple[float, str]] | None = None
+    vmin: float | None = None
+    vmax: float | None = None
+
+    # categorical (NLCD classes, drought D0-D4, damage states)
+    classes: list[LegendClass] | None = None
+
+    # both
+    value_field: str | None = None  # VECTOR: the GeoJSON property the color is driven by
+    units: str | None = None
+    label: str | None = None
 
 
 class ModelSetup(GraceModel):
@@ -132,6 +234,12 @@ class LayerURI(GraceModel):
     ``map-command(zoom-to)`` after ``add_loaded_layer`` so the client camera
     flies to the layer's geographic extent. Format: ``(min_lon, min_lat,
     max_lon, max_lat)`` in EPSG:4326.
+
+    ``legend`` is the DATA-DRIVEN render key (see ``LegendKey``): the colormap
+    is the semantic per-variable choice, the range is the REAL data range the
+    producer already computed. Additive + optional -- ``legend=None`` means
+    legacy ``style_preset`` rendering (the existing preset + URL-rescale +
+    preset-fallback path), so layers without a legend render exactly as before.
     """
 
     layer_id: str  # stable id; flows into map-command load-layer args
@@ -143,3 +251,27 @@ class LayerURI(GraceModel):
     role: Literal["primary", "context", "input"] = "primary"
     units: str | None = None
     bbox: tuple[float, float, float, float] | None = None  # (min_lon, min_lat, max_lon, max_lat); triggers zoom-to
+    legend: LegendKey | None = None  # data-driven render key; None => legacy style_preset rendering
+
+
+# --------------------------------------------------------------------------- #
+# Resolve the envelope-side ``LegendKey`` forward reference.
+# --------------------------------------------------------------------------- #
+# ``ResultLayer`` (envelope.py) mirrors ``LayerURI.legend`` but cannot import
+# ``LegendKey`` at module scope: execution.py imports envelope.py (for
+# ``TemporalConfig``), so the reverse import would be circular. ``ResultLayer``
+# therefore carries a STRING forward-ref ``"LegendKey | None"``. envelope.py is
+# fully loaded by the time execution.py reaches this point, so we rebuild the
+# envelope models that reference ``LegendKey`` here, injecting it into the
+# types namespace. ``AssessmentEnvelope`` embeds ``ResultLayer`` and so must be
+# rebuilt too. Idempotent; ``raise_errors=False`` keeps any unrelated still-open
+# forward ref from breaking the package import.
+from . import envelope as _envelope  # noqa: E402  (deferred to break the import cycle)
+
+_envelope.ResultLayer.model_rebuild(
+    _types_namespace={**vars(_envelope), "LegendKey": LegendKey, "LegendClass": LegendClass}
+)
+_envelope.AssessmentEnvelope.model_rebuild(
+    _types_namespace={**vars(_envelope), "LegendKey": LegendKey, "LegendClass": LegendClass},
+    force=True,
+)

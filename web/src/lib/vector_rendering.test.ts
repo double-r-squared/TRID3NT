@@ -33,7 +33,11 @@ import {
   MESH_LINE_WIDTH,
   isMeshGridLayer,
   MESH_FILL_OPACITY,
+  legendHasValueField,
+  buildLegendFillExpression,
+  LEGEND_FILL_FALLBACK,
 } from "./vector_rendering";
+import type { LegendKey } from "../contracts";
 
 // ---------------------------------------------------------------------------
 // job-0175 — inline GeoJSON synchronous validator
@@ -531,5 +535,129 @@ describe("presetColorFor - saltwater_intrusion (sprint-18 Wave-5)", () => {
     expect(presetColorFor("capture_zone")).toBe("#9B59B6");
     expect(presetColorFor("wellhead_protection")).toBe("#9B59B6");
     expect(presetColorFor("osm_waterways")).toBe("#4477FF");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DATA-DRIVEN LEGEND - generic vector fill from a LegendKey.value_field
+// ---------------------------------------------------------------------------
+
+describe("legendHasValueField (data-driven legend)", () => {
+  it("is true only when the legend carries a non-empty value_field", () => {
+    expect(legendHasValueField({ kind: "categorical", value_field: "ds_mean" })).toBe(true);
+    expect(legendHasValueField({ kind: "continuous", value_field: "depth" })).toBe(true);
+  });
+
+  it("is false for a legend with no value_field, or nullish input", () => {
+    expect(legendHasValueField({ kind: "continuous", colormap: "reds" })).toBe(false);
+    expect(legendHasValueField({ kind: "categorical", value_field: "" })).toBe(false);
+    expect(legendHasValueField(null)).toBe(false);
+    expect(legendHasValueField(undefined)).toBe(false);
+  });
+});
+
+describe("buildLegendFillExpression - categorical (match-by-bin)", () => {
+  // The Pelicun-shaped categorical legend the producer now emits: ds_mean drives a
+  // damage-state choropleth via half-open numeric bins.
+  const pelicunLegend: LegendKey = {
+    kind: "categorical",
+    value_field: "ds_mean",
+    vmin: 0,
+    vmax: 4,
+    classes: [
+      { value_min: 0, value_max: 1, color: "#2DC937", label: "None" },
+      { value_min: 1, value_max: 2, color: "#E7B416", label: "Slight" },
+      { value_min: 2, value_max: 3, color: "#DB7B2B", label: "Moderate" },
+      { value_min: 3, value_max: 4.0001, color: "#CC3232", label: "Complete" },
+    ],
+  };
+
+  it("builds a `case` over the classes keyed on the value_field", () => {
+    const expr = buildLegendFillExpression(pelicunLegend);
+    expect(Array.isArray(expr)).toBe(true);
+    expect(expr![0]).toBe("case");
+    const flat = JSON.stringify(expr);
+    // Each class color is present, the property is read via ["get","ds_mean"].
+    expect(flat).toContain("#2DC937");
+    expect(flat).toContain("#CC3232");
+    expect(flat).toContain("ds_mean");
+    // A half-open bin uses >= and < on the property.
+    expect(flat).toContain('[">=",["get","ds_mean"]');
+    expect(flat).toContain('["<",["get","ds_mean"]');
+  });
+
+  it("ends with the neutral fallback (honesty floor: no class match => no-data)", () => {
+    const expr = buildLegendFillExpression(pelicunLegend)!;
+    expect(expr[expr.length - 1]).toBe(LEGEND_FILL_FALLBACK);
+  });
+
+  it("supports discrete-value categorical classes (NLCD-style codes)", () => {
+    const nlcd: LegendKey = {
+      kind: "categorical",
+      value_field: "class_code",
+      classes: [
+        { value: 11, color: "#476BA0", label: "Open water" },
+        { value: 41, color: "#68AA63", label: "Deciduous forest" },
+      ],
+    };
+    const expr = buildLegendFillExpression(nlcd)!;
+    const flat = JSON.stringify(expr);
+    // Discrete classes use an == match on the property.
+    expect(flat).toContain('["==",["get","class_code"],11]');
+    expect(flat).toContain("#476BA0");
+  });
+});
+
+describe("buildLegendFillExpression - continuous (graduated ramp)", () => {
+  it("builds an interpolate over the value_field scaled to [vmin,vmax]", () => {
+    const legend: LegendKey = {
+      kind: "continuous",
+      value_field: "depth",
+      colormap: "blues",
+      vmin: 0,
+      vmax: 4,
+      units: "meters",
+    };
+    const expr = buildLegendFillExpression(legend)!;
+    // Wrapped in a `case` guarded by `has` so a feature missing the prop -> fallback.
+    expect(expr[0]).toBe("case");
+    const flat = JSON.stringify(expr);
+    expect(flat).toContain('["has","depth"]');
+    expect(flat).toContain("interpolate");
+    expect(flat).toContain('["get","depth"]');
+    // The fallback is the neutral no-data color.
+    expect(expr[expr.length - 1]).toBe(LEGEND_FILL_FALLBACK);
+  });
+
+  it("uses explicit [stop,hex] colormap stops scaled onto the value range", () => {
+    const legend: LegendKey = {
+      kind: "continuous",
+      value_field: "conc",
+      colormap: [
+        [0, "#ffffff"],
+        [1, "#ff0000"],
+      ],
+      vmin: 10,
+      vmax: 20,
+    };
+    const expr = buildLegendFillExpression(legend)!;
+    const flat = JSON.stringify(expr);
+    // stop 0 -> vmin (10), stop 1 -> vmax (20).
+    expect(flat).toContain("10,\"#ffffff\"");
+    expect(flat).toContain("20,\"#ff0000\"");
+  });
+
+  it("returns null when the legend has no value_field (rasters / flat layers)", () => {
+    expect(
+      buildLegendFillExpression({ kind: "continuous", colormap: "reds", vmin: 0, vmax: 1 }),
+    ).toBeNull();
+    expect(buildLegendFillExpression(null)).toBeNull();
+    expect(buildLegendFillExpression(undefined)).toBeNull();
+  });
+
+  it("returns null when a continuous legend has no resolvable colormap", () => {
+    expect(
+      buildLegendFillExpression({ kind: "continuous", value_field: "x", vmin: 0, vmax: 1 }),
+    ).toBeNull();
   });
 });

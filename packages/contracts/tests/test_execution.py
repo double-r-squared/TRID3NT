@@ -8,10 +8,12 @@ import pytest
 from pydantic import ValidationError
 
 from grace2_contracts.common import new_ulid
-from grace2_contracts.envelope import TemporalConfig
+from grace2_contracts.envelope import ResultLayer, TemporalConfig
 from grace2_contracts.execution import (
     ExecutionHandle,
     LayerURI,
+    LegendClass,
+    LegendKey,
     ModelSetup,
     RunResult,
 )
@@ -101,3 +103,130 @@ def test_layer_uri_maps_field_for_field_onto_load_layer_args() -> None:
     assert args.style_preset == layer.style_preset
     assert args.temporal is not None
     assert args.temporal.step_seconds == layer.temporal.step_seconds
+
+
+# --------------------------------------------------------------------------- #
+# LegendKey -- the data-driven render key (the colormap that comes from the data)
+# --------------------------------------------------------------------------- #
+
+
+def test_legend_key_constructs_continuous_from_real_data_range() -> None:
+    """A continuous legend: named ramp (semantic) + the REAL data range
+    (vmin/vmax = the percentile read), the canonical raster/graduated-vector
+    shape."""
+    legend = LegendKey(
+        kind="continuous",
+        colormap="reds",
+        vmin=0.12,  # the real p2 the producer computed (NOT a hardcoded 0)
+        vmax=3.47,  # the real p98 (NOT a hardcoded 3)
+        units="meters",
+        label="Flood depth",
+    )
+    assert legend.kind == "continuous"
+    assert legend.colormap == "reds"
+    assert legend.vmin == 0.12 and legend.vmax == 3.47
+    assert legend.classes is None
+    # explicit-stops form of colormap also validates
+    stops = LegendKey(
+        kind="continuous",
+        colormap=[(0.0, "#ffffff"), (0.5, "#ff8800"), (1.0, "#000000")],
+        vmin=0.0,
+        vmax=4.0,
+    )
+    assert isinstance(stops.colormap, list)
+    assert stops.colormap[0] == (0.0, "#ffffff")
+
+
+def test_legend_key_constructs_categorical_with_classes() -> None:
+    """A categorical legend: discrete class swatches (NLCD / damage states),
+    optionally driven by a VECTOR feature property via ``value_field``."""
+    legend = LegendKey(
+        kind="categorical",
+        value_field="ds_mean",  # the GeoJSON property the choropleth colors by
+        classes=[
+            LegendClass(value=0, color="#1a9641", label="None"),
+            LegendClass(value_min=0.5, value_max=1.5, color="#fdae61", label="Slight"),
+            LegendClass(value="D4", color="#730000", label="Exceptional"),
+        ],
+        units=None,
+    )
+    assert legend.kind == "categorical"
+    assert legend.value_field == "ds_mean"
+    assert legend.classes is not None and len(legend.classes) == 3
+    # both class-addressing forms are accepted (single value OR a numeric bin)
+    assert legend.classes[0].value == 0
+    assert legend.classes[1].value_min == 0.5 and legend.classes[1].value_max == 1.5
+    assert legend.classes[2].value == "D4"
+    # categorical keys carry no continuous range
+    assert legend.colormap is None and legend.vmin is None and legend.vmax is None
+
+
+def test_layer_uri_carries_legend_and_round_trips() -> None:
+    """``LayerURI`` carries the data-driven legend; it survives a JSON
+    round-trip byte-for-byte."""
+    layer = LayerURI(
+        layer_id="run-01HX-flood-depth",
+        name="Flood depth (m)",
+        layer_type="raster",
+        uri="s3://grace-2/runs/01HX/depth.cog.tif",
+        style_preset="flood_depth_blue",
+        role="primary",
+        units="meters",
+        legend=LegendKey(
+            kind="continuous",
+            colormap="reds",
+            vmin=0.12,
+            vmax=3.47,
+            units="meters",
+            label="Flood depth",
+        ),
+    )
+    a = layer.model_dump(mode="json")
+    assert a["legend"]["kind"] == "continuous"
+    assert a["legend"]["vmin"] == 0.12 and a["legend"]["vmax"] == 3.47
+    text_a = json.dumps(a, sort_keys=True)
+    b = LayerURI.model_validate(json.loads(text_a)).model_dump(mode="json")
+    assert text_a == json.dumps(b, sort_keys=True)
+
+
+def test_layer_uri_legend_is_optional_backward_compat() -> None:
+    """Additive + optional: a ``LayerURI`` without a legend is unchanged
+    (legend defaults to None => legacy ``style_preset`` rendering)."""
+    layer = LayerURI(
+        layer_id="legacy",
+        name="Legacy raster",
+        layer_type="raster",
+        uri="s3://grace-2/runs/legacy/depth.cog.tif",
+        style_preset="flood_depth_blue",
+    )
+    assert layer.legend is None
+    dumped = layer.model_dump(mode="json")
+    assert dumped["legend"] is None
+    again = LayerURI.model_validate(dumped).model_dump(mode="json")
+    assert dumped == again
+
+
+def test_result_layer_mirrors_legend_and_round_trips() -> None:
+    """``ResultLayer`` (envelope.py) mirrors the legend; the forward-ref to
+    ``execution.LegendKey`` resolves and the categorical shape round-trips."""
+    result = ResultLayer(
+        layer_id="run-01HX-damage",
+        name="Damage state",
+        layer_type="vector",
+        uri="s3://grace-2/runs/01HX/damage.fgb",
+        style_preset="pelicun_damage_state",
+        role="primary",
+        legend=LegendKey(
+            kind="categorical",
+            value_field="ds_mean",
+            classes=[
+                LegendClass(value=0, color="#1a9641", label="None"),
+                LegendClass(value=4, color="#d7191c", label="Complete"),
+            ],
+        ),
+    )
+    assert result.legend is not None
+    assert result.legend.value_field == "ds_mean"
+    a = result.model_dump(mode="json")
+    again = ResultLayer.model_validate(a).model_dump(mode="json")
+    assert a == again

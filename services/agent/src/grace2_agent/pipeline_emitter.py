@@ -780,6 +780,28 @@ _MAX_DENSITY_META_ENTRIES: int = 256
 _LAST_DENSITY_META_BY_URI: dict[str, Any] = {}
 
 
+def _legend_for_layer_uri(uri: str | None) -> Any:
+    """Lift the data-driven ``LegendKey`` stashed by ``publish_layer`` for a
+    display uri, or ``None``.
+
+    The atomic ``publish_layer`` returns a bare tile-template string, so the
+    server wrap-site rebuilds a ``LayerURI`` WITHOUT a legend; ``publish_layer``
+    stashes the computed key in its module-level side-table keyed by the SAME
+    display uri (the tile template). This lifts it back out by ``layer.uri`` so
+    the ``ProjectLayerSummary`` carries the render KEY. Lazy import (the module
+    is owned alongside this one) + fail-open: any error returns ``None`` so the
+    layer falls back to legacy ``style_preset`` rendering, never blocked.
+    """
+    if not uri:
+        return None
+    try:
+        from .tools.publish_layer import pop_legend_for_uri
+
+        return pop_legend_for_uri(uri)
+    except Exception:  # noqa: BLE001 - legend lift is best-effort, never fatal
+        return None
+
+
 @dataclass
 class _StepState:
     """Internal mutable record for one step. Materialized into ``PipelineStep``
@@ -1604,6 +1626,16 @@ class PipelineEmitter:
         plain gs:///s3:// COG (no query string) keys to its own uri, so the
         legacy uri-only behavior is preserved for everything not display-wrapped.
         """
+        # DATA-DRIVEN LEGEND carry-over: copy the LayerURI's ``legend`` onto the
+        # summary so the render KEY (colormap + REAL data range, or categorical
+        # classes) reaches the web. Composer/auto-publish layers carry the legend
+        # ON the LayerURI directly (e.g. Pelicun's ds_mean choropleth key). The
+        # atomic ``publish_layer`` returns a BARE tile-template string, so the
+        # server wrap-site rebuilds a LayerURI WITHOUT a legend; for that path we
+        # lift the legend out of publish_layer's module stash by ``layer.uri``
+        # (the same display uri it was stashed under). ``None`` everywhere =>
+        # legacy ``style_preset`` rendering (additive, byte-for-byte unchanged).
+        _legend = getattr(layer, "legend", None) or _legend_for_layer_uri(layer.uri)
         summary = ProjectLayerSummary(
             layer_id=layer.layer_id,
             name=layer.name,
@@ -1613,6 +1645,7 @@ class PipelineEmitter:
             visible=True,
             role=layer.role,
             temporal=layer.temporal is not None,
+            legend=_legend,
         )
         # Dedup by underlying-COG identity — in-place replace if present, else
         # append. ``_layer_identity_key`` collapses two display URLs of the same

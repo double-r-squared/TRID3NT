@@ -83,7 +83,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from grace2_contracts.execution import LayerURI
+from grace2_contracts.execution import LayerURI, LegendClass, LegendKey
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
@@ -187,6 +187,54 @@ _DEFAULT_COMPONENT_TYPE = "RES1"
 
 _DS_LOSS_RATIO_BREAKS = np.array([0.05, 0.20, 0.50, 0.80])
 _DS_LABELS = ("DS0_none", "DS1_slight", "DS2_moderate", "DS3_extensive", "DS4_complete")
+
+# DATA-DRIVEN LEGEND for the per-asset ``ds_mean`` choropleth. Pelicun emits a
+# VECTOR FlatGeobuf whose features carry ``ds_mean`` (the mean HAZUS damage state
+# in 0..4); the legend KEY tells the frontend to drive the fill from that field
+# generically (replacing the brittle ``pelicun_damage`` exact-string sentinel that
+# never matched the real ``pelicun_damage_state`` style_preset). Five graduated
+# buckets centered on DS0..DS4 along a green(no damage)->yellow->red(complete)
+# damage ramp -- the canonical HAZUS damage palette. ``vmin=0``/``vmax=4`` is the
+# CANONICAL fixed scale for damage state (not a percentile read): DS labels are
+# fixed categories, so the legend is pinned, not data-derived.
+_DS_LEGEND_COLORS = (
+    "#1a9850",  # DS0 none      - green
+    "#a6d96a",  # DS1 slight    - light green
+    "#fee08b",  # DS2 moderate  - yellow
+    "#fc8d59",  # DS3 extensive - orange
+    "#d73027",  # DS4 complete  - red
+)
+_DS_HUMAN_LABELS = ("None", "Slight", "Moderate", "Extensive", "Complete")
+
+
+def _build_damage_state_legend() -> LegendKey:
+    """Build the categorical/graduated ``LegendKey`` for the ``ds_mean`` choropleth.
+
+    One swatch per HAZUS damage state DS0..DS4, each covering the half-unit bucket
+    centered on the integer state (so a continuous ``ds_mean`` of e.g. 1.7 lands in
+    the DS2 bucket). ``value_field="ds_mean"`` tells the generic web vector path
+    which feature property drives the fill; ``vmin=0``/``vmax=4`` is the canonical
+    damage-state scale. Built fresh per call (Pydantic models are cheap; avoids a
+    shared-mutable-default footgun).
+    """
+    classes = [
+        LegendClass(
+            value_min=float(i) - 0.5,
+            value_max=float(i) + 0.5,
+            color=_DS_LEGEND_COLORS[i],
+            label=f"DS{i} {_DS_HUMAN_LABELS[i]}",
+        )
+        for i in range(5)
+    ]
+    return LegendKey(
+        kind="categorical",
+        classes=classes,
+        value_field="ds_mean",
+        vmin=0.0,
+        vmax=4.0,
+        units="damage_state",
+        label="Damage state",
+    )
 
 # Standard HAZUS flood depth-damage aleatory dispersion (σ in ln-space).
 # Source: HAZUS Flood Technical Manual §3.3 + Tate et al. 2015.
@@ -1368,4 +1416,11 @@ def run_pelicun_damage_assessment(
         style_preset="pelicun_damage_state",
         role="primary",
         units="damage_state",
+        # DATA-DRIVEN LEGEND: the per-asset ``ds_mean`` choropleth key. Carries
+        # ``value_field="ds_mean"`` so the generic web vector path drives the
+        # fill from the real feature property -- fixing the prior
+        # pelicun_damage_state(style) vs pelicun_damage(web sentinel) mismatch by
+        # construction (the web no longer needs the layer name to match a string;
+        # it renders ANY layer whose legend carries a value_field).
+        legend=_build_damage_state_legend(),
     )

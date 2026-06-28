@@ -1799,3 +1799,87 @@ async def _read_vector_uri_as_geojson_for_test(uri: str) -> Any:
     from grace2_agent.pipeline_emitter import _read_vector_uri_as_geojson
 
     return await _read_vector_uri_as_geojson(uri)
+
+
+# --------------------------------------------------------------------------- #
+# DATA-DRIVEN LEGEND carry-over (the render KEY reaches the wire)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_legend_on_layer_uri_flows_to_session_state(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A ``LayerURI`` that carries a ``legend`` (composer / Pelicun path) emits it
+    on the ``ProjectLayerSummary`` in the next session-state envelope."""
+    from grace2_contracts.execution import LegendClass, LegendKey
+
+    layer = LayerURI(
+        layer_id="pelicun_1",
+        name="Pelicun damage",
+        layer_type="vector",
+        uri="s3://b/pelicun.fgb",
+        style_preset="pelicun_damage_state",
+        legend=LegendKey(
+            kind="categorical",
+            value_field="ds_mean",
+            vmin=0.0,
+            vmax=4.0,
+            classes=[LegendClass(value_min=1.5, value_max=2.5, color="#fee08b", label="DS2 Moderate")],
+            units="damage_state",
+        ),
+    )
+    await emitter.add_loaded_layer(layer)
+
+    summary = _session_frames(sink)[-1]["payload"]["loaded_layers"][-1]
+    assert summary["legend"] is not None
+    assert summary["legend"]["value_field"] == "ds_mean"
+    assert summary["legend"]["kind"] == "categorical"
+    assert summary["legend"]["vmin"] == 0.0 and summary["legend"]["vmax"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_legend_lifted_from_publish_stash_by_uri(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """The atomic publish_layer wrap-site rebuilds a LayerURI WITHOUT a legend; the
+    emitter lifts the legend publish_layer stashed by display uri onto the
+    summary (the continuous-raster path)."""
+    from grace2_agent.tools.publish_layer import _stash_legend_for_uri
+    from grace2_contracts.execution import LegendKey
+
+    tile_uri = "https://cf.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fx.tif&rescale=0,3&colormap_name=ylgnbu"
+    _stash_legend_for_uri(
+        tile_uri,
+        LegendKey(kind="continuous", colormap="ylgnbu", vmin=0.0, vmax=3.0, label="Flood depth"),
+    )
+    # The wrap-site rebuilds the LayerURI from the bare string -> no legend on it.
+    layer = LayerURI(
+        layer_id="flood_1",
+        name="flood_1",
+        layer_type="raster",
+        uri=tile_uri,
+        style_preset="continuous_flood_depth",
+    )
+    assert layer.legend is None  # the wrap-site cannot set it
+    await emitter.add_loaded_layer(layer)
+
+    summary = _session_frames(sink)[-1]["payload"]["loaded_layers"][-1]
+    assert summary["legend"] is not None
+    assert summary["legend"]["kind"] == "continuous"
+    assert summary["legend"]["colormap"] == "ylgnbu"
+    assert summary["legend"]["vmin"] == 0.0 and summary["legend"]["vmax"] == 3.0
+
+
+@pytest.mark.asyncio
+async def test_legacy_layer_without_legend_emits_null_legend(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """BACKWARD-COMPAT: a layer with no legend (and nothing stashed for its uri)
+    carries ``legend=None`` -> the web legacy style_preset path renders it as
+    before."""
+    layer = _make_layer("gs://b/legacy-dem.tif", layer_id="legacy_dem_1")
+    await emitter.add_loaded_layer(layer)
+
+    summary = _session_frames(sink)[-1]["payload"]["loaded_layers"][-1]
+    assert summary["legend"] is None

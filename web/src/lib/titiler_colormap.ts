@@ -69,6 +69,17 @@ const COLORMAP_STOPS: Record<string, readonly string[]> = {
   rdylbu: ["#d73027", "#fc8d59", "#fee090", "#ffffbf", "#e0f3f8", "#91bfdb", "#4575b4"],
   // Grayscale (black -> white).
   gray: ["#000000", "#404040", "#808080", "#bfbfbf", "#ffffff"],
+  // ColorBrewer GnBu (light green -> blue) - wave height / water depth ramps.
+  gnbu: ["#f7fcf0", "#e0f3db", "#ccebc5", "#a8ddb5", "#7bccc4", "#4eb3d3", "#2b8cbe", "#08589e"],
+  // ColorBrewer Greens (light -> dark green).
+  greens: ["#f7fcf5", "#e5f5e0", "#c7e9c0", "#a1d99b", "#74c476", "#41ab5d", "#238b45", "#005a32"],
+  // matplotlib magma (perceptual, black -> purple -> white) - seismic PGA etc.
+  magma: ["#000004", "#231151", "#5f187f", "#982d80", "#d3436e", "#f8765c", "#febb81", "#fcfdbf"],
+  // ColorBrewer RdYlGn (red -> yellow -> green), diverging (its _r reverse covers
+  // green -> red, the common damage / suitability direction).
+  rdylgn: ["#a50026", "#d73027", "#f46d43", "#fdae61", "#fee08b", "#d9ef8b", "#a6d96a", "#66bd63", "#1a9850", "#006837"],
+  // ColorBrewer YlOrRd (yellow -> orange -> red) - slope angle, heat, drought.
+  ylorrd: ["#ffffcc", "#ffeda0", "#fed976", "#feb24c", "#fd8d3c", "#fc4e2a", "#e31a1c", "#bd0026", "#800026"],
 };
 
 /**
@@ -99,6 +110,46 @@ export function getColormapStops(
 /** True when the colormap_name resolves to a known ramp (reverse-suffix aware). */
 export function isKnownColormap(colormapName: string | null | undefined): boolean {
   return getColormapStops(colormapName) !== null;
+}
+
+/**
+ * DATA-DRIVEN LEGEND (the colormap KEY from the data) - resolve a `LegendKey.colormap`
+ * field to CSS gradient stops. The producer emits the colormap as EITHER:
+ *   - a NAMED ramp (string, e.g. "reds"/"viridis") -> resolved via COLORMAP_STOPS,
+ *     reverse-suffix (`_r`) aware (same path as `getColormapStops`); OR
+ *   - EXPLICIT stops as `[[stop_0to1, "#rrggbb"], ...]` -> used verbatim, sorted by
+ *     position, clamped into [0, 1].
+ *
+ * Returns null when the input is null/empty, an unknown ramp name, or an explicit
+ * array with no valid stops, so the caller falls back to the style_preset gradient.
+ * NEVER throws.
+ *
+ * NOTE: this resolves only the COLORS (the ramp). The numeric range is the
+ * LegendKey's `vmin`/`vmax` (the real data range), kept separate by design so the
+ * colormap choice and the value range are independent (the NATE principle).
+ */
+export function resolveLegendColormapStops(
+  colormap: string | ReadonlyArray<readonly [number, string]> | null | undefined,
+): GradientStop[] | null {
+  if (colormap == null) return null;
+  // Named ramp: reuse the reverse-suffix-aware resolver.
+  if (typeof colormap === "string") return getColormapStops(colormap);
+  // Explicit stops: [[stop_0to1, "#rrggbb"], ...]. Coerce + validate each pair,
+  // drop malformed entries, sort by position, clamp positions into [0, 1].
+  if (!Array.isArray(colormap)) return null;
+  const stops: GradientStop[] = [];
+  for (const pair of colormap) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const position = Number(pair[0]);
+    const color = pair[1];
+    if (!Number.isFinite(position) || typeof color !== "string" || color.length === 0) {
+      continue;
+    }
+    stops.push({ position: Math.min(1, Math.max(0, position)), color });
+  }
+  if (stops.length === 0) return null;
+  stops.sort((a, b) => a.position - b.position);
+  return stops;
 }
 
 /**

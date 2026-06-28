@@ -2442,6 +2442,129 @@ describe("addVectorLayer  -  inline GeoJSON (job-0175)", () => {
   });
 });
 
+// --- DATA-DRIVEN LEGEND: generic vector fill from layer.legend.value_field --- //
+//
+// A vector polygon layer whose `legend` names a `value_field` paints its fill
+// GENERICALLY from the legend (buildLegendFillExpression) - the generic
+// replacement for the isPelicunDamageLayer exact-match branch. A legacy Pelicun
+// layer (style_preset only, no legend) still paints the ds_mean choropleth via
+// the sentinel; a plain vector (no legend, no sentinel) takes the flat color.
+describe("addVectorLayer  -  data-driven legend fill (generic value_field)", () => {
+  function makeMockMap() {
+    return {
+      addSource: vi.fn(),
+      addLayer: vi.fn(),
+      isStyleLoaded: vi.fn().mockReturnValue(true),
+    } as unknown as Parameters<typeof addVectorLayer>[0];
+  }
+  function polygonFc() {
+    return {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-100, 30], [-99, 30], [-99, 31], [-100, 31], [-100, 30]]],
+          },
+          properties: { ds_mean: 2.4 },
+        },
+      ],
+    };
+  }
+  function fillColorOf(m: Parameters<typeof addVectorLayer>[0], id: string): unknown {
+    const addLayer = (m as unknown as { addLayer: ReturnType<typeof vi.fn> }).addLayer;
+    const def = addLayer.mock.calls.find(
+      (c) => ((c as MockCallArgs)[0] as { id: string }).id === id,
+    )?.[0] as { paint: Record<string, unknown> };
+    return def.paint["fill-color"];
+  }
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("paints a data-driven legend fill expression (categorical bins on ds_mean)", async () => {
+    const m = makeMockMap();
+    await addVectorLayer(
+      m,
+      {
+        layer_id: "pelicun-damage",
+        uri: "https://ex.com/dmg.geojson",
+        style_preset: "pelicun_damage",
+        inline_geojson: polygonFc(),
+        legend: {
+          kind: "categorical",
+          value_field: "ds_mean",
+          vmin: 0,
+          vmax: 4,
+          classes: [
+            { value_min: 0, value_max: 1, color: "#2DC937", label: "None" },
+            { value_min: 1, value_max: 2, color: "#E7B416", label: "Slight" },
+            { value_min: 2, value_max: 4.0001, color: "#CC3232", label: "Heavy" },
+          ],
+        },
+      } as unknown as Parameters<typeof addVectorLayer>[1],
+      1,
+      { current: new Map<string, number>([["pelicun-damage", 1]]) },
+      { current: new Map() },
+      { current: new Set<string>(["pelicun-damage"]) },
+    );
+    const fill = fillColorOf(m, "pelicun-damage");
+    // It is a generic MapLibre expression driven by the legend's value_field +
+    // classes (NOT the hardcoded buildDsMeanExpression 0/0.5/1 ramp).
+    expect(Array.isArray(fill)).toBe(true);
+    const flat = JSON.stringify(fill);
+    expect(flat).toContain("ds_mean");
+    expect(flat).toContain("#2DC937");
+    expect(flat).toContain("#CC3232");
+    // The legacy ds_mean ramp midpoint color must NOT appear (proves we took the
+    // generic legend path, not the buildDsMeanExpression sentinel path).
+    expect(flat).not.toContain("interpolate");
+  });
+
+  it("LEGACY Pelicun (style_preset only, no legend) still paints the ds_mean choropleth", async () => {
+    const m = makeMockMap();
+    await addVectorLayer(
+      m,
+      {
+        layer_id: "pelicun-legacy",
+        uri: "https://ex.com/dmg.geojson",
+        style_preset: "pelicun_damage",
+        inline_geojson: polygonFc(),
+      },
+      1,
+      { current: new Map<string, number>([["pelicun-legacy", 1]]) },
+      { current: new Map() },
+      { current: new Set<string>(["pelicun-legacy"]) },
+    );
+    const fill = fillColorOf(m, "pelicun-legacy");
+    // The legacy sentinel path: the green->yellow->red interpolate over ds_mean.
+    expect(Array.isArray(fill)).toBe(true);
+    const flat = JSON.stringify(fill);
+    expect(flat).toContain("interpolate");
+    expect(flat).toContain("ds_mean");
+  });
+
+  it("LEGACY plain vector (no legend, no sentinel) takes the flat preset color", async () => {
+    const m = makeMockMap();
+    await addVectorLayer(
+      m,
+      {
+        layer_id: "wdpa",
+        uri: "https://ex.com/wdpa.geojson",
+        style_preset: "wdpa_polygon",
+        inline_geojson: polygonFc(),
+      },
+      1,
+      { current: new Map<string, number>([["wdpa", 1]]) },
+      { current: new Map() },
+      { current: new Set<string>(["wdpa"]) },
+    );
+    // Flat slate hex string (NOT an expression array).
+    expect(fillColorOf(m, "wdpa")).toBe("#708090");
+  });
+});
+
 // --- job-0258: layer-control wiring (LAYER CONTROLS DEAD root-cause fix) --- //
 //
 // Root cause: LayerPanel's user controls dispatched ONLY to its local reducer

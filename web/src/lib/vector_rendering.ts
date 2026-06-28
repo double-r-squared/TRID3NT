@@ -35,6 +35,8 @@
 
 import type { FeatureCollection, Feature, Geometry } from "geojson";
 import { deserialize } from "flatgeobuf/lib/mjs/geojson.js";
+import type { LegendKey } from "../contracts";
+import { resolveLegendColormapStops } from "./titiler_colormap";
 
 /** Geometry families MapLibre paints distinctly. */
 export type VectorGeomKind = "point" | "line" | "polygon" | "unknown";
@@ -421,6 +423,118 @@ export function buildDsMeanExpression(): unknown[] {
     ],
     "#708090",  // fallback: slate — ds_mean absent
   ];
+}
+
+// ---------------------------------------------------------------------------
+// DATA-DRIVEN LEGEND -> generic vector fill expression (the colormap KEY from the
+// data). When a layer carries a `LegendKey` with a `value_field`, the producer
+// has told us EXACTLY which GeoJSON property drives the color AND the
+// classes/ramp+range to map it through. We build the MapLibre fill-color
+// expression from that GENERICALLY, so a new graduated/categorical vector tool
+// needs ZERO web changes (it replaces the isPelicunDamageLayer exact-match
+// branch). presetColorFor + the hash palette stay as the fallback for vectors
+// with no legend.
+// ---------------------------------------------------------------------------
+
+/** Fallback fill color when a feature has no value / falls outside the legend
+ *  (slate -- visually distinguishes "no data" from any ramp/class color). */
+export const LEGEND_FILL_FALLBACK = "#708090";
+
+/**
+ * True when a layer's `LegendKey` drives the vector FILL from a feature property
+ * (i.e. it has a `value_field`). This is the generic replacement for the Pelicun
+ * exact-match sentinel: ANY vector legend with a `value_field` paints via
+ * `buildLegendFillExpression`, not just `pelicun_damage`.
+ */
+export function legendHasValueField(
+  legend: LegendKey | null | undefined,
+): legend is LegendKey {
+  return Boolean(
+    legend &&
+      typeof legend.value_field === "string" &&
+      legend.value_field.length > 0,
+  );
+}
+
+/**
+ * Build a MapLibre `fill-color` expression for a VECTOR layer GENERICALLY from
+ * its data-driven `LegendKey`. The legend names the feature property
+ * (`value_field`) and how to color it:
+ *
+ *   - CATEGORICAL (kind="categorical" or `classes` present): a `case` over the
+ *     classes. Discrete `value` classes match the property exactly; numeric
+ *     `value_min`/`value_max` classes match a half-open bin
+ *     [value_min, value_max). Classes are tried in order; the first match wins.
+ *   - CONTINUOUS (a `colormap` + `vmin`/`vmax`): an `interpolate` over the
+ *     property, with the colormap stops (named ramp OR explicit) scaled from
+ *     [0,1] onto [vmin, vmax]. The colormap is resolved via
+ *     resolveLegendColormapStops; vmin/vmax default to 0/1 when absent.
+ *
+ * Every branch is wrapped so a feature missing the property (or outside every
+ * class) falls back to LEGEND_FILL_FALLBACK -- the honesty floor: "no value
+ * here" reads as the neutral fallback, never as a fabricated ramp color.
+ *
+ * Returns null when the legend cannot drive a fill (no `value_field`, or neither
+ * a usable class list nor a resolvable continuous ramp), so the caller falls
+ * back to the flat preset/palette color. The result is a MapLibre-native
+ * expression array (invariant 1: emit received values, not computed numbers).
+ */
+export function buildLegendFillExpression(
+  legend: LegendKey | null | undefined,
+): unknown[] | null {
+  if (!legendHasValueField(legend)) return null;
+  const field = legend.value_field as string;
+  const getValue = ["get", field];
+
+  // CATEGORICAL: a `case` over the ordered classes. Discrete-value classes match
+  // exactly; numeric-bin classes match [value_min, value_max). First match wins.
+  const classes = legend.classes;
+  if (legend.kind === "categorical" || (classes && classes.length > 0)) {
+    if (!classes || classes.length === 0) return null;
+    const expr: unknown[] = ["case"];
+    let added = 0;
+    for (const c of classes) {
+      if (typeof c.color !== "string" || c.color.length === 0) continue;
+      if (c.value !== undefined && c.value !== null) {
+        // Discrete match: property == value.
+        expr.push(["==", getValue, c.value]);
+        expr.push(c.color);
+        added += 1;
+      } else if (
+        typeof c.value_min === "number" &&
+        typeof c.value_max === "number"
+      ) {
+        // Half-open numeric bin: value_min <= property < value_max. Guarded by
+        // `has` so a missing property never matches a bin (-> fallback).
+        expr.push([
+          "all",
+          ["has", field],
+          [">=", getValue, c.value_min],
+          ["<", getValue, c.value_max],
+        ]);
+        expr.push(c.color);
+        added += 1;
+      }
+    }
+    if (added === 0) return null;
+    expr.push(LEGEND_FILL_FALLBACK); // fallback: no class matched.
+    return expr;
+  }
+
+  // CONTINUOUS: an `interpolate` over the property, colormap scaled to [vmin,vmax].
+  const stops = resolveLegendColormapStops(legend.colormap);
+  if (!stops || stops.length === 0) return null;
+  const vmin = typeof legend.vmin === "number" ? legend.vmin : 0;
+  const vmaxRaw = typeof legend.vmax === "number" ? legend.vmax : 1;
+  // Degenerate range guard: a flat range can't interpolate; fall back.
+  const vmax = vmaxRaw > vmin ? vmaxRaw : vmin + 1;
+  const interp: unknown[] = ["interpolate", ["linear"], getValue];
+  for (const s of stops) {
+    interp.push(vmin + s.position * (vmax - vmin));
+    interp.push(s.color);
+  }
+  // Wrap so a feature missing the property reads the fallback (honesty floor).
+  return ["case", ["has", field], interp, LEGEND_FILL_FALLBACK];
 }
 
 /**

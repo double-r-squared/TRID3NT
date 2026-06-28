@@ -16,7 +16,7 @@ Invariants this module is responsible for:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, model_validator
 
@@ -29,6 +29,14 @@ from .common import (
     ULIDStr,
     UTCDatetime,
 )
+
+if TYPE_CHECKING:
+    # ``LegendKey`` lives in execution.py, which imports this module
+    # (``TemporalConfig``). A runtime import here would be circular, so the
+    # ``ResultLayer.legend`` annotation is a string forward-ref pydantic
+    # resolves lazily against the ``execution`` module namespace on first
+    # validation (the package is always fully importable by then).
+    from .execution import LegendKey
 
 __all__ = [
     "HazardType",
@@ -89,6 +97,12 @@ class ResultLayer(GraceModel):
     translation. Output formats are fixed by FR-CE-4/FR-QS-3: rasters COG,
     vectors FlatGeobuf/GeoParquet. ``LayerURI`` (execution.py) is the producer
     shape that maps onto this.
+
+    ``legend`` mirrors ``LayerURI.legend`` -- the DATA-DRIVEN render key (see
+    ``execution.LegendKey``): the colormap is the semantic per-variable choice,
+    the range is the REAL data range. Additive + optional -- ``None`` means
+    legacy ``style_preset`` rendering, so layers without a legend render exactly
+    as before.
     """
 
     layer_id: str  # stable id; used in map-command messages
@@ -99,6 +113,7 @@ class ResultLayer(GraceModel):
     temporal: TemporalConfig | None = None  # present iff layer is time-varying
     role: Literal["primary", "context", "input"]
     units: str | None = None  # e.g., "meters", "m/s", or None for categorical
+    legend: "LegendKey | None" = None  # data-driven render key; None => legacy style_preset rendering
 
 
 class DataSource(GraceModel):

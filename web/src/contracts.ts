@@ -281,6 +281,75 @@ export type ProjectLayerType =
   | "wmts"
   | "geojson";
 
+// --- Data-driven render legend (the colormap KEY that comes from the data) -- //
+//
+// Mirrors `grace2_contracts.execution.LegendKey` / `LegendClass` field-for-field
+// (both are in `execution.__all__`). THE PRINCIPLE (NATE): the gradient/key comes
+// FROM THE DATA at fetch time so it MEANS something rather than being a retroactive
+// hardcoded guess. The producer (publish_layer / pipeline_emitter / pelicun) emits a
+// `LegendKey` from values it already computed (the p2/p98 percentile range, the GDAL
+// color table, the per-feature `value_field`); the frontend renders ANY key
+// generically, so a new tool that emits a `LegendKey` needs ZERO web changes.
+//
+// Additive + optional everywhere: `legend` absent => legacy `style_preset` rendering
+// (the existing preset + URL-rescale + preset-fallback path stays as the fallback),
+// so legacy layers render exactly as before.
+
+/**
+ * One swatch in a CATEGORICAL `LegendKey` (NLCD class, drought D0-D4, Pelicun
+ * damage state, etc.). A class addresses the data it colors in ONE of two ways;
+ * exactly one form is populated per class:
+ *   - `value` -- a single discrete value the swatch matches (GDAL color-table
+ *     entry, NLCD class code, the "D2" drought label). Number or string.
+ *   - `value_min` / `value_max` -- a numeric bin the swatch covers (graduated
+ *     buckets, e.g. damage-state mean 0.5..1.5).
+ * `color` is an "#rrggbb" hex; `label` is the human-readable caption (verbatim).
+ */
+export interface LegendClass {
+  value?: number | string | null;
+  value_min?: number | null;
+  value_max?: number | null;
+  color: string; // "#rrggbb"
+  label: string;
+}
+
+/**
+ * The DATA-DRIVEN render key for a layer -- the colormap/legend the frontend
+ * draws and the raster/vector colors are driven by. Mirrors the Python
+ * `grace2_contracts.execution.LegendKey`.
+ *
+ * The colormap CHOICE stays the semantic per-variable decision (drought ramps
+ * tan->dark-red, temperature rdylbu, etc.); the RANGE (`vmin`/`vmax`) is the REAL
+ * data range by default (the p2/p98 percentile read the producer already computes)
+ * UNLESS a variable pins a canonical fixed scale. The legend AND the render MUST
+ * agree on the same range.
+ */
+export interface LegendKey {
+  /** REQUIRED discriminator: "continuous" (rasters + graduated vectors) vs
+   *  "categorical" (discrete classes: NLCD, drought, damage states). */
+  kind: "continuous" | "categorical";
+  /** continuous only. A NAMED ramp the web resolves to stops via
+   *  titiler_colormap COLORMAP_STOPS (e.g. "reds"/"viridis"), OR explicit stops
+   *  as `[[stop_0to1, "#rrggbb"], ...]`. Serializes as JSON arrays (pydantic
+   *  round-trips inner pairs as tuples). null/absent for purely-categorical keys. */
+  colormap?: string | Array<[number, string]> | null;
+  /** continuous: REAL data low (the p2 the producer computes) or a pinned scale
+   *  min. null/absent when unknown. */
+  vmin?: number | null;
+  /** continuous: REAL data high (p98) or a pinned scale max. null/absent when unknown. */
+  vmax?: number | null;
+  /** categorical: ordered swatches. null/absent for continuous keys. */
+  classes?: LegendClass[] | null;
+  /** VECTOR layers only: the GeoJSON feature property the color is driven by
+   *  (e.g. "ds_mean"). null/absent for rasters (the band IS the value). */
+  value_field?: string | null;
+  /** Data units the legend annotates (e.g. "meters", "mg/L"). null/absent for
+   *  unitless/categorical. */
+  units?: string | null;
+  /** Optional legend title (e.g. "Flood depth"). */
+  label?: string | null;
+}
+
 export interface ProjectLayerSummary {
   layer_id: string;        // ULID assigned by the agent / worker
   name: string;            // human-readable, e.g. "Storm-surge max" or "Basemap"
@@ -303,6 +372,13 @@ export interface ProjectLayerSummary {
   // style_preset formally defined in D.2 via job-0072 (closes OQ-W-65-STYLE-PRESET).
   // Optional here because older documents may omit it; UI hides legend affordance gracefully.
   style_preset?: string | null;
+  // DATA-DRIVEN render legend (mirrors execution.LayerURI.legend /
+  // collections.ProjectLayerSummary.legend). The producer emits it from the values
+  // it already computed (percentile range, GDAL color table, per-feature value_field).
+  // When present the LayerLegend renders the colorbar DIRECTLY from it and Map.tsx
+  // builds the vector fill expression generically. Absent => legacy style_preset
+  // rendering (the URL-rescale + preset fallback path is unchanged).
+  legend?: LegendKey | null;
 }
 
 /**

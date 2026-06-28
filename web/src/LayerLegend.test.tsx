@@ -225,6 +225,74 @@ describe("LayerLegend  -  ONE key per sequential group (item 1)", () => {
   });
 });
 
+// DATA-DRIVEN LEGEND DEDUP (NATE 2026-06-27: "we surface a key and it gets
+// rendered generically"). When the producer emits a real LegendKey on each
+// frame of a sequence, the N frames carry the SAME key (same colormap + range),
+// so the legend must collapse them to ONE rendered key  -  not N. This guards
+// the regression where every animation frame spawned its own legend card.
+function makeLegendFrameLayer(
+  hour: number,
+  legend: ProjectLayerSummary["legend"],
+  run = "run-leg",
+): ProjectLayerSummary {
+  const hh = String(hour).padStart(2, "0");
+  return {
+    layer_id: `${run}-f${hh}`,
+    name: `Flood depth F+${hh}h`,
+    layer_type: "raster",
+    uri: `gs://grace-2/runs/${run}/depth_f${hh}.cog.tif`,
+    visible: true,
+    opacity: 1,
+    z_index: 1,
+    style_preset: "continuous_flood_depth",
+    legend,
+  };
+}
+
+describe("LayerLegend  -  ONE key per data-driven legend series (dedup)", () => {
+  const sharedLegend: ProjectLayerSummary["legend"] = {
+    kind: "continuous",
+    colormap: "reds",
+    vmin: 0,
+    vmax: 10,
+    units: "m",
+    label: "Flood depth (m)",
+  };
+
+  it("collapses N frames sharing one LegendKey into a single rendered key", () => {
+    const layers = [
+      makeLegendFrameLayer(1, sharedLegend),
+      makeLegendFrameLayer(3, sharedLegend),
+      makeLegendFrameLayer(6, sharedLegend),
+      makeLegendFrameLayer(12, sharedLegend),
+    ];
+    render(<LayerLegend layers={layers} />);
+    // The whole sequence shares one colormap + range  -  exactly ONE key.
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(1);
+  });
+
+  it("renders distinct keys when frames carry genuinely different LegendKeys", () => {
+    const depth = { ...sharedLegend };
+    const velocity: ProjectLayerSummary["legend"] = {
+      kind: "continuous",
+      colormap: "viridis",
+      vmin: 0,
+      vmax: 4,
+      units: "m/s",
+      label: "Velocity (m/s)",
+    };
+    const layers = [
+      makeLegendFrameLayer(1, depth, "run-depth"),
+      makeLegendFrameLayer(3, depth, "run-depth"),
+      makeLegendFrameLayer(1, velocity, "run-vel"),
+      makeLegendFrameLayer(3, velocity, "run-vel"),
+    ];
+    render(<LayerLegend layers={layers} />);
+    // Two distinct series (different colormap/range/units) = two keys.
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(2);
+  });
+});
+
 describe("LayerLegend  -  AOI-less fallback placement", () => {
   it("places the key bottom-center when no anchor/barWidth is given", () => {
     render(<LayerLegend layers={[makeLayer()]} />);
@@ -1950,5 +2018,114 @@ describe("LayerLegend  -  desktop docked strip (LANE D)", () => {
     render(<LayerLegend layers={[makeLayer()]} hidden suppressShowPill />);
     expect(screen.queryByTestId("grace2-layer-legend")).toBeNull();
     expect(screen.queryByTestId("grace2-layer-legend-show")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DATA-DRIVEN LEGEND (the colormap KEY from the data) - render a layer's
+// `LegendKey` directly: continuous from vmin/vmax+colormap, categorical as class
+// swatches, and a vector layer (raster-only gate LIFTED) gets a key too. Run on
+// DESKTOP so the assertions read the single docked strip (no portal/snap noise).
+// ---------------------------------------------------------------------------
+describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
+  beforeEach(() => {
+    stubMatchMedia(false); // DESKTOP
+  });
+
+  it("renders a CONTINUOUS raster legend from vmin/vmax + colormap (the real range)", () => {
+    // The producer emits the REAL p2/p98 range (0..7.2 m) + the semantic ramp; the
+    // legend renders THAT range, not the preset's 0..3.5 guess. Title from the
+    // legend label; units verbatim.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "depth-legend",
+            // A non-flood preset to prove the legend OVERRIDES the preset bounds.
+            style_preset: "continuous_flood_depth",
+            legend: {
+              kind: "continuous",
+              colormap: "blues",
+              vmin: 0,
+              vmax: 7.2,
+              units: "m",
+              label: "Surge depth",
+            },
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent("Surge depth");
+    // The numeric labels come from vmin/vmax (with the NBSP-joined unit), NOT the
+    // preset's 0..3.5.
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0 m");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("7.2 m");
+    // The gradient bar paints (continuous => bar, not swatches).
+    expect(screen.getByTestId("layer-legend-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("layer-legend-class")).toBeNull();
+    // The bar uses the resolved "blues" ramp stops (a light->dark blue gradient).
+    expect(screen.getByTestId("layer-legend-bar").style.background).toContain("linear-gradient");
+  });
+
+  it("renders a CATEGORICAL VECTOR legend as class swatches (raster-only gate LIFTED)", () => {
+    // A Pelicun-shaped damage choropleth: a VECTOR layer with a categorical legend.
+    // Before this change a vector layer got NO legend key; now it does.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "pelicun-damage",
+            layer_type: "vector", // <- vector, NOT raster
+            style_preset: "pelicun_damage",
+            legend: {
+              kind: "categorical",
+              value_field: "ds_mean",
+              units: null,
+              label: "Damage state",
+              classes: [
+                { value_min: 0, value_max: 1, color: "#2DC937", label: "None" },
+                { value_min: 1, value_max: 2, color: "#E7B416", label: "Slight" },
+                { value_min: 3, value_max: 4, color: "#CC3232", label: "Complete" },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    // The key renders (the gate is lifted for a legend-bearing vector layer).
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent("Damage state");
+    // One swatch row per class, each with its color + label, and NO gradient bar.
+    const classes = screen.getAllByTestId("layer-legend-class");
+    expect(classes).toHaveLength(3);
+    expect(screen.queryByTestId("layer-legend-bar")).toBeNull();
+    const swatches = screen.getAllByTestId("layer-legend-swatch");
+    expect(swatches[0]!.style.background).toBe("#2DC937");
+    expect(within(classes[2]!).getByText("Complete")).toBeInTheDocument();
+  });
+
+  it("LEGACY (no legend): a raster layer renders EXACTLY as before via the preset path", () => {
+    // The honesty-floor / backward-compat guard: an unchanged layer (no legend) keeps
+    // the preset title + the preset 0..3.5 m bounds (NOT a data-driven override).
+    render(<LayerLegend layers={[makeLayer({ legend: null })]} />);
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent(
+      "Max flood depth (m)",
+    );
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0 m");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("3.5 m");
+    // Still a gradient bar (the preset continuous render), no class swatches.
+    expect(screen.getByTestId("layer-legend-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("layer-legend-class")).toBeNull();
+  });
+
+  it("LEGACY (no legend): a vector layer still gets NO legend key (gate only lifts WITH a legend)", () => {
+    // A plain vector layer (no legend) must NOT suddenly grow a key - the gate only
+    // lifts for legend-bearing vectors, so non-legend vectors are unchanged.
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "v", layer_type: "vector", style_preset: "wdpa_polygon" })]}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
   });
 });

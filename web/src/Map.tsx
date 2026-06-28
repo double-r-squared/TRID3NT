@@ -34,7 +34,7 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, RegionCandidate } from "./contracts";
+import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, RegionCandidate, LegendKey } from "./contracts";
 import { compareLayersTopFirst } from "./contracts";
 import type { FeatureCollection, Feature, Polygon, Geometry } from "geojson";
 import { publicTileBase } from "./lib/public_base";
@@ -129,6 +129,8 @@ import {
   MESH_FILL_OPACITY,
   MESH_LINE_WIDTH,
   buildDsMeanExpression,
+  legendHasValueField,
+  buildLegendFillExpression,
   POLYGON_FILL_OPACITY,
   POLYGON_STROKE_WIDTH,
   CLUSTER_THRESHOLD,
@@ -296,6 +298,12 @@ interface WireLayerSummary {
   opacity?: number;
   // job-0139  -  vector layer additions. Optional because raster layers omit them.
   style_preset?: string | null;
+  // DATA-DRIVEN LEGEND  -  the colormap KEY from the data (mirrors
+  // ProjectLayerSummary.legend / execution.LayerURI.legend). When a VECTOR layer
+  // carries a legend with a `value_field` the fill is driven GENERICALLY from it
+  // (buildLegendFillExpression) instead of the isPelicunDamageLayer exact-match
+  // sentinel; absent => the legacy flat preset/palette color path is unchanged.
+  legend?: LegendKey | null;
   bbox?: [number, number, number, number] | null;
   // job-0175  -  inline GeoJSON for vector layers. When present, the client
   // skips the `uri` fetch (which would hit Invariant 5's gs:// guardrail
@@ -937,6 +945,54 @@ export function clipFeaturesToBbox(
 export const CLIP_CONTAINMENT_TOLERANCE = 0.1;
 
 /**
+ * DATA-DRIVEN LEGEND - resolve the polygon `fill-color` for a vector layer,
+ * GENERICALLY honoring a `LegendKey` with a `value_field`.
+ *
+ * Resolution order:
+ *   1. legend.value_field present AND buildLegendFillExpression succeeds -> the
+ *      data-driven MapLibre expression (categorical match / continuous interpolate).
+ *      This is the generic replacement for the isPelicunDamageLayer exact-match
+ *      branch, so Pelicun (now emitting legend.value_field="ds_mean") renders via
+ *      this path - the old style_preset token mismatch is gone by construction.
+ *   2. legacy Pelicun sentinel (style_preset=="pelicun_damage", no legend) ->
+ *      buildDsMeanExpression(), preserved for any pre-legend Pelicun output.
+ *   3. otherwise -> the flat preset/palette `color`.
+ *
+ * Returns a MapLibre-native fill-color value (expression array OR hex string).
+ */
+function resolvePolygonFillColor(
+  legend: LegendKey | null | undefined,
+  stylePreset: string | null | undefined,
+  color: string,
+): unknown {
+  if (legendHasValueField(legend)) {
+    const expr = buildLegendFillExpression(legend);
+    if (expr) return expr;
+  }
+  if (isPelicunDamageLayer(stylePreset)) return buildDsMeanExpression();
+  return color;
+}
+
+/**
+ * DATA-DRIVEN LEGEND - the polygon fill-opacity for a vector layer. A graduated /
+ * categorical layer (a data-driven legend.value_field, OR the legacy Pelicun
+ * sentinel) paints BOLD (0.7) so the choropleth reads clearly; mesh stays faint
+ * (wireframe); everything else uses the default POLYGON_FILL_OPACITY. Kept here so
+ * the three registration sites + the opacity-slider helper share one rule.
+ */
+function resolvePolygonFillOpacity(
+  baseOpacity: number,
+  legend: LegendKey | null | undefined,
+  stylePreset: string | null | undefined,
+): number {
+  if (isMeshGridLayer(stylePreset)) return baseOpacity * MESH_FILL_OPACITY;
+  if (legendHasValueField(legend) || isPelicunDamageLayer(stylePreset)) {
+    return baseOpacity * 0.7;
+  }
+  return baseOpacity * POLYGON_FILL_OPACITY;
+}
+
+/**
  * Async vector-layer registration (job-0139). Fetches the layer's GeoJSON
  * (or FlatGeobuf-converted-to-GeoJSON), adds a `geojson` source, and adds an
  * appropriate paint layer based on geometry kind. Generation-guarded so a
@@ -959,6 +1015,10 @@ export async function addVectorLayer(
     opacity?: number;
     visible?: boolean;
     style_preset?: string | null;
+    /** DATA-DRIVEN LEGEND  -  when present with a `value_field` the polygon fill
+     *  is driven generically from it (buildLegendFillExpression); absent => the
+     *  legacy flat preset/palette color + Pelicun sentinel path is unchanged. */
+    legend?: LegendKey | null;
     /** job-0175: inline GeoJSON FeatureCollection from the agent. When present
      *  the client renders from this directly, bypassing the `uri` fetch path
      *  that would otherwise hit the gs:// guardrail in `fetchVectorAsGeoJson`
@@ -1128,7 +1188,9 @@ export async function addVectorLayer(
  */
 function registerVectorOnMap(
   m: MapLibreMap,
-  layer: { layer_id: string; style_preset?: string | null },
+  // DATA-DRIVEN LEGEND: `legend` is optional + drives the polygon fill generically
+  // when it carries a value_field (resolvePolygonFillColor); absent => legacy color.
+  layer: { layer_id: string; style_preset?: string | null; legend?: LegendKey | null },
   fc: FeatureCollection,
   geomKind: VectorGeomKind,
   color: string,
@@ -1249,11 +1311,11 @@ function registerVectorOnMap(
       layout: { visibility: visible ? "visible" : "none" },
     });
   } else if (geomKind === "polygon") {
-    // Pelicun damage: apply ds_mean choropleth gradient expression (Part 2).
-    // All other polygons: flat fill with POLYGON_FILL_OPACITY (Part 3).
-    const fillColor = isPelicunDamageLayer(layer.style_preset)
-      ? buildDsMeanExpression()
-      : color;
+    // DATA-DRIVEN LEGEND: a layer whose legend names a `value_field` paints its
+    // fill GENERICALLY from the legend (categorical match / continuous ramp);
+    // the legacy Pelicun sentinel still maps to the ds_mean choropleth; all other
+    // polygons take the flat preset/palette `color` (Part 2/3).
+    const fillColor = resolvePolygonFillColor(layer.legend, layer.style_preset, color);
 
     m.addLayer({
       id: layer.layer_id,
@@ -1262,15 +1324,11 @@ function registerVectorOnMap(
       paint: {
         // MapLibre fill-color accepts expression arrays natively.
         "fill-color": fillColor as string,
-        // Reduced fill opacity (0.4) so basemap labels stay readable
-        // underneath polygon fills (Part 3). Mesh-grid (NATE #156) uses a
-        // faint MESH_FILL_OPACITY so it reads as a wireframe (cells visible,
-        // still clickable). Pelicun uses 0.7 so the damage gradient is bold.
-        "fill-opacity": isMeshGridLayer(layer.style_preset)
-          ? opacity * MESH_FILL_OPACITY
-          : isPelicunDamageLayer(layer.style_preset)
-          ? opacity * 0.7
-          : opacity * POLYGON_FILL_OPACITY,
+        // Reduced fill opacity (0.4) so basemap labels stay readable underneath
+        // polygon fills (Part 3). Mesh-grid (NATE #156) uses a faint MESH_FILL_OPACITY
+        // so it reads as a wireframe; a data-driven/graduated legend (and the legacy
+        // Pelicun sentinel) paints bold (0.7) so the choropleth reads clearly.
+        "fill-opacity": resolvePolygonFillOpacity(opacity, layer.legend, layer.style_preset),
         // Subtle stroke softens the CDP-rectangle look while keeping edges
         // distinguishable (Part 3 / Pelicun "less rectangular" ask).
         "fill-outline-color": color,
@@ -1329,6 +1387,9 @@ export function registerVectorTileLayer(
     vector_geom_kind?: string;
     vector_source_layer?: string;
     style_preset?: string | null;
+    /** DATA-DRIVEN LEGEND  -  drives the polygon fill generically when it carries
+     *  a `value_field` (buildLegendFillExpression); absent => legacy flat color. */
+    legend?: LegendKey | null;
     opacity?: number;
     visible?: boolean;
   },
@@ -1386,9 +1447,10 @@ export function registerVectorTileLayer(
       layout: { visibility: visible ? "visible" : "none" },
     } as unknown as Parameters<MapLibreMap["addLayer"]>[0]);
   } else {
-    const fillColor = isPelicunDamageLayer(layer.style_preset)
-      ? buildDsMeanExpression()
-      : color;
+    // DATA-DRIVEN LEGEND: drive the fill generically from a legend.value_field
+    // when present (categorical / continuous ramp); else the legacy Pelicun
+    // sentinel ds_mean choropleth; else the flat color.
+    const fillColor = resolvePolygonFillColor(layer.legend, layer.style_preset, color);
     m.addLayer({
       id: layer.layer_id,
       type: "fill",
@@ -1397,12 +1459,9 @@ export function registerVectorTileLayer(
       paint: {
         "fill-color": fillColor as string,
         // Mesh-grid (NATE #156): faint fill so the lattice reads as a wireframe
-        // (cells visible, still clickable); Pelicun stays bold at 0.7.
-        "fill-opacity": isMeshGridLayer(layer.style_preset)
-          ? opacity * MESH_FILL_OPACITY
-          : isPelicunDamageLayer(layer.style_preset)
-          ? opacity * 0.7
-          : opacity * POLYGON_FILL_OPACITY,
+        // (cells visible, still clickable); a data-driven/graduated legend (and
+        // the legacy Pelicun sentinel) stays bold at 0.7.
+        "fill-opacity": resolvePolygonFillOpacity(opacity, layer.legend, layer.style_preset),
         "fill-outline-color": color,
       },
       layout: { visibility: visible ? "visible" : "none" },
@@ -1484,6 +1543,10 @@ export function applyLayerOpacity(
   opacity: number,
   geomKind: VectorGeomKind | undefined,
   stylePreset?: string | null,
+  // DATA-DRIVEN LEGEND - additive optional arg: a layer with a legend.value_field
+  // (graduated/categorical fill) keeps its BOLD 0.7 fill-opacity when the slider
+  // moves, exactly like the legacy Pelicun sentinel. Absent => unchanged behavior.
+  legend?: LegendKey | null,
 ): void {
   if (!m.getLayer(layerId)) return;
   if (geomKind === "point") {
@@ -1504,12 +1567,10 @@ export function applyLayerOpacity(
     m.setPaintProperty(layerId, "line-opacity", opacity);
   } else if (geomKind === "polygon") {
     // Mesh-grid (NATE #156) keeps the faint wireframe fill when the LayerPanel
-    // opacity slider moves; Pelicun stays bold at 0.7; others use the default.
-    const polyOpacity = isMeshGridLayer(stylePreset)
-      ? opacity * MESH_FILL_OPACITY
-      : isPelicunDamageLayer(stylePreset)
-      ? opacity * 0.7
-      : opacity * POLYGON_FILL_OPACITY;
+    // opacity slider moves; a data-driven/graduated legend (and the legacy Pelicun
+    // sentinel) stays bold at 0.7; others use the default. Shared rule with the
+    // registration sites so creation + slider stay in lockstep.
+    const polyOpacity = resolvePolygonFillOpacity(opacity, legend, stylePreset);
     m.setPaintProperty(layerId, "fill-opacity", polyOpacity);
     m.setPaintProperty(layerId, "fill-outline-color", resolveVectorColor(layerId, stylePreset, geomKind));
     if (m.getLayer(`${layerId}-outline`)) {
@@ -2600,6 +2661,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // The map-command opacity path needs it for the Pelicun fill multiplier,
   // and the command envelope itself doesn't carry presets.
   const layerStylePresets = useRef<Map<string, string | null>>(new Map());
+  // DATA-DRIVEN LEGEND - mirror of layerStylePresets keyed by layer_id, so the
+  // map-command opacity-slider path (which has only the layer_id) can recover the
+  // layer's LegendKey to keep a graduated/categorical fill BOLD when the slider
+  // moves. Populated + cleared alongside layerStylePresets in the reconcile loop.
+  const layerLegends = useRef<Map<string, LegendKey | null>>(new Map());
   // Tracks the in-flight vector-fetch generation per layer_id. When a layer is
   // removed mid-fetch, this counter advances so a late-arriving fetch resolves
   // into a no-op rather than re-registering the source (kickoff -scope:
@@ -3219,6 +3285,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // so any in-flight fetch for this layer_id resolves into a no-op.
           vectorGeomKinds.current.delete(id);
           layerStylePresets.current.delete(id);
+          layerLegends.current.delete(id);
           vectorFetchGen.current.set(id, (vectorFetchGen.current.get(id) ?? 0) + 1);
         }
       }
@@ -3291,6 +3358,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // job-0258: keep the preset bookkeeping current for the map-command
         // opacity path (Pelicun fill multiplier).
         layerStylePresets.current.set(layer.layer_id, layer.style_preset ?? null);
+        // DATA-DRIVEN LEGEND: mirror the legend too so the opacity-slider path
+        // keeps a graduated/categorical fill bold (resolvePolygonFillOpacity).
+        layerLegends.current.set(layer.layer_id, layer.legend ?? null);
 
         // deck.gl SPIKE (#169) + LAZY-LOAD: ROUTE heavy/footprint inline-GeoJSON
         // vectors to the interleaved deck.gl overlay instead of the MapLibre vector
@@ -3326,7 +3396,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // previous inline branch missed.
           if (m.getLayer(layer.layer_id)) {
             const geomKind = vectorGeomKinds.current.get(layer.layer_id);
-            applyLayerOpacity(m, layer.layer_id, opacity, geomKind, layer.style_preset);
+            applyLayerOpacity(m, layer.layer_id, opacity, geomKind, layer.style_preset, layer.legend);
             applyLayerVisibility(m, layer.layer_id, visible);
           }
           continue;
@@ -4108,6 +4178,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           opacity,
           vectorGeomKinds.current.get(payload.layer_id),
           layerStylePresets.current.get(payload.layer_id) ?? null,
+          layerLegends.current.get(payload.layer_id) ?? null,
         );
         // job-0179  -  write-through so the edit survives a re-render / reconnect.
         layerCache.setOverride(layerCache.activeCaseId, payload.layer_id, {

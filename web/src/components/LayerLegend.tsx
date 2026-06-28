@@ -48,7 +48,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ProjectLayerSummary } from "../contracts";
+import { ProjectLayerSummary, type LegendKey, type LegendClass } from "../contracts";
 import { getStylePreset, StylePreset, type GradientStop } from "../lib/style-presets";
 import {
   aoiScaleFactor,
@@ -66,6 +66,7 @@ import { detectSequentialGroups } from "../LayerPanel";
 import {
   getColormapStops,
   parseTitilerTileStyle,
+  resolveLegendColormapStops,
   type ParsedRescale,
 } from "../lib/titiler_colormap";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -350,6 +351,66 @@ interface LegendKeyModel {
   rescale: ParsedRescale | null;
   /** Parsed-colormap CSS gradient stops (from `colormap_name`), or null. */
   colormapStops: GradientStop[] | null;
+  /**
+   * DATA-DRIVEN LEGEND (the colormap KEY from the data) - the resolved render
+   * payload built DIRECTLY from a layer's `LegendKey` when present. When set this
+   * is the SOURCE OF TRUTH (it OVERRIDES the preset + URL-rescale path), so a
+   * layer that carries a legend renders its real range/colormap/classes/units.
+   * Null/undefined => the legacy preset + URL-rescale path (legacy layers are
+   * byte-for-byte unchanged). Built once in selectKeyModels via legendModelFor.
+   */
+  data?: ResolvedLegendData | null;
+}
+
+/**
+ * DATA-DRIVEN LEGEND - the render payload resolved from a `LegendKey`. A
+ * `continuous` key carries `stops` + numeric `min`/`max` (the colorbar); a
+ * `categorical` key carries `classes` (one swatch row each). `title` + `unit` are
+ * the legend label / units. Built in legendModelFor; consumed by the render path.
+ */
+interface ResolvedLegendData {
+  kind: "continuous" | "categorical";
+  title: string;
+  unit: string;
+  /** continuous: gradient stops + numeric bounds. */
+  stops: GradientStop[] | null;
+  min: number | null;
+  max: number | null;
+  /** categorical: the swatch rows (color + label, in order). */
+  classes: LegendClass[] | null;
+}
+
+/**
+ * DATA-DRIVEN LEGEND - resolve a layer's `LegendKey` into a ResolvedLegendData,
+ * or null when it cannot drive a colorbar/class list (so the caller falls back to
+ * the preset + URL-rescale path). Pure (Invariant 1): every value is read from the
+ * legend the producer emitted; nothing is computed.
+ *
+ *   - continuous: stops from `colormap` (named ramp resolved via COLORMAP_STOPS,
+ *     OR explicit [stop,hex] stops) + min/max from `vmin`/`vmax`. Null stops =>
+ *     not renderable as a gradient -> fall back.
+ *   - categorical: the `classes` list verbatim (color + label). Empty => fall back.
+ *
+ * `fallbackTitle` (the layer name) is used when the legend carries no `label`.
+ */
+function legendModelFor(
+  legend: LegendKey | null | undefined,
+  fallbackTitle: string,
+): ResolvedLegendData | null {
+  if (!legend) return null;
+  const title = legend.label ?? fallbackTitle;
+  const unit = legend.units ?? "";
+  if (legend.kind === "categorical" || (legend.classes && legend.classes.length > 0)) {
+    const classes = legend.classes;
+    if (!classes || classes.length === 0) return null;
+    return { kind: "categorical", title, unit, stops: null, min: null, max: null, classes };
+  }
+  // Continuous: resolve the colormap (named OR explicit) to stops.
+  const stops = resolveLegendColormapStops(legend.colormap);
+  if (!stops || stops.length === 0) return null;
+  const min = typeof legend.vmin === "number" ? legend.vmin : null;
+  const max = typeof legend.vmax === "number" ? legend.vmax : null;
+  return { kind: "continuous", title, unit, stops, min, max, classes: null };
 }
 
 /** Per-key interactive UI state the user can drive (width + free pos + snap). */
@@ -368,6 +429,25 @@ interface KeyUiState {
    */
   sideOverride?: AoiSide;
 }
+
+/**
+ * DATA-DRIVEN LEGEND - a neutral StylePreset placeholder for a key whose render
+ * payload comes from a `LegendKey` (`LegendKeyModel.data`). The model's `preset`
+ * field is required, but when `data` is set the render path reads from `data`, so
+ * this placeholder is never displayed; it only satisfies the model shape for a
+ * legend-bearing layer that has no matching style_preset (e.g. a vector Pelicun
+ * choropleth).
+ */
+const LEGEND_DATA_PLACEHOLDER_PRESET: StylePreset = {
+  label: "",
+  minValue: 0,
+  maxValue: 1,
+  unit: "",
+  stops: [
+    { position: 0, color: "#708090" },
+    { position: 1, color: "#708090" },
+  ],
+};
 
 /** Builds a CSS linear-gradient string from gradient stops (sorted by caller). */
 function buildGradient(stops: GradientStop[]): string {
@@ -480,6 +560,35 @@ const DESKTOP_DOCK_BAR_THICKNESS = 12;
  * The FIRST eligible layer (group or standalone) to claim a series key wins;
  * later layers with the same series key are skipped.
  */
+/**
+ * Stable series signature for a DATA-DRIVEN legend key. Two layers/frames whose
+ * legends are identical (same kind + colormap + range + value_field + units +
+ * class shape) MEAN the same thing, so they fold into ONE legend key (the same
+ * dedup the legacy colormap+rescale series key gives). Returns null when there is
+ * no legend (caller falls back to a per-layer key).
+ */
+function legendSeriesKey(legend: LegendKey | null | undefined): string | null {
+  if (!legend) return null;
+  const cmap = Array.isArray(legend.colormap)
+    ? legend.colormap.map((s) => `${s[0]}:${s[1]}`).join(",")
+    : (legend.colormap ?? "");
+  const classes = legend.classes
+    ? legend.classes
+        .map((c) => `${c.value ?? ""}|${c.value_min ?? ""}|${c.value_max ?? ""}|${c.color}`)
+        .join(";")
+    : "";
+  return [
+    "legend",
+    legend.kind,
+    cmap,
+    legend.vmin ?? "",
+    legend.vmax ?? "",
+    legend.value_field ?? "",
+    legend.units ?? "",
+    classes,
+  ].join("|");
+}
+
 function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
   // Detect sequential groups to emit one key per group.
   const groups = detectSequentialGroups(layers);
@@ -497,6 +606,59 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
 
   const out: LegendKeyModel[] = [];
   for (const l of layers) {
+    // DATA-DRIVEN LEGEND (the colormap KEY from the data) - when a layer carries a
+    // `LegendKey` we render it DIRECTLY, BEFORE the raster-only / preset gate. This
+    // LIFTS the raster-only gate: a VECTOR layer (Pelicun choropleth, NLCD-style
+    // classes, graduated damage) that carries a legend ALSO gets a legend key. The
+    // resolved render payload (continuous gradient OR categorical swatches) is the
+    // source of truth and overrides the preset/URL-rescale path below. One key per
+    // layer_id here (legend-bearing layers are not part of the TiTiler colormap
+    // series dedup, which keys off the colormap_name URL params the engines emit).
+    const legendData = legendModelFor(l.legend, l.name);
+    if (legendData) {
+      // Route legend-bearing layers through the SAME group + series dedup the
+      // legacy path uses, so a multi-frame animation series (every frame carrying
+      // the same data-driven legend) yields ONE key, not one-per-frame. The series
+      // identity for a legend layer is the legend's own signature (kind + colormap
+      // + range + value_field + units + class shape) -- two layers/frames with the
+      // same legend MEAN the same thing, so they fold into one key.
+      const placeholderPreset =
+        getStylePreset(l.style_preset ?? "") ?? LEGEND_DATA_PLACEHOLDER_PRESET;
+      if (groupedIds.has(l.layer_id)) {
+        const g = groups.find((gr) =>
+          gr.layers.some((m) => m.layer_id === l.layer_id),
+        );
+        if (!g || emittedGroupKeys.has(g.key)) continue;
+        emittedGroupKeys.add(g.key);
+        const rep = g.layers[0] ?? l;
+        const repLegend = legendModelFor(rep.legend, rep.name) ?? legendData;
+        const gSeries = legendSeriesKey(rep.legend) ?? `group:${g.key}`;
+        if (emittedSeries.has(gSeries)) continue;
+        emittedSeries.add(gSeries);
+        out.push({
+          layerId: `group:${g.key}`,
+          preset: placeholderPreset,
+          rescale: null,
+          colormapStops: null,
+          data: repLegend,
+        });
+        continue;
+      }
+      const lSeries = legendSeriesKey(l.legend) ?? `legend:${l.layer_id}`;
+      if (emittedSeries.has(lSeries)) continue;
+      emittedSeries.add(lSeries);
+      out.push({
+        layerId: l.layer_id,
+        // A synthetic preset placeholder: it is NOT read when `data` is set (the
+        // render path reads from `data`). Required by the model shape only.
+        preset: placeholderPreset,
+        rescale: null,
+        colormapStops: null,
+        data: legendData,
+      });
+      continue;
+    }
+
     if (l.layer_type !== "raster") continue;
     if (l.style_preset == null) continue;
     const preset = getStylePreset(l.style_preset);
@@ -1230,15 +1392,29 @@ export function LayerLegend({
           };
         }
 
-        // FRAME-TRUTH (NATE 2026-06-19)  -  the gradient + numeric bounds match
-        // what the map actually paints. The parsed-from-URL colormap/rescale are
-        // the SOURCE OF TRUTH when present; the style_preset is the FALLBACK.
-        const minLabel = model.rescale ? model.rescale.min : preset.minValue;
-        const maxLabel = model.rescale ? model.rescale.max : preset.maxValue;
+        // DATA-DRIVEN LEGEND (the colormap KEY from the data) - when the layer
+        // carries a resolved legend it is the SOURCE OF TRUTH (overriding both the
+        // URL-rescale and the style_preset): the title/bounds/unit come straight
+        // from the producer-emitted LegendKey. A categorical legend renders class
+        // swatches instead of a bar (handled in the value-row render below).
+        // FRAME-TRUTH (NATE 2026-06-19) is the next fallback: the parsed-from-URL
+        // colormap/rescale match what the map paints; the style_preset is last.
+        const data = model.data ?? null;
+        const isCategorical = data?.kind === "categorical";
+        const minLabel = data?.kind === "continuous"
+          ? (data.min ?? "")
+          : model.rescale ? model.rescale.min : preset.minValue;
+        const maxLabel = data?.kind === "continuous"
+          ? (data.max ?? "")
+          : model.rescale ? model.rescale.max : preset.maxValue;
         // The preset unit is meaningful only for the preset's own scale; when
         // the bounds come from the URL rescale (an arbitrary layer), drop the
         // unit so we never mislabel (e.g. tagging a temperature ramp with "m").
-        const unitLabel = model.rescale ? "" : preset.unit;
+        // A data-driven legend carries its OWN units (or none) - use them verbatim.
+        const unitLabel = data ? data.unit : model.rescale ? "" : preset.unit;
+        // The card title: the legend's label/layer-name when data-driven, else the
+        // preset label.
+        const titleLabel = data ? data.title : preset.label;
         // SIDE-SNAP / ITEM 5  -  the side label MUST match the snapped layout: it
         // reads from the SAME resolvedSides array (the user's drag-snap override
         // when present, else the CCW index side incl. the scrubber-active start
@@ -1270,10 +1446,21 @@ export function LayerLegend({
           ? // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-27): a compact fixed width so
             // several keys fit as one horizontal line (the row scrolls if needed).
             MOBILE_BAND_KEY_WIDTH
-          : orientation === "vertical"
+          : // CATEGORICAL keys render swatch+label ROWS, never a vertical gradient
+            // rail, so they always need the horizontal card width even when docked
+            // to a left/right AOI edge (orientation 'vertical') -- a narrow vertical
+            // width would clip the class labels.
+            orientation === "vertical" && !isCategorical
             ? Math.round(VERTICAL_KEY_WIDTH * scale)
             : width;
-        const stops = model.colormapStops ?? preset.stops;
+        // DATA-DRIVEN LEGEND: continuous data-driven stops win over the
+        // URL-parsed colormap and the preset; categorical keys have no gradient
+        // (they render swatches) so we keep the preset stops only as a harmless
+        // default the categorical branch never paints.
+        const stops =
+          data?.kind === "continuous" && data.stops
+            ? data.stops
+            : model.colormapStops ?? preset.stops;
         const gradient =
           orientation === "vertical"
             ? `linear-gradient(to top, ${stops
@@ -1331,8 +1518,9 @@ export function LayerLegend({
             {/* LEGEND v2 - ROW 1 (HORIZONTAL only): title + hide(X). On a VERTICAL
                 key the title is rotated to read vertically and the X moves to the
                 BOTTOM of the column (item 3 + item 4), so the top title row is
-                skipped here for vertical. */}
-            {orientation !== "vertical" ? (
+                skipped here for vertical. DATA-DRIVEN LEGEND: a CATEGORICAL key
+                renders its OWN title above the swatch list, so skip this row too. */}
+            {orientation !== "vertical" && !isCategorical ? (
               <div
                 style={{
                   display: "flex",
@@ -1354,7 +1542,7 @@ export function LayerLegend({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {preset.label}
+                  {titleLabel}
                 </span>
                 <LegendControls idx={idx} onHide={() => setHidden(true)} />
               </div>
@@ -1371,8 +1559,80 @@ export function LayerLegend({
                 the title to read VERTICALLY (writing-mode: vertical-rl) so the
                 FULL label is legible alongside the bar - NO truncation.
                 ITEM 4: the close (X) sits at the BOTTOM of the column, inline
-                with the colorbar (below the min label), not at the top. */}
-            {orientation === "vertical" ? (
+                with the colorbar (below the min label), not at the top.
+
+                DATA-DRIVEN LEGEND: a CATEGORICAL key renders a column of class
+                swatches (color chip + label) instead of a gradient bar, with its
+                own title on top + the hide(X) at the bottom (orientation-agnostic). */}
+            {isCategorical ? (
+              <div
+                data-testid="layer-legend-value-row"
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "stretch",
+                  gap: 3,
+                  marginTop: 2,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 6,
+                    marginBottom: 2,
+                  }}
+                >
+                  <span
+                    data-testid="layer-legend-title"
+                    style={{
+                      fontSize: titleFont,
+                      fontWeight: 600,
+                      letterSpacing: "0.03em",
+                      color: "#ddd",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {titleLabel}
+                  </span>
+                  <LegendControls idx={idx} onHide={() => setHidden(true)} />
+                </div>
+                {(data?.classes ?? []).map((cls, ci) => (
+                  <div
+                    key={`${layerId}-class-${ci}`}
+                    data-testid="layer-legend-class"
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                  >
+                    <span
+                      data-testid="layer-legend-swatch"
+                      style={{
+                        width: barThickness,
+                        height: barThickness,
+                        borderRadius: 3,
+                        background: cls.color,
+                        border: "1px solid rgba(255,255,255,0.20)",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: labelFont,
+                        color: "#cfd4db",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {cls.label}
+                      {unitLabel ? ` ${unitLabel}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : orientation === "vertical" ? (
               <div
                 data-testid="layer-legend-value-row"
                 style={{
@@ -1401,7 +1661,7 @@ export function LayerLegend({
                     overflowWrap: "anywhere",
                   }}
                 >
-                  {preset.label}
+                  {titleLabel}
                 </span>
                 <span
                   data-testid="layer-legend-max-label"
@@ -1615,14 +1875,27 @@ export function LayerLegend({
  */
 function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
   const preset = model.preset;
-  // FRAME-TRUTH: parsed-from-URL rescale + colormap are the source of truth when
-  // present; the style_preset is the fallback (mirrors the snap-render loop).
-  const minLabel = model.rescale ? model.rescale.min : preset.minValue;
-  const maxLabel = model.rescale ? model.rescale.max : preset.maxValue;
+  // DATA-DRIVEN LEGEND (the colormap KEY from the data) - when the layer carries a
+  // resolved legend it is the SOURCE OF TRUTH (title/bounds/unit/stops, or a
+  // categorical swatch list), overriding the URL-rescale + preset path. FRAME-TRUTH
+  // (URL rescale/colormap) is the next fallback; the style_preset is last.
+  const data = model.data ?? null;
+  const isCategorical = data?.kind === "categorical";
+  const minLabel = data?.kind === "continuous"
+    ? (data.min ?? "")
+    : model.rescale ? model.rescale.min : preset.minValue;
+  const maxLabel = data?.kind === "continuous"
+    ? (data.max ?? "")
+    : model.rescale ? model.rescale.max : preset.maxValue;
   // The preset unit is meaningful only for the preset's own scale; a URL rescale
-  // is an arbitrary layer, so drop the unit there (never mislabel).
-  const unitLabel = model.rescale ? "" : preset.unit;
-  const stops = model.colormapStops ?? preset.stops;
+  // is an arbitrary layer, so drop the unit there (never mislabel). A data-driven
+  // legend carries its own units verbatim.
+  const unitLabel = data ? data.unit : model.rescale ? "" : preset.unit;
+  const titleLabel = data ? data.title : preset.label;
+  const stops =
+    data?.kind === "continuous" && data.stops
+      ? data.stops
+      : model.colormapStops ?? preset.stops;
   const gradient = buildGradient(stops);
   //   = NON-BREAKING SPACE: keeps the value and its unit on ONE line.
   const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
@@ -1657,8 +1930,48 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
           marginBottom: 5,
         }}
       >
-        {preset.label}
+        {titleLabel}
       </div>
+      {/* DATA-DRIVEN LEGEND: a CATEGORICAL key lists class swatches; a continuous
+          key keeps the [min] bar [max] colorbar row. */}
+      {isCategorical ? (
+        <div
+          data-testid="layer-legend-value-row"
+          style={{ display: "flex", flexDirection: "column", gap: 3 }}
+        >
+          {(data?.classes ?? []).map((cls, ci) => (
+            <div
+              key={`desktop-class-${ci}`}
+              data-testid="layer-legend-class"
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span
+                data-testid="layer-legend-swatch"
+                style={{
+                  width: DESKTOP_DOCK_BAR_THICKNESS,
+                  height: DESKTOP_DOCK_BAR_THICKNESS,
+                  borderRadius: 3,
+                  background: cls.color,
+                  border: "1px solid rgba(255,255,255,0.20)",
+                  flexShrink: 0,
+                }}
+              />
+              <span
+                style={{
+                  fontSize: DESKTOP_DOCK_LABEL_FONT,
+                  color: "#cfd4db",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {cls.label}
+                {unitLabel ? ` ${unitLabel}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div
         data-testid="layer-legend-value-row"
         style={{ display: "flex", alignItems: "center", gap: 6 }}
@@ -1698,6 +2011,7 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
           {maxText}
         </span>
       </div>
+      )}
     </div>
   );
 }

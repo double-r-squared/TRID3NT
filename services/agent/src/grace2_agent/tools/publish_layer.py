@@ -90,6 +90,8 @@ __all__ = [
     "publish_layer",
     "PublishLayerError",
     "style_params_from_band_stats",
+    "legend_for_published_layer",
+    "pop_legend_for_uri",
     "build_titiler_tile_url",
     "set_jobs_client",
     "set_gcp_project",
@@ -938,19 +940,286 @@ def style_params_from_band_stats(
     return _TITILER_SAFE_DEFAULT
 
 
+# --------------------------------------------------------------------------- #
+# Data-driven legend KEY (NATE: "the color gradient/key must come FROM THE DATA
+# when we fetch the map -- it MUST mean something").
+#
+# The legend is derived DIRECTLY from the resolved TiTiler style_params string
+# (the SAME ``&rescale=lo,hi&colormap_name=name`` the raster render uses), so the
+# legend range and the painted raster range AGREE by construction -- there is no
+# second, separately-computed range to drift. For pinned-registry presets that is
+# the semantic fixed range (flood 0-3, seismic PGA 0-1, temperature 250-320 K);
+# for the generic fallback it is the REAL p2/p98 percentile range the resolver
+# already read off the COG. Categorical (paletted/NLCD) rasters carry NO
+# style_params (the embedded GDAL table colorizes them), so their legend comes
+# from ``_read_band1_colormap`` instead -- one ``LegendClass`` per table entry.
+#
+# Additive + fail-open: ANY failure here returns ``None`` so the publish proceeds
+# exactly as before (legend=None => the web legacy style_preset path renders it).
+# --------------------------------------------------------------------------- #
+
+#: Module-level side-table of the most-recent published-raster ``LegendKey``
+#: keyed by the layer's DISPLAY uri (the TiTiler tile TEMPLATE the atomic
+#: ``publish_layer`` returns). ``publish_layer`` returns a bare URL string, so the
+#: server wrap-site rebuilds a ``LayerURI`` from it WITHOUT a legend; the pipeline
+#: emitter's ``add_loaded_layer`` lifts the legend back out of this stash by
+#: ``layer.uri``. Mirrors ``_LAST_DENSITY_META_BY_URI`` exactly (module scope is
+#: safe -- the legend is a pure function of the content-addressed COG + preset, so
+#: two sessions publishing the same layer compute the identical key). FIFO-bounded
+#: at the write site so the always-on agent process never grows it without limit.
+_MAX_LEGEND_ENTRIES: int = 256
+_LAST_LEGEND_BY_URI: dict[str, Any] = {}
+
+
+def _parse_style_params(style_params: str) -> tuple[float | None, float | None, str | None]:
+    """Pull ``(vmin, vmax, colormap_name)`` out of a ``&rescale=lo,hi&colormap_name=name``
+    style-params string. Any field absent / unparseable -> ``None`` for that slot.
+
+    This is the inverse of the strings the resolver builds, so the legend and the
+    raster render are GUARANTEED to use the same numbers (no second range read).
+    """
+    from urllib.parse import parse_qsl
+
+    vmin: float | None = None
+    vmax: float | None = None
+    cmap: str | None = None
+    if not style_params:
+        return (None, None, None)
+    for k, v in parse_qsl(style_params.lstrip("&"), keep_blank_values=False):
+        if k == "rescale" and "," in v:
+            lo_s, hi_s = v.split(",", 1)
+            try:
+                vmin, vmax = float(lo_s), float(hi_s)
+            except ValueError:
+                vmin = vmax = None
+        elif k == "colormap_name":
+            cmap = v or None
+    return (vmin, vmax, cmap)
+
+
+def _rgb_to_hex(entry: Any) -> str | None:
+    """``(r, g, b[, a])`` 0-255 ints -> ``"#rrggbb"``; ``None`` on a bad entry."""
+    try:
+        r, g, b = int(entry[0]), int(entry[1]), int(entry[2])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not all(0 <= c <= 255 for c in (r, g, b)):
+        return None
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _categorical_legend_from_colormap(
+    cmap: dict, *, label: str | None = None
+) -> "LegendKey | None":
+    """Build a categorical ``LegendKey`` from a band-1 GDAL color table.
+
+    ``cmap`` is ``{class_index: (r, g, b, a)}`` (the shape ``_read_band1_colormap``
+    returns for NLCD + other paletted rasters). One ``LegendClass`` per MEANINGFUL
+    entry, ordered by class index. GDAL always materializes the table to 256
+    entries; indices the raster does not actually use come back as either fully
+    transparent (``a == 0`` -- nodata / unused slots) OR the opaque-black filler
+    default ``(0, 0, 0, 255)``. Both are dropped so the legend shows only the
+    classes that meaningfully colorize pixels (a real NLCD table has ~16 distinct
+    colors, not 256). Duplicate colors are collapsed to the first class index that
+    carries them (paletted rasters never reuse a color for two real classes). The
+    label is the class index rendered verbatim (this seam carries no code->name
+    map). Returns ``None`` when nothing meaningful survives.
+    """
+    from grace2_contracts.execution import LegendClass, LegendKey
+
+    classes: list[LegendClass] = []
+    seen_colors: set[str] = set()
+    for idx in sorted(cmap.keys()):
+        entry = cmap[idx]
+        # Drop fully-transparent slots (nodata / unused class codes).
+        try:
+            if len(entry) >= 4 and int(entry[3]) == 0:
+                continue
+        except (TypeError, ValueError):
+            pass
+        hex_color = _rgb_to_hex(entry)
+        if hex_color is None:
+            continue
+        # Drop GDAL's opaque-black filler default for unset palette indices.
+        if hex_color == "#000000":
+            continue
+        # Collapse duplicate colors (a paletted raster gives each real class a
+        # distinct color; repeats are filler echoes).
+        if hex_color in seen_colors:
+            continue
+        seen_colors.add(hex_color)
+        classes.append(
+            LegendClass(value=int(idx), color=hex_color, label=str(int(idx)))
+        )
+    if not classes:
+        return None
+    return LegendKey(kind="categorical", classes=classes, label=label)
+
+
+def legend_for_published_layer(
+    style_preset: str | None,
+    layer_uri: str,
+    style_params: str,
+    *,
+    units: str | None = None,
+    raster_bytes: bytes | None = None,
+) -> "LegendKey | None":
+    """Build the data-driven ``LegendKey`` for a just-published RASTER layer.
+
+    Derived from the ALREADY-resolved ``style_params`` so the legend range equals
+    the rendered range by construction:
+
+    - ``style_params`` carries ``&rescale=lo,hi&colormap_name=name`` -> a
+      ``kind="continuous"`` key with ``colormap=name``, ``vmin=lo``, ``vmax=hi``
+      (the real p2/p98 range for unpinned presets; the pinned semantic range for
+      registry presets -- whichever the raster actually renders with).
+    - empty ``style_params`` (categorical / RGBA / terrain passthrough) -> probe
+      the COG for an embedded GDAL color table and emit a ``kind="categorical"``
+      key of one swatch per class. RGBA composites + grayscale terrain carry no
+      table, so they get ``None`` (legacy rendering -- there is no meaningful key).
+
+    Fail-open: returns ``None`` on ANY error so the publish is never blocked
+    (``legend=None`` => the web legacy ``style_preset`` path renders the layer
+    exactly as before).
+    """
+    from grace2_contracts.execution import LegendKey
+
+    try:
+        vmin, vmax, cmap_name = _parse_style_params(style_params)
+        label = _legend_label_for(style_preset)
+        if cmap_name is not None and vmin is not None and vmax is not None:
+            # Continuous raster: the resolved rescale IS the legend range, so the
+            # colorbar and the painted tiles span the identical numbers.
+            return LegendKey(
+                kind="continuous",
+                colormap=cmap_name,
+                vmin=vmin,
+                vmax=vmax,
+                units=units,
+                label=label,
+            )
+        # No rescale/colormap in the URL -> categorical/paletted, RGBA, or
+        # terrain passthrough. Only a paletted raster has a meaningful key.
+        if raster_bytes is None:
+            raster_bytes = _read_raster_bytes(layer_uri)
+        if raster_bytes is None:
+            return None
+        try:
+            import rasterio
+            from rasterio.io import MemoryFile
+
+            with MemoryFile(raster_bytes) as mem, mem.open() as src:
+                table = _read_band1_colormap(src)
+        except Exception as exc:  # noqa: BLE001 - palette probe is best-effort
+            logger.debug(
+                "legend palette probe skipped (%s: %s)", type(exc).__name__, exc
+            )
+            return None
+        if not table:
+            return None
+        return _categorical_legend_from_colormap(table, label=label)
+    except Exception as exc:  # noqa: BLE001 - never block a publish on the legend
+        logger.debug(
+            "legend_for_published_layer failed for %s (%s: %s)",
+            layer_uri,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _legend_label_for(style_preset: str | None) -> str | None:
+    """A short human-readable legend title from the preset, or ``None``.
+
+    Best-effort cosmetic: ``"continuous_flood_depth"`` -> ``"Flood depth"``. The
+    frontend renders it verbatim as the legend caption; ``None`` is fine (the web
+    falls back to the layer name). Pure presentation -- never affects the range.
+    """
+    if not style_preset or style_preset == "auto":
+        return None
+    cleaned = style_preset
+    for prefix in ("continuous_", "categorical_", "diverging_"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    cleaned = cleaned.replace("_", " ").strip()
+    if not cleaned:
+        return None
+    return cleaned[:1].upper() + cleaned[1:]
+
+
+def _stash_legend_for_uri(display_uri: str, legend: "LegendKey | None") -> None:
+    """Record (or clear) the published layer's ``LegendKey`` keyed by display uri.
+
+    FIFO-bounded (mirrors ``_LAST_DENSITY_META_BY_URI``) so the always-on agent
+    process cannot grow this side-table without limit. A ``None`` legend clears
+    any stale entry for this uri (so a re-publish that now resolves to no key
+    cannot leave an orphaned one behind).
+    """
+    if not display_uri:
+        return
+    if display_uri in _LAST_LEGEND_BY_URI:
+        del _LAST_LEGEND_BY_URI[display_uri]
+    if legend is None:
+        return
+    _LAST_LEGEND_BY_URI[display_uri] = legend
+    while len(_LAST_LEGEND_BY_URI) > _MAX_LEGEND_ENTRIES:
+        _LAST_LEGEND_BY_URI.pop(next(iter(_LAST_LEGEND_BY_URI)))
+
+
+def pop_legend_for_uri(display_uri: str) -> "LegendKey | None":
+    """Look up the stashed ``LegendKey`` for a published layer's display uri.
+
+    Non-destructive READ (a re-emit / replay of the SAME layer must resolve the
+    same key). The pipeline emitter's ``add_loaded_layer`` calls this to lift the
+    legend onto the ``ProjectLayerSummary`` for the publish_layer wrap-site path
+    (where the rebuilt ``LayerURI`` carries no legend of its own). Returns
+    ``None`` when nothing was stashed (legacy / categorical-RGBA layers).
+    """
+    return _LAST_LEGEND_BY_URI.get(display_uri)
+
+
 def build_titiler_tile_url(tile_base: str, cog_uri: str, style_params: str) -> str:
     """Mint the TiTiler XYZ tile TEMPLATE for a bare COG key + resolved style.
 
     Single seam shared by the on-box ``publish_layer`` s3 branch and the
     register-only manifest path so the URL shape stays identical:
     ``{tile_base}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=<cog>&rescale=..``
+
+    DATA-DRIVEN LEGEND (register-only twin): the SFINCS-offload manifest path
+    builds its ``LayerURI`` here without going through ``publish_layer``'s s3
+    branch, so this seam also stashes the continuous legend derived from the
+    SAME ``style_params`` it is baking into the URL (keyed by the returned
+    template). The range therefore equals the painted range by construction, and
+    the pipeline emitter lifts it onto the manifest layer by ``layer.uri``. Only
+    the continuous case is derivable from ``style_params`` alone; categorical /
+    RGBA register-only layers (empty ``style_params``) fall through to legacy
+    rendering (legend=None). Fail-open: never blocks the URL mint.
     """
     from urllib.parse import quote
 
-    return (
+    template = (
         f"{tile_base.rstrip('/')}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
         f"?url={quote(cog_uri, safe='')}{style_params}"
     )
+    try:
+        _vmin, _vmax, _cmap = _parse_style_params(style_params)
+        if _cmap is not None and _vmin is not None and _vmax is not None:
+            from grace2_contracts.execution import LegendKey
+
+            _stash_legend_for_uri(
+                template,
+                LegendKey(kind="continuous", colormap=_cmap, vmin=_vmin, vmax=_vmax),
+            )
+        else:
+            _stash_legend_for_uri(template, None)
+    except Exception as exc:  # noqa: BLE001 - legend never blocks the URL mint
+        logger.debug(
+            "build_titiler_tile_url legend stash skipped (%s: %s)",
+            type(exc).__name__,
+            exc,
+        )
+    return template
 
 
 # --------------------------------------------------------------------------- #
@@ -2144,6 +2413,25 @@ def publish_layer(
             f"{tile_base}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
             f"?url={quote(layer_uri, safe='')}{style_params}"
         )
+        # DATA-DRIVEN LEGEND: derive the render KEY from the SAME resolved
+        # style_params (so the legend range equals the painted-tile range by
+        # construction) and stash it keyed by the display uri (the tile template
+        # this call returns). publish_layer returns a bare URL string, so the
+        # server wrap-site rebuilds a LayerURI WITHOUT a legend; the pipeline
+        # emitter's add_loaded_layer lifts the legend back out of the stash by
+        # layer.uri. Fail-open: a None legend just clears the stash entry and the
+        # web legacy style_preset path renders the layer exactly as before.
+        try:
+            _legend = legend_for_published_layer(
+                effective_preset, layer_uri, style_params
+            )
+            _stash_legend_for_uri(template, _legend)
+        except Exception as exc:  # noqa: BLE001 - legend never blocks a publish
+            logger.debug(
+                "publish_layer (titiler) legend build skipped (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
         logger.info(
             "publish_layer (titiler) layer_id=%s uri=%s template=%s",
             layer_id,

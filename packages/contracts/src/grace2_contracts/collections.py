@@ -32,9 +32,9 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, field_validator
 
 from .catalog import CatalogEntry
-from .catalog import CatalogEntry
 from .common import GraceModel, ULIDStr, UTCDatetime
 from .event import EventMetadata
+from .execution import LegendKey
 
 #: SCREAMING_SNAKE_CASE error-code pattern (Appendix A.6).
 #: Open set per A.6: codes are validated by shape, not against a closed registry,
@@ -112,6 +112,12 @@ class ProjectLayerSummary(GraceModel):
     ``opacity`` (0.0–1.0) and ``z_index`` enable layer-stack arbitration;
     clients fall back to ``1.0`` / a default order if both are absent.
 
+    ``legend`` is the DATA-DRIVEN render key mirrored from ``LayerURI.legend``
+    (see ``execution.LegendKey``): the colormap is the semantic per-variable
+    choice, the range is the REAL data range. Additive + optional -- ``None``
+    means legacy ``style_preset`` rendering, so layers without a legend render
+    exactly as before. The pipeline emitter copies it onto this summary.
+
     Closes OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.
     """
 
@@ -128,6 +134,9 @@ class ProjectLayerSummary(GraceModel):
     wms_url: str | None = None       # QGIS Server WMS URL for MapLibre tile registration
     opacity: float | None = None     # 0.0–1.0; client falls back to 1.0 if absent
     z_index: int | None = None       # MapLibre layer-order arbitration; lower draws first
+
+    # --- Data-driven render key (additive; None => legacy style_preset path) --- #
+    legend: LegendKey | None = None  # mirrored from LayerURI.legend; see execution.LegendKey
 
 
 class ProjectDocument(DocModel):

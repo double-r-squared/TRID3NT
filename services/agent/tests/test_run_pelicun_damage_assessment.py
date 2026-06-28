@@ -555,6 +555,43 @@ def test_registered_tool_returns_layer_uri_with_correct_shape(tmp_path) -> None:
     assert result.units == "damage_state"
     assert result.style_preset == "pelicun_damage_state"
     assert result.layer_id.startswith("pelicun-damage-")
+    # DATA-DRIVEN LEGEND: the returned LayerURI carries a graduated/categorical
+    # legend keyed off the real ``ds_mean`` feature property, so the generic web
+    # vector path drives the choropleth (fixing the pelicun_damage_state-vs-
+    # pelicun_damage sentinel mismatch by construction).
+    assert result.legend is not None
+    assert result.legend.value_field == "ds_mean"
+    assert result.legend.vmin == 0.0 and result.legend.vmax == 4.0
+    assert result.legend.units == "damage_state"
+    assert result.legend.classes is not None and len(result.legend.classes) == 5
+
+
+def test_damage_state_legend_is_graduated_ds_mean_choropleth() -> None:
+    """The ``ds_mean`` legend KEY: a 5-bucket green->red HAZUS damage ramp driven
+    by the real feature property, with a canonical 0..4 damage-state scale."""
+    from grace2_agent.tools.run_pelicun_damage_assessment import (
+        _build_damage_state_legend,
+    )
+
+    legend = _build_damage_state_legend()
+    assert legend.kind == "categorical"
+    assert legend.value_field == "ds_mean"
+    assert (legend.vmin, legend.vmax) == (0.0, 4.0)
+    assert legend.units == "damage_state"
+    # One half-unit bucket centered on each DS0..DS4 (a continuous ds_mean of
+    # 1.7 lands in the DS2 bucket [1.5, 2.5)).
+    buckets = [(c.value_min, c.value_max) for c in legend.classes]
+    assert buckets == [(-0.5, 0.5), (0.5, 1.5), (1.5, 2.5), (2.5, 3.5), (3.5, 4.5)]
+    # green (no damage) -> red (complete) ramp; each swatch is a hex color.
+    assert legend.classes[0].color == "#1a9850"  # DS0 none = green
+    assert legend.classes[-1].color == "#d73027"  # DS4 complete = red
+    for c in legend.classes:
+        assert c.color.startswith("#") and len(c.color) == 7
+        assert c.label.startswith("DS")
+    # Round-trips through model_dump(mode="json") as the wire envelope would.
+    dumped = legend.model_dump(mode="json")
+    assert dumped["value_field"] == "ds_mean"
+    assert len(dumped["classes"]) == 5
 
 
 def test_fragility_set_eq_2020_raises_not_wired_yet() -> None:
