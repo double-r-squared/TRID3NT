@@ -2080,12 +2080,18 @@ export function setFeatureHighlight(
       },
     });
   }
-  // Enlarged ring for a tapped point.
+  // Enlarged ring for a tapped point. FOOTPRINT HIGHLIGHT DOT FILTER (NATE
+  // 2026-06-28): gate the circle to POINT geometry only. Without this filter
+  // MapLibre paints the ring at EVERY POLYGON VERTEX of a footprint highlight
+  // (the stray dots around the selected building); a genuine point tap
+  // (gauge/occurrence/NSI) still keeps its ring. Same idiom as bbox_draw.ts /
+  // SpatialDrawSurface.tsx.
   if (!m.getLayer(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)) {
     m.addLayer({
       id: FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID,
       type: "circle",
       source: FEATURE_HIGHLIGHT_SOURCE_ID,
+      filter: ["==", ["geometry-type"], "Point"],
       paint: {
         "circle-radius": 10,
         "circle-color": "rgba(0,0,0,0)", // ring only  -  don't blanket the point
@@ -4821,8 +4827,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         setFeaturePopup((cur) => {
           if (!cur || cur.enrichFid !== enrichFid || !cur.enriching) return cur;
           if (!tags) {
-            // Enrich failed/empty: just clear the loading row, keep the card.
-            return { ...cur, enriching: false };
+            // FOOTPRINT ENRICH TERMINAL STATE (NATE 2026-06-28): the detail
+            // fetch failed/timed out (building_enrich returns null on any
+            // failure incl. the 10s COLD_FETCH_TIMEOUT_MS, e.g. the agent box is
+            // asleep). Set a TERMINAL enrichFailed flag (not just enriching:false)
+            // so FeaturePopup shows an HONEST "details unavailable" line instead
+            // of silently collapsing to a bare card (reads as "loaded then
+            // stopped"). The stale-resolve guard above still drops a resolve for
+            // a since-dismissed/replaced popup, so this never paints onto the
+            // wrong feature.
+            return { ...cur, enriching: false, enrichFailed: true };
           }
           const merged = mergeTagsIntoAttributes(cur, tags);
           return { ...merged, enriching: false };

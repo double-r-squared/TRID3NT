@@ -1547,21 +1547,31 @@ export function App(): JSX.Element {
         coldLoadedCaseRef.current = null;
         return;
       }
-      // Mark the attempt resolved for THIS Case so the spinner can fall through
-      // to the honest empty / Wake stub even box-off (where wsStatus never
-      // settles). Runs on BOTH the null (no-snapshot/abort) and success paths.
-      setColdViewAttemptedCaseId(activeCaseId);
       if (payload === null) {
-        // No snapshot / wedged hop aborted -> leave the Case shell + Wake UI and
-        // release the guard so a later attempt in the same disconnected episode
-        // can re-fetch.
+        // COLD-VIEW GATE FIX (NATE 2026-06-28): a null result is TRANSIENT (no
+        // snapshot yet / signer wedged / S3 hop aborted / parse error -
+        // fetchCaseView collapses every failure to null), NOT a definitive
+        // answer for this Case. Do NOT latch coldViewAttemptedCaseId here: a
+        // Case that HAS persisted layers but cold-resolved null must stay
+        // RETRYABLE so the next cold attempt / connection change self-heals it
+        // WITHOUT a manual refresh (the refresh-then-paints bug). Release the
+        // guard so a later attempt in the same disconnected episode re-fetches.
+        // The 12s coldSettleTimedOut bound (below) still stops the spinner so it
+        // never hangs forever; the empty/restore stub then renders the honest
+        // "wake the agent to restore layers" copy for a Case the durable summary
+        // says HAD layers.
         coldLoadedCaseRef.current = null;
         return;
       }
-      // SUCCESS: latch the guard so we don't refetch this Case while still
-      // disconnected, then feed the cold snapshot through the SAME path the live
-      // WS case-open uses. The rehydration effect ([activeSession, bus]) then
-      // paints it. A later live case-open supersedes idempotently.
+      // DEFINITIVE RESOLUTION: a non-null payload is the authoritative cold
+      // answer for THIS Case (a genuinely-empty case still returns a valid
+      // payload with empty loaded_layers). Mark the attempt RESOLVED so the
+      // spinner falls through to the honest empty / restore stub box-off, and
+      // latch the guard so we don't refetch this Case while still disconnected.
+      // Then feed the cold snapshot through the SAME path the live WS case-open
+      // uses; the rehydration effect ([activeSession, bus]) paints it. A later
+      // live case-open supersedes idempotently.
+      setColdViewAttemptedCaseId(activeCaseId);
       coldLoadedCaseRef.current = activeCaseId;
       useCases_onCaseOpen(payload);
       // job-0179  -  ALSO push the case-open onto the bus so Chat (which does
@@ -2004,6 +2014,26 @@ export function App(): JSX.Element {
   // (layersLoading + caseSelectedButUnsettled are computed ABOVE the AuthGate
   // gate return - see the Job E note there - so the hook runs unconditionally.)
 
+  // COLD-VIEW GATE FIX (NATE 2026-06-28): the DURABLE signal that this Case HAD
+  // layers, read from its CaseSummary (the cold /case-list already painted the
+  // rail box-off, so activeCase is present even with the agent asleep). The
+  // summary carries layer_summary (flat layer_ids) and loaded_layer_summaries
+  // (persisted ProjectLayerSummary snapshots) - either being non-empty means
+  // DynamoDB persists layers for this Case. When the cold-view then resolves
+  // with ZERO live layers (a transient null that timed out, or an empty frame),
+  // we render an HONEST "wake the agent to restore layers" stub instead of the
+  // bare "add layers" empty (which falsely implies the Case is new/empty and is
+  // why a manual refresh - a fresh cold attempt - then paints the real layers).
+  // A genuinely-new/empty Case has NO durable layer count, so it correctly
+  // keeps the "Ask the assistant to add data." empty.
+  const caseHadLayers =
+    (activeCase?.layer_summary?.length ?? 0) > 0 ||
+    (activeCase?.loaded_layer_summaries?.length ?? 0) > 0;
+  // Show the restore stub only once the spinner has stopped (not loading), the
+  // live layer list is empty, and the durable summary says this Case HAD layers.
+  const showRestoreLayersStub =
+    !layersLoading && layers.length === 0 && caseHadLayers;
+
   // FIX 2  -  payload-warning gates render in Chat's per-Case stream now (no
   // App-level filtering / banner). See Chat.tsx routePayloadWarning.
 
@@ -2281,6 +2311,25 @@ export function App(): JSX.Element {
                     }}
                   />
                   <span>Loading layers...</span>
+                </div>
+              ) : showRestoreLayersStub ? (
+                <div
+                  data-testid="grace2-case-view-restore-layers"
+                  style={{
+                    marginTop: 8,
+                    background: "rgba(15,15,20,0.92)",
+                    border: "1px dashed #6b5d2e",
+                    borderRadius: 8,
+                    padding: 12,
+                    color: "#c9b873",
+                    fontSize: 12,
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                    width: 288,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  Wake the agent to restore this Case's layers.
                 </div>
               ) : (
                 <div
@@ -2661,6 +2710,27 @@ export function App(): JSX.Element {
                       }}
                     />
                     <span>Loading layers...</span>
+                  </div>
+                ) : showRestoreLayersStub ? (
+                  <div
+                    data-testid="grace2-case-view-restore-layers"
+                    style={{
+                      // COLD-VIEW GATE FIX (NATE 2026-06-28): same hairline card
+                      // as the empty stub, only the outline/copy change so there
+                      // is no layout shift; amber tint reads as "needs a wake".
+                      background: "rgba(18,19,24,0.72)",
+                      border: "1px dashed rgba(201,184,115,0.45)",
+                      borderRadius: 10,
+                      padding: 12,
+                      color: "#c9b873",
+                      fontSize: 12,
+                      textAlign: "center",
+                      lineHeight: 1.4,
+                      boxSizing: "border-box",
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    Wake the agent to restore this Case's layers.
                   </div>
                 ) : (
                   <div

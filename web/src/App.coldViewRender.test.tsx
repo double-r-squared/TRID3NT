@@ -531,12 +531,20 @@ function ColdViewFetchHarness({
   wsStatus,
   coldLoad,
   onLayers,
+  // COLD-VIEW GATE FIX (NATE 2026-06-28): the durable "this Case HAD layers"
+  // signal (the CaseSummary.layer_summary count box-off). When > 0 AND the cold
+  // resolve is empty/null, App renders the honest restore stub instead of the
+  // bare "add layers" empty. Defaults to 0 (a genuinely-new/empty Case).
+  durableLayerCount = 0,
+  // The 12s cold-settle bound (coldSettleTimedOut). The harness exposes a window
+  // hook to fire it deterministically (the real App uses a 12s setTimeout).
 }: {
   wsStatus: WsStatusLike;
   // The deferred cold-load stands in for fetchCaseView: the test resolves it
   // AFTER flipping wsStatus to prove a mid-fetch flap does not cancel it.
   coldLoad: () => Promise<CaseOpenEnvelopePayload | null>;
   onLayers: (layers: ProjectLayerSummary[]) => void;
+  durableLayerCount?: number;
 }): JSX.Element {
   const bus = useRef(createLayerPanelBus()).current;
   const layerCache = useRef(getLayerCache()).current;
@@ -628,12 +636,15 @@ function ColdViewFetchHarness({
         coldLoadedCaseRef.current = null;
         return;
       }
-      setColdViewAttemptedCaseId(activeCaseId);
+      // COLD-VIEW GATE FIX (NATE 2026-06-28): a null result is TRANSIENT - do
+      // NOT latch coldViewAttemptedCaseId here; release the guard so the next
+      // cold attempt re-fetches (the view self-heals without a manual refresh).
       if (payload === null) {
         coldLoadedCaseRef.current = null;
         return;
       }
-      // (2) latch the guard only on SUCCESS, then feed onCaseOpen.
+      // DEFINITIVE RESOLUTION (non-null payload): mark resolved + latch + feed.
+      setColdViewAttemptedCaseId(activeCaseId);
       coldLoadedCaseRef.current = activeCaseId;
       onCaseOpen(payload);
       bus.pushCaseOpen(payload);
@@ -642,6 +653,14 @@ function ColdViewFetchHarness({
       cancelled = true;
     };
   }, [activeCaseId, notConnected, activeSession, onCaseOpen, bus, coldLoad]);
+
+  // ── The FIXED 12s cold-settle bound (App.tsx), reproduced as a window-fired
+  // flag so a test can trip it deterministically (the real App uses a 12s
+  // setTimeout). It STOPS the spinner box-off so it never hangs forever. ──── //
+  const [coldSettleTimedOut, setColdSettleTimedOut] = useState(false);
+  useEffect(() => {
+    setColdSettleTimedOut(false);
+  }, [activeCaseId]);
 
   // ── The FIXED layersLoading derivation (App.tsx), reproduced. ──────────── //
   const caseSelectedButUnsettled =
@@ -652,19 +671,34 @@ function ColdViewFetchHarness({
     activeCaseId !== null && coldViewAttemptedCaseId === activeCaseId;
   const layersLoading = useMemo(() => {
     if (activeCaseId === null) return false;
-    const coldDone = coldViewSettledForCase; // (no timer in the harness)
+    const coldDone = coldViewSettledForCase || coldSettleTimedOut;
     if (caseSelectedButUnsettled && !coldDone) return true;
     if (!coldDone && (wsStatus === "connecting" || wsStatus === "reconnecting"))
       return true;
     return false;
-  }, [activeCaseId, caseSelectedButUnsettled, wsStatus, coldViewSettledForCase]);
+  }, [
+    activeCaseId,
+    caseSelectedButUnsettled,
+    wsStatus,
+    coldViewSettledForCase,
+    coldSettleTimedOut,
+  ]);
+
+  // ── The FIXED restore-stub gate (App.tsx): the Case HAD layers (durable
+  // count > 0) but cold resolved empty + the spinner stopped -> honest stub. ─ //
+  const caseHadLayers = durableLayerCount > 0;
+  const showRestoreLayersStub =
+    !layersLoading && layers.length === 0 && caseHadLayers;
 
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__test_selectCase = (
       id: string,
     ) => selectCase(id);
+    (window as unknown as Record<string, unknown>).__test_fireColdSettle = () =>
+      setColdSettleTimedOut(true);
     return () => {
       delete (window as unknown as Record<string, unknown>).__test_selectCase;
+      delete (window as unknown as Record<string, unknown>).__test_fireColdSettle;
     };
   }, [selectCase]);
 
@@ -672,7 +706,15 @@ function ColdViewFetchHarness({
     <div>
       <div data-testid="app-layer-count">{layers.length}</div>
       <div data-testid="app-layers-loading">{layersLoading ? "yes" : "no"}</div>
-      {layers.length === 0 && <div>{EMPTY_STATE_TEXT}</div>}
+      {/* App's three-way empty/loading/restore split, reproduced. */}
+      {layers.length === 0 &&
+        (layersLoading ? null : showRestoreLayersStub ? (
+          <div data-testid="grace2-case-view-restore-layers">
+            Wake the agent to restore this Case's layers.
+          </div>
+        ) : (
+          <div data-testid="grace2-case-view-empty-layers">{EMPTY_STATE_TEXT}</div>
+        ))}
     </div>
   );
 }
@@ -737,7 +779,7 @@ describe("TASK A - cold-VIEW survives a mid-fetch connecting->reconnecting flap"
     });
   });
 
-  it("a no-snapshot cold-load (null) box-off STOPS the spinner instead of spinning forever", async () => {
+  it("a no-snapshot cold-load (null) box-off is BOUNDED by the 12s cold-settle timer (not latched by the null itself)", async () => {
     const deferred = makeDeferred();
     render(
       <ColdViewFetchHarness
@@ -753,18 +795,188 @@ describe("TASK A - cold-VIEW survives a mid-fetch connecting->reconnecting flap"
     });
     // Spinner up while the attempt is in flight.
     expect(screen.getByTestId("app-layers-loading").textContent).toBe("yes");
-    // Resolve to NULL (no snapshot) - the attempt is now RESOLVED.
+    // Resolve to NULL (no snapshot). COLD-VIEW GATE FIX: a null is TRANSIENT and
+    // does NOT latch the attempt, so the spinner is still up (the view stays
+    // retryable). It is the 12s coldSettleTimedOut bound that finally stops it.
     await act(async () => {
       deferred.resolve(null);
       await deferred.promise;
     });
-    // Still zero layers, but the spinner CLEARS (honest empty / Wake stub),
-    // NOT an endless "Loading layers..." on the box-off reconnecting flap.
+    expect(screen.getByTestId("app-layers-loading").textContent).toBe("yes");
+    // The 12s bound fires (box-off the WS never connects) -> spinner CLEARS so it
+    // never hangs forever, falling through to the honest empty stub.
+    await act(async () => {
+      (
+        window as unknown as { __test_fireColdSettle: () => void }
+      ).__test_fireColdSettle();
+    });
     await waitFor(() => {
       expect(screen.getByTestId("app-layers-loading").textContent).toBe("no");
     });
     expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+    // No durable layer count -> a genuinely-empty Case still shows "add layers".
     expect(screen.queryByText(EMPTY_STATE_TEXT)).not.toBeNull();
+    expect(screen.queryByTestId("grace2-case-view-restore-layers")).toBeNull();
+  });
+});
+
+// ── COLD-VIEW GATE FIX (NATE 2026-06-28): a MODFLOW Case reopened box-asleep
+// showed the bare "add layers" empty with no spinner; a manual refresh then
+// painted it. ROOT: the cold-view path latched coldViewAttemptedCaseId on a
+// TRANSIENT null BEFORE distinguishing it from a genuinely-empty case, so the
+// spinner dropped and the bare empty rendered even for a Case that HAS persisted
+// layers. The fix: (a) a null/abort/error stays RETRYABLE (no latch) so the view
+// self-heals on the next cold attempt without a refresh; (b) for a Case the
+// durable summary says HAD layers, render an honest "wake the agent" stub. ──── //
+describe("COLD-VIEW GATE - transient null stays retryable + honest restore stub", () => {
+  it("a Case with a DURABLE layer count whose cold resolves null shows the RESTORE stub (not the bare empty) once the spinner stops", async () => {
+    const deferred = makeDeferred();
+    render(
+      <ColdViewFetchHarness
+        wsStatus="reconnecting"
+        coldLoad={() => deferred.promise}
+        onLayers={() => {}}
+        durableLayerCount={26}
+      />,
+    );
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+    });
+    // Spinner up; the null resolves but does NOT latch (still retryable).
+    await act(async () => {
+      deferred.resolve(null);
+      await deferred.promise;
+    });
+    expect(screen.getByTestId("app-layers-loading").textContent).toBe("yes");
+    // The 12s bound stops the spinner. Because the Case HAD layers (durable
+    // count 26) but cold resolved zero, the HONEST restore stub renders - NOT
+    // the bare "add layers" empty (the bug).
+    await act(async () => {
+      (
+        window as unknown as { __test_fireColdSettle: () => void }
+      ).__test_fireColdSettle();
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("grace2-case-view-restore-layers")).not.toBeNull();
+    });
+    expect(screen.queryByText(EMPTY_STATE_TEXT)).toBeNull();
+  });
+
+  it("a transient null is RETRYABLE: a later cold attempt with the real snapshot self-heals to all 26 layers WITHOUT a manual refresh", async () => {
+    // First arm: the cold-load resolves null (transient - box still waking).
+    let attempt = 0;
+    const firstDeferred = makeDeferred();
+    const secondDeferred = makeDeferred();
+    const coldLoad = (): Promise<CaseOpenEnvelopePayload | null> => {
+      attempt += 1;
+      return attempt === 1 ? firstDeferred.promise : secondDeferred.promise;
+    };
+    let lastLayers3: ProjectLayerSummary[] = [];
+
+    const { rerender } = render(
+      <ColdViewFetchHarness
+        wsStatus="reconnecting"
+        coldLoad={coldLoad}
+        onLayers={(l) => (lastLayers3 = l)}
+        durableLayerCount={26}
+      />,
+    );
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+    });
+    // First attempt resolves NULL -> NOT latched (guard released, retryable).
+    await act(async () => {
+      firstDeferred.resolve(null);
+      await firstDeferred.promise;
+    });
+    expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+
+    // A connection change re-arms the cold-VIEW effect. The guard was already
+    // RELEASED by the transient null (the whole point of the fix), so a fresh
+    // disconnected episode (here: a brief "connected" that resets the guard,
+    // then back to "reconnecting") fires a SECOND cold attempt - the self-heal
+    // the OLD latch prevented (which forced a manual refresh). The first null
+    // left the guard released, so this re-arm is allowed.
+    await act(async () => {
+      rerender(
+        <ColdViewFetchHarness
+          wsStatus="connected"
+          coldLoad={coldLoad}
+          onLayers={(l) => (lastLayers3 = l)}
+          durableLayerCount={26}
+        />,
+      );
+    });
+    await act(async () => {
+      rerender(
+        <ColdViewFetchHarness
+          wsStatus="reconnecting"
+          coldLoad={coldLoad}
+          onLayers={(l) => (lastLayers3 = l)}
+          durableLayerCount={26}
+        />,
+      );
+    });
+    // Second attempt resolves the REAL snapshot -> all 26 layers paint.
+    await act(async () => {
+      secondDeferred.resolve(COLD_PAYLOAD);
+      await secondDeferred.promise;
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layer-count").textContent).toBe(
+        String(EXPECTED_LAYERS),
+      );
+    });
+    expect(lastLayers3.length).toBe(EXPECTED_LAYERS);
+    // It self-healed: more than one cold attempt was made (no refresh needed).
+    expect(attempt).toBeGreaterThan(1);
+    // No empty / restore stub once the layers are present.
+    expect(screen.queryByText(EMPTY_STATE_TEXT)).toBeNull();
+    expect(screen.queryByTestId("grace2-case-view-restore-layers")).toBeNull();
+  });
+
+  it("a GENUINELY-EMPTY Case (no durable layers) that cold-resolves an empty payload still shows the 'add layers' empty, NOT the restore stub", async () => {
+    // The cold-load returns a VALID payload whose session_state has ZERO layers -
+    // a real new/empty case. This is a DEFINITIVE resolution (non-null), so it
+    // latches normally and the spinner stops; with no durable layer count the
+    // honest empty (not the restore stub) renders.
+    const emptyPayload = {
+      ...COLD_PAYLOAD,
+      session_state: {
+        ...COLD_PAYLOAD.session_state!,
+        loaded_layers: [],
+      },
+    } as unknown as CaseOpenEnvelopePayload;
+    const deferred = makeDeferred();
+    render(
+      <ColdViewFetchHarness
+        wsStatus="reconnecting"
+        coldLoad={() => deferred.promise}
+        onLayers={() => {}}
+        durableLayerCount={0}
+      />,
+    );
+    await act(async () => {
+      (
+        window as unknown as { __test_selectCase: (id: string) => void }
+      ).__test_selectCase(COLD_PAYLOAD.session_state!.case.case_id);
+    });
+    await act(async () => {
+      deferred.resolve(emptyPayload);
+      await deferred.promise;
+    });
+    // Definitive resolution latches the attempt -> spinner stops.
+    await waitFor(() => {
+      expect(screen.getByTestId("app-layers-loading").textContent).toBe("no");
+    });
+    expect(screen.getByTestId("app-layer-count").textContent).toBe("0");
+    // Genuinely empty -> the "add layers" empty, NOT the restore stub.
+    expect(screen.queryByText(EMPTY_STATE_TEXT)).not.toBeNull();
+    expect(screen.queryByTestId("grace2-case-view-restore-layers")).toBeNull();
   });
 });
 

@@ -125,3 +125,90 @@ describe("FeaturePopup enriching loading state", () => {
     expect(screen.getByText("12 km2")).toBeTruthy();
   });
 });
+
+// FOOTPRINT ENRICH TERMINAL STATE (NATE 2026-06-28): a null detail fetch (the
+// agent box is asleep / the 10s timeout fired) used to silently clear the
+// "Loading details..." row with no message -> a bare card that read as "loaded
+// then stopped". The fix sets enrichFailed:true so FeaturePopup shows an honest
+// terminal message. These cover BOTH the slim-attrs region AND the no-attrs
+// region, the unchanged success/loading paths, and a non-footprint popup.
+describe("FeaturePopup enrich TERMINAL FAILURE state", () => {
+  const FAILED_TEXT =
+    "Details unavailable -- the agent must be awake to load building details.";
+
+  it("shows the honest failure line when enrichFailed is set WITH slim attrs", () => {
+    const data: FeaturePopupData = {
+      title: "Building",
+      attributes: [{ label: "Building", value: "yes" }],
+      point: PT,
+      enriching: false,
+      enrichFailed: true,
+      enrichFid: "w1",
+    };
+    render(<FeaturePopup data={data} canvasSize={CANVAS} isMobile={false} onClose={() => {}} />);
+    expect(screen.getByTestId("feature-popup-enrich-failed")).toBeTruthy();
+    expect(screen.getByText(FAILED_TEXT)).toBeTruthy();
+    // The loading row is gone (the spinner stopped) ...
+    expect(screen.queryByTestId("feature-popup-enriching")).toBeNull();
+  });
+
+  it("shows the honest failure line when enrichFailed is set with NO attrs (slim-empty footprint)", () => {
+    const data: FeaturePopupData = {
+      title: "Building",
+      attributes: [],
+      point: PT,
+      enriching: false,
+      enrichFailed: true,
+      enrichFid: "w1",
+    };
+    render(<FeaturePopup data={data} canvasSize={CANVAS} isMobile={false} onClose={() => {}} />);
+    expect(screen.getByTestId("feature-popup-enrich-failed")).toBeTruthy();
+    expect(screen.getByText(FAILED_TEXT)).toBeTruthy();
+    // It REPLACES the bare "No additional attributes." empty (the bug card).
+    expect(screen.queryByTestId("feature-popup-empty")).toBeNull();
+  });
+
+  it("does NOT show the failure line while still enriching (loading wins)", () => {
+    const data: FeaturePopupData = {
+      title: "Building",
+      attributes: [],
+      point: PT,
+      enriching: true,
+      enrichFid: "w1",
+    };
+    render(<FeaturePopup data={data} canvasSize={CANVAS} isMobile={false} onClose={() => {}} />);
+    expect(screen.getByTestId("feature-popup-enriching")).toBeTruthy();
+    expect(screen.queryByTestId("feature-popup-enrich-failed")).toBeNull();
+  });
+
+  it("a SUCCESSFUL merge (enrichFailed unset) shows tags + no failure line", () => {
+    // The real Map.tsx success path merges tags + sets enriching:false WITHOUT
+    // enrichFailed. mergeTagsIntoAttributes is the merge; assert no failure row.
+    const merged = mergeTagsIntoAttributes(
+      buildFeaturePopupData(
+        { osm_id: 1, osm_type: "way", fid: "w1" },
+        PT,
+        { layerName: "Buildings (OSM)", geomKindLabel: "Polygon" },
+      ),
+      { building: "house" },
+    );
+    const data: FeaturePopupData = { ...merged, enriching: false };
+    expect(data.enrichFailed).toBeUndefined();
+    render(<FeaturePopup data={data} canvasSize={CANVAS} isMobile={false} onClose={() => {}} />);
+    expect(screen.getByText("house")).toBeTruthy();
+    expect(screen.queryByTestId("feature-popup-enrich-failed")).toBeNull();
+  });
+
+  it("a NON-footprint popup never shows the failure line (no enrichFailed flag)", () => {
+    const data: FeaturePopupData = {
+      title: "Some Park",
+      subtitle: "National Park",
+      attributes: [{ label: "Area", value: "12 km2" }],
+      point: PT,
+    };
+    render(<FeaturePopup data={data} canvasSize={CANVAS} isMobile={false} onClose={() => {}} />);
+    expect(screen.queryByTestId("feature-popup-enrich-failed")).toBeNull();
+    // The plain no-extra-attrs popup still falls through normally.
+    expect(screen.getByText("12 km2")).toBeTruthy();
+  });
+});

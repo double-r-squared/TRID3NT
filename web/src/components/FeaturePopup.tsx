@@ -109,6 +109,15 @@ export interface FeaturePopupData {
    * rendered.
    */
   enrichFid?: string;
+  /**
+   * Footprint enrich TERMINAL FAILURE (NATE 2026-06-28): set true by Map.tsx
+   * when the detail fetch resolved null (failed / timed out -- e.g. the agent
+   * box is asleep). The card then renders a one-line honest "details
+   * unavailable" message instead of silently collapsing to a bare card (which
+   * read as "loaded then stopped"). Footprint-only; absent/false for every
+   * other popup, which stays byte-for-byte unchanged.
+   */
+  enrichFailed?: boolean;
 }
 
 export interface FeaturePopupProps {
@@ -476,6 +485,21 @@ export function FeaturePopup({
             >
               Loading details...
             </div>
+          ) : data.enrichFailed ? (
+            // FOOTPRINT ENRICH TERMINAL STATE (NATE 2026-06-28): the detail
+            // fetch failed/timed out (the agent box is asleep). Show an honest
+            // one-line message instead of silently dropping the loading row.
+            <div
+              data-testid="feature-popup-enrich-failed"
+              style={{
+                padding: "5px 0 0",
+                fontSize: 11,
+                color: "#b8893a",
+                fontStyle: "italic",
+              }}
+            >
+              Details unavailable -- the agent must be awake to load building details.
+            </div>
           ) : null}
         </div>
       ) : data.enriching ? (
@@ -491,6 +515,21 @@ export function FeaturePopup({
           }}
         >
           Loading details...
+        </div>
+      ) : data.enrichFailed ? (
+        // FOOTPRINT ENRICH TERMINAL STATE (NATE 2026-06-28): no slim attributes
+        // AND the enrich fetch failed/timed out -- the honest terminal message
+        // instead of a bare "No additional attributes." card.
+        <div
+          data-testid="feature-popup-enrich-failed"
+          style={{
+            padding: "8px 12px 12px",
+            fontSize: 11,
+            color: "#b8893a",
+            fontStyle: "italic",
+          }}
+        >
+          Details unavailable -- the agent must be awake to load building details.
         </div>
       ) : (
         <div

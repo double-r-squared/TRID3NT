@@ -68,6 +68,7 @@ interface FeatureInspectMapMock {
   _emit: (ev: string, e: unknown) => void;
   _canvasStyle: { cursor: string };
   _addedLayers: Set<string>;
+  _addedLayerDefs: Map<string, { id: string; filter?: unknown }>;
   _addedSources: Set<string>;
 }
 
@@ -76,6 +77,7 @@ let lastMapMock: FeatureInspectMapMock | null = null;
 vi.mock("maplibre-gl", () => {
   class MockMap {
     _addedLayers = new Set<string>(["qgis-basemap", "osm-fallback-basemap"]);
+    _addedLayerDefs = new Map<string, { id: string; filter?: unknown }>();
     _addedSources = new Set<string>(["qgis-wms", "osm-fallback"]);
     _listeners = new Map<string, Listener[]>();
     _canvasStyle = { cursor: "" };
@@ -83,8 +85,11 @@ vi.mock("maplibre-gl", () => {
     addSource = vi.fn((id: string) => {
       this._addedSources.add(id);
     });
-    addLayer = vi.fn((def: { id: string }) => {
+    addLayer = vi.fn((def: { id: string; filter?: unknown }) => {
       this._addedLayers.add(def.id);
+      // FIX 3 (NATE 2026-06-28): retain the FULL layer def so a test can assert
+      // the geometry-type filter on the highlight CIRCLE layer.
+      this._addedLayerDefs.set(def.id, def);
     });
     removeLayer = vi.fn((id: string) => this._addedLayers.delete(id));
     removeSource = vi.fn((id: string) => this._addedSources.delete(id));
@@ -397,6 +402,32 @@ describe("MapView — generic feature highlight on tap (FIX 1)", () => {
     expect(data?.features[0]?.geometry.type).toBe("Polygon");
   });
 
+  it("FIX 3 (NATE 2026-06-28): the highlight CIRCLE layer carries a Point geometry-type filter so NO vertex dots paint around a polygon", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[-81, 26], [-81.1, 26], [-81.1, 26.1], [-81, 26.1], [-81, 26]]],
+        },
+        properties: { name_eng: "Big Cypress" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81.05, lat: 26.05 } });
+    });
+    // The circle layer was added WITH the Point-only filter. Without it, MapLibre
+    // would paint the ring at every polygon vertex (the stray dots bug). fill +
+    // line carry NO such filter (the polygon wash + outline must still paint).
+    const circleDef = m._addedLayerDefs.get(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID);
+    expect(circleDef?.filter).toEqual(["==", ["geometry-type"], "Point"]);
+    const fillDef = m._addedLayerDefs.get(FEATURE_HIGHLIGHT_FILL_LAYER_ID);
+    const lineDef = m._addedLayerDefs.get(FEATURE_HIGHLIGHT_LINE_LAYER_ID);
+    expect(fillDef?.filter).toBeUndefined();
+    expect(lineDef?.filter).toBeUndefined();
+  });
+
   it("feeds the highlight source a tapped LINE geometry (roads / rivers)", async () => {
     const m = await renderWithRenderedVectorLayer();
     m.queryRenderedFeatures.mockReturnValue([
@@ -431,6 +462,11 @@ describe("MapView — generic feature highlight on tap (FIX 1)", () => {
     expect(data?.features[0]?.geometry.type).toBe("Point");
     // The circle highlight layer (enlarged ring) is present.
     expect(m._addedLayers.has(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)).toBe(true);
+    // FIX 3 (NATE 2026-06-28): a genuine POINT tap satisfies the Point-only
+    // filter, so the ring STILL paints (the filter scopes dots away from
+    // polygon vertices without suppressing real point highlights).
+    const circleDef = m._addedLayerDefs.get(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID);
+    expect(circleDef?.filter).toEqual(["==", ["geometry-type"], "Point"]);
   });
 
   it("clears the highlight (removes layers + source) when the popup is closed via X", async () => {
