@@ -388,6 +388,60 @@ describe("PipelineCard — humanized step labels (job-0173 + job-0294)", () => {
     expect(label.textContent).not.toContain("Sfincs");
   });
 
+  // GOES / GLM are ACRONYMS. Before the explicit map entries the satellite
+  // animation tools fell through titleCaseToolName and rendered the lower-cased
+  // acronym ("Fetch Goes Animation" / "Fetch Goes Archive Animation" / "Fetch
+  // Glm Lightning"). The card must keep GOES / GLM ALL-CAPS and read honestly.
+  it("renders 'fetch_goes_animation' with ALL-CAPS GOES (never 'Goes')", () => {
+    const { unmount } = render(
+      <PipelineCard step={makeStep({ state: "running", name: "fetch_goes_animation" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Fetching GOES animation frames…");
+    expect(label.textContent).not.toContain("Goes");
+    expect(label.textContent).not.toContain("Fetch Goes Animation");
+    unmount();
+
+    render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_goes_animation" })} />);
+    const done = screen.getByTestId("pipeline-card-name");
+    expect(done).toHaveTextContent("Loaded GOES animation");
+    expect(done.textContent).not.toContain("Goes");
+  });
+
+  it("renders 'fetch_goes_archive_animation' with ALL-CAPS GOES (never 'Goes')", () => {
+    const { unmount } = render(
+      <PipelineCard step={makeStep({ state: "running", name: "fetch_goes_archive_animation" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Fetching GOES archive frames…");
+    expect(label.textContent).not.toContain("Goes");
+    expect(label.textContent).not.toContain("Fetch Goes Archive Animation");
+    unmount();
+
+    render(
+      <PipelineCard step={makeStep({ state: "complete", name: "fetch_goes_archive_animation" })} />,
+    );
+    const done = screen.getByTestId("pipeline-card-name");
+    expect(done).toHaveTextContent("Loaded GOES archive frames");
+    expect(done.textContent).not.toContain("Goes");
+  });
+
+  it("renders 'fetch_glm_lightning' with ALL-CAPS GLM (never 'Glm')", () => {
+    const { unmount } = render(
+      <PipelineCard step={makeStep({ state: "running", name: "fetch_glm_lightning" })} />,
+    );
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Fetching GLM lightning…");
+    expect(label.textContent).not.toContain("Glm");
+    expect(label.textContent).not.toContain("Fetch Glm Lightning");
+    unmount();
+
+    render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_glm_lightning" })} />);
+    const done = screen.getByTestId("pipeline-card-name");
+    expect(done).toHaveTextContent("Loaded GLM lightning");
+    expect(done.textContent).not.toContain("Glm");
+  });
+
   // FIX 4 (NATE 2026-06-26) — summarize_layer_statistics fronts a code-exec, so
   // its terminal label is the honest "Code completed", not "Layer statistics
   // ready".

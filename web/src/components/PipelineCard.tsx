@@ -634,6 +634,23 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
     complete: "Loaded radar reflectivity",
   },
   fetch_goes_satellite: { running: "Fetching GOES imagery…", complete: "Loaded GOES imagery" },
+  // GOES / GLM are ACRONYMS (Geostationary Operational Environmental Satellite /
+  // Geostationary Lightning Mapper). Without explicit entries these fell through
+  // titleCaseToolName and rendered "Fetch Goes Animation" / "Fetch Goes Archive
+  // Animation" / "Fetch Glm Lightning" (lower-cased acronym + raw verb). Follows
+  // the SFINCS-solve acronym precedent below.
+  fetch_goes_animation: {
+    running: "Fetching GOES animation frames…",
+    complete: "Loaded GOES animation",
+  },
+  fetch_goes_archive_animation: {
+    running: "Fetching GOES archive frames…",
+    complete: "Loaded GOES archive frames",
+  },
+  fetch_glm_lightning: {
+    running: "Fetching GLM lightning…",
+    complete: "Loaded GLM lightning",
+  },
 
   // --- Coastal / tides -------------------------------------------------- //
   fetch_noaa_coops_tides: { running: "Fetching tide data…", complete: "Loaded tide data" },
