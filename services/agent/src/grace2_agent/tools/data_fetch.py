@@ -791,15 +791,15 @@ def _building_fid(el_type: Any, osm_id: Any) -> str:
 def _extract_building_features(
     payload: dict[str, Any],
 ) -> tuple[list[tuple[Any, dict[str, Any]]], dict[str, dict[str, Any]]]:
-    """Walk Overpass ``elements`` → ``(features, tags_by_fid)`` for buildings.
+    """Walk Overpass ``elements`` -> ``(features, tags_by_fid)`` for buildings.
 
     Ways become ``Polygon``s; multipolygon relations become ``(Multi)Polygon``s.
     Non-areal / malformed elements are skipped.
 
     INLINE payload is SLIM (frontend-perf fix, NATE 2026-06-27 "footprint layers
     store too much in the frontend GeoJSON"): each feature carries ONLY id props
-    — ``osm_id``, ``osm_type``, and a stable composite ``fid`` (e.g. ``"w123456"``)
-    — and DROPS ``building`` + ``name`` from the inline properties. The full tag
+    -- ``osm_id``, ``osm_type``, and a stable composite ``fid`` (e.g. ``"w123456"``)
+    -- and DROPS ``building`` + ``name`` from the inline properties. The full tag
     bag (``building``, ``height``, ``levels``, ``name``, ``addr:*`` ...) is
     captured separately in the returned ``tags_by_fid`` map for the
     click-to-enrich sidecar; the popup fetches it on demand by ``(osm_type,
@@ -890,7 +890,7 @@ def _fetch_osm_buildings_bytes(
     if on_tags is not None and tags_by_fid:
         try:
             on_tags(tags_by_fid)
-        except Exception as exc:  # noqa: BLE001 — sidecar is best-effort
+        except Exception as exc:  # noqa: BLE001 -- sidecar is best-effort
             logger.warning(
                 "fetch_buildings(osm): tag-sidecar callback failed: %s", exc
             )
@@ -1099,7 +1099,7 @@ def _write_buildings_tags_sidecar(
     """Persist the ``{fid -> full tags}`` sidecar next to the buildings ``.fgb``.
 
     Best-effort (NATE 2026-06-27 click-to-enrich): a write failure must NOT fail
-    the fetch — the slim layer still renders; the popup enrich path degrades to a
+    the fetch -- the slim layer still renders; the popup enrich path degrades to a
     live Overpass-by-id query when the sidecar is absent. The sidecar key is the
     SAME ``<key>`` as the ``.fgb`` with a ``.tags.json`` suffix
     (``cache/static-30d/buildings/<key>.tags.json``).
@@ -1126,7 +1126,7 @@ def _write_buildings_tags_sidecar(
             len(tags_by_fid),
             len(body),
         )
-    except Exception as exc:  # noqa: BLE001 — sidecar is best-effort
+    except Exception as exc:  # noqa: BLE001 -- sidecar is best-effort
         logger.warning(
             "fetch_buildings: tags sidecar write degraded (%s); enrich will "
             "fall back to live Overpass-by-id",
@@ -1219,7 +1219,7 @@ def fetch_buildings(
         if src == "osm":
             # Click-to-enrich (NATE 2026-06-27): the OSM fetcher surfaces the
             # full per-fid tag bag so we can persist the sidecar under the SAME
-            # cache key as the .fgb. Best-effort — _write_..._sidecar swallows
+            # cache key as the .fgb. Best-effort -- _write_..._sidecar swallows
             # its own failures so the fetch never fails on a sidecar write.
             def _on_tags(tags_by_fid: dict[str, dict[str, Any]]) -> None:
                 _write_buildings_tags_sidecar(quantized, "osm", tags_by_fid)

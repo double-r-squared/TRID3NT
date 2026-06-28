@@ -1342,7 +1342,7 @@ def _read_tags_from_sidecars(fid: str) -> dict[str, Any] | None:
             BUILDINGS_TAGS_SIDECAR_EXT,
             _FETCH_BUILDINGS_METADATA,
         )
-    except Exception:  # noqa: BLE001 — import wiring fault -> live fallback
+    except Exception:  # noqa: BLE001 -- import wiring fault -> live fallback
         logger.warning("building-detail: sidecar import wiring failed", exc_info=True)
         return None
 
@@ -1367,13 +1367,13 @@ def _read_tags_from_sidecars(fid: str) -> dict[str, Any] | None:
                 try:
                     raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
                     data = json.loads(raw)
-                except Exception:  # noqa: BLE001 — skip an unreadable sidecar
+                except Exception:  # noqa: BLE001 -- skip an unreadable sidecar
                     continue
                 if isinstance(data, dict):
                     bag = data.get(fid)
                     if isinstance(bag, dict):
                         return bag
-    except Exception:  # noqa: BLE001 — S3 fault -> live fallback
+    except Exception:  # noqa: BLE001 -- S3 fault -> live fallback
         logger.warning("building-detail: sidecar scan degraded", exc_info=True)
         return None
     return None
@@ -1400,7 +1400,7 @@ def _read_tags_from_overpass(osm_type: str, osm_id: str) -> dict[str, Any] | Non
             )
             resp.raise_for_status()
             payload = resp.json()
-    except Exception:  # noqa: BLE001 — Overpass unreachable / non-JSON
+    except Exception:  # noqa: BLE001 -- Overpass unreachable / non-JSON
         logger.warning("building-detail: live Overpass-by-id failed", exc_info=True)
         return None
     elements = payload.get("elements") if isinstance(payload, dict) else None

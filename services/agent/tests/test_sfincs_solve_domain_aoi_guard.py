@@ -241,3 +241,17 @@ def test_solver_equivalent_box_is_passthrough() -> None:
         "run_swmm_urban_flood", same, pin
     )
     assert out == same
+
+
+def test_solver_guard_never_injects_bbox_into_point_driven_modflow() -> None:
+    """POINT-driven groundwater solvers (MODFLOW plume) take NO bbox -- the AOI
+    guard must NOT inject one even when a Case AOI is pinned. Their domain is a
+    well / source point, not a rectangle; injecting a flood-AOI bbox would be a
+    spurious key today and latent wrong-extent debt tomorrow."""
+    pin = list(_SOLVE_DOMAIN)
+    for tool in ("run_modflow_job", "run_model_groundwater_contamination_scenario"):
+        params = {"upgradient_offset_km": 1.0, "duration_days": 30}
+        out = _maybe_default_solver_bbox_to_pinned_aoi(tool, params, pin)
+        # Same object, no bbox injected -- byte-for-byte passthrough.
+        assert out is params
+        assert "bbox" not in out

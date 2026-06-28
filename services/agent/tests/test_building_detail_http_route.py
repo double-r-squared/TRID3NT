@@ -75,7 +75,7 @@ def test_building_detail_sidecar_hit(monkeypatch):
         tool_catalog_http, "_read_tags_from_sidecars", lambda fid: dict(tags)
     )
 
-    def _no_live(osm_type, osm_id):  # pragma: no cover — must not be reached
+    def _no_live(osm_type, osm_id):  # pragma: no cover -- must not be reached
         raise AssertionError("live Overpass must not run on a sidecar hit")
 
     monkeypatch.setattr(tool_catalog_http, "_read_tags_from_overpass", _no_live)
@@ -137,7 +137,7 @@ def test_building_detail_404_when_both_miss(monkeypatch):
 def test_building_detail_400_on_bad_osm_type(monkeypatch):
     """An unknown osm_type yields a typed 400 (validation, not a 500)."""
 
-    def _no_sidecar(fid):  # pragma: no cover — validation runs first
+    def _no_sidecar(fid):  # pragma: no cover -- validation runs first
         raise AssertionError("sidecar must not run for an invalid request")
 
     monkeypatch.setattr(tool_catalog_http, "_read_tags_from_sidecars", _no_sidecar)

@@ -2430,8 +2430,10 @@ const HIDDEN_ATTR_KEYS: ReadonlySet<string> = new Set([
   "shape_area",
   "shape__length",
   "shape__area",
-  // Click-to-enrich (NATE 2026-06-27): the slim footprint join-keys are plumbing,
-  // not user-facing attributes - the full tags arrive via the enrich fetch.
+  // Raw OSM identifiers -- plumbing, not user-facing attributes, in the same
+  // class as id/fid/objectid hidden above. Globally hidden so NO popup (footprint
+  // or otherwise) surfaces a bare "Osm Id" row; for slim footprints the human
+  // detail (name/height/...) arrives via the click-to-enrich fetch instead.
   "osm_id",
   "osm_type",
 ]);

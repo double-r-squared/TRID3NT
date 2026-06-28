@@ -5117,6 +5117,16 @@ def _maybe_default_fetch_bbox_to_pinned_aoi(
     return new_params
 
 
+#: Expensive-solver scenario types whose domain IS an AOI bbox (areal solvers).
+#: ``scenario_type_for_tool`` also recognizes the POINT-driven groundwater solvers
+#: (``run_modflow_job`` / ``run_model_groundwater_contamination_scenario`` ->
+#: ``"plume"``) which take NO bbox param -- their domain is a well / source point,
+#: not a rectangle. The AOI-snap below must NOT inject a bbox into those (it would
+#: be a spurious, ignored key today and latent wrong-extent debt tomorrow), so the
+#: guard is restricted to these bbox-driven scenario types.
+_BBOX_DRIVEN_SOLVER_SCENARIOS: frozenset[str] = frozenset({"flood-depth", "swmm-depth"})
+
+
 def _maybe_default_solver_bbox_to_pinned_aoi(
     tool_name: str,
     params: dict,
@@ -5127,9 +5137,10 @@ def _maybe_default_solver_bbox_to_pinned_aoi(
     NATE DIRECTIVE (#183): the SFINCS solve must compute ONLY within the active
     AOI bbox "unless something requires it to expand". The fetch-default rule
     (``_maybe_default_fetch_bbox_to_pinned_aoi``) snapped FETCHES onto the pinned
-    AOI, but expensive SOLVERS (``run_model_flood_scenario`` / ``run_swmm_*`` /
-    ``run_modflow_*`` -- anything ``scenario_type_for_tool`` recognizes) were
-    EXEMPT, so a follow-up / re-entry solve still ran on whatever bbox the LLM
+    AOI, but the expensive AREAL SOLVERS (``run_model_flood_scenario`` /
+    ``run_model_nws_flood_event_scenario`` / ``run_swmm_urban_flood`` -- the
+    bbox-driven scenario types in ``_BBOX_DRIVEN_SOLVER_SCENARIOS``) were EXEMPT,
+    so a follow-up / re-entry solve still ran on whatever bbox the LLM
     free-handed. The #159 lineage: the displayed AOI snapped smaller (the pinned
     ``state.case_bbox``) while the LLM handed the solver a DRIFTED / wider
     same-area box, so the SFINCS grid (built directly from that bbox via
@@ -5140,7 +5151,8 @@ def _maybe_default_solver_bbox_to_pinned_aoi(
     PRECISE RULE (identical to the fetch default -- honor real expansion, fix the
     drifted same-area box; "required expansion is allowed, only UN-required
     expansion is the bug"):
-      * Only applies to recognized expensive solvers (``scenario_type_for_tool``).
+      * Only applies to the bbox-driven AREAL solvers (flood / urban depth).
+        POINT-driven solvers (MODFLOW plume) take no bbox and are skipped.
       * No pinned AOI -> no-op. The FIRST solve in a Case (no AOI pinned yet)
         DEFINES the domain from the LLM's bbox; the pin is written AFTER it.
       * No / invalid ``bbox`` supplied -> inject the pin (solve the active AOI).
@@ -5162,7 +5174,10 @@ def _maybe_default_solver_bbox_to_pinned_aoi(
     mutates the input dict in place. Shares the exact tolerance / enclose / overlap
     semantics of the fetch default for a single, auditable AOI-snap policy.
     """
-    if scenario_type_for_tool(tool_name) is None:
+    if scenario_type_for_tool(tool_name) not in _BBOX_DRIVEN_SOLVER_SCENARIOS:
+        # Non-solver, or a POINT-driven solver (MODFLOW plume) that takes no bbox
+        # -- never inject one. Only the areal (bbox-driven) flood/urban solvers
+        # have an AOI rectangle to snap.
         return params
     pin = _coerce_bbox4(pinned_bbox)
     if pin is None:

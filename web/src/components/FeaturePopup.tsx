@@ -479,7 +479,7 @@ export function FeaturePopup({
           ) : null}
         </div>
       ) : data.enriching ? (
-        // No slim attributes yet, but a footprint enrich is in flight — show the
+        // No slim attributes yet, but a footprint enrich is in flight -- show the
         // loading affordance instead of the "No additional attributes" empty.
         <div
           data-testid="feature-popup-enriching"
