@@ -2818,5 +2818,19 @@
     "model": "opus-4.8",
     "subagent_tokens": 193351,
     "description": "Workflow wf_518c6875 (3 agents): desktop-only fix lifting the legend docked strip above the active scrubber footprint (76px). Mobile byte-for-byte unchanged. Commit 94c449e, Vercel auto-deploy."
+  },
+  {
+    "job_id": "web-mobile-bottom-hud-polish",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 764566,
+    "description": "Workflow wf_e50a4f26 (6 agents): mobile-only bottom-HUD restack (chat -> scrubber(20px gap) -> one-row legend), measure real chat-sheet top (ResizeObserver, fixes float-mid-screen), zoom-keyed legend dock above chat. Desktop byte-for-byte unchanged; 388 tests, tsc clean. Commit 913fcf5, Vercel auto-deploy."
+  },
+  {
+    "job_id": "tools-work-integration",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 0,
+    "description": "Orchestrator hands-on (no subagents): merged tools-work -> main (union-resolved ~6 reg files; reconciled fetch_fault_sources global-query audit), added report-3c heavy-sync offload (12 fetchers), deployed agent -> 181 tools live on box. Registry 144->165 modules. Commits 210fc5a + the integration branch. Cold-route catalog + web presets pending."
   }
 ]
