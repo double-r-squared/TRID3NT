@@ -112,6 +112,29 @@ export function catalogUrl(): string {
 }
 
 /**
+ * COLD (agent-less) tool-catalog URL -- a durable STATIC snapshot of the catalog
+ * published to the public web S3 bucket at deploy time (see
+ * scripts/deploy_agent_bundle.sh). NATE 2026-06-27: "I shouldn't have to start
+ * an agent to see tools." This object is served 24/7 with no running agent and,
+ * crucially, fetching it does NOT wake the auto-stopped agent box (unlike the
+ * live /api/tool-catalog origin on :8766). It is the PRIMARY catalog source for
+ * the read-only popup; `catalogUrl()` (live agent) is only the fallback.
+ *
+ * The object is public-read (web bucket already carries a PublicReadGetObject
+ * policy) and CORS-enabled for the Vercel origins, so the browser GETs it
+ * directly from the S3 REST endpoint cross-origin. Override at build time with
+ * VITE_GRACE2_COLD_CATALOG_URL; default is the live us-west-2 web bucket key.
+ */
+export function coldCatalogUrl(): string {
+  const explicit =
+    (import.meta.env.VITE_GRACE2_COLD_CATALOG_URL as string | undefined) ?? null;
+  if (explicit != null && explicit.trim() !== "") {
+    return explicit.trim();
+  }
+  return "https://grace2-hazard-web-226996537797.s3.us-west-2.amazonaws.com/catalog/tool-catalog.json";
+}
+
+/**
  * Tile base the agent SHOULD bake into TiTiler templates once the edge is live.
  *
  * The web does NOT build tile URLs itself (publish_layer.py emits the full

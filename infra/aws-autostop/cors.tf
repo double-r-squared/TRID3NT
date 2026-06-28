@@ -45,3 +45,35 @@ resource "aws_s3_bucket_cors_configuration" "runs" {
     max_age_seconds = 3000
   }
 }
+
+# Web-bucket CORS for the COLD tool-catalog route (NATE 2026-06-27: "I shouldn't
+# have to start an agent to see tools").
+#
+# WHY: the read-only tool catalog is published as a durable static JSON in the
+# public web bucket (catalog/tool-catalog.json, written by
+# scripts/deploy_agent_bundle.sh on every agent deploy). The web app
+# (web/src/components/ToolsCatalogPopup.tsx -> coldCatalogUrl()) reads it FIRST
+# via a cross-origin browser GET of
+# https://<web_bucket>.s3.<region>.amazonaws.com/catalog/tool-catalog.json so
+# the catalog loads with the agent box ASLEEP and WITHOUT waking it. Same CORS
+# lesson as the runs bucket above: the browser only exposes the bytes to JS when
+# S3 returns a matching Access-Control-Allow-Origin. Unlike the runs bucket this
+# one is PUBLIC-read (the bucket already carries a PublicReadGetObject policy),
+# so there is no signer hop -- CORS is all that is needed. GET/HEAD only.
+variable "web_bucket" {
+  type        = string
+  description = "Public web S3 bucket hosting the cold tool-catalog snapshot (and the legacy S3+CloudFront SPA assets)."
+  default     = "grace2-hazard-web-226996537797"
+}
+
+resource "aws_s3_bucket_cors_configuration" "web" {
+  bucket = var.web_bucket
+
+  cors_rule {
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = var.web_cors_origins
+    allowed_headers = ["*"]
+    expose_headers  = ["Content-Length", "Content-Type", "ETag"]
+    max_age_seconds = 3000
+  }
+}

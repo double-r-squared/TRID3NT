@@ -26,7 +26,10 @@
 // because the tool list benefits from horizontal room.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { catalogUrl as catalogUrlFromBase } from "../lib/public_base";
+import {
+  catalogUrl as catalogUrlFromBase,
+  coldCatalogUrl,
+} from "../lib/public_base";
 import { IconClose, IconGlobe } from "./icons";
 
 // ---------------------------------------------------------------------------
@@ -363,51 +366,69 @@ export function ToolsCatalogPopup({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // Initial fetch.
+  // Initial fetch -- COLD-FIRST (NATE 2026-06-27: "I shouldn't have to start an
+  // agent to see tools"). The read-only catalog loads WITHOUT a running agent:
+  // we try the durable STATIC snapshot in the public web bucket FIRST (always
+  // up, and a plain S3 GET that does NOT wake the auto-stopped box), then fall
+  // back to the live box-local /api/tool-catalog only if the snapshot is
+  // missing/unreachable. Each attempt is bounded by its own 10s timeout; an
+  // error surfaces only if EVERY source fails.
+  //
+  // An explicit `catalogUrl` prop is treated as a deliberate single-source
+  // override (tests + callers that pin the endpoint) -- it skips the cold path.
   useEffect(() => {
     if (initialCatalog) return;
     let cancelled = false;
-    const url = catalogUrl ?? defaultCatalogUrl();
-    // NATE 2026-06-26: bound this fetch the same way RoutingQualityDashboard
-    // does. The /api/tool-catalog endpoint is BOX-LOCAL, so when the EC2 agent
-    // is asleep a bare fetch never resolves and the popup hangs on
-    // "Loading catalog..." forever. Time it out and surface an honest error.
+    let activeController: AbortController | null = null;
+    const sources =
+      catalogUrl != null && catalogUrl !== ""
+        ? [catalogUrl]
+        : [coldCatalogUrl(), defaultCatalogUrl()];
     const TIMEOUT_MS = 10_000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
     (async () => {
-      try {
-        const resp = await fetch(url, {
-          method: "GET",
-          signal: controller.signal,
-        });
-        if (!resp.ok) {
-          throw new Error(`HTTP ${resp.status}`);
+      let lastErr: unknown = null;
+      let lastWasAbort = false;
+      for (const url of sources) {
+        const controller = new AbortController();
+        activeController = controller;
+        const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+        try {
+          const resp = await fetch(url, {
+            method: "GET",
+            signal: controller.signal,
+          });
+          if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+          }
+          const json = (await resp.json()) as ToolCatalogPayload;
+          clearTimeout(timer);
+          if (cancelled) return;
+          setCatalog(json);
+          setState("ready");
+          return; // first successful source wins
+        } catch (err) {
+          clearTimeout(timer);
+          if (cancelled) return;
+          lastErr = err;
+          lastWasAbort = err instanceof DOMException && err.name === "AbortError";
+          // fall through to the next source
         }
-        const json = (await resp.json()) as ToolCatalogPayload;
-        if (cancelled) return;
-        setCatalog(json);
-        setState("ready");
-      } catch (err) {
-        if (cancelled) return;
-        const isAbort =
-          err instanceof DOMException && err.name === "AbortError";
-        setErrorText(
-          isAbort
-            ? `request timed out after ${TIMEOUT_MS / 1000}s (the agent may be asleep)`
-            : err instanceof Error
-              ? err.message
-              : "unknown fetch error",
-        );
-        setState("error");
-      } finally {
-        clearTimeout(timer);
       }
+      if (cancelled) return;
+      setErrorText(
+        lastWasAbort
+          ? `request timed out after ${TIMEOUT_MS / 1000}s (the agent may be asleep)`
+          : lastErr instanceof Error
+            ? lastErr.message
+            : "unknown fetch error",
+      );
+      setState("error");
     })();
+
     return () => {
       cancelled = true;
-      clearTimeout(timer);
-      controller.abort();
+      activeController?.abort();
     };
   }, [catalogUrl, initialCatalog]);
 

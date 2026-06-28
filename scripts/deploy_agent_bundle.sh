@@ -57,4 +57,37 @@ aws s3 cp "$TGZ.sha256" "s3://$BUCKET/$KEY.sha256" --region "$REGION" --only-sho
 
 echo "uploaded  s3://$BUCKET/$KEY"
 echo "sha256    $SHA"
+
+# --------------------------------------------------------------------------- #
+# COLD tool-catalog snapshot (NATE 2026-06-27: "I shouldn't have to start an
+# agent to see tools"). Build the catalog payload from the SAME source we just
+# bundled and publish it as a durable, public, agent-less JSON in the web S3
+# bucket. The web app (web/src/components/ToolsCatalogPopup.tsx) reads this COLD
+# snapshot FIRST -- it is served 24/7 and a plain GET does NOT wake the
+# auto-stopped agent box. Republished here on every deploy, so it tracks exactly
+# what the box is about to run. Best-effort: a failure here NEVER aborts the
+# agent code deploy (the web falls back to the live /api/tool-catalog endpoint).
+# Skip with GRACE2_SKIP_COLD_CATALOG=1.
+# --------------------------------------------------------------------------- #
+if [ "${GRACE2_SKIP_COLD_CATALOG:-0}" != "1" ]; then
+  WEB_BUCKET="${GRACE2_WEB_BUCKET:-grace2-hazard-web-226996537797}"
+  CATALOG_KEY="${GRACE2_COLD_CATALOG_KEY:-catalog/tool-catalog.json}"
+  AGENT_PY="${GRACE2_AGENT_PY:-$REPO_ROOT/services/agent/.venv/bin/python}"
+  [ -x "$AGENT_PY" ] || AGENT_PY="$(command -v python3 || true)"
+  CATALOG_JSON="$STAGE/tool-catalog.json"
+  if [ -n "$AGENT_PY" ] && PYTHONPATH="$STAGE${PYTHONPATH:+:$PYTHONPATH}" "$AGENT_PY" -c \
+      'import json,sys; from grace2_agent.tool_catalog_http import build_catalog_payload; sys.stdout.write(json.dumps(build_catalog_payload(), separators=(",",":")))' \
+      > "$CATALOG_JSON" 2>/dev/null && [ -s "$CATALOG_JSON" ]; then
+    if aws s3 cp "$CATALOG_JSON" "s3://$WEB_BUCKET/$CATALOG_KEY" \
+        --content-type application/json --cache-control "public, max-age=300" \
+        --region "$REGION" --only-show-errors; then
+      echo "cold catalog published  s3://$WEB_BUCKET/$CATALOG_KEY  ($(wc -c < "$CATALOG_JSON") bytes)"
+    else
+      echo "WARN: cold catalog upload failed (web falls back to live /api/tool-catalog)"
+    fi
+  else
+    echo "WARN: could not build cold catalog payload via $AGENT_PY (skipping; web falls back to live endpoint)"
+  fi
+fi
+
 echo "next: run scripts/deploy_agent_onbox.sh on the box (see its header)"

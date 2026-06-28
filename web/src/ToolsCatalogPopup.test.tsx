@@ -330,9 +330,16 @@ describe("ToolsCatalogPopup", () => {
     render(<ToolsCatalogPopup onClose={() => undefined} />);
     // Initially loading.
     expect(screen.getByTestId("grace2-tools-catalog-loading")).toBeTruthy();
-    // Advance past the 10s timeout and flush the rejected promise microtasks.
+    // COLD-FIRST (NATE 2026-06-27): the default path tries the cold static
+    // snapshot THEN the live agent, each bounded by its own 10s timeout. Both
+    // hang here, so advance through BOTH (cold timeout, then live timeout) to
+    // exhaust every source and reach the honest asleep-aware error.
     await act(async () => {
-      vi.advanceTimersByTime(10_000);
+      vi.advanceTimersByTime(10_000); // cold attempt aborts
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(10_000); // live attempt aborts -> error
       await Promise.resolve();
     });
     const errorEl = screen.getByTestId("grace2-tools-catalog-error");
@@ -341,6 +348,66 @@ describe("ToolsCatalogPopup", () => {
     expect(errorEl.textContent).toMatch(/agent may be asleep/);
     expect(screen.queryByTestId("grace2-tools-catalog-loading")).toBeNull();
     vi.useRealTimers();
+  });
+
+  // COLD-FIRST read-only route (NATE 2026-06-27: "I shouldn't have to start an
+  // agent to see tools"). The popup loads the durable STATIC catalog snapshot
+  // from the public web bucket first, falling back to the live box-local
+  // endpoint only if the snapshot is unreachable.
+  it("loads the COLD static snapshot first (no agent needed)", async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      calls.push(url);
+      return Promise.resolve(
+        new Response(JSON.stringify(FAKE_CATALOG), { status: 200 }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ToolsCatalogPopup onClose={() => undefined} />);
+    await waitFor(() => {
+      expect(screen.getByText("fetch_dem")).toBeTruthy();
+    });
+    // The FIRST (and only, on success) fetch hits the cold web-bucket snapshot,
+    // NOT the live :8766 agent endpoint.
+    expect(calls[0]).toMatch(/grace2-hazard-web.*\/catalog\/tool-catalog\.json/);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toMatch(/\/api\/tool-catalog/);
+  });
+
+  it("falls back to the LIVE agent endpoint when the cold snapshot 404s", async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      calls.push(url);
+      if (url.includes("grace2-hazard-web")) {
+        // Cold snapshot missing (e.g. first-ever deploy) -> fast 404.
+        return Promise.resolve(new Response("nope", { status: 404 }));
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(FAKE_CATALOG), { status: 200 }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ToolsCatalogPopup onClose={() => undefined} />);
+    await waitFor(() => {
+      expect(screen.getByText("fetch_dem")).toBeTruthy();
+    });
+    // Tried cold first, then the live agent endpoint.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatch(/grace2-hazard-web/);
+    expect(calls[1]).toMatch(/\/api\/tool-catalog/);
+  });
+
+  it("errors only when BOTH the cold snapshot and the live agent fail", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response("down", { status: 503 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ToolsCatalogPopup onClose={() => undefined} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("grace2-tools-catalog-error")).toBeTruthy();
+    });
+    // Both sources attempted before surfacing the error.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("close button + backdrop + Esc invoke onClose", () => {
