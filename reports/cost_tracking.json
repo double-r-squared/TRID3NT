@@ -1,5 +1,13 @@
 [
   {
+    "job_id": "feedback-batch-scope",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 375577,
+    "description": "Workflow wf_92348bd2 (4 agents): read-only scope of the residual-open items from NATE 06-25/06-26 live feedback into a deconflicted parallel batch. Found ~90% already shipped 06-26; residual = building-footprint metadata thinning (medium), GOES card label (trivial, identifier-enum sub-item already landed in d45d841), SFINCS #183 (compute already == AOI bbox). Surveyed adjacent escalations (DeepForest worker, QGIS coalesced worker reframing job-0308, #195 sfincs.log live feed). Disjoint file sets confirmed parallelizable. Fed the impl workflow wf_b190d784.",
+    "agent": "natealmanza3@gmail.com"
+  },
+  {
     "job_id": "cold-tool-catalog-route",
     "sprint": 18,
     "model": "opus-4.8",
