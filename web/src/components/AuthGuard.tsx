@@ -188,6 +188,7 @@ export function AuthGuard({
   // renders, so adding hooks here is SAFE (unlike a hook below App.tsx's auth
   // early-return, which would trip React #310 and blank the authed app).
   const [code, setCode] = useState<string>("");
+  const [showCode, setShowCode] = useState<boolean>(false);
 
   const configured =
     forceConfigured !== undefined ? forceConfigured : isFirebaseConfigured();
@@ -304,7 +305,7 @@ export function AuthGuard({
             >
               <input
                 data-testid="grace2-code-input"
-                type="password"
+                type={showCode ? "text" : "password"}
                 // eslint-disable-next-line jsx-a11y/no-autofocus
                 autoFocus
                 autoComplete="off"
@@ -315,6 +316,26 @@ export function AuthGuard({
                 aria-label="Access code"
                 style={codeInputStyle}
               />
+              <button
+                data-testid="grace2-code-toggle"
+                type="button"
+                onClick={() => setShowCode((v) => !v)}
+                style={{
+                  alignSelf: "flex-end",
+                  background: "none",
+                  border: "none",
+                  color: "#9ca3af",
+                  fontSize: 12,
+                  fontFamily: SANS,
+                  cursor: "pointer",
+                  padding: 0,
+                  textDecoration: "underline",
+                }}
+                aria-label={showCode ? "Hide access code" : "Show access code"}
+                aria-pressed={showCode}
+              >
+                {showCode ? "Hide code" : "Show code"}
+              </button>
               <button
                 data-testid="grace2-code-submit"
                 type="submit"
