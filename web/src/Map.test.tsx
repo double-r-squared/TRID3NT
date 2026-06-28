@@ -2588,6 +2588,8 @@ import {
   aoiRectCornerPlaceable,
   AOI_CORNER_MIN_EXTENT_PX,
   AOI_CORNER_FILL_FRACTION,
+  aoiRectTooSmallToShow,
+  AOI_MIN_VISIBLE_EXTENT_PX,
 } from "./Map";
 import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
@@ -3084,6 +3086,53 @@ describe("aoiRectCornerPlaceable (mobile legend corner-attach vs dock decision)"
     expect(
       aoiRectCornerPlaceable({ left: 0, top: 0, right: 4000, bottom: 4000 }, 0, 0),
     ).toBe(true);
+  });
+});
+
+// ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only): aoiRectTooSmallToShow is the
+// DISTINCT "the AOI bbox is a tiny dot on screen" signal that HIDES both the
+// scrubber + legend - NOT the corner-placeable/viewport-fill decision. It is true
+// ONLY when a rect is present AND its smaller on-screen extent is below the hide
+// threshold (the zoomed-OUT speck), and crucially does NOT trip on a
+// viewport-FILLING AOI (huge on both axes) the way corner-placeable does.
+describe("aoiRectTooSmallToShow (mobile scrubber + legend zoom-out hide)", () => {
+  it("is FALSE when there is no projected AOI rect (preserves no-bbox behavior)", () => {
+    expect(aoiRectTooSmallToShow(null)).toBe(false);
+    expect(aoiRectTooSmallToShow(undefined)).toBe(false);
+  });
+
+  it("is TRUE when the smaller on-screen extent is below the hide threshold (a dot)", () => {
+    // height a hair under the threshold -> a tiny dot -> hide.
+    const h = AOI_MIN_VISIBLE_EXTENT_PX - 1;
+    expect(
+      aoiRectTooSmallToShow({ left: 480, top: 400, right: 600, bottom: 400 + h }),
+    ).toBe(true);
+  });
+
+  it("is FALSE for a normal AOI comfortably above the threshold", () => {
+    expect(
+      aoiRectTooSmallToShow({ left: 300, top: 250, right: 700, bottom: 550 }),
+    ).toBe(false);
+  });
+
+  it("is FALSE exactly AT the threshold (strict < so the boundary stays visible)", () => {
+    const h = AOI_MIN_VISIBLE_EXTENT_PX;
+    expect(
+      aoiRectTooSmallToShow({ left: 480, top: 400, right: 600, bottom: 400 + h }),
+    ).toBe(false);
+  });
+
+  it("does NOT trip on a viewport-FILLING AOI (huge on both axes) - only the speck", () => {
+    // A box that fills/exceeds any viewport is large on both axes -> NOT too small.
+    expect(
+      aoiRectTooSmallToShow({ left: 0, top: 0, right: 4000, bottom: 4000 }),
+    ).toBe(false);
+  });
+
+  it("the hide threshold is >= the corner-placeable dot threshold (hide in the same neighborhood)", () => {
+    // The hide engages no earlier than the corner-placeable dot flip (24px), so a
+    // bbox band-docks before it disappears.
+    expect(AOI_MIN_VISIBLE_EXTENT_PX).toBeGreaterThanOrEqual(AOI_CORNER_MIN_EXTENT_PX);
   });
 });
 

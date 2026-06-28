@@ -360,6 +360,14 @@ export function App(): JSX.Element {
   // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
   const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
 
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - whether the AOI bbox is a tiny
+  // DOT on screen (zoomed OUT far). MapView lifts it via onAoiTooSmallToShowChange;
+  // App threads it into the SequenceScrubber so the scrubber HIDES on the
+  // zoomed-out-speck case (the legend reads the same signal directly inside Map).
+  // Default false (no hide). DESKTOP never reads it (the scrubber's hide is
+  // mobile-gated), so this adds nothing to the desktop render.
+  const [aoiTooSmallToShow, setAoiTooSmallToShow] = useState<boolean>(false);
+
   // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - the mobile chat bottom-sheet's
   // geometry (expanded? + dragged height in vh) is lifted out of Chat (via its
   // onSheetGeometryChange callback) so the App-root overlays (SequenceScrubber +
@@ -2014,6 +2022,10 @@ export function App(): JSX.Element {
         /* Lift the projected AOI rect so the SequenceScrubber (inside
            LayerPanel) can pin bottom-center of the AOI box like the legend. */
         onAoiScreenRectChange={setAoiScreenRect}
+        /* ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - lift the "AOI bbox is a
+           tiny dot on screen" signal so the SequenceScrubber can hide when the
+           user zooms OUT far. The legend reads the same signal inside Map. */
+        onAoiTooSmallToShowChange={setAoiTooSmallToShow}
         /* Item b (NATE 2026-06-20) + LANE D (NATE) - the legend show/hide is
            App-owned on BOTH platforms now. MOBILE: the toggle lives INSIDE the
            expanded Layers section. DESKTOP: it lives in BottomRowButtons next to
@@ -2936,6 +2948,11 @@ export function App(): JSX.Element {
            same value the mobile legend docks to) so the MOBILE scrubber docks
            to + tracks the chat panel top. Null on desktop -> bottom-pinned. */
         sheetTopPx={sheetTopPx}
+        /* ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only): hide the scrubber when the
+           AOI bbox is a tiny dot on screen (zoomed OUT far). Gated to mobile here
+           so desktop is byte-for-byte unchanged (the scrubber also mobile-gates
+           the hide internally; this keeps the prop false on desktop). */
+        aoiTooSmallToShow={isMobile && aoiTooSmallToShow}
       />
     </div>
     </AuthGuard>
@@ -2956,6 +2973,7 @@ function AppSequenceScrubber({
   chatWidthPx = 0,
   chatCollapsed = false,
   sheetTopPx = null,
+  aoiTooSmallToShow = false,
 }: {
   /**
    * ITEM 2 - suppress the scrubber entirely (mobile Layers drawer open, or the
@@ -2977,6 +2995,12 @@ function AppSequenceScrubber({
    * over the map. Desktop ignores it (stays bottom-pinned).
    */
   sheetTopPx?: number | null;
+  /**
+   * ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - when true the scrubber HIDES
+   * (the AOI bbox is a tiny dot on screen). App already mobile-gates this; the
+   * scrubber also mobile-gates the hide internally. Default false (no hide).
+   */
+  aoiTooSmallToShow?: boolean;
 }): JSX.Element | null {
   const controller = useMemo(() => getAnimationController(), []);
   const anim = useAnimationState(controller);
@@ -3008,6 +3032,7 @@ function AppSequenceScrubber({
       chatWidthPx={chatWidthPx}
       chatCollapsed={chatCollapsed}
       sheetTopPx={sheetTopPx}
+      aoiTooSmallToShow={aoiTooSmallToShow}
     />
   );
 }

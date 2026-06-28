@@ -389,6 +389,16 @@ export interface MapViewProps {
    */
   onAoiScreenRectChange?: (rect: LegendScreenRect | null) => void;
   /**
+   * ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - lifts the "the AOI bbox is a
+   * tiny DOT on screen" signal (aoiRectTooSmallToShow over the freshly-projected
+   * rect) up to App so the SequenceScrubber (rendered at the App root) can HIDE
+   * itself when the user has zoomed OUT far enough that the bbox is a speck. The
+   * legend reads the same signal directly (threaded below). Called with the
+   * boolean whenever it changes; false when there is no AOI or the box is large
+   * enough to be useful. Desktop ignores it (the scrubber never reads it there).
+   */
+  onAoiTooSmallToShowChange?: (tooSmall: boolean) => void;
+  /**
    * Item b (NATE 2026-06-20)  -  CONTROLLED legend hide state, threaded straight
    * to LayerLegend. App owns it on mobile so the show/hide toggle can live in
    * the expanded Layers section (out of the chat composer's way). Undefined =>
@@ -2194,6 +2204,18 @@ export const LEGEND_VIEWPORT_MARGIN_PX = 24; // px kept clear on each side.
 export const AOI_CORNER_MIN_EXTENT_PX = 24;
 export const AOI_CORNER_FILL_FRACTION = 0.92;
 
+// ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - a DISTINCT "AOI is a tiny dot on
+// screen" threshold for HIDING the scrubber + legend entirely (NOT the
+// corner-placeable / viewport-fill decision). When the user zooms OUT far enough
+// that the bbox's SMALLER on-screen extent shrinks below this, the AOI reads as a
+// speck and the overlays add nothing but clutter, so both render null. Set a touch
+// above AOI_CORNER_MIN_EXTENT_PX so the hide engages in the same zoomed-out-tiny
+// neighborhood the corner-placeable check already flips on (24px), giving a small,
+// honest dot-band where the legend has already band-docked before it disappears.
+// This is purely the TINY-dot case: a viewport-FILLING AOI (zoomed in) is huge on
+// both axes and never trips this, and an ABSENT bbox keeps today's behavior.
+export const AOI_MIN_VISIBLE_EXTENT_PX = 36;
+
 export function computeBboxScreenWidth(
   m: MapLibreMap,
   bbox: [number, number, number, number],
@@ -2346,6 +2368,24 @@ export function aoiRectCornerPlaceable(
     return false;
   }
   return true;
+}
+
+// ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - is the AOI bbox a tiny DOT on
+// screen (zoomed OUT far) such that BOTH the scrubber AND the legend should be
+// HIDDEN entirely? True ONLY when an AOI rect IS present (a bbox is projected) AND
+// its SMALLER on-screen extent is below AOI_MIN_VISIBLE_EXTENT_PX. Distinct from
+// aoiRectCornerPlaceable (which conflates the tiny-dot case with the
+// viewport-filling case): this is the zoomed-OUT speck case ONLY -- a
+// viewport-filling AOI is large on both axes and never trips this, and an ABSENT
+// rect returns false so today's no-bbox behavior (the band-dock / static fallback)
+// is preserved. Consumed only by the mobile legend + scrubber hide gate.
+export function aoiRectTooSmallToShow(
+  rect: LegendScreenRect | null | undefined,
+): boolean {
+  if (!rect) return false;
+  const w = Math.abs(rect.right - rect.left);
+  const h = Math.abs(rect.bottom - rect.top);
+  return Math.min(w, h) < AOI_MIN_VISIBLE_EXTENT_PX;
 }
 
 // --- F74b feature-click/tap-to-inspect ---------------------------------- //
@@ -2665,7 +2705,7 @@ export function mergeTagsIntoAttributes(
   return { ...data, title, attributes: merged };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, onAoiTooSmallToShowChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, legendSheetTopPx = null, caseActive = true, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel, chatWidthPx, chatCollapsed, mobile, simRunning = false, caseHasAoi, onAoiStageConfirm, terrain3dEnabled = false, contoursEnabled = false, leftPanelWidthPx = 0 }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -2844,6 +2884,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   //     aoiCornerPlaceable.
   const [legendMapZoom, setLegendMapZoom] = useState<number | null>(null);
   const [aoiCornerPlaceable, setAoiCornerPlaceable] = useState<boolean>(false);
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - the AOI bbox is a tiny DOT on
+  // screen (zoomed OUT far). Threaded to the LayerLegend (which early-returns null)
+  // and lifted to App (for the SequenceScrubber) so BOTH hide. Default false so an
+  // absent/normal bbox keeps both overlays visible. DESKTOP never reads it.
+  const [aoiTooSmallToShow, setAoiTooSmallToShow] = useState<boolean>(false);
   const isMobile = useIsMobile();
 
   // F74b feature-click/tap-to-inspect. `featurePopup` is the currently-shown
@@ -4519,6 +4564,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         /* no canvas in test env - treat as unknown (cw/ch stay 0) */
       }
       setAoiCornerPlaceable(aoiRectCornerPlaceable(rect, cw, ch));
+      // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - derive the DISTINCT
+      // "tiny dot on screen" signal from the SAME freshly-projected rect. True only
+      // when a bbox IS projected AND its smaller on-screen extent is below
+      // AOI_MIN_VISIBLE_EXTENT_PX (zoomed OUT far). Unlike aoiCornerPlaceable this
+      // does NOT trip on a viewport-filling AOI (huge on both axes) - only the
+      // speck case. Consumed by the legend (hides) + lifted to App for the scrubber.
+      setAoiTooSmallToShow(aoiRectTooSmallToShow(rect));
       // Mirror the LIVE map zoom for the legend's mobile dock decision. This is a
       // continuously-tracked value (move/zoom/render listeners on this effect),
       // unlike the popup-only `currentZoom`. Guarded read so a torn-down map can't
@@ -4585,6 +4637,15 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     lastReportedRectRef.current = legendRect;
     onAoiScreenRectChange(legendRect);
   }, [legendRect, onAoiScreenRectChange]);
+
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - lift the "AOI is a tiny dot"
+  // signal up to App so the SequenceScrubber (rendered at the App root) can hide
+  // when the bbox is a speck. Only fires when the boolean actually flips (React
+  // already dedups identical setState, but the callback is App's, so guard it).
+  useEffect(() => {
+    if (!onAoiTooSmallToShowChange) return;
+    onAoiTooSmallToShowChange(aoiTooSmallToShow);
+  }, [aoiTooSmallToShow, onAoiTooSmallToShowChange]);
 
   // MOBILE-ONLY HUD (NATE 2026-06-27) - track the LIVE map zoom independently of
   // the AOI projection effect (which only runs while aoiBbox is non-null) and of
@@ -5293,9 +5354,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   //     for a corner attach (the normal case, preserves existing corner-snap);
   //     false only in the clearly-too-zoomed cases (AOI off-screen / fills the
   //     viewport / is a tiny dot) so the mobile legend docks above the chat.
-  const legendHudExtras: { mapZoom: number | null; aoiCornerPlaceable: boolean } = {
+  const legendHudExtras: {
+    mapZoom: number | null;
+    aoiCornerPlaceable: boolean;
+    aoiTooSmallToShow: boolean;
+  } = {
     mapZoom: legendMapZoom,
     aoiCornerPlaceable,
+    // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - true when the AOI bbox is a
+    // tiny dot on screen; the legend's mobile path early-returns null. DESKTOP
+    // ignores it (the desktop legend never reads the HUD extras).
+    aoiTooSmallToShow,
   };
 
   return (

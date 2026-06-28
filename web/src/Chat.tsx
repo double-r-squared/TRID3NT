@@ -3112,6 +3112,20 @@ export function Chat({
   // docks to the true panel top. `sheetContainerRef` is attached to the mobile
   // sheet container div below (desktop never sets it, so this all no-ops there).
   const sheetContainerRef = useRef<HTMLDivElement | null>(null);
+  // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27, mobile-only) - when the agent is
+  // OFFLINE/WAKING the chat-chrome is hidden and the visible bottom element is
+  // the floating WakeOverlay box (the "Wake up"/"Waking up"/"Connecting" card),
+  // NOT the chat container. We attach this ref to the composer-gate wrapper (which
+  // directly contains the WakeOverlay box in the not-connected states with no top
+  // offset, so its top edge IS the wake box top) and measure ITS top instead of
+  // the (collapsed/bare) chat container's. That keeps sheetTopPx equal to the
+  // VISIBLE bottom element's top in BOTH states, so the scrubber + legend dock to
+  // the wake box when offline and to the full chat panel when online.
+  const wakeBoxRef = useRef<HTMLDivElement | null>(null);
+  // Live mirror of `notConnected` (computed far below, after this stable callback)
+  // so the once-bound ResizeObserver + the publisher read the CURRENT connection
+  // state without re-binding. Assigned just below where `notConnected` is derived.
+  const notConnectedRef = useRef<boolean>(false);
   // Publish the latest geometry + measured top. Defined as a stable callback so
   // both the geometry effect and the ResizeObserver can call it. Reads the live
   // sheetExpanded / sheetHeightVh from refs so the observer (which only binds
@@ -3120,8 +3134,17 @@ export function Chat({
   sheetExpandedRef.current = sheetExpanded;
   const publishSheetGeometry = useCallback((): void => {
     if (!mobile) return;
-    const el = sheetContainerRef.current;
-    // getBoundingClientRect().top is the container's top edge in viewport px
+    // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27): measure the TOP of whatever bottom
+    // element is actually on screen. CONNECTED -> the chat container (the scrubber
+    // sits above the WHOLE panel incl. its header). NOT-CONNECTED -> the wake box
+    // (composer-gate) so the overlays dock to the floating wake card, not the
+    // stale online expanded-sheet line. The wake ref is null until the box mounts,
+    // so we fall back to the chat container until then.
+    const el =
+      notConnectedRef.current && wakeBoxRef.current
+        ? wakeBoxRef.current
+        : sheetContainerRef.current;
+    // getBoundingClientRect().top is the element's top edge in viewport px
     // (the sheet is bottom-anchored, so its top edge IS the overlay dock line).
     // null when unmounted / not yet attached -> App keeps its arithmetic estimate
     // until the first real measurement lands.
@@ -3150,6 +3173,13 @@ export function Chat({
     if (!el || typeof ResizeObserver === "undefined") return undefined;
     const ro = new ResizeObserver(() => publishSheetGeometry());
     ro.observe(el);
+    // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27): also observe the wake box so a
+    // resize of the floating "Wake up"/"Connecting" card (which the chat-container
+    // observer cannot see while the chrome is hidden + bare) re-measures the
+    // visible bottom-element top in the not-connected states. Guarded - the ref is
+    // null when the box is unmounted (connected).
+    const wakeEl = wakeBoxRef.current;
+    if (wakeEl) ro.observe(wakeEl);
     // Measure once immediately so the first real top lands without waiting for a
     // resize tick (covers the initial connecting/collapsed paint).
     publishSheetGeometry();
@@ -4211,6 +4241,36 @@ export function Chat({
   const notConnected = composerPhase !== "chat";
   const hideMobileChrome = mobile && notConnected;
 
+  // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27, mobile-only) - mirror `notConnected`
+  // into the ref the (stable) publisher reads, and RE-MEASURE on the
+  // connected<->notConnected transition. The publisher + ResizeObserver are bound
+  // once (stable deps) and cannot see this state flip on their own, so without
+  // this the overlays would dock to the STALE element after a transition (the
+  // online expanded-sheet line while offline, or vice versa). A double rAF lets
+  // the just-(un)mounted wake box / restored chat chrome lay out before we read
+  // its top. Mobile-gated so desktop never publishes (it short-circuits to null).
+  notConnectedRef.current = notConnected;
+  useEffect(() => {
+    if (!mobile) return undefined;
+    // Publish immediately so the dock line flips state synchronously with the
+    // transition, then again after layout settles (the wake box / chrome height
+    // is final only post-paint).
+    publishSheetGeometry();
+    let raf2 = 0;
+    const raf1 =
+      typeof requestAnimationFrame !== "undefined"
+        ? requestAnimationFrame(() => {
+            raf2 = requestAnimationFrame(() => publishSheetGeometry());
+          })
+        : 0;
+    return () => {
+      if (typeof cancelAnimationFrame !== "undefined") {
+        if (raf1) cancelAnimationFrame(raf1);
+        if (raf2) cancelAnimationFrame(raf2);
+      }
+    };
+  }, [mobile, notConnected, publishSheetGeometry]);
+
   // Staggered ease-in on connect (NATE redesign): when status flips to
   // `connected`, ease the COMPOSER in first, then the sheet header / back panel
   // a beat later (~160ms). `chromeRevealed` gates the chrome's opacity/transform
@@ -4728,6 +4788,14 @@ export function Chat({
         <div
           data-testid="composer-gate"
           data-composer-phase={composerPhase}
+          // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27, mobile-only) - this wrapper
+          // directly contains the WakeOverlay box in the not-connected states with
+          // no top offset, so its top edge IS the visible wake box top. The
+          // publisher measures THIS (not the bare/collapsed chat container) when
+          // offline so the scrubber + legend dock to the floating wake card. The
+          // ref is attached on every platform but only READ on mobile when
+          // notConnected (desktop short-circuits sheetTopPx to null in App).
+          ref={wakeBoxRef}
           style={{ position: "relative" }}
         >
           {/* job-0266 — keyed by the visible stream so navigating between

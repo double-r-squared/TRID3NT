@@ -307,6 +307,17 @@ export interface LayerLegendProps {
    * Ignored entirely on desktop.
    */
   aoiCornerPlaceable?: boolean;
+  /**
+   * ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY) - the AOI bbox has zoomed OUT to a
+   * tiny DOT on screen (its smaller on-screen extent < AOI_MIN_VISIBLE_EXTENT_PX,
+   * computed by Map.tsx aoiRectTooSmallToShow). When true the mobile legend HIDES
+   * entirely (renders null) - a speck-sized bbox carries no useful colorbar context
+   * and the keys would just clutter. This takes PRECEDENCE over the AOI-snap /
+   * band-dock decision (tiny dot -> hidden, not snapped). Default false so an absent
+   * prop preserves today's behavior (no hide). Ignored entirely on desktop (the
+   * desktop dock path early-returns before this is read).
+   */
+  aoiTooSmallToShow?: boolean;
 }
 
 /**
@@ -740,6 +751,10 @@ export function LayerLegend({
   // Both are consumed ONLY in the mobile path below (desktop early-returns first).
   mapZoom = null,
   aoiCornerPlaceable = true,
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - default false so an absent prop
+  // keeps today's behavior; consumed ONLY in the mobile path below (desktop
+  // early-returns first, so it is byte-for-byte unchanged).
+  aoiTooSmallToShow = false,
 }: LayerLegendProps): JSX.Element | null {
   // mapZoom is a supplementary signal threaded for future zoom-keyed refinement;
   // aoiCornerPlaceable is the primary dock trigger. Reference mapZoom so the lint
@@ -1138,6 +1153,15 @@ export function LayerLegend({
 
   // Nothing eligible => render nothing (preserves the old hide contract).
   if (keyModels.length === 0) return null;
+
+  // ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY) - the AOI bbox is a tiny dot on
+  // screen (the user zoomed OUT far). HIDE the legend entirely - a speck-sized
+  // bbox carries no useful colorbar context. Placed AFTER every hook (so hook
+  // order is stable) and gated to MOBILE so desktop is byte-for-byte unchanged
+  // (desktop never receives this prop and would early-return at !isMobile anyway).
+  // Takes PRECEDENCE over the AOI-snap / band-dock decision below (tiny dot ->
+  // hidden, not snapped).
+  if (isMobile && aoiTooSmallToShow) return null;
 
   // LEGEND v2 (DROP-ZONE SIGNALS)  -  while a key is being dragged, paint a thin
   // "area signal" along each VALID snap target (left/right/top edges of the AOI;

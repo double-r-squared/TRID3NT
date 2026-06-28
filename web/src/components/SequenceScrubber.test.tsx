@@ -355,6 +355,23 @@ describe("SequenceScrubber — mobile sheet-top dock (TASK E)", () => {
     expect(el.style.bottom).toBe("24px");
     expect(el.style.top).toBe("");
   });
+
+  // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27): when the agent is OFFLINE/WAKING, App
+  // publishes the WAKE box top as sheetTopPx (Chat measures the composer-gate, not
+  // the stale online sheet). The scrubber treats it identically - docking its
+  // bottom GAP px above the wake box top - so it sits on the wake card, not
+  // mid-screen. This asserts the scrubber side of the Part A fix.
+  it("mobile: docks above the WAKE box top when offline (sheetTopPx = wake box top)", () => {
+    stubPlatform(true);
+    setViewportHeight(800);
+    // The wake box top, lower on the screen than an expanded sheet would be.
+    const wakeBoxTopPx = 700;
+    renderScrubber({ sheetTopPx: wakeBoxTopPx });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.bottom).toBe(
+      `${800 - wakeBoxTopPx + SCRUBBER_SHEET_DOCK_GAP_PX}px`,
+    );
+  });
 });
 
 // DESKTOP GUTTER CENTERING (the one stable position input): the static pill
@@ -480,5 +497,53 @@ describe("SequenceScrubber — x/N counter contained within the pill", () => {
     const counter = screen.getByTestId("scrubber-frame-label");
     expect(el.contains(counter)).toBe(true);
     expect(counter).toHaveTextContent("2/3");
+  });
+});
+
+// ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY): when the AOI bbox has zoomed OUT
+// to a tiny dot on screen, App threads `aoiTooSmallToShow` (computed in Map.tsx)
+// and the MOBILE scrubber HIDES entirely (renders null). Desktop is byte-for-byte
+// unchanged: the prop defaults false and the hide is mobile-gated.
+describe("SequenceScrubber - zoom-out hide (aoiTooSmallToShow, mobile-only)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubPlatform(mobile: boolean): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: mobile,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+  }
+
+  it("MOBILE: hides the scrubber entirely when aoiTooSmallToShow is true", () => {
+    stubPlatform(true);
+    renderScrubber({ aoiTooSmallToShow: true });
+    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+  });
+
+  it("MOBILE: still renders when aoiTooSmallToShow is false", () => {
+    stubPlatform(true);
+    renderScrubber({ aoiTooSmallToShow: false });
+    expect(screen.getByTestId("grace2-sequence-scrubber")).not.toBeNull();
+  });
+
+  it("DESKTOP: NEVER hides on aoiTooSmallToShow (the hide is mobile-only)", () => {
+    stubPlatform(false);
+    renderScrubber({ aoiTooSmallToShow: true });
+    // Desktop ignores the signal entirely - the static bottom-center pill stays.
+    expect(screen.getByTestId("grace2-sequence-scrubber")).not.toBeNull();
+  });
+
+  it("defaults to NOT hidden when the prop is omitted (existing callers unaffected)", () => {
+    stubPlatform(true);
+    renderScrubber();
+    expect(screen.getByTestId("grace2-sequence-scrubber")).not.toBeNull();
   });
 });

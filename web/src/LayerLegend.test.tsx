@@ -864,6 +864,21 @@ describe("LayerLegend  -  desktop docked strip clears the active scrubber", () =
       restore();
     }
   });
+
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only): desktop must IGNORE
+  // aoiTooSmallToShow entirely - the desktop docked strip renders regardless (it
+  // early-returns to the static strip before the mobile hide is read).
+  it("DESKTOP IGNORES aoiTooSmallToShow - the docked strip still renders", () => {
+    const restore = mockIsMobile(false);
+    try {
+      render(<LayerLegend layers={[makeLayer()]} aoiTooSmallToShow={true} />);
+      const strip = screen.getByTestId("grace2-layer-legend");
+      expect(strip).toHaveAttribute("data-legend-docked", "desktop");
+      expect(strip.style.bottom).toBe("16px");
+    } finally {
+      restore();
+    }
+  });
 });
 
 // MOBILE SHEET-TOP DOCK (NATE 2026-06-24) - when App threads the chat sheet's
@@ -1218,6 +1233,61 @@ describe("LayerLegend  -  mobile one-row band dock above the scrubber (NATE 2026
     expect(pill.style.bottom).toBe(`${768 - 500 + MOBILE_SHEET_DOCK_GAP_PX}px`);
     // No one-row band while hidden.
     expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+  });
+});
+
+// ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY): when the AOI bbox has zoomed OUT
+// to a tiny dot on screen, Map.tsx threads `aoiTooSmallToShow` and the MOBILE
+// legend HIDES entirely (renders null) - the speck carries no useful colorbar
+// context. This takes PRECEDENCE over the AOI-snap / band-dock decision. beforeEach
+// stubs mobile=true. The desktop path is byte-for-byte unchanged (it early-returns
+// to the static docked strip before the prop is read - asserted in the LANE D
+// block too; here we assert mobile behavior + the default-off prop).
+describe("LayerLegend  -  zoom-out hide (aoiTooSmallToShow, mobile-only)", () => {
+  it("MOBILE: hides the legend entirely when aoiTooSmallToShow is true (no AOI)", () => {
+    const { container } = render(
+      <LayerLegend layers={[makeLayer()]} aoiTooSmallToShow={true} />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+
+  it("MOBILE: hide takes PRECEDENCE over the AOI snap (tiny dot -> hidden, not snapped)", () => {
+    // An AOI rect IS projected and would normally corner-attach, but the tiny-dot
+    // hide wins: render nothing.
+    const { container } = render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        aoiRect={{ left: 100, top: 50, right: 400, bottom: 300 }}
+        aoiCornerPlaceable={true}
+        aoiTooSmallToShow={true}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+
+  it("MOBILE: hide takes PRECEDENCE over the above-chat band dock too", () => {
+    const { container } = render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        sheetTopPx={500}
+        aoiCornerPlaceable={false}
+        aoiTooSmallToShow={true}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByTestId("grace2-layer-legend-band-row")).toBeNull();
+  });
+
+  it("MOBILE: still renders when aoiTooSmallToShow is false (the normal case)", () => {
+    render(<LayerLegend layers={[makeLayer()]} aoiTooSmallToShow={false} />);
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+  });
+
+  it("defaults to NOT hidden when the prop is omitted (existing callers unaffected)", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
   });
 });
 

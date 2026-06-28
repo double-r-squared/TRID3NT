@@ -114,6 +114,16 @@ export interface SequenceScrubberProps {
    * composer clearance). Ignored on desktop (the chat is a side panel there).
    */
   sheetTopPx?: number | null;
+  /**
+   * ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY) - the AOI bbox has zoomed OUT to a
+   * tiny DOT on screen (Map.tsx aoiRectTooSmallToShow). When true the MOBILE
+   * scrubber HIDES entirely (renders null), mirroring the legend - a speck-sized
+   * bbox has no useful frame context to step. Default false so existing callers /
+   * tests are unaffected (no hide), and gated to mobile in the body so desktop is
+   * byte-for-byte unchanged. The scrubber has no other bbox awareness; this single
+   * boolean is the whole hide contract.
+   */
+  aoiTooSmallToShow?: boolean;
 }
 
 /** Clamp `i` into [0, n) with wraparound so the scrubber loops cleanly. */
@@ -136,6 +146,10 @@ export function SequenceScrubber({
   chatWidthPx = 0,
   chatCollapsed = false,
   sheetTopPx = null,
+  // ZOOM-OUT HIDE (NATE 2026-06-27, mobile-only) - default false so existing
+  // callers / tests are unaffected; consumed ONLY on mobile in the hide guard
+  // below so desktop is byte-for-byte unchanged.
+  aoiTooSmallToShow = false,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
   const isMobile = useIsMobile();
@@ -154,6 +168,13 @@ export function SequenceScrubber({
   );
 
   if (n === 0) return null;
+
+  // ZOOM-OUT HIDE (NATE 2026-06-27, MOBILE-ONLY) - the AOI bbox is a tiny dot on
+  // screen (the user zoomed OUT far). HIDE the scrubber entirely, mirroring the
+  // legend. Gated to MOBILE so desktop (the static bottom-center pill) is
+  // byte-for-byte unchanged; default-false prop keeps existing callers / tests
+  // green. Placed after the hooks above so hook order stays stable.
+  if (isMobile && aoiTooSmallToShow) return null;
 
   // The slider + counter both read this SAME live index, so the handle tracks
   // auto-advance: when the controller advances a frame it notifies -> App

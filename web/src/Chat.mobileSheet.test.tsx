@@ -1738,3 +1738,66 @@ describe("Chat.tsx mobile sheet-geometry lift (sheetTopPx dock)", () => {
     expect(CHAT_SRC).toContain("ref={mobile ? sheetContainerRef : undefined}");
   });
 });
+
+// DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27, mobile-only) - when the agent is
+// OFFLINE/WAKING the chat chrome is hidden and the visible bottom element is the
+// floating WakeOverlay box (not the chat container). The publisher must measure
+// the WAKE box top in that state so the scrubber + legend dock to the wake card
+// instead of the stale online expanded-sheet line, and the measurement must
+// RE-FIRE on the connected<->notConnected transition. Chat can't mount in
+// happy-dom, so we pin the wiring at the source level (the CHAT_SRC pattern).
+describe("Chat.tsx mobile dock-to-visible-bottom (wake box vs chat container)", () => {
+  it("holds a ref to the wake box (composer-gate) + a live notConnected ref", () => {
+    expect(CHAT_SRC).toContain(
+      "const wakeBoxRef = useRef<HTMLDivElement | null>(null);",
+    );
+    expect(CHAT_SRC).toContain(
+      "const notConnectedRef = useRef<boolean>(false);",
+    );
+  });
+
+  it("publishes the WAKE box top when notConnected, else the chat container top", () => {
+    // The publisher selects the visible bottom element per connection state: the
+    // wake box (composer-gate) when notConnected, else the chat sheet container.
+    expect(CHAT_SRC).toMatch(
+      /const el =\s*notConnectedRef\.current && wakeBoxRef\.current\s*\?\s*wakeBoxRef\.current\s*:\s*sheetContainerRef\.current;/,
+    );
+    // It still measures the chosen element's real top via getBoundingClientRect.
+    expect(CHAT_SRC).toContain(
+      "const topPx = el ? el.getBoundingClientRect().top : null;",
+    );
+  });
+
+  it("mirrors notConnected into the ref + RE-MEASURES on the transition", () => {
+    // The live mirror keeps the once-bound publisher reading the current state.
+    expect(CHAT_SRC).toContain("notConnectedRef.current = notConnected;");
+    // A mobile-gated effect re-publishes when notConnected flips (the
+    // connected<->notConnected transition) so a fresh wake-box top replaces the
+    // stale latched online top.
+    expect(CHAT_SRC).toMatch(
+      /useEffect\(\(\) => \{\s*if \(!mobile\) return undefined;\s*\/\/[\s\S]*?publishSheetGeometry\(\);[\s\S]*?\}, \[mobile, notConnected, publishSheetGeometry\]\)/,
+    );
+  });
+
+  it("the ResizeObserver also observes the wake box so its resize re-measures", () => {
+    // The observer (bound once) additionally observes the wake element when it is
+    // mounted, so a resize of the floating card re-publishes the visible top.
+    expect(CHAT_SRC).toContain("const wakeEl = wakeBoxRef.current;");
+    expect(CHAT_SRC).toContain("if (wakeEl) ro.observe(wakeEl);");
+  });
+
+  it("attaches the wake-box ref to the composer-gate wrapper", () => {
+    // The composer-gate directly contains the WakeOverlay box in the not-connected
+    // states (no top offset), so its top IS the visible wake box top.
+    const gateStart = CHAT_SRC.indexOf('data-testid="composer-gate"');
+    expect(gateStart).toBeGreaterThan(-1);
+    // The wake-box ref sits on the same composer-gate div (after its comment block),
+    // before the gate's style prop closes - slice generously past the comment.
+    const gateSlice = CHAT_SRC.slice(gateStart, gateStart + 1200);
+    expect(gateSlice).toContain("ref={wakeBoxRef}");
+    // And it precedes the gate's style (it is a prop on the SAME element).
+    expect(gateSlice.indexOf("ref={wakeBoxRef}")).toBeLessThan(
+      gateSlice.indexOf('style={{ position: "relative" }}'),
+    );
+  });
+});
