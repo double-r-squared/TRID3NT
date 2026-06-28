@@ -655,7 +655,7 @@ export async function signInWithAccessCode(code: string): Promise<void> {
     const resp = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code: code.trim() }),
     });
     if (!resp.ok) throw new Error("Invalid code");
     data = (await resp.json()) as typeof data;

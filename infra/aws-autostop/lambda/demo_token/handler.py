@@ -165,7 +165,7 @@ def _parse_code(event: dict) -> str | None:
     code = payload.get("code")
     if not isinstance(code, str):
         return None
-    return code
+    return code.strip()
 
 
 def _method(event: dict) -> str:
@@ -199,7 +199,7 @@ def handler(event, context):  # noqa: ANN001, ARG001
     # Constant-time compare against the stored code. On ANY SSM failure fail
     # closed (500) rather than leaking whether the code matched.
     try:
-        stored = _get_secure_param(SSM_CODE_PARAM)
+        stored = _get_secure_param(SSM_CODE_PARAM).strip()
     except ClientError as exc:
         logger.exception("SSM get of access code failed: %s", exc)
         return _response(500, {"error": "demo sign-in unavailable"})
