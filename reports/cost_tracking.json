@@ -1,5 +1,13 @@
 [
   {
+    "job_id": "mobile-dock-to-wake-zoom-hide",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 294786,
+    "description": "1 Explore (map) + 1 Opus impl agent. MOBILE-ONLY: scrubber + legend now dock to the visible bottom element's top -- the chat panel when online, the WakeOverlay box when offline/waking (was floating mid-screen above the wake box; root cause = sheetTopPx latched the stale online-sheet top). Measure wakeBoxRef (composer-gate) when notConnected + re-fire on transition. + zoom-out hide: AOI_MIN_VISIBLE_EXTENT_PX=36, both overlays early-return null when the bbox is a tiny dot on screen (mobile-gated). Desktop byte-identical. 2202 web tests + tsc green. Commit 43a6257, pushed (Vercel). NATE live-test pending; zoom-hide threshold 36px is tunable.",
+    "agent": "natealmanza3@gmail.com"
+  },
+  {
     "job_id": "feedback-batch-impl",
     "sprint": 18,
     "model": "opus-4.8",
