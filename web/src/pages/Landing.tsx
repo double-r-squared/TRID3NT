@@ -222,42 +222,62 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
       </header>
 
       <main>
-        {/* ------------------------- Hero ------------------------- */}
+        {/* ------------------------- Hero (split) ------------------------- */}
+        {/* Desktop: two columns -- copy/CTA left, flagship screenshot right.
+            The contour field sits subtly behind the whole hero (veiled down).
+            At mobile widths (<=940px) the grid collapses to a single column and
+            the large hero shot is hidden (display:none in landing.css), so the
+            mobile stack stays the current single-column copy-only hero. */}
         <section className="lp-hero">
           <div className="lp-hero-field" aria-hidden="true">
             <ContourField className="lp-contours" />
             <div className="lp-hero-veil" />
           </div>
 
-          <div className="lp-hero-inner">
-            <span className="lp-eyebrow">Multi-hazard modeling, made conversational</span>
-            <h1 className="lp-h1">
-              Understand the hazard
-              <br />
-              <span className="lp-accent">before it arrives.</span>
-            </h1>
-            <p className="lp-sub">
-              TRID3NT turns a question about flood, storm surge, groundwater,
-              earthquake, or wildfire risk into a rigorous answer - in plain
-              language, on a live map, grounded in real numerical simulation.
-              Work that once took a team of specialists weeks now happens in a
-              single conversation.
-            </p>
-            <div className="lp-cta-row">
-              <a
-                className="lp-cta"
-                href="/app"
-                data-testid="grace2-landing-cta"
-              >
-                {ctaLabel}
-                <span className="lp-cta-arrow" aria-hidden="true">
-                  <IconArrowRight size={16} />
-                </span>
-              </a>
-              <a className="lp-cta-ghost" href="#how">
-                See how it works
-              </a>
+          <div className="lp-hero-grid">
+            <div className="lp-hero-inner">
+              <span className="lp-eyebrow">Multi-hazard modeling, made conversational</span>
+              <h1 className="lp-h1">
+                Understand the hazard
+                <br />
+                <span className="lp-accent">before it arrives.</span>
+              </h1>
+              <p className="lp-sub">
+                TRID3NT turns a question about flood, storm surge, groundwater,
+                earthquake, or wildfire risk into a rigorous answer - in plain
+                language, on a live map, grounded in real numerical simulation.
+                Work that once took a team of specialists weeks now happens in a
+                single conversation.
+              </p>
+              <div className="lp-cta-row">
+                <a
+                  className="lp-cta"
+                  href="/app"
+                  data-testid="grace2-landing-cta"
+                >
+                  {ctaLabel}
+                  <span className="lp-cta-arrow" aria-hidden="true">
+                    <IconArrowRight size={16} />
+                  </span>
+                </a>
+                <a className="lp-cta-ghost" href="#how">
+                  See how it works
+                </a>
+              </div>
             </div>
+
+            {/* Flagship product shot -- desktop only (hidden at <=940px). The
+                flood render now lives here, so the old lp-showcase flood section
+                below is removed to avoid duplicating this image. */}
+            <figure className="lp-hero-shot" aria-hidden="true">
+              <img
+                src="/landing/shot_flood_desktop.webp"
+                width={1440}
+                height={900}
+                alt=""
+                loading="eager"
+              />
+            </figure>
           </div>
 
           <a className="lp-scroll-cue" href="#capabilities" aria-label="Scroll to capabilities">
@@ -300,29 +320,10 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           </div>
         </section>
 
-        {/* --------------------- Showcase (hero shot) --------------------- */}
-        <section className="lp-section lp-showcase" ref={reveal}>
-          <figure className="lp-frame">
-            <div className="lp-frame-bar" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
-            {/* IMAGE SLOT: real North-Star desktop screenshot (flood render).
-                Orchestrator swaps live evidence into /landing/shot_flood_desktop.webp. */}
-            <img
-              src="/landing/shot_flood_desktop.webp"
-              width={1440}
-              height={900}
-              alt="TRID3NT rendering a simulated coastal flood-depth surface over a stretch of coastline, alongside the conversation that produced it"
-              loading="lazy"
-            />
-            <figcaption>
-              A simulated coastal flood, asked for in plain language and
-              rendered on the map.
-            </figcaption>
-          </figure>
-        </section>
+        {/* NOTE: the flood-render showcase that used to live here was removed --
+            the flagship flood screenshot now anchors the split hero above, so
+            rendering it again here would duplicate the image. The remaining
+            showcase below features the OTHER shot (shot_impact_desktop.webp). */}
 
         {/* ----------------------- How it works ----------------------- */}
         <section className="lp-section lp-how" id="how" ref={reveal}>
@@ -416,13 +417,9 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
         {/* --------------------- Impact showcase --------------------- */}
         <section className="lp-section lp-showcase lp-showcase-wide" ref={reveal}>
           <figure className="lp-frame">
-            <div className="lp-frame-bar" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </div>
             {/* IMAGE SLOT: real North-Star desktop screenshot (impact/damage view).
-                Orchestrator swaps live evidence into /landing/shot_impact_desktop.webp. */}
+                Orchestrator swaps live evidence into /landing/shot_impact_desktop.webp.
+                Minimalist: no fake browser-dots bar -- a clean framed render. */}
             <img
               src="/landing/shot_impact_desktop.webp"
               width={1440}

@@ -67,7 +67,7 @@
   z-index: 1;
   max-width: var(--lp-max);
   margin: 0 auto;
-  padding: 92px 32px;
+  padding: 116px 32px;
   opacity: 0;
   transform: translateY(26px);
   transition: opacity 720ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -158,12 +158,24 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   justify-content: center;
-  min-height: clamp(560px, 82vh, 880px);
+  min-height: clamp(580px, 84vh, 900px);
   max-width: var(--lp-max);
   margin: 0 auto;
-  padding: 40px 32px 96px;
+  padding: 48px 32px 104px;
+}
+
+/* Split hero: copy/CTA on the left, the flagship product shot on the right.
+   Collapses to a single column (copy only -- the shot is hidden) at <=940px. */
+.lp-hero-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  align-items: center;
+  gap: clamp(40px, 5vw, 72px);
+  width: 100%;
 }
 
 /* The contour-field canvas + a veil that fades it into the page. */
@@ -183,22 +195,23 @@
   display: block;
 }
 
-/* Vignette that darkens edges + bottom so copy stays legible and the field
-   dissolves into the next section. */
+/* Vignette + veil. Heavier than v1 so the contour field reads as a QUIET
+   background texture, not a busy backdrop -- a near-flat wash over the whole
+   hero, darkest under the left-column copy and toward the bottom seam. */
 .lp-hero-veil {
   position: absolute;
   inset: 0;
   background:
     radial-gradient(
-      ellipse 80% 70% at 28% 42%,
-      transparent 0%,
-      rgba(6, 8, 12, 0.35) 60%,
-      rgba(6, 8, 12, 0.72) 100%
+      ellipse 78% 70% at 26% 46%,
+      rgba(6, 8, 12, 0.55) 0%,
+      rgba(6, 8, 12, 0.62) 55%,
+      rgba(6, 8, 12, 0.82) 100%
     ),
     linear-gradient(
       to bottom,
-      transparent 40%,
-      rgba(6, 8, 12, 0.75) 88%,
+      rgba(6, 8, 12, 0.4) 30%,
+      rgba(6, 8, 12, 0.8) 86%,
       var(--lp-bg) 100%
     );
 }
@@ -206,7 +219,28 @@
 .lp-hero-inner {
   position: relative;
   z-index: 1;
-  max-width: 720px;
+  max-width: 600px;
+}
+
+/* The flagship product screenshot in the right hero column: large, clean,
+   rounded, with a soft shadow -- no fake browser chrome, minimalist. */
+.lp-hero-shot {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid var(--lp-line-2);
+  background: #0c111a;
+  box-shadow:
+    0 40px 100px -28px rgba(0, 0, 0, 0.78),
+    0 0 0 1px rgba(121, 196, 224, 0.06);
+}
+
+.lp-hero-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .lp-eyebrow {
@@ -221,12 +255,12 @@
 }
 
 .lp-h1 {
-  margin: 26px 0 0;
+  margin: 28px 0 0;
   font-family: var(--lp-serif);
-  font-weight: 500;
-  font-size: clamp(40px, 6.4vw, 78px);
-  line-height: 1.04;
-  letter-spacing: -0.018em;
+  font-weight: 400;
+  font-size: clamp(40px, 5vw, 62px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
 }
 
 .lp-accent {
@@ -234,9 +268,10 @@
 }
 
 .lp-sub {
-  margin: 26px 0 0;
-  max-width: 58ch;
-  font-size: clamp(16px, 1.5vw, 19px);
+  margin: 28px 0 0;
+  max-width: 48ch;
+  font-size: clamp(16px, 1.2vw, 18px);
+  line-height: 1.72;
   color: var(--lp-ink-dim);
 }
 
@@ -350,79 +385,55 @@
 .lp-h2 {
   margin: 0;
   font-family: var(--lp-serif);
-  font-weight: 500;
-  font-size: clamp(28px, 3.6vw, 44px);
-  letter-spacing: -0.015em;
-  line-height: 1.12;
+  font-weight: 400;
+  font-size: clamp(28px, 3.2vw, 40px);
+  letter-spacing: -0.018em;
+  line-height: 1.16;
 }
 
 .lp-section-sub {
-  margin: 18px 0 0;
+  margin: 20px 0 0;
   color: var(--lp-ink-dim);
   font-size: 16.5px;
-  max-width: 62ch;
+  line-height: 1.72;
+  max-width: 60ch;
 }
 
 /* ----------------------- Capabilities ----------------------- */
 
+/* Flatter, cleaner capability grid: open columns with generous gaps, no
+   enclosing border / seam-grid, no per-card shadow -- just a quiet hairline
+   rule under each card's heading row and an accent icon. Minimalist. */
 .lp-cap-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  margin-top: 48px;
-  border: 1px solid var(--lp-line);
-  border-radius: 16px;
-  background: var(--lp-line);
-  overflow: hidden;
+  gap: 14px 40px;
+  margin-top: 60px;
 }
 
 .lp-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 30px 28px 32px;
-  background: var(--lp-bg-2);
-  transition: background 220ms ease, transform 220ms ease;
-}
-
-.lp-card::after {
-  /* accent hairline that draws in on hover */
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 2px;
-  background: linear-gradient(90deg, var(--lp-accent), transparent);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 280ms ease;
-}
-
-.lp-card:hover {
-  background: #0d1320;
-}
-
-.lp-card:hover::after {
-  transform: scaleX(1);
+  padding: 28px 0 8px;
+  background: transparent;
 }
 
 .lp-card-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 10px;
-  border: 1px solid var(--lp-line-2);
   background: var(--lp-panel);
   color: var(--lp-accent);
 }
 
 .lp-card h3 {
-  margin: 20px 0 8px;
+  margin: 18px 0 9px;
   font-size: 17px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--lp-ink);
 }
@@ -430,6 +441,7 @@
 .lp-card p {
   margin: 0;
   font-size: 14.5px;
+  line-height: 1.66;
   color: var(--lp-ink-dim);
 }
 
@@ -447,27 +459,14 @@
   position: relative;
   margin: 0;
   border: 1px solid var(--lp-line-2);
-  border-radius: 14px;
+  border-radius: 16px;
   background: #0c111a;
   overflow: hidden;
-  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6),
-    0 0 1px rgba(121, 196, 224, 0.4);
+  box-shadow: 0 40px 100px -28px rgba(0, 0, 0, 0.72);
 }
 
-.lp-frame-bar {
-  display: flex;
-  gap: 7px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--lp-line);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.lp-frame-bar i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
-}
+/* (The fake browser-dots bar `.lp-frame-bar` was removed for the minimalist
+   redesign -- both showcase frames now present a clean, chrome-free render.) */
 
 .lp-frame img {
   display: block;
@@ -499,7 +498,7 @@
   padding: 30px 26px 32px;
   border: 1px solid var(--lp-line);
   border-radius: 14px;
-  background: var(--lp-panel);
+  background: transparent;
 }
 
 .lp-step-n {
@@ -709,8 +708,24 @@
     padding: 76px 28px;
   }
 
+  /* Mobile hero: collapse the split back to the current single-column stack
+     (copy + CTA only) and HIDE the large desktop hero screenshot so the mobile
+     rendering stays exactly as it was before the split-hero redesign. */
+  .lp-hero-grid {
+    display: block;
+  }
+
+  .lp-hero-inner {
+    max-width: 720px;
+  }
+
+  .lp-hero-shot {
+    display: none;
+  }
+
   .lp-cap-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 32px;
   }
 
   .lp-steps {
