@@ -47,15 +47,15 @@ Status of every item from the live-testing feedback. DONE = committed + deployed
 - [x] 3D terrain softened (exaggeration 2.0->1.4) + linear resampling in 3D (kills ~9px pixelation) (f2f472a)
 - [x] Sentinel-2 guardrail 0.5->1.0 deg^2 + honest auto-coarsening (c6cbfb1)
 - [x] low output image resolution -> option (b) DONE (d929430, deployed): user-resolution gate extended to fetch_dem [1,3,10,30]m + fetch_topobathy [3,10,30]m via the #154 ResolutionPickerCard (opt-in finer, finest-allowed-by-area cap; NAIP/NDVI/GOES source-capped left as-is; SFINCS/SWMM solver defaults confirmed not coarse + super-linear -> no floor raise).
-- [ ] building-footprint METADATA thinning: ID-only GeoJSON + fetch-on-click enrich (= #165 MVT data-island)
+- [x] building-footprint METADATA thinning: ID-only inline GeoJSON (osm_id/osm_type/fid) + /api/building-detail click-to-enrich (sidecar -> Overpass-by-id fallback); MVT geometry tiling DEFERRED as the #165 follow-up (0d6a35a + 7e3aa7f, deployed web+agent 2026-06-27)
 
 ### Engine
-- [ ] SFINCS sim computes full domain while AOI shrinks (display-only) - #183 (low-pri per NATE)
+- [x] SFINCS compute-domain #183 (NATE direction: compute ONLY within bbox, NO COG clip): engine already builds the grid from the AOI with no padding (locked by a guard + test); closed the residual #159 server boundary -- expensive AREAL solvers now snap a drifted/wider re-entry solve DOWN to the active AOI (_maybe_default_solver_bbox_to_pinned_aoi, gated to flood-depth/swmm-depth so MODFLOW plume solvers are untouched). #194 archetypes byte-identical (f4e0f9f + 7e3aa7f, deployed)
 
 ### Delegated -> tools session (tools-backlog/goes-tool-desc-feedback-2026-06-25.md)
-- [ ] goes18 -> goes-18 identifier explicit in tool desc
-- [ ] "Fetch Goes Archive Animation" label -> "Fetched GOES file"; capitalize GOES
-- [ ] tool descriptions carry all selection info, no extraneous
+- [x] goes18 -> goes-18 identifier explicit in tool desc (landed earlier in the fetcher pass d45d841: hyphenated enums + _normalize_satellite coercer)
+- [x] "Fetch Goes Archive Animation" label -> honest GOES/GLM-cased card labels (3 HUMANIZED_STEP_NAMES entries in PipelineCard.tsx; archive label says "frames") (2d82910, deployed Vercel)
+- [x] tool descriptions carry all selection info, no extraneous (GOES family already satisfies this per the scope)
 
 ## Rule reminders (in memory)
 - Opus on Claude's subagents; Haiku = the in-site agent model; Claude does NOT drive the live prod agent (NATE verifies).

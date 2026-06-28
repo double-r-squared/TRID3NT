@@ -1,5 +1,13 @@
 [
   {
+    "job_id": "feedback-batch-impl",
+    "sprint": 18,
+    "model": "opus-4.8",
+    "subagent_tokens": 814177,
+    "description": "Workflow wf_7c00d943 (6 agents: 3 sequential impl in main checkout + 3 parallel adversarial verify) for the residual 06-25/06-26 feedback batch. GOES/GLM card labels (approve), SFINCS #183 solve-domain pin to active AOI (approve_with_nits; no COG clip per NATE, #194 archetypes byte-identical), building-footprint ID-only inline props + /api/building-detail click-enrich sidecar/Overpass (approve_with_nits; MVT deferred). Orchestrator resolved both nits (SFINCS guard gated to bbox-driven scenarios so MODFLOW plume solvers get no spurious bbox; buildings osm_id/osm_type global-hide clarified) + ASCII cleanup. Commits 2d82910/f4e0f9f/0d6a35a/7e3aa7f. Deployed: web push (Vercel) + agent SSM (verified live on box).",
+    "agent": "natealmanza3@gmail.com"
+  },
+  {
     "job_id": "feedback-batch-scope",
     "sprint": 18,
     "model": "opus-4.8",
