@@ -7,14 +7,14 @@
 ---
 
 ## TL;DR
-This session added **~29 new tools + 1 tool upgrade** (registry **129 -> 164**, batch 5 included), proved a **coalesced QGIS Processing worker**, and produced **2 worker escalations**. Everything is additive on branch `tools-work` (pushed). To integrate: **(1) merge `tools-work` -> main, (2) deploy the agent, (3) wire the 5 seams in section 3** (none blocking — the tools degrade gracefully without them). Full agent suite is green except 3 pre-existing `swmm-api` failures that are NOT from this work.
+This session added **35 new tools + 3 upgrades** (registry **129 -> 164**), proved a **coalesced QGIS Processing worker**, and produced **2 worker escalations**. Everything is additive on branch `tools-work` (pushed). To integrate: **(1) merge `tools-work` -> main, (2) deploy the agent, (3) wire the 5 seams in section 3** (none blocking — the tools degrade gracefully without them). Full agent suite is green except 3 pre-existing `swmm-api` failures that are NOT from this work.
 
 ---
 
 ## 1. The branch (how to integrate)
-- **Branch:** `tools-work` (origin), HEAD `a82e021` at time of writing (batch 5 will advance it — **merge the branch HEAD; treat the `PROJECT_LOG.md` tail as the authoritative landed-tool list**).
+- **Branch:** `tools-work` (origin), HEAD `d36e508` — **merge the branch HEAD; treat the `PROJECT_LOG.md` tail as the authoritative landed-tool list**.
 - **Self-contained + additive:** new files under `services/agent/src/grace2_agent/tools/` + tests under `services/agent/tests/`, plus the 3 registration files (`tools/__init__.py`, `categories.py`, `data/tool_query_corpus.yaml`) and the `test_tools_registry.py` global-query audit. No edits to `server.py`, `adapter.py`, contracts, `services/workers/`, web, or infra (those are your seam — see section 3).
-- **Deploy:** merge -> main, then deploy the agent via the custom `grace2-runshell` SSM doc (standing auth). Registry grows 129 -> 158 (-> ~164 with batch 5).
+- **Deploy:** merge -> main, then deploy the agent via the custom `grace2-runshell` SSM doc (standing auth). Registry grows 129 -> 164.
 
 ---
 
@@ -57,7 +57,7 @@ New `style_preset` tokens the new tools emit. **Tools fall back gracefully** (pe
 ---
 
 ## 4. Verification
-- **Full agent suite:** 8780 passed, 107 skipped, **3 failed** — all in `tests/test_granularity_gate.py`, caused by a **missing `swmm-api` dep, PRE-EXISTING and unrelated** to this work (confirmed present before any of these commits via stash-rerun). Everything this session added is green, including the registration/category/corpus-coverage gates + the `supports_global_query` audit.
+- **Full agent suite:** 9142 passed, 113 skipped, **3 failed** — all in `tests/test_granularity_gate.py`, caused by a **missing `swmm-api` dep, PRE-EXISTING and unrelated** to this work (confirmed present before any of these commits via stash-rerun). Note: run with `TMPDIR` on a non-tmpfs disk — the box's `/tmp` is a 7.8G tmpfs that other sessions fill, and a full tmpfs spuriously fails ~60 IO-bound tests. Everything this session added is green, including the registration/category/corpus-coverage gates + the `supports_global_query` audit.
 - Per-tool: each tool has a local-first proof vs the real source + a real S3 round-trip (evidence captured in `PROJECT_LOG.md` and the workflow result records).
 
 ---
