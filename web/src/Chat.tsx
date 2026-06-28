@@ -2869,7 +2869,7 @@ export function MobileSheetHeaderRow({
             gap: 8,
           }}
         >
-          <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+          <strong style={{ fontSize: 14 }}>TRID3NT</strong>
           <span
             data-testid="grace2-build-version"
             title="build version — tells you which deploy this tab is running"
@@ -4295,7 +4295,7 @@ export function Chat({
         />
       )}
       {/* F45 refined / F45b (job-0330) — MOBILE three-zone handle row.
-          EXPANDED → (GRACE-2 + version) LEFT, grabber CENTER, status RIGHT.
+          EXPANDED -> (TRID3NT + version) LEFT, grabber CENTER, status RIGHT.
           COLLAPSED → just the grabber at the TOP (no labels); when tools /
           sandbox are running, the active-strip stack fills the middle.
           The grabber stays the F44 drag affordance. Desktop renders the
@@ -4334,7 +4334,7 @@ export function Chat({
           />
         </div>
       )}
-      {/* DESKTOP header — classic F45 row: 'GRACE-2' + version LEFT, the
+      {/* DESKTOP header -- classic F45 row: 'TRID3NT' + version LEFT, the
           connection status RIGHT, the collapse control at the far right.
           (Mobile uses MobileSheetHeaderRow above instead.) */}
       {!mobile && (
@@ -4376,7 +4376,7 @@ export function Chat({
                 flexShrink: 0,
               }}
             />
-            <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+            <strong style={{ fontSize: 14 }}>TRID3NT</strong>
             <span
               data-testid="grace2-build-version"
               title="build version — tells you which deploy this tab is running"

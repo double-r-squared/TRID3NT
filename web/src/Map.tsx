@@ -219,7 +219,7 @@ const OSM_TILE_TEMPLATE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTRIBUTION =
   '- <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 const QGIS_WMS_ATTRIBUTION =
-  'Basemap via GRACE-2 QGIS Server  -  - <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+  'Basemap via TRID3NT QGIS Server  -  - <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 
 const CONUS_VIEW = {
   center: [-95.5, 37.0] as [number, number],

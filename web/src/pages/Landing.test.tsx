@@ -18,11 +18,11 @@ import { Landing } from "./Landing";
 afterEach(cleanup);
 
 describe("Landing - hero CTA contract", () => {
-  it("renders the primary CTA pointing at /app with 'Launch GRACE-2'", () => {
+  it("renders the primary CTA pointing at /app with 'Launch TRID3NT'", () => {
     render(<Landing />);
     const cta = screen.getByTestId("grace2-landing-cta");
     expect(cta).toHaveAttribute("href", "/app");
-    expect(cta).toHaveTextContent(/launch grace-2/i);
+    expect(cta).toHaveTextContent(/launch trid3nt/i);
   });
 
   it("renders the 'Resume session' CTA variant when hasSession is true", () => {
@@ -34,7 +34,7 @@ describe("Landing - hero CTA contract", () => {
 
   it("sets a multi-hazard document title", () => {
     render(<Landing />);
-    expect(document.title).toMatch(/GRACE-2/);
+    expect(document.title).toMatch(/TRID3NT/);
     expect(document.title).toMatch(/multi-hazard/i);
   });
 });

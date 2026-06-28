@@ -696,7 +696,7 @@ export function SettingsPopup({
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>About</div>
           <div style={valueStyle}>
-            <span>GRACE-2</span>
+            <span>TRID3NT</span>
             <span
               data-testid="grace2-settings-build-sha"
               style={{ fontFamily: "monospace", fontSize: 12, color: "#aaa" }}

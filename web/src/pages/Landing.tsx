@@ -197,18 +197,18 @@ function useScrollReveal(): (el: HTMLElement | null) => void {
 export function Landing({ hasSession = false }: LandingProps): JSX.Element {
   useEffect(() => {
     document.title =
-      "GRACE-2 - Conversational multi-hazard analysis, grounded in real simulation";
+      "TRID3NT - Conversational multi-hazard analysis, grounded in real simulation";
   }, []);
 
   const reveal = useScrollReveal();
-  const ctaLabel = hasSession ? "Resume session" : "Launch GRACE-2";
+  const ctaLabel = hasSession ? "Resume session" : "Launch TRID3NT";
 
   return (
     <div className="lp" data-testid="grace2-landing">
       <header className="lp-nav">
         <a className="lp-wordmark" href="/">
           <span className="lp-wordmark-glyph" aria-hidden="true" />
-          GRACE-2
+          TRID3NT
         </a>
         <nav className="lp-nav-links" aria-label="Landing navigation">
           <a href="#capabilities">Capabilities</a>
@@ -237,7 +237,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               <span className="lp-accent">before it arrives.</span>
             </h1>
             <p className="lp-sub">
-              GRACE-2 turns a question about flood, storm surge, groundwater,
+              TRID3NT turns a question about flood, storm surge, groundwater,
               earthquake, or wildfire risk into a rigorous answer - in plain
               language, on a live map, grounded in real numerical simulation.
               Work that once took a team of specialists weeks now happens in a
@@ -314,7 +314,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               src="/landing/shot_flood_desktop.webp"
               width={1440}
               height={900}
-              alt="GRACE-2 rendering a simulated coastal flood-depth surface over a stretch of coastline, alongside the conversation that produced it"
+              alt="TRID3NT rendering a simulated coastal flood-depth surface over a stretch of coastline, alongside the conversation that produced it"
               loading="lazy"
             />
             <figcaption>
@@ -365,7 +365,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               </h2>
               <p>
                 The hard part of hazard work was never having an opinion - it
-                was producing one you could defend. GRACE-2 keeps the rigor and
+                was producing one you could defend. TRID3NT keeps the rigor and
                 removes the friction: a conversational workbench in front of the
                 real simulation engines, so the analysis is fast to reach and
                 sound enough to act on.
@@ -395,7 +395,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                 src="/landing/shot_chat_mobile.webp"
                 width={390}
                 height={844}
-                alt="GRACE-2 on a phone, working through a hazard analysis as a conversation"
+                alt="TRID3NT on a phone, working through a hazard analysis as a conversation"
                 loading="lazy"
               />
               <figcaption>The analysis, narrated as it runs.</figcaption>
@@ -405,7 +405,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                 src="/landing/shot_terrain_mobile.webp"
                 width={390}
                 height={844}
-                alt="A colored-relief terrain layer rendered on the GRACE-2 mobile map"
+                alt="A colored-relief terrain layer rendered on the TRID3NT mobile map"
                 loading="lazy"
               />
               <figcaption>The terrain it produced, on the map.</figcaption>
@@ -427,7 +427,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               src="/landing/shot_impact_desktop.webp"
               width={1440}
               height={900}
-              alt="GRACE-2 estimating damage to individual buildings beneath a simulated flood-depth surface"
+              alt="TRID3NT estimating damage to individual buildings beneath a simulated flood-depth surface"
               loading="lazy"
             />
             <figcaption>
@@ -458,7 +458,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
         <div className="lp-footer-row">
           <span className="lp-footer-brand">
             <span className="lp-wordmark-glyph" aria-hidden="true" />
-            GRACE-2
+            TRID3NT
           </span>
           <nav aria-label="Footer">
             <a href="/privacy" data-testid="grace2-landing-privacy-link">
@@ -468,7 +468,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           </nav>
         </div>
         <p className="lp-footer-fine">
-          - 2026 GRACE-2. Model outputs are research aids, not official
+          - 2026 TRID3NT. Model outputs are research aids, not official
           hazard guidance.
         </p>
       </footer>

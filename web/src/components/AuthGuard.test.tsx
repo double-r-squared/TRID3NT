@@ -141,7 +141,7 @@ describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)"
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
     expect(screen.getByTestId("grace2-auth-guard-signin")).toBeInTheDocument();
     expect(screen.getByTestId("grace2-auth-guard-wordmark")).toHaveTextContent(
-      "GRACE-2",
+      "TRID3NT",
     );
     const signInBtn = screen.getByTestId("grace2-auth-guard-signin-btn");
     expect(signInBtn).toBeInTheDocument();

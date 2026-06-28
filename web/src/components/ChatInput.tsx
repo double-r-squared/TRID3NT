@@ -528,7 +528,7 @@ export function ChatInput({
   onSubmit,
   onCancel,
   disabled = false,
-  placeholder = "Reply to GRACE-2",
+  placeholder = "Reply to TRID3NT",
   maxVh = DEFAULT_MAX_VH,
   onHeightChange,
   fontSizePx = 14,

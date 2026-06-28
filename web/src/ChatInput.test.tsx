@@ -197,16 +197,16 @@ describe("ChatInput — submit semantics", () => {
 });
 
 describe("ChatInput — placeholder (job-0153 Part 5)", () => {
-  it("defaults to the short 'Reply to GRACE-2' placeholder", () => {
+  it("defaults to the short 'Reply to TRID3NT' placeholder", () => {
     renderIdle();
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-    expect(ta.placeholder).toBe("Reply to GRACE-2");
+    expect(ta.placeholder).toBe("Reply to TRID3NT");
   });
 
   it("accepts an override via the placeholder prop", () => {
-    renderIdle({ placeholder: "Ask GRACE-2..." });
+    renderIdle({ placeholder: "Ask TRID3NT..." });
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-    expect(ta.placeholder).toBe("Ask GRACE-2...");
+    expect(ta.placeholder).toBe("Ask TRID3NT...");
   });
 });
 

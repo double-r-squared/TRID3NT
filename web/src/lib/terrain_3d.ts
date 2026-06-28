@@ -237,7 +237,7 @@ export function buildTerrainDemSource(
       tileSize: 256,
       encoding: "mapbox",
       maxzoom: 18,
-      attribution: "Elevation via GRACE-2 TiTiler (terrain-RGB)",
+      attribution: "Elevation via TRID3NT TiTiler (terrain-RGB)",
       origin: "titiler",
     };
   }

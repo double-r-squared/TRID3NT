@@ -1021,10 +1021,10 @@ describe("Chat.tsx glyph policy (job-0325)", () => {
 });
 
 describe("Chat.tsx header layout (F45, job-0325)", () => {
-  it("groups 'GRACE-2' + build version into the LEFT tab group", () => {
+  it("groups 'TRID3NT' + build version into the LEFT tab group", () => {
     // The LEFT group wraps the strong label + version testid.
     expect(CHAT_SRC).toContain('data-testid="grace2-chat-tab-left"');
-    expect(CHAT_SRC).toMatch(/grace2-chat-tab-left[\s\S]*?GRACE-2/);
+    expect(CHAT_SRC).toMatch(/grace2-chat-tab-left[\s\S]*?TRID3NT/);
     expect(CHAT_SRC).toMatch(
       /grace2-chat-tab-left[\s\S]*?grace2-build-version/,
     );
@@ -1094,11 +1094,11 @@ describe("Chat.tsx desktop chrome rework (model button + connection dot)", () =>
     );
   });
 
-  it("reduces the desktop connection signal to a DOT placed LEFT of the GRACE-2 wordmark", () => {
+  it("reduces the desktop connection signal to a DOT placed LEFT of the TRID3NT wordmark", () => {
     // Inside the desktop LEFT tab group, the connection-status element appears
     // BEFORE the GRACE-2 wordmark (item 2: dot to the left of the wordmark).
     const dotIdx = desktopHeaderSrc.indexOf('data-testid="connection-status"');
-    const wordmarkIdx = desktopHeaderSrc.indexOf("GRACE-2</strong>");
+    const wordmarkIdx = desktopHeaderSrc.indexOf("TRID3NT</strong>");
     expect(dotIdx).toBeGreaterThan(-1);
     expect(wordmarkIdx).toBeGreaterThan(-1);
     expect(dotIdx).toBeLessThan(wordmarkIdx);
@@ -1193,7 +1193,7 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     );
     // LEFT zone — grace + version.
     const left = screen.getByTestId("grace2-chat-tab-left");
-    expect(left.textContent).toContain("GRACE-2");
+    expect(left.textContent).toContain("TRID3NT");
     expect(screen.getByTestId("grace2-build-version")).toBeTruthy();
     // CENTER zone — the grabber rectangle (the drag handle).
     expect(screen.getByTestId("grace2-sheet-grabber-zone")).toBeTruthy();

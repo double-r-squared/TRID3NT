@@ -215,12 +215,12 @@ export function AuthGate({
       data-testid="grace2-auth-gate"
       role="dialog"
       aria-modal="true"
-      aria-label="GRACE-2 sign-in"
+      aria-label="TRID3NT sign-in"
       style={overlayStyle}
     >
       <div data-testid="grace2-auth-gate-card" style={cardStyle}>
         <h1 data-testid="grace2-auth-gate-wordmark" style={wordmarkStyle}>
-          GRACE-2
+          TRID3NT
         </h1>
         <p style={taglineStyle}>
           Multi-hazard modeling workbench. Sign in to save your Cases across

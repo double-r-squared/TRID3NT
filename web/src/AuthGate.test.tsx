@@ -41,7 +41,7 @@ describe("AuthGate — render", () => {
     render(<AuthGate onAnonymousAccept={() => {}} />);
     expect(screen.getByTestId("grace2-auth-gate")).toBeInTheDocument();
     expect(screen.getByTestId("grace2-auth-gate-wordmark")).toHaveTextContent(
-      "GRACE-2",
+      "TRID3NT",
     );
     expect(screen.getByTestId("grace2-auth-gate-google")).toBeInTheDocument();
     expect(

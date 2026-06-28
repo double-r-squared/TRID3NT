@@ -9,9 +9,9 @@ import { UserBubble } from "./components/UserBubble";
 
 describe("UserBubble (job-0153 Part 2)", () => {
   it("renders the user text verbatim", () => {
-    render(<UserBubble text="Hello GRACE-2" />);
+    render(<UserBubble text="Hello TRID3NT" />);
     expect(screen.getByTestId("user-bubble").textContent).toBe(
-      "Hello GRACE-2",
+      "Hello TRID3NT",
     );
   });
 

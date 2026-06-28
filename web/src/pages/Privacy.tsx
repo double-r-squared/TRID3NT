@@ -17,7 +17,7 @@ const CONTACT_EMAIL = "natealmanza3@gmail.com";
 
 export function Privacy(): JSX.Element {
   useEffect(() => {
-    document.title = "Privacy Policy — GRACE-2";
+    document.title = "Privacy Policy - TRID3NT";
   }, []);
 
   return (
@@ -25,7 +25,7 @@ export function Privacy(): JSX.Element {
       <header className="pp-nav">
         <a className="pp-wordmark" href="/">
           <span className="pp-wordmark-glyph" aria-hidden="true" />
-          GRACE-2
+          TRID3NT
         </a>
         <a className="pp-nav-launch" href="/app">
           Launch app
@@ -39,7 +39,7 @@ export function Privacy(): JSX.Element {
         </p>
 
         <p className="pp-lede">
-          GRACE-2 is an AI workbench for multi-hazard modeling: you chat with
+          TRID3NT is an AI workbench for multi-hazard modeling: you chat with
           an agent powered by Anthropic&rsquo;s Claude (via AWS Bedrock) that
           runs geospatial models and renders the results on a map. This policy
           explains, in plain language, what data the service handles when you
@@ -50,7 +50,7 @@ export function Privacy(): JSX.Element {
           <h2>Data we collect</h2>
           <ul>
             <li>
-              <strong>Session identifiers.</strong> Today GRACE-2 uses
+              <strong>Session identifiers.</strong> Today TRID3NT uses
               anonymous sessions: a randomly generated session ID and
               anonymous user ID stored in your browser&rsquo;s localStorage.
               They contain no personal information. When Google sign-in
@@ -97,7 +97,7 @@ export function Privacy(): JSX.Element {
         <section>
           <h2>Storage &amp; third parties</h2>
           <p>
-            GRACE-2 runs on Amazon Web Services (AWS). Your data is processed
+            TRID3NT runs on Amazon Web Services (AWS). Your data is processed
             and stored by the following services, each under its own terms:
           </p>
           <ul>
@@ -132,7 +132,7 @@ export function Privacy(): JSX.Element {
           <h2>Your choices</h2>
           <ul>
             <li>
-              You can use GRACE-2 anonymously today; no account is required.
+              You can use TRID3NT anonymously today; no account is required.
             </li>
             <li>
               Clearing your browser&rsquo;s localStorage for this site
@@ -168,9 +168,9 @@ export function Privacy(): JSX.Element {
       <footer className="pp-footer">
         <a href="/" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
           <IconArrowLeft size={14} />
-          Back to GRACE-2
+          Back to TRID3NT
         </a>
-        <span>© 2026 GRACE-2 · Built on AWS Bedrock · Amazon EC2 · QGIS</span>
+        <span>© 2026 TRID3NT · Built on AWS Bedrock · Amazon EC2 · QGIS</span>
       </footer>
     </div>
   );

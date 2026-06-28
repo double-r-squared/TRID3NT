@@ -74,7 +74,7 @@ describe("Privacy — required disclosures", () => {
   it("links back to the landing page and to the app", () => {
     render(<Privacy />);
     expect(
-      screen.getByRole("link", { name: /back to grace-2/i }),
+      screen.getByRole("link", { name: /back to trid3nt/i }),
     ).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /launch app/i })).toHaveAttribute(
       "href",
@@ -84,6 +84,6 @@ describe("Privacy — required disclosures", () => {
 
   it("sets the document title", () => {
     render(<Privacy />);
-    expect(document.title).toBe("Privacy Policy — GRACE-2");
+    expect(document.title).toBe("Privacy Policy - TRID3NT");
   });
 });
