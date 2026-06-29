@@ -52,7 +52,6 @@ import {
   readTerrain3dEnabled,
   writeTerrain3dEnabled,
   readContoursEnabled,
-  writeContoursEnabled,
 } from "../lib/terrain_3d";
 
 export interface SettingsPopupProps {
@@ -340,22 +339,15 @@ export function SettingsPopup({
   const [terrain3dEnabled, setTerrain3dEnabled] = useState<boolean>(() =>
     readTerrain3dEnabled(),
   );
-  const [contoursEnabled, setContoursEnabled] = useState<boolean>(() =>
-    readContoursEnabled(),
-  );
+  // Contour overlay flag retained (read-only, default off) only to keep the
+  // onTerrain3dChange payload shape; the broken/stub toggle UI was removed.
+  const [contoursEnabled] = useState<boolean>(() => readContoursEnabled());
 
   function onToggleTerrain3d(): void {
     const next = !terrain3dEnabled;
     setTerrain3dEnabled(next);
     writeTerrain3dEnabled(next);
     onTerrain3dChange?.({ terrain3d: next, contours: contoursEnabled });
-  }
-
-  function onToggleContours(): void {
-    const next = !contoursEnabled;
-    setContoursEnabled(next);
-    writeContoursEnabled(next);
-    onTerrain3dChange?.({ terrain3d: terrain3dEnabled, contours: next });
   }
 
   // SHARED-BOX SLEEP (NATE 2026-06-29). Two-step: first click ARMS a confirm,
@@ -539,28 +531,6 @@ export function SettingsPopup({
               {terrain3dEnabled ? "On" : "Off"}
             </button>
           </div>
-          {/* Contour overlay (STUB) - rendered only when 3D is on, since it
-              overlays the same terrain DEM. Real contour lines need the
-              maplibre-contour plugin (not a dep); for now the toggle persists +
-              MapView logs a TODO. Disabled visual cue so the stub is honest. */}
-          {terrain3dEnabled && (
-            <div style={{ ...valueStyle, marginTop: 10 }}>
-              <span>
-                Contour lines{" "}
-                <span style={{ color: "#888", fontSize: 11 }}>(coming soon)</span>
-              </span>
-              <button
-                data-testid="grace2-settings-contours-toggle"
-                onClick={onToggleContours}
-                style={buttonStyle}
-                role="switch"
-                aria-checked={contoursEnabled}
-                aria-label={`Turn contour lines ${contoursEnabled ? "off" : "on"}`}
-              >
-                {contoursEnabled ? "On" : "Off"}
-              </button>
-            </div>
-          )}
         </div>
 
         {/* Agent section (NATE 2026-06-29, SHARED box) - "Put agent to sleep"
