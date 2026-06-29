@@ -147,7 +147,7 @@ resource "aws_codebuild_project" "agent_builder" {
         build = {
           commands = [
             "cd ctx",
-            "echo Building agent image -> $REGISTRY/$ECR_REPO",
+            "echo Building agent image for $REGISTRY/$ECR_REPO",
             "docker build --file services/agent/Dockerfile --tag $REGISTRY/$ECR_REPO:latest --tag $REGISTRY/$ECR_REPO:codebuild .",
             "echo === IMAGE SIZE ===",
             "docker images $REGISTRY/$ECR_REPO:latest",
@@ -318,7 +318,7 @@ resource "aws_codebuild_project" "broker_builder" {
         build = {
           commands = [
             "cd ctx",
-            "echo Building broker image -> $REGISTRY/$ECR_REPO",
+            "echo Building broker image for $REGISTRY/$ECR_REPO",
             "docker build --file infra/aws-agent-isolation/broker/Dockerfile --tag $REGISTRY/$ECR_REPO:latest --tag $REGISTRY/$ECR_REPO:codebuild .",
             "echo === IMAGE SIZE ===",
             "docker images $REGISTRY/$ECR_REPO:latest",
