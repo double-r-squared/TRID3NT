@@ -575,34 +575,40 @@ async def run_model_flood_habitat_scenario(
 ) -> dict[str, Any]:
     """Run the Case 1 (flood + habitat) composer end-to-end.
 
-    Six-step composition chain over a single bounding box (all deterministic
-    Python, zero LLM calls inside):
-    1. ``fetch_wdpa_protected_areas(bbox, designation_filter)`` — WDPA polygon
-       layer for the bbox.
-    2. Per-species: ``fetch_gbif_occurrences(bbox, taxon_key)`` — one
-       FlatGeobuf ``LayerURI`` per species in ``species_keys``.
-    3. ``run_model_flood_scenario(bbox, return_period_yr)`` — SFINCS flood
-       depth COG (9-step sub-chain; see that tool's docstring).
-    4. ``compute_zonal_statistics(flood_depth_cog, wdpa_polygons)`` — flood
-       impact metrics within each WDPA polygon.
-    5. Optional: ``clip_raster_to_polygon(flood_cog, place_clip_polygon_uri)``
-       — clips the flood layer to a named place polygon when provided.
-    6. Optional: per-layer ``clip_vector_to_polygon(species_layer_uri,
-       place_clip_polygon_uri)`` — clips each species layer to the same polygon.
+    ONE-CALL composer that overlays a SFINCS flood-depth layer with species
+    occurrences (GBIF) and protected-area polygons (WDPA), computes per-polygon
+    flood-impact metrics, and returns every layer + a narration summary.
 
-    When to use:
+    Use this when:
         - Case 1 intent: combine flood modeling with species occurrence data
           and protected-area overlays over a single bbox (e.g. "Show me Florida
           panther occurrences in Big Cypress, plus a 100-year flood").
         - User wants a flood-depth layer, per-species occurrences, WDPA
           boundaries, impact summary, and narration text in one call.
 
-    When NOT to use:
-        - Flood-only scenario (use ``run_model_flood_scenario`` directly).
-        - Species-only query (use ``fetch_gbif_occurrences`` directly).
+    Do NOT use this for:
+        - Flood-only scenario (use run_model_flood_scenario directly).
+        - Species-only query (use fetch_gbif_occurrences directly).
         - Non-flood hazard composers (other milestones).
         - Custom multi-tool plans not covered by Case 1 (compose atomics
           manually).
+
+    Cite the returned impact_metrics aggregate for headline numbers; each
+    returned LayerURI (flood / species / WDPA) can be published separately.
+
+    Six-step composition chain over a single bbox:
+    1. ``fetch_wdpa_protected_areas(bbox, designation_filter)`` -- WDPA polygon
+       layer for the bbox.
+    2. Per-species: ``fetch_gbif_occurrences(bbox, taxon_key)`` -- one
+       FlatGeobuf ``LayerURI`` per species in ``species_keys``.
+    3. ``run_model_flood_scenario(bbox, return_period_yr)`` -- SFINCS flood
+       depth COG (9-step sub-chain; see that tool's docstring).
+    4. ``compute_zonal_statistics(flood_depth_cog, wdpa_polygons)`` -- flood
+       impact metrics within each WDPA polygon.
+    5. Optional: ``clip_raster_to_polygon(flood_cog, place_clip_polygon_uri)``
+       -- clips the flood layer to a named place polygon when provided.
+    6. Optional: per-layer ``clip_vector_to_polygon(species_layer_uri,
+       place_clip_polygon_uri)`` -- clips each species layer to the same polygon.
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. The
@@ -616,10 +622,10 @@ async def run_model_flood_habitat_scenario(
             ``"atlas14_<N>yr"`` family (e.g. ``"atlas14_100yr"``,
             ``"atlas14_500yr"``); the ``<N>`` becomes ``return_period_yr`` in
             the underlying flood model.
-        protected_area_designation: optional WDPA ``DESIG_ENG`` filter — e.g.
+        protected_area_designation: optional WDPA ``DESIG_ENG`` filter -- e.g.
             ``["National Park", "National Preserve"]`` to restrict the WDPA
             overlay.
-        place_clip_polygon_uri: optional polygon URI (``gs://`` or local) used
+        place_clip_polygon_uri: optional polygon URI (``s3://`` or local) used
             to clip the flood + WDPA + species layers to a named region
             (e.g. an Apalachicola NF polygon when the user said
             "in Apalachicola National Forest").

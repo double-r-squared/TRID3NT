@@ -788,38 +788,29 @@ def fetch_usgs_earthquakes(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch REAL, RECORDED USGS earthquakes as a point FlatGeobuf.
+    """Fetch REAL, RECORDED USGS earthquakes as a point layer -- the OBSERVED
+    event catalog (epicenters), NOT a probabilistic hazard model.
 
-    Retrieves recorded seismic events from the USGS FDSN Event Web Service (the
-    machine API behind the USGS "Latest Earthquakes" map) inside a bbox and time
-    window, above a minimum magnitude. Returns one Point feature per event at
-    the epicenter, carrying the magnitude, depth, origin time, place
-    description, and the USGS event-page URL. This is the canonical OBSERVED
-    seismic-event source — the network/instrument record of what actually
-    happened — NOT a probabilistic seismic-hazard model.
+    Use this when:
+        - Recent / historical earthquakes, "seismic events", "quakes", "tremors",
+          "where did earthquakes happen" (e.g. "earthquakes in California this
+          month", "recent quakes near Anchorage", "M5+ in the last year").
+        - You need actual recorded epicenters / magnitudes / depths to map,
+          count, or annotate, or to give seismic context to a damage discussion.
+    Do NOT use this for:
+        - PROBABILISTIC seismic HAZARD (PGA / shaking with a return period) --
+          that is ``run_seismic_hazard_psha``, a hazard surface, not a catalog.
+        - ShakeMap / ground-motion FOOTPRINT for a single event (this returns
+          epicenter POINTS, not the modeled shaking field).
+        - Fault traces as polylines (``fetch_fault_sources``); volcano alerts
+          (``fetch_usgs_volcano_alerts``); tsunami inundation.
+    Honest-empty: a seismically quiet area/window raises EarthquakesNoEventsError
+    (typed), never an empty success-shaped layer. Returns a vector LayerURI (one
+    Point per event) -- pass to ``publish_layer`` to map it.
 
-    When to use:
-        - The user asks for recent / historical earthquakes, "seismic events",
-          "quakes", "tremors", or "where did earthquakes happen"
-          (e.g. "show me the earthquakes in California this month", "recent
-          quakes near Anchorage", "magnitude 5+ earthquakes in the last year",
-          "did anything shake near Ridgecrest last week").
-        - You need actual recorded epicenters, magnitudes, and depths — the real
-          event catalog — to map, count, or annotate.
-        - Providing seismic context for a damage / shaking / infrastructure
-          discussion ("what earthquakes preceded this?").
-
-    When NOT to use:
-        - PROBABILISTIC seismic HAZARD (PGA / shaking with a return period, the
-          USGS National Seismic Hazard Model) — that is a hazard surface, not an
-          event catalog. (If a probabilistic-hazard tool exists, use it; this
-          tool returns the OBSERVED event record only.)
-        - ShakeMap / ground-motion FOOTPRINT rasters for a single event — this
-          tool returns epicenter POINTS, not the modeled shaking field.
-        - Volcano / landslide / tsunami inundation — use the dedicated hazard
-          tools; ``tsunami`` here is only a per-event boolean flag from USGS.
-        - Faults / fault traces as polylines — this tool returns events, not the
-          fault geometry.
+    Queries the USGS FDSN Event Web Service (the API behind the USGS "Latest
+    Earthquakes" map) inside a bbox + time window above a magnitude floor; each
+    Point carries mag, depth, origin time, place, and the USGS event-page URL.
 
     Parameters:
         bbox: Optional ``(west, south, east, north)`` in EPSG:4326 to restrict

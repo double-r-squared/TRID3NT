@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     HydroperiodLayerURI,
@@ -325,51 +326,54 @@ async def run_model_wetland_hydroperiod_scenario(
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
     specific_yield: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model a wetland's seasonal water-table range (hydroperiod).
-
-    Builds a transient MODFLOW 6 groundwater-flow model with an unconfined water
-    table, an RCH recharge schedule (seasonal wet/dry), and an EVT
-    evapotranspiration sink over the user-supplied wetland footprint, runs it, and
-    produces a HYDROPERIOD layer: how much the wetland water table swings across
-    the seasons (the seasonal head range) and the under-wetland head series. Use
-    this to assess wetland hydroperiod / seasonal water-table fluctuation.
+    """Model a WETLAND's seasonal water-table range / hydroperiod -- how long and how deep an area stays saturated across wet/dry seasons.
 
     Use this when:
         - The user asks about a wetland's hydroperiod, seasonal water-table swing /
-          fluctuation, or how wet/dry seasons move the wetland water table.
+          fluctuation, or how long / how deep the wetland stays saturated across
+          wet and dry seasons.
 
     Do NOT use this for:
-        - A recharge-basin mound (use ``run_model_mar_scenario``).
-        - A pumping-well drawdown cone (use ``run_model_sustainable_yield_scenario``).
-        - Surface-water flooding (use ``run_model_flood_scenario``  -  SFINCS).
+        - A recharge-basin mound (use run_model_mar_scenario).
+        - Surface-water flooding / inundation (use run_model_flood_scenario -- SFINCS).
+        - A contaminant plume (use run_modflow_job).
+
+    Honesty floor: a missing wetland footprint is a typed USER_INPUT_REQUIRED error
+    -- the wetland outline is a user input, never invented.
+
+    Returns a WetlandHydroperiodResult whose hydroperiod_layer (a
+    HydroperiodLayerURI) auto-renders and carries seasonal_head_range_m +
+    head_timeseries -- the agent narrates those typed scalars; do not call
+    publish_layer.
+
+    Builds a transient MODFLOW 6 unconfined model with an RCH recharge schedule
+    (seasonal wet/dry) and an EVT evapotranspiration sink over the user-supplied
+    wetland footprint, runs it, and produces a hydroperiod layer: how much the
+    water table swings across the seasons (the seasonal head range) and the
+    under-wetland head series.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        wetland_footprint_lonlat: the wetland outline as ``[(lon, lat), ...]`` or a
-            GeoJSON polygon. REQUIRED  -  never invented; ask the user if absent.
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        wetland_footprint_lonlat: the wetland outline as [(lon, lat), ...] or a
+            GeoJSON polygon. REQUIRED -- never invented; ask the user if absent.
         recharge_schedule_m_day: per-period recharge rate list (m/day). Demo
             wet/dry alternation if None.
         et_surface_m / et_max_rate_m_day / et_extinction_depth_m: EVT controls.
             Demo defaults if None.
         n_periods: explicit transient period override.
         aquifer_k_ms / porosity / specific_yield: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: compute class (small/standard/large/gpu). Default "standard".
 
-    Returns:
-        On success: a ``WetlandHydroperiodResult`` JSON dict with the
-        ``hydroperiod_layer`` (a ``HydroperiodLayerURI`` carrying
-        ``seasonal_head_range_m`` + ``head_timeseries``  -  the agent narrates these
-        typed numbers), the ``derived_params``, and the ``summary``. On a
-        recoverable failure (incl. a missing footprint) the tool returns a typed
-        error the agent narrates honestly  -  it never fabricates a wetland.
+    On a recoverable failure (incl. a missing footprint) the tool returns a typed
+    error the agent narrates honestly -- it never fabricates a wetland.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     try:

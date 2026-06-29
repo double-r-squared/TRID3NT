@@ -1161,41 +1161,34 @@ def run_pelicun_damage_assessment(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fragility-curve-driven damage assessment via Pelicun.
-
-    For each asset point or polygon in ``assets_uri``:
-        1. Sample the hazard raster at the asset location.
-        2. Look up the matching fragility function by ``component_type`` +
-           hazard intensity (from ``fragility_set``).
-        3. Monte-Carlo sample ``realization_count`` damage states.
-        4. Aggregate to per-asset expected damage state + 95% CI + repair-cost
-           statistics.
-
-    Returns a ``LayerURI`` pointing at a FlatGeobuf of the asset features with
-    per-feature damage properties — see "Returns" below.
+    """Fragility-curve damage assessment via Pelicun -- per-asset damage states +
+    repair costs over an EXISTING hazard raster + asset layer (HAZUS).
 
     Use this when:
-        - The user has a modeled or fetched hazard raster (flood depth COG,
-          earthquake intensity raster) AND an asset layer (buildings, parcels,
-          critical infrastructure) and wants quantitative damage / loss
-          estimates over the asset set.
-        - The user asks "how much damage", "expected losses", "which buildings
-          are most exposed", or "monte-carlo damage assessment" on a modeled
-          hazard.
-
+        - You ALREADY have a hazard raster (flood-depth COG, earthquake intensity)
+          AND an asset layer (NSI structures, building grid, parcels) and want
+          quantitative damage / loss: "how much damage", "expected losses", "which
+          buildings are most exposed", monte-carlo damage assessment.
     Do NOT use this for:
-        - Plain hazard exposure counts (use ``compute_zonal_statistics`` with
-          value=hazard raster, zone=asset polygons — cheaper and faster when
-          you only need "how many assets are in the flood zone").
-        - Building footprint counts or density (use ``compute_building_density``
-          or ``fetch_buildings`` — they emit the asset layer this tool consumes).
-        - Loss estimation without an asset layer (this tool requires per-asset
-          features; if you only have aggregate population in a zone, use a
-          zonal-statistics + WorldPop pipeline instead).
-        - Hazards outside the available fragility sets (v0.1 ships flood;
-          earthquake is registered but not wired — wildfire / wind /
-          liquefaction fragility sets are gated on the seismic and wildfire
-          engine work).
+        - You have NO asset/building layer yet -- use
+          ``run_pelicun_with_buildings`` (it fetches a building-density grid
+          FIRST, then runs this).
+        - "How many assets in the flood zone" exposure counts
+          (``compute_zonal_statistics``) or footprint counts
+          (``compute_building_density`` / ``fetch_buildings`` -- they PRODUCE the
+          asset layer this consumes).
+        - Hazards with no wired fragility set (v0.1 = flood only; earthquake is
+          registered but not implemented -> ``fragility_set='fema_hazus_eq_2020'``
+          raises).
+    Honesty (Invariant 1): narrate ds_mean / repair_cost_mean from the returned
+    FEATURE properties, never invent damage numbers. Returns a vector LayerURI
+    (per-asset FlatGeobuf, ds_mean choropleth) -- pass to ``publish_layer`` to map.
+
+    For each asset in ``assets_uri``: sample the hazard raster at the asset, look
+    up the HAZUS loss function by ``component_type``, Monte-Carlo
+    ``realization_count`` loss-ratio realizations (bounded lognormal,
+    sigma_lnD=0.4), aggregate to a per-asset damage state (DS0..DS4) + 95% CI +
+    repair-cost USD.
 
     Parameters:
         hazard_raster_uri: the hazard layer's ``layer_id`` HANDLE from a
@@ -1287,7 +1280,7 @@ def run_pelicun_damage_assessment(
         because Microsoft Buildings carries no occupancy data.
 
         v0.1 cache-first preference: if ``compute_building_density`` has
-        already been called for the same bbox (a cache hit exists in GCS),
+        already been called for the same bbox (a cache hit exists),
         pass its returned ``LayerURI.uri`` directly as ``assets_uri``.  The
         tool reads the COG, samples every non-zero cell as an asset point, and
         runs the Pelicun loop.
@@ -1352,7 +1345,7 @@ def run_pelicun_damage_assessment(
             ``realization_count``.
         PelicunFragilityDataError: Pelicun isn't installed or the bundled
             HAZUS CSV is missing/malformed.
-        PelicunRuntimeError: I/O failure (GCS download, rasterio open,
+        PelicunRuntimeError: I/O failure (object-store download, rasterio open,
             CRS reprojection).
         PelicunNoAssetsError: zero assets in input, zero after the
             component-types filter, or zero overlapping the hazard footprint.

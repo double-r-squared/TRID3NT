@@ -54,7 +54,7 @@ FR-TA-1 / FR-TA-2 / FR-CE-8 / invariants 1, 2, 3, 10.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -359,39 +359,39 @@ async def run_pelicun_with_buildings(
     hazard_raster_uri: str,
     bbox: tuple[float, float, float, float],
     cell_size_m: float = 100.0,
-    fragility_set: str = "hazus_flood_v6",
+    fragility_set: Literal["hazus_flood_v6", "fema_hazus_eq_2020"] = "hazus_flood_v6",
     realization_count: int = 100,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch building density grid then run Pelicun flood-damage assessment.
+    """Fetch a building-density grid THEN run Pelicun flood-damage -- use when you
+    have NO asset/building/NSI layer yet (one call does both).
 
-    Two-step composition: ``compute_building_density(bbox, cell_size_m)`` →
-    ``density_cog_to_point_fgb`` (COG-to-point conversion) →
-    ``run_pelicun_damage_assessment(hazard_raster_uri, assets_uri=<points_fgb>)``.
-    The resulting damage layer shows spatially-varying damage over the actual
-    built-area grid rather than administrative polygons. Not cached at the
-    workflow level (each underlying step is individually cached).
-
-    When to use:
-        - User asks for a building-level or spatially-distributed damage
-          assessment over a flood hazard raster for an international bbox
-          or when USACE NSI structures are not available.
-        - User wants to see "which buildings are damaged" or "damage
-          distributed across the flood zone" — not a CDP administrative aggregate.
-        - A prior ``run_model_flood_scenario`` has produced a flood depth COG
-          and the user wants to pair it with a building-density asset layer.
-
-    When NOT to use:
-        - Plain hazard exposure counts (use ``compute_zonal_statistics`` —
-          cheaper when you only need "how many assets are in the flood zone").
-        - Cases with a custom asset layer already in hand (pass it directly to
-          ``run_pelicun_damage_assessment(assets_uri=...)`` instead).
-        - CONUS bboxes where ``fetch_usace_nsi`` is available — NSI carries
-          real HAZUS occupancy class + per-structure replacement value. Prefer
-          ``run_pelicun_damage_assessment(assets_uri=<NSI URI>)`` for CONUS.
+    Use this when:
+        - You want building-level / spatially-distributed flood damage but do NOT
+          have an asset layer yet -- this fetches the building-density grid FIRST,
+          then runs Pelicun on it (international bbox, or USACE NSI unavailable).
+        - "Which buildings are damaged" / "damage across the flood zone" over a
+          flood-depth COG from a prior ``run_model_flood_scenario``.
+    Do NOT use this for:
+        - You ALREADY have an asset layer (NSI, footprints, parcels) -- call
+          ``run_pelicun_damage_assessment(assets_uri=...)`` directly.
+        - CONUS where ``fetch_usace_nsi`` is available (NSI carries real occupancy
+          + replacement value) -- prefer ``run_pelicun_damage_assessment`` with
+          the NSI URI.
+        - Plain "how many assets in the flood zone" exposure
+          (``compute_zonal_statistics``).
         - Non-flood hazards (``fema_hazus_eq_2020`` is not wired in v0.1).
+    Honesty (Invariant 1): narrate ds_mean / repair_cost_mean from the returned
+    FEATURE properties, never invent. Returns a vector damage LayerURI -- pass to
+    ``publish_layer`` to map it.
+
+    Two-step: ``compute_building_density(bbox, cell_size_m)`` ->
+    ``density_cog_to_point_fgb`` -> ``run_pelicun_damage_assessment(
+    hazard_raster_uri, assets_uri=<points>)``; damage follows the real built-area
+    grid, not administrative polygons. Not cached at the workflow level (each
+    underlying step is individually cached).
 
     Parameters:
         hazard_raster_uri: single-band flood-depth COG in metres. This MUST be the
@@ -440,7 +440,7 @@ async def run_pelicun_with_buildings(
     Cache:
         Building-density step: ``ttl_class="static-30d"`` — cached for 30
         days per ``(bbox-rounded-6dp, cell_size_m, source)``; subsequent calls
-        with the same inputs hit GCS rather than re-fetching Microsoft tiles.
+        with the same inputs hit the cache rather than re-fetching Microsoft tiles.
         Pelicun step: ``ttl_class="static-30d"`` — seeded deterministically
         per asset so byte-identical results are cached.
         This workflow wrapper itself: ``cacheable=False`` (the wrapper

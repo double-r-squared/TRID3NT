@@ -2960,38 +2960,45 @@ def run_solver(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> ExecutionHandle:
-    """Submit a solver execution to the active backend (local / AWS Batch).
+    """Submit a STAGED model to the active solver backend (local / AWS Batch).
 
-    Use this when: the agent has a staged model (e.g. from
-    ``build_sfincs_model``) and needs to actually run the solver. Returns an
-    ``ExecutionHandle`` whose ``workflow_name`` pins the backend and which is
-    the Invariant-8 cancellation seam — feed it to ``wait_for_completion`` to
-    poll progress and obtain the ``RunResult``.
+    GENERIC solver-dispatch primitive -- the low-level seam the engine composers
+    call after staging a deck; agents normally invoke a higher-level composer
+    (run_model_flood_scenario, run_geoclaw_inundation, ...) instead.
 
-    Do NOT use this for: cancelling a running execution (use the WS
-    ``cancel`` envelope — the cancel chain reaches the run automatically via
-    ``wait_for_completion``'s cancel handler); polling a running execution
-    (use ``wait_for_completion``); inspecting a completed run's outputs
-    (those land in ``RunResult.output_uri`` per FR-CE-4).
+    Use this when:
+        - The agent has a staged model manifest (e.g. from build_sfincs_model)
+          and needs to actually launch the solver, then poll it via
+          wait_for_completion using the returned ExecutionHandle.
+
+    Do NOT use this for:
+        - Cancelling a running execution (use the WS cancel envelope -- it
+          reaches the run via wait_for_completion's cancel handler).
+        - Polling a running execution (use wait_for_completion).
+        - Inspecting a completed run's outputs (RunResult.output_uri, FR-CE-4).
+
+    Returns an ExecutionHandle whose workflow_name pins the backend and which is
+    the Invariant-8 cancellation seam -- feed it to wait_for_completion.
 
     Params:
-        solver: lowercase solver identifier. v0.1 supports ``"sfincs"``
-            only; other values raise ``SolverNotRegisteredError`` per
-            the kickoff's lazy-per-milestone deploy strategy.
+        solver: lowercase solver identifier registered in
+            SOLVER_WORKFLOW_REGISTRY (sfincs, geoclaw, openquake, landlab, swan,
+            canopy; extended lazily per-milestone). An unregistered value raises
+            SolverNotRegisteredError.
         model_setup_uri: ``s3://`` URI of the manifest the solver envelope
             will read (the job-0040 manifest schema: ``{"inputs":[...],
             "sfincs_args":[...], "outputs":[...]}``). Input URIs inside the
             manifest are resolved by scheme (job-0291). Engine job-0042's
             ``model_flood_scenario`` workflow composes this from the M4
             atomic-tool substrate.
-        compute_class: FR-CE-3 compute class — selects the AWS Batch sizing
+        compute_class: FR-CE-3 compute class -- selects the AWS Batch sizing
             bucket (small / standard / large / xlarge / gpu). Defaults to
             ``"medium"`` (== standard).
 
     Returns:
         ``ExecutionHandle{handle_id, run_id, solver, compute_class,
         workflows_execution_id, workflow_name, workflow_location,
-        submitted_at}`` — the Invariant-8 cancellation contract. The
+        submitted_at}`` -- the Invariant-8 cancellation contract. The
         ``workflow_name`` pins the backend (``local-docker`` / ``local-exec``
         / ``aws-batch``) so ``wait_for_completion`` routes correctly.
 
@@ -3111,42 +3118,37 @@ async def wait_for_completion(
 ) -> RunResult:
     """Poll the solver run backing ``handle`` until terminal.
 
-    Use this when: the agent has an ``ExecutionHandle`` from ``run_solver``
-    and needs the ``RunResult`` (and the ``output_uri``) before continuing
-    the pipeline. The tool blocks while the solver runs but is cancellable
-    via the WS ``cancel`` chain (Invariant 8 — see module docstring).
-
-    Do NOT use this for: starting a new run (use ``run_solver``); short,
-    synchronous tool calls (atomic tools are sub-second; this is the
-    solver-class blocking pattern).
+    Use this when:
+        - You have an ``ExecutionHandle`` from ``run_solver`` and need the
+          ``RunResult`` (and ``output_uri``) before continuing the pipeline.
+          Blocks while the solver runs but is cancellable via the WS ``cancel``
+          chain (Invariant 8).
+    Do NOT use this for:
+        - Starting a new run (use ``run_solver``).
+        - Short synchronous tool calls (atomic tools are sub-second; this is the
+          solver-class blocking pattern).
 
     Params:
-        handle: the ``ExecutionHandle`` returned by ``run_solver``. The
-            ``workflow_name`` field pins the backend (``local-docker`` /
-            ``local-exec`` / ``aws-batch``) so the poll routes correctly.
-        poll_interval_s: seconds between completion polls. Default 10s —
-            matches NFR-P-4 ≤15-min budget granularity (≥9 polls per run).
-            Surfaced as OQ-41-POLL-INTERVAL.
-        timeout_s: hard ceiling. Defaults to 1800 s (30 min — gives 2×
-            headroom over NFR-P-4). On timeout the tool returns
-            ``RunResult{status="failed", error_code="SOLVER_TIMEOUT"}``
-            and best-effort cancels the run.
+        handle: the ``ExecutionHandle`` from ``run_solver``. Its
+            ``workflow_name`` pins the backend (``local-docker`` / ``local-exec``
+            / ``aws-batch``) so the poll routes correctly.
+        poll_interval_s: seconds between completion polls. Default 10s --
+            matches NFR-P-4 <=15-min budget granularity (>=9 polls per run).
+        timeout_s: hard ceiling. Default 1800s (30 min). On timeout returns
+            ``RunResult{status="failed", error_code="SOLVER_TIMEOUT"}`` and
+            best-effort cancels the run.
 
     Returns:
         ``RunResult{run_id, handle_id, status, output_uri?, started_at,
         completed_at, duration_seconds, error_code?, error_message?,
-        cancellation_reason?}`` — terminal outcome. ``status="complete"``
-        carries the ``output_uri`` parsed from ``completion.json``;
-        ``"failed"`` carries the error code/message; ``"cancelled"``
-        carries a ``cancellation_reason``.
+        cancellation_reason?}`` -- terminal outcome. ``"complete"`` carries the
+        ``output_uri`` parsed from ``completion.json``; ``"failed"`` the error
+        code/message; ``"cancelled"`` a ``cancellation_reason``.
 
-    FR-DC-6: This tool is uncacheable-by-construction. The cache shim is
-    NOT invoked.
-
-    Invariant 8 (cancellation): when the M1 WS cancel chain raises
-    ``asyncio.CancelledError`` inside this coroutine's poll-sleep, the
-    backend handler terminates the live container / Batch job before
-    re-raising so cancellation is initiated within ≤30 s per NFR-R-3.
+    Invariant 8 (cancellation): when the WS cancel chain raises
+    ``asyncio.CancelledError`` in this coroutine's poll-sleep, the backend
+    terminates the live container / Batch job before re-raising (within ~30s per
+    NFR-R-3). FR-DC-6: uncacheable-by-construction; the cache shim is NOT invoked.
     """
     if poll_interval_s < 0:
         raise SolverDispatchError(

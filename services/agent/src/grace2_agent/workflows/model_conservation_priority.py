@@ -443,36 +443,30 @@ async def run_model_conservation_priority(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Build the SC-DNR-style conservation-priority stack for a region.
+    """Build the SC-DNR-style conservation-priority STACK for a US region -- aerial
+    base + vegetation + biodiversity-priority + species layers in one call.
 
-    Deterministic composer (zero LLM calls inside) that fans out over a single
-    AOI and emits the conservation stack as layers:
-
-    1. ``fetch_naip(bbox)``  --  high-res aerial imagery BASE (US-only).
-    2. ``compute_ndvi(bbox, window)``  --  Sentinel-2 NDVI vegetation index.
-    3. ``fetch_mobi(bbox, layer)``  --  NatureServe MoBI imperiled-species
-       biodiversity-importance raster (CONUS-only).
-    4. ``fetch_gbif_occurrences(bbox, species)``  --  one occurrence-point layer
-       per ``species_keys`` entry.
-    5. ``fetch_iucn_red_list_range(bbox, name)``  --  one threatened-range layer
-       per ``species_names`` entry.
-
-    Each source is best-effort and INDEPENDENT  --  one failing never aborts the
-    others. The honesty floor means a run that produced NO layers reports
-    ``status="error"`` (never ``"ok"``); a some-but-not-all run reports
-    ``"partial"`` with the failing sources named.
-
-    When to use:
+    Use this when:
         - A conservation / habitat / biodiversity-priority request over a US
-          region: "show me conservation priorities around the ACE Basin",
-          "map biodiversity, vegetation, and panther sightings near Big Cypress".
-
-    When NOT to use:
-        - A single data layer (call the atomic tool directly: ``fetch_naip`` /
-          ``compute_ndvi`` / ``fetch_mobi`` / ``fetch_gbif_occurrences``).
-        - Flood + habitat exposure (use ``run_model_flood_habitat_scenario``).
-        - Non-US AOIs for the NAIP / MoBI layers (those degrade with an honest
+          region: "show conservation priorities around the ACE Basin", "map
+          biodiversity, vegetation, and panther sightings near Big Cypress".
+    Do NOT use this for:
+        - A single data layer -- call the atomic tool directly (``fetch_naip`` /
+          ``compute_ndvi`` / ``fetch_mobi`` / ``fetch_gbif_occurrences`` /
+          ``fetch_iucn_red_list_range``).
+        - Flood + habitat exposure (``run_model_flood_habitat_scenario``).
+        - Non-US AOIs for the NAIP / MoBI layers (they degrade with an honest
           typed error; NDVI + GBIF + IUCN still work globally).
+    Honesty floor: a run that produced NO layers reports status="error" (never
+    "ok"); some-but-not-all reports "partial" with the failing sources named --
+    never claims a stack it did not build.
+
+    Deterministic composer (zero LLM calls) that fans out over one AOI:
+    ``fetch_naip`` (aerial BASE, US-only) + ``compute_ndvi`` (Sentinel-2
+    vegetation) + ``fetch_mobi`` (NatureServe imperiled-species biodiversity
+    raster, CONUS-only) + ``fetch_gbif_occurrences`` (one layer per
+    ``species_keys``) + ``fetch_iucn_red_list_range`` (one layer per
+    ``species_names``). Each source is best-effort + INDEPENDENT.
 
     Params:
         bbox: AOI ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326, OR omit

@@ -53,10 +53,10 @@ import json
 import logging
 import math
 import os
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts import new_ulid
-from grace2_contracts.execution import LayerURI
+from grace2_contracts.execution import ComputeClass, LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
@@ -299,8 +299,12 @@ _METADATA = AtomicToolMetadata(
 async def compute_canopy_height(
     bbox: tuple[float, float, float, float] | list[float] | str | None = None,
     imagery_uri: str | None = None,
-    model_variant: str = DEFAULT_MODEL_VARIANT,
-    compute_class: str | None = None,
+    model_variant: Literal[
+        "compressed_SSLhuge_aerial",
+        "compressed_SSLhuge",
+        "compressed_SSLlarge",
+    ] = DEFAULT_MODEL_VARIANT,
+    compute_class: ComputeClass | None = None,
     case_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -308,27 +312,26 @@ async def compute_canopy_height(
 ) -> LayerURI | dict[str, Any]:
     """Estimate tree-canopy HEIGHT (metres) over an AOI from RGB imagery.
 
-    Runs Meta's pretrained HighResCanopyHeight deep-learning model (a DINOv2 ViT
-    backbone + DPT decoder, Apache-2.0) on sub-metre RGB aerial imagery and
-    produces an ESTIMATED per-pixel canopy-top-height raster (metres), painted on
-    the map with a greens height ramp. This is an "AI-using-AI" inference tool:
-    the inference is heavy (a ViT on CPU is minutes-to-hours), so it runs on the
-    SAME scale-to-zero CPU AWS Batch substrate the physics engines use -- it is an
-    ordinary compute-heavy tool, NOT a special tier.
+    Runs Meta's pretrained HighResCanopyHeight model (DINOv2 ViT + DPT decoder)
+    on sub-metre RGB aerial imagery to produce an ESTIMATED per-pixel
+    canopy-top-height raster (metres), a greens height ramp. Heavy CPU inference
+    on the SAME scale-to-zero AWS Batch substrate the engines use.
 
     Use this when:
         - The user wants tree / forest CANOPY HEIGHT over an area ("how tall are
-          the trees here", "estimate canopy height for <small forested AOI>",
-          "show a canopy-height map"); OR
-        - A downstream needs a height raster to feed ``compute_zonal_statistics``
+          the trees here", "estimate canopy height", "canopy-height map"); OR
+        - A downstream needs a height raster to feed compute_zonal_statistics
           (mean/max canopy height per polygon / FTW ag field).
 
     Do NOT use this for:
-        - Vegetation greenness / health (use ``compute_ndvi``).
-        - Land-cover CLASSES (use ``fetch_landcover``).
+        - Vegetation greenness / health (use compute_ndvi).
+        - Land-cover CLASSES (use fetch_landcover).
         - Building heights / a DSM-DTM difference (this is a TREE-canopy model).
-        - Very large AOIs -- a CPU ViT is slow, so the bbox is capped; narrow it
-          to a neighborhood / small preserve.
+        - Very large AOIs -- a CPU ViT is slow, so the bbox is capped.
+
+    Truthfulness floor: the layer is a model ESTIMATE (MAE ~2.5 m), named
+    "Estimated Canopy Height (m)"; an empty/incomplete solve returns a typed
+    error, never a silently-empty layer as success.
 
     Params:
         bbox: the AOI as ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326

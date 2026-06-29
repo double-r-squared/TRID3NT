@@ -45,6 +45,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -454,50 +455,52 @@ async def run_model_sustainable_yield_scenario(
     n_periods: int | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model a pumping well's drawdown cone (sustainable-yield / well interference).
+    """Model a pumping well's DRAWDOWN cone (sustainable-yield / well interference).
 
-    Builds a MODFLOW 6 transient groundwater-flow model with a sustained
-    extraction well at the user-supplied location + rate, runs it, and produces a
-    DRAWDOWN layer (the cone of depression  -  how far the water table is drawn
-    down around the well, and the peak decline). Use this to assess sustainable
-    yield, well interference, or how much a proposed pumping rate lowers the water
-    table.
+    A MODFLOW 6 transient groundwater-flow run with a sustained extraction well at
+    the user-supplied location + rate, producing the cone of depression around the
+    well and its peak decline.
 
     Use this when:
         - The user asks how much a pumping well draws down the water table, the
           drawdown cone / cone of depression, sustainable yield, or well
-          interference.
+          interference / how much a proposed pumping rate lowers the water table.
 
     Do NOT use this for:
-        - A contaminant spill plume (use ``run_modflow_job``).
-        - Mine-pit dewatering (use ``run_model_mine_dewatering_scenario``).
-        - Surface-water flooding (use ``run_model_flood_scenario``  -  SFINCS).
+        - A contaminant spill plume -> run_modflow_job.
+        - Open-pit mine inflow / dewatering rate -> run_model_mine_dewatering_scenario.
+        - A capture zone / zone-of-contribution -> run_model_capture_zone_scenario.
+        - A regional water-budget partition -> run_model_regional_water_budget_scenario.
+        - Surface-water flooding -> run_model_flood_scenario (SFINCS).
+
+    Never fabricates the well: a missing well location OR pumping rate returns a
+    typed USER_INPUT_REQUIRED error (ask the user) rather than inventing one.
+
+    Returns a SustainableYieldResult with a drawdown_layer (DrawdownLayerURI) that
+    auto-renders -- the agent narrates the typed scalars (max_drawdown_m, the
+    head_decline_timeseries); do not call publish_layer.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        well_location_latlon: the pumping-well ``(lat, lon)``. REQUIRED  -  never
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        well_location_latlon: the pumping-well (lat, lon). REQUIRED -- never
             invented; ask the user if absent.
         pumping_rate_m3_day: well extraction rate, m^3/day. REQUIRED. A positive
             value is treated as extraction magnitude; negative is extraction too.
         sim_years / n_periods: optional transient horizon controls.
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: FR-CE-3 compute class. Default "standard".
 
-    Returns:
-        On success: a ``SustainableYieldResult`` JSON dict with the
-        ``drawdown_layer`` (a ``DrawdownLayerURI`` carrying ``max_drawdown_m`` +
-        ``head_decline_timeseries``  -  the agent narrates these typed numbers),
-        the ``derived_params``, and the ``summary``. On a recoverable failure
-        (incl. a missing well/rate) the tool returns a typed error the agent
-        narrates honestly  -  it never fabricates a well.
+    Returns the result as a JSON dict (derived_params + summary alongside the
+    layer). On a recoverable failure (incl. a missing well/rate) the tool returns
+    a typed error the agent narrates honestly.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     well = _coerce_optional_latlon(well_location_latlon)

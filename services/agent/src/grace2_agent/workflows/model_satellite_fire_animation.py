@@ -58,7 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -1255,39 +1255,42 @@ async def run_model_satellite_fire_animation(
     start_utc: str | None = None,
     end_utc: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,
-    satellite: str | None = None,
+    satellite: Literal[
+        "goes-18", "goes-19", "suomi-npp", "noaa-20", "noaa-21", "all"
+    ]
+    | None = None,
     confirm: bool = False,
     overlay_firms: bool = True,
     overlay_perimeters: bool = True,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Recreate a CIRA-style satellite fire animation (GOES or JPSS/VIIRS), review-gated.
+    """Recreate a CIRA-style satellite fire animation (GOES or JPSS/VIIRS) --
+    REVIEW-GATED: STOPS for a bbox/window confirm before fetching all frames.
 
-    Composes the full fire-animation pipeline: resolve the named incident
-    (NIFC/WFIGS) -> AOI bbox + time window -> per-frame satellite imagery
-    (GOES-18 GeoColor + Fire Temperature BLENDED into one composite loop for an
-    intra-day 5-minute animation -- GeoColor base with the active fire glowing on
-    top, the CIRA "GeoColor and Fire Temperature" look -- OR JPSS/VIIRS Day Fire
-    for a multi-day irregular polar series) -> a scrubbable animation, with FIRMS
-    hot pixels + the NIFC perimeter overlaid. STOPS at a bbox/window REVIEW gate
-    first so the user sees + can adjust the AOI and the window BEFORE all frames
-    are fetched.
+    Use this when:
+        - "Recreate the CIRA GOES / JPSS-VIIRS fire animation of <named fire>"
+          when the AOI is NOT yet known -- this does the incident/news lookup,
+          derives the AOI + window, and STOPS at a review gate (confirm=false).
+        - An intra-day GOES loop (GeoColor + Fire Temperature blended) OR a
+          multi-day JPSS/VIIRS Day Fire timelapse (products=["day_fire"]).
+    Do NOT use this for:
+        - An ALREADY-known AOI with NO confirm gate -- use
+          ``run_model_goes_fire_animation`` (the unattended GOES sibling).
+        - Lightning, not fire (``run_model_glm_lightning_animation``).
+        - A single most-recent frame (``fetch_goes_satellite``); detections-only
+          (``fetch_firms_active_fire``) or perimeters-only
+          (``fetch_nifc_fire_perimeters``).
+    Two phases: confirm=false returns status="review" (AOI bbox + window +
+    planned frame counts); confirm=true fetches + publishes + animates. ALWAYS
+    call confirm=false FIRST. Honesty floor: a run that produced NO frames
+    returns status="empty", never "ok".
 
-    When to use:
-        - "Recreate the CIRA GOES fire animation of the fires near Eureka Utah."
-        - "Recreate the JPSS VIIRS Day Fire animation of the Santa Rosa Island
-          fire over the four days it grew."
-        - Any "pull the news on this fire and animate it from satellite imagery"
-          request. Pick GOES-18 / 5-minute for an intra-day loop; pick
-          JPSS/VIIRS Day Fire for a multi-day timelapse. ALWAYS hit the review
-          gate (confirm=false) first.
-
-    When NOT to use:
-        - A single most-recent satellite frame (use fetch_goes_satellite).
-        - Active-fire detections only (fetch_firms_active_fire) or perimeters only
-          (fetch_nifc_fire_perimeters) with no animation.
-        - A flood / surge / seismic scenario (use the matching run_model_* engine).
+    Composes the full pipeline: resolve the named incident (NIFC/WFIGS) -> AOI
+    bbox + time window -> per-frame GOES (GeoColor + Fire Temperature BLENDED into
+    one intra-day 5-minute loop -- the CIRA "GeoColor and Fire Temperature" look
+    -- OR JPSS/VIIRS Day Fire for a multi-day polar series) -> a scrubbable
+    animation, with FIRMS hot pixels + the NIFC perimeter overlaid.
 
     Params:
         incident_name: the named fire incident (e.g. "Iron", "Santa Rosa Island").

@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -826,42 +826,40 @@ async def run_model_glm_lightning_animation(
     bbox: tuple[float, float, float, float],
     start_utc: str | None = None,
     end_utc: str | None = None,
-    satellite: str = DEFAULT_SATELLITE,
+    satellite: Literal["goes-19", "goes-16", "goes-18", "goes-17"] = DEFAULT_SATELLITE,
     accumulation_window_s: int = DEFAULT_ACCUM_S,
-    base_band: str = "visible",
+    base_band: Literal["visible", "ir"] = "visible",
     storm_name: str | None = None,
     overlay_standalone_ged: bool = True,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Animate a GOES-19 GLM lightning loop DIRECT from an AOI + UTC window -- NO news step.
+    """Animate a GOES GLM LIGHTNING loop DIRECT from an AOI + UTC window -- NO
+    news step, NO geocode, NO availability snap.
 
-    Recreates the CIRA/RAMMB SLIDER "visible + Group Energy Density" lightning loop
-    for a Gulf-of-Mexico tropical cyclone as a real, in-app, time-scrubbable layer.
-    Over the requested daytime UTC window it animates a grayscale GOES-19 (GOES-East)
-    ABI band-2 VISIBLE base and bakes a GLM Group-Energy-Density (GED) PURPLE/violet
-    overlay on top -- GLM optical-lightning group energy gridded onto the ABI 2 km
-    grid, accumulated per 1-minute frame, on a log purple ramp (femtojoules).
-    Lightning flickers as bright violet-to-white cells over the grayscale storm,
-    marching with the convection.
-
-    DIRECT, ONE-SHOT, NO NEWS LOOKUP. This composer takes the AOI bbox + UTC window
-    DIRECTLY and goes STRAIGHT to fetch -> grid -> bake -> publish. There is NO
-    news/incident ingest, NO NIFC/news lookup, NO geocode-from-news, and NO
-    availability/SLIDER snap. Pick THIS when you already have an AOI and a time
-    window and want the lightning loop to just run.
-
-    When to use:
-        - "Show the lightning over this storm" / "animate the GLM Group Energy
-          Density over this bbox and window" when the AOI is already known.
-        - Recreate the CIRA Gulf-cyclone visible + GED loop for a pinned event.
-
-    When NOT to use:
-        - The AOI is NOT known and you need a news/geocode lookup first (there is no
-          such path here by design -- resolve the bbox separately, then call this).
-        - A GOES fire-temperature imagery loop (run_model_goes_fire_animation).
-        - A single most-recent lightning snapshot (fetch_glm_lightning, no
+    Use this when:
+        - The AOI bbox + UTC window are ALREADY known: "show the lightning over
+          this storm" / "animate the GLM Group Energy Density over this bbox and
+          window".
+        - Recreate the CIRA/RAMMB Gulf-cyclone "visible + Group Energy Density"
+          loop for a pinned event (grayscale GOES-East visible base + purple GED).
+    Do NOT use this for:
+        - An AOI that is NOT known / needs a news lookup first -- resolve the bbox
+          separately (e.g. ``run_model_news_event_ingest``), THEN call this (there
+          is no news path here by design).
+        - A GOES FIRE loop (``run_model_goes_fire_animation`` /
+          ``run_model_satellite_fire_animation``) -- this is LIGHTNING, not fire.
+        - A single most-recent lightning snapshot (``fetch_glm_lightning`` with no
           accumulation_window_s).
+    Honesty floor: raises GLM_ANIM_EMPTY when NO 1-min bucket had in-AOI lightning
+    (quiet storm / AOI off the storm / pre-GLM date) -- never a blank animation.
+
+    Per 1-minute frame it bins the GLM Group-Energy-Density onto the ABI 2 km grid,
+    reads the nearest visible scan onto the SAME grid, and bakes the purple GED
+    over the grayscale base -> ONE scrubbable RGB loop (the CIRA look), plus an
+    optional separable transparent purple GED overlay scrubber. GED is shown in
+    femtojoules on a log purple ramp; lightning flickers violet-to-white over the
+    grayscale storm, marching with the convection.
 
     Params:
         bbox: AOI [min_lon, min_lat, max_lon, max_lat] EPSG:4326. Required. Example

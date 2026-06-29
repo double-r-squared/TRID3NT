@@ -55,6 +55,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     CaptureZoneLayerURI,
     DEFAULT_AQUIFER_K_MS,
@@ -341,57 +342,50 @@ async def run_model_capture_zone_scenario(
     n_particles: int = 16,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Delineate the capture zone (zone of contribution) for a pumping well.
+    """Delineate the capture zone / zone-of-contribution for a pumping well (raw capture envelope, no regulatory framing).
 
-    Builds a MODFLOW 6 steady groundwater-flow model, then runs an MF6 PRT
-    (Particle Tracking) backward-tracking solve that releases particles around
-    the pumping-well screen and tracks them up-gradient to their capture origin.
-    The convex hull of all backtracked pathlines at each requested travel-time
-    threshold is the capture-zone isochrone for that tier. Produces a VECTOR
-    polygon layer on the map (violet protection-zone colour).
+    MF6 PRT backward particle tracking from the pumping well; convex hull of
+    backtracked pathlines per travel-time tier = the capture-zone isochrone.
+    VECTOR polygon. Shows where a well's water comes FROM.
 
     Use this when:
         - The user asks for the capture zone, zone of contribution, zone of
           influence, or zone of transport for a pumping well.
-        - The user asks how far back in time the water in a well came from.
+        - The user asks how far back / from where the water in a well came.
 
     Do NOT use this for:
-        - A wellhead PROTECTION area with EPA WHPA framing (use
-          ``run_model_wellhead_protection_scenario``).
-        - A pumping-well DRAWDOWN cone (use ``run_model_sustainable_yield_scenario``).
-        - A contaminant spill plume (use ``run_modflow_job``).
+        - The EPA WHPA regulatory product with named time-of-travel (TOT)
+          protection zones (run_model_wellhead_protection_scenario).
+        - A pumping-well DRAWDOWN cone (run_model_sustainable_yield_scenario).
+        - A contaminant spill plume (run_modflow_job).
 
-    PRECISION CAVEAT: the polygon is the CONVEX HULL of discrete backtracked
-    pathlines on a structured 100 m rectilinear grid with DEMO aquifer parameters
-    (K=1e-4 m/s, porosity=0.3), NOT a calibrated regulatory wellhead protection
-    area. Always narrate this caveat.
+    PRECISION CAVEAT: a DEMO convex-hull envelope on a 100 m grid, NOT a
+    calibrated regulatory product. Always narrate.
+
+    Returns a CaptureZoneResult with a CaptureZoneLayerURI that auto-renders; the
+    agent narrates the typed capture_zone_area_km2 + travel_time_years + per-tier
+    isochrone_areas_km2 + particle_count. Do not call publish_layer.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        well_location_latlon: the pumping-well ``(lat, lon)``. REQUIRED -- never
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        well_location_latlon: the pumping-well (lat, lon). REQUIRED -- never
             invented; ask the user if absent (Invariant 9).
         travel_time_years: list of isochrone cutoffs in years. Default [1, 5, 10].
         n_particles: particles released around the well screen (default 16; range
             4..256). More = denser pathline fan = more representative shape.
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``'standard'``. PRT
-            archetypes run LOCAL-ONLY (fast; Batch is not used).
+        compute_class: FR-CE-3 compute class. Default "standard". PRT archetypes
+            run LOCAL-ONLY (fast; Batch is not used).
 
-    Returns:
-        On success: a ``CaptureZoneResult`` JSON dict with the
-        ``capture_zone_layer`` (a ``CaptureZoneLayerURI`` carrying
-        ``capture_zone_area_km2`` + ``travel_time_years`` + per-tier
-        ``isochrone_areas_km2`` + ``particle_count``). On a recoverable failure
-        (incl. a missing well) the tool returns a typed error the agent narrates
-        honestly -- it never fabricates a well.
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    On a recoverable failure (incl. a missing well) the tool returns a typed error
+    the agent narrates honestly -- it never fabricates a well. FR-DC-6:
+    cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     well = _coerce_optional_latlon(well_location_latlon)
@@ -448,18 +442,15 @@ async def run_model_wellhead_protection_scenario(
     n_particles: int = 16,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Delineate an EPA-style wellhead protection area (WHPA) for a pumping well.
+    """Delineate an EPA Wellhead Protection Area (WHPA) -- regulatory time-of-travel (TOT) protection zones for a pumping well.
 
-    Identical to ``run_model_capture_zone_scenario`` but uses EPA WHPA
-    fixed-travel-time framing and default tiers of [2, 5, 10] years (the EPA
-    wellhead protection program under SDWA Section 1428; fixed-travel-time
-    delineation per EPA 440/6-87-010 -- the 2-year IMMEDIATE zone, the 5-year
-    INTERMEDIATE zone, and the 10-year LONG-TERM zone). Both tools produce the
-    same ``CaptureZoneLayerURI`` carrier; the framing and defaults differ.
+    MF6 PRT particle tracking with EPA WHPA fixed-travel-time framing and named
+    TOT intervals: default tiers [2, 5, 10] yr (SDWA Section 1428) -- 2/5/10 yr
+    = IMMEDIATE/INTERMEDIATE/LONG-TERM zones.
 
     Use this when:
         - The user explicitly asks for a wellhead protection area, WHPA, source
@@ -468,18 +459,21 @@ async def run_model_wellhead_protection_scenario(
           Act (SDWA) Wellhead Protection Program.
 
     Do NOT use this for:
-        - A general zone-of-contribution / capture zone without WHPA framing
-          (use ``run_model_capture_zone_scenario``).
-        - A drawdown cone (use ``run_model_sustainable_yield_scenario``).
+        - A plain zone-of-contribution / capture zone WITHOUT WHPA framing or
+          named TOT intervals (run_model_capture_zone_scenario).
+        - A pumping-well DRAWDOWN cone (run_model_sustainable_yield_scenario).
 
-    PRECISION CAVEAT: the polygon is a demo planning envelope computed from DEMO
-    aquifer parameters, NOT a regulatory WHPA delineation. Always narrate this.
+    PRECISION CAVEAT: a DEMO planning envelope, NOT a legally defensible
+    regulatory WHPA delineation.
 
-    Params, Returns: identical to ``run_model_capture_zone_scenario`` (default
-    travel_time_years=[2, 5, 10]).
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    Returns a CaptureZoneResult with a CaptureZoneLayerURI that auto-renders (same
+    carrier as run_model_capture_zone_scenario); the agent narrates the typed
+    capture_zone_area_km2 + per-tier isochrone_areas_km2. Do not call
+    publish_layer. Params identical to run_model_capture_zone_scenario (default
+    travel_time_years=[2, 5, 10]). On a recoverable failure (incl. a missing well)
+    the tool returns a typed error the agent narrates honestly -- it never
+    fabricates a well. FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     well = _coerce_optional_latlon(well_location_latlon)

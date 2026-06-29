@@ -35,6 +35,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     MODFLOWRunArgs,
@@ -319,49 +320,51 @@ async def run_model_mar_scenario(
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
     aquifer_sy: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model a managed-aquifer-recharge (MAR) groundwater mound under a basin.
-
-    Builds a transient MODFLOW 6 groundwater-flow model with an unconfined water
-    table and an RCH recharge package over the user-supplied infiltration-basin
-    footprint, runs it, and produces a MOUNDING layer: how high the water table
-    rises under the basin (the mound) and the total volume of water recharged into
-    the aquifer. Use this to assess managed aquifer recharge / water banking /
-    infiltration-basin mounding.
+    """Model a managed-aquifer-recharge (MAR) groundwater MOUND under a spreading/infiltration basin (passive surface recharge, no recovery).
 
     Use this when:
-        - The user asks how much an infiltration / recharge basin raises the water
-          table (the mound), managed aquifer recharge, or aquifer water banking.
+        - The user asks how high an infiltration / recharge / spreading basin
+          raises the water table (the recharge mound), managed aquifer recharge,
+          or passive aquifer water banking.
 
     Do NOT use this for:
-        - A pumping-well drawdown cone (use ``run_model_sustainable_yield_scenario``).
-        - Aquifer storage & recovery cycling (use ``run_model_asr_scenario``).
-        - A contaminant spill plume (use ``run_modflow_job``).
+        - Seasonal inject-AND-recover through a well / recovery efficiency (use
+          run_model_asr_scenario) -- MAR is passive basin recharge with NO recovery.
+        - A pumping / extraction drawdown cone (use run_model_sustainable_yield_scenario).
+        - A contaminant plume (use run_modflow_job).
+
+    Honesty floor: a missing basin footprint is a typed USER_INPUT_REQUIRED error
+    (never invented).
+
+    Returns a MARResult whose mounding_layer (a MoundingLayerURI) auto-renders and
+    carries max_mounding_m + recharged_volume_m3 -- agent narrates these scalars,
+    do not call publish_layer.
+
+    Builds a transient MODFLOW 6 unconfined groundwater-flow model with an RCH
+    recharge package over the user-supplied infiltration-basin footprint, runs it,
+    and produces a mounding layer: how high the water table rises under the basin
+    and the total volume of water recharged into the aquifer.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        basin_footprint_lonlat: the basin outline as ``[(lon, lat), ...]`` or a
-            GeoJSON polygon. REQUIRED  -  never invented; ask the user if absent.
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        basin_footprint_lonlat: the basin outline as [(lon, lat), ...] or a
+            GeoJSON polygon. REQUIRED -- never invented; ask the user if absent.
         infiltration_rate_m_day: applied recharge rate (m/day). Demo default if None.
         recharge_months: months the basin floods (>= 1). Demo default if None.
         n_periods: explicit transient period override.
         aquifer_k_ms / porosity / aquifer_sy: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: compute class (small/standard/large/gpu). Default "standard".
 
-    Returns:
-        On success: a ``MARResult`` JSON dict with the ``mounding_layer`` (a
-        ``MoundingLayerURI`` carrying ``max_mounding_m`` + ``recharged_volume_m3``  -
-        the agent narrates these typed numbers), the ``derived_params``, and the
-        ``summary``. On a recoverable failure (incl. a missing basin) the tool
-        returns a typed error the agent narrates honestly  -  it never fabricates a
-        basin.
+    On a recoverable failure (incl. a missing basin) the tool returns a typed error
+    the agent narrates honestly -- it never fabricates a basin.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     try:

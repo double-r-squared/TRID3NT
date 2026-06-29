@@ -31,8 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.landlab_contracts import (
     LandlabRunArgs,
     LandlabSusceptibilityLayerURI,
@@ -86,7 +87,7 @@ _RUN_LANDLAB_METADATA = AtomicToolMetadata(
 )
 async def run_landlab_susceptibility(
     bbox: tuple[float, float, float, float] | list[float] | str | None = None,
-    analysis: str = "landslide_probability",
+    analysis: Literal["landslide_probability", "overland_flow"] = "landslide_probability",
     target_resolution_m: float = 30.0,
     soil_transmissivity_m2_day: float | None = None,
     soil_cohesion_pa: float | None = None,
@@ -97,37 +98,39 @@ async def run_landlab_susceptibility(
     n_monte_carlo: int | None = None,
     rainfall_intensity_mm_hr: float | None = None,
     storm_duration_hr: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LandlabSusceptibilityLayerURI | dict[str, Any]:
-    """Run a Landlab surface-process simulation over an AOI (landslide / runoff).
+    """Run a Landlab surface-process simulation over an AOI -- LANDSLIDE
+    susceptibility / factor-of-safety, or rainfall OVERLAND FLOW (AWS Batch -> COG).
+
+    Use this when:
+        - Model LANDSLIDE susceptibility / slope stability / factor of safety /
+          where slopes may fail over a hillslope or catchment
+          (analysis="landslide_probability", the default).
+        - Model rainfall OVERLAND FLOW / surface runoff routed over terrain
+          (analysis="overland_flow").
+    Do NOT use this for:
+        - Riverine / coastal flooding (``run_model_flood_scenario`` = SFINCS) or
+          urban / pluvial drainage flooding around buildings
+          (``run_swmm_urban_flood``).
+        - Groundwater contamination plumes (``run_modflow_job``).
+    Honesty (Invariant 1): narrate unstable_area_fraction / min_factor_of_safety /
+    mean_probability_of_failure from the returned typed fields, never invent; the
+    demo soil/rainfall defaults are demo values, not site-calibrated geotechnics.
 
     Builds a Landlab ``RasterModelGrid`` from the AOI DEM and runs a documented
     component chain on AWS Batch:
-      - ``"landslide_probability"`` (DEFAULT): the infinite-slope
-        ``LandslideProbability`` chain (FlowAccumulator -> LandslideProbability)
-        — a Monte-Carlo probability-of-failure + factor-of-safety field driven by
-        topographic slope + contributing area + soil cohesion / friction /
-        transmissivity / recharge. The landslide-susceptibility / FoS hazard.
-      - ``"overland_flow"``: the ``OverlandFlow`` (de Almeida shallow-water)
-        chain — routes a rainfall pulse over the DEM and returns the peak
-        surface-water depth.
-    Returns a ``LandlabSusceptibilityLayerURI`` carrying the susceptibility / FoS
-    COG + the three narration scalars.
-
-    Use this when:
-        - The user asks to model LANDSLIDE susceptibility / slope stability /
-          factor of safety / where slopes may fail over a hillslope or catchment.
-        - The user asks to model rainfall OVERLAND FLOW / surface runoff routed
-          over terrain (pass ``analysis="overland_flow"``).
-
-    Do NOT use this for:
-        - Riverine / coastal flooding (use ``run_model_flood_scenario`` —
-          SFINCS) or urban / pluvial drainage flooding around buildings (use
-          ``run_swmm_urban_flood``).
-        - Groundwater contamination plumes (use ``run_modflow_job``).
+      - ``"landslide_probability"`` (DEFAULT): infinite-slope
+        ``LandslideProbability`` (FlowAccumulator -> LandslideProbability) -- a
+        Monte-Carlo probability-of-failure + factor-of-safety field from slope +
+        contributing area + soil cohesion / friction / transmissivity / recharge.
+      - ``"overland_flow"``: ``OverlandFlow`` (de Almeida shallow-water) -- routes
+        a rainfall pulse over the DEM, returns the peak surface-water depth.
+    Returns a ``LandlabSusceptibilityLayerURI`` (a ``LayerURI`` subtype) carrying
+    the COG + the three narration scalars.
 
     Params:
         bbox: AOI as ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326
@@ -148,17 +151,17 @@ async def run_landlab_susceptibility(
 
     Returns:
         On success: a ``LandlabSusceptibilityLayerURI`` (a ``LayerURI`` subtype)
-        — the emitter appends it to ``session-state.loaded_layers`` and the map
+        -- the emitter appends it to ``session-state.loaded_layers`` and the map
         renders the susceptibility / FoS / depth COG. It carries
         ``unstable_area_fraction`` + ``min_factor_of_safety`` +
-        ``mean_probability_of_failure`` (Invariant 1 — the agent narrates these
+        ``mean_probability_of_failure`` (Invariant 1 -- the agent narrates these
         typed numbers, never invents them).
 
         On failure: a dict with ``status="error"`` + ``error_code`` +
         ``error_message`` so the LLM narrates the failure honestly (no layer).
 
     FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
+    ``source_class="workflow_dispatch"`` -- the cache shim is NOT invoked.
     """
     if bbox is None:
         return {

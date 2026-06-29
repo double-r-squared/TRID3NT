@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
+
+from grace2_contracts.execution import ComputeClass
 
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -87,13 +89,13 @@ async def run_swmm_urban_flood(
     total_rain_depth_mm: float | None = None,
     storm_duration_hr: float = 6.0,
     rain_interval_min: int = 5,
-    building_representation: str = "drop",
-    infiltration_method: str = "none",
+    building_representation: Literal["drop", "raise", "roughness"] = "drop",
+    infiltration_method: Literal["none", "scs_cn", "green_ampt"] = "none",
     target_resolution_m: float = 10.0,
     manning_overland: float = 0.03,
     mass_balance_tolerance_pct: float = 5.0,
     barriers: dict[str, Any] | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     enable_autoscale: bool = True,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -101,29 +103,27 @@ async def run_swmm_urban_flood(
 ) -> SWMMDepthLayerURI | dict[str, Any]:
     """Run a quasi-2D PySWMM urban (pluvial) flood simulation over an AOI.
 
-    Builds a quasi-2D SWMM deck from the AOI DEM + OSM building footprints (one
-    storage node per overland cell, 4-connectivity conduits, per-cell rainfall
-    subcatchments fed by an Atlas-14 nested design-storm hyetograph, a single
-    boundary outfall), runs pyswmm headless in-process, rasterizes the
-    per-timestep node depth onto the mesh grid, and returns a
-    ``SWMMDepthLayerURI`` carrying the peak overland-depth COG + the three
-    narration scalars. The per-timestep depth frames are emitted as a temporal
-    animation group the LayerPanel scrubber plays.
+    Builds a quasi-2D SWMM overland mesh from the AOI DEM + OSM buildings,
+    drives it with an Atlas-14 design storm, runs pyswmm headless, and returns
+    the peak overland-depth COG + a depth animation. Native flood-control
+    structures (walls, flap gates).
 
     Use this when:
-        - The user asks to model urban / pluvial / drainage / stormwater
-          flooding, simulate street-level inundation from a design storm,
-          model flooding AROUND buildings, or run a SWMM / PCSWMM-style urban
-          flood scenario over a city block / neighborhood AOI.
-        - The scenario involves structural flood controls: a SOUND BARRIER /
-          flood WALL (water is dammed) or a FLAP GATE / one-way drain (water
-          passes one direction only) — pass these as ``barriers``.
+        - Urban / pluvial / drainage / stormwater flooding, street-level
+          inundation from a design storm, flooding AROUND buildings, or a SWMM /
+          PCSWMM-style run over a city block / neighborhood.
+        - Structural flood controls: a flood WALL (water dammed) or a FLAP GATE /
+          one-way drain -- pass these as barriers.
 
     Do NOT use this for:
         - Riverine / coastal / large-watershed flooding (use
-          ``run_model_flood_scenario`` — that is SFINCS).
-        - Groundwater contamination plumes (use ``run_modflow_job``).
-        - Cancelling a running urban-flood sim (use the WS ``cancel`` envelope).
+          run_model_flood_scenario -- that is SFINCS).
+        - Tsunami / dam-break / shallow-water run-up (use run_geoclaw_inundation).
+        - Groundwater contamination plumes (use run_modflow_job).
+
+    Narrate the typed max_depth_m / flooded_area_km2 / n_buildings_affected it
+    returns, never invented (Invariant 1); a mass-balance failure raises a typed
+    error instead of a silently-wrong layer (honesty floor).
 
     Params:
         bbox: AOI as ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326

@@ -41,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -755,7 +755,7 @@ _RUN_METADATA = AtomicToolMetadata(
 async def run_model_goes_fire_animation(
     bbox: tuple[float, float, float, float],
     products: list[str] | None = None,
-    satellite: str = "goes-18",
+    satellite: Literal["goes-18", "goes-19"] = "goes-18",
     sector: str = "conus",
     start_utc: str | None = None,
     end_utc: str | None = None,
@@ -765,33 +765,34 @@ async def run_model_goes_fire_animation(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Animate a GOES fire loop UNATTENDED (auto-snap the window, fetch, publish -- NO confirm gate).
+    """Animate a GOES fire loop UNATTENDED -- NO confirm gate: auto-snaps the
+    window, fetches, publishes, and runs to completion WITHOUT parking.
+
+    Use this when:
+        - The AOI bbox is ALREADY known and the user does NOT want a
+          window-confirm gate: "animate the GOES fire loop over this AOI and
+          window and just run it".
+        - "Recreate the CIRA GOES-18 GeoColor + Fire Temperature animation over
+          this bbox" -- an intra-day blended loop, no parking.
+    Do NOT use this for:
+        - An AOI that is NOT yet known / you need the news-incident lookup + a
+          bbox/window REVIEW gate first -- use
+          ``run_model_satellite_fire_animation`` (the review-gated sibling).
+        - A multi-day polar VIIRS Day Fire timelapse
+          (``run_model_satellite_fire_animation`` with products=["day_fire"]).
+        - Lightning (``run_model_glm_lightning_animation``); a single most-recent
+          frame (``fetch_goes_satellite``); detections-only
+          (``fetch_firms_active_fire``).
+    Honesty floor: raises GOES_FIRE_ANIM_EMPTY ONLY when NOTHING is available (an
+    empty SLIDER index, or every fetched frame empty/off-grid) -- never a fake
+    "ok".
 
     Recreates a CIRA-style intra-day GOES fire animation as a real, in-app,
-    scrubbable layer that runs to completion WITHOUT parking the conversation to
-    ask the user to confirm the time window. Given an AOI bbox and a window (or
-    "use the most recent available"), it reads the SLIDER availability,
-    AUTO-SNAPS the window to the nearest AVAILABLE frames, then fetches + publishes
-    the GOES-18 GeoColor + Fire Temperature imagery (BLENDED into one composite
-    scrubber by default -- the CIRA "GeoColor and Fire Temperature" look), and
-    overlays the FIRMS active-fire detections as a co-registered static layer.
-
-    When to use:
-        - "Animate the GOES fire loop over this AOI and window and just run it"
-          (no parking to confirm the window).
-        - "Recreate the CIRA GOES-18 GeoColor + Fire Temperature animation over
-          this bbox" when the AOI is already known.
-        - The unattended sibling of run_model_satellite_fire_animation: pick THIS
-          when the AOI bbox is already resolved and the user does NOT want a
-          window-confirm gate.
-
-    When NOT to use:
-        - The AOI is NOT yet known and you need the news/incident lookup + a
-          bbox/window REVIEW gate first (use run_model_satellite_fire_animation).
-        - A multi-day polar VIIRS Day Fire timelapse
-          (run_model_satellite_fire_animation with products=["day_fire"]).
-        - A single most-recent satellite frame (fetch_goes_satellite) or active-
-          fire detections only (fetch_firms_active_fire).
+    scrubbable layer. Given an AOI bbox + a window (or "use the most recent
+    available") it reads SLIDER availability, AUTO-SNAPS the window to the nearest
+    available frames, then fetches + publishes GOES-18 GeoColor + Fire Temperature
+    (BLENDED into one composite scrubber by default) with the FIRMS active-fire
+    detections overlaid.
 
     Params:
         bbox: AOI [min_lon, min_lat, max_lon, max_lat] EPSG:4326. Required.

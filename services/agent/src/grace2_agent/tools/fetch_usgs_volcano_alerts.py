@@ -681,38 +681,30 @@ def fetch_usgs_volcano_alerts(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch the CURRENT USGS volcano alert levels as a point FlatGeobuf.
+    """Fetch the CURRENT USGS volcano alert levels as a point layer -- the
+    OBSERVED observatory status, NOT a probabilistic eruption-hazard model.
 
-    Retrieves the current volcanic-alert status of every monitored US volcano
-    from the USGS Volcano Hazards Program HANS public API and returns one Point
-    feature per volcano at its summit, carrying the four-stage Volcano Alert
-    Level (``NORMAL`` / ``ADVISORY`` / ``WATCH`` / ``WARNING``) and the ICAO
-    Aviation Color Code (``GREEN`` / ``YELLOW`` / ``ORANGE`` / ``RED``), plus
-    summit elevation, region, and the responsible observatory. This is the
-    canonical OBSERVED volcanic-unrest status — each observatory's current call
-    on its volcanoes — NOT a probabilistic eruption-hazard model.
+    Use this when:
+        - Current volcano alert status: "which volcanoes are at watch/warning",
+          "is any volcano erupting", "volcano alert levels", "aviation color
+          codes" (e.g. "what is Kilauea's alert level", "any Alaska volcanoes
+          acting up", "map the Cascade volcanoes and their status").
+        - You need the real current alert state -- the observatory record -- to
+          map, count, or annotate (ashfall / aviation / hazard context).
+    Do NOT use this for:
+        - PROBABILISTIC eruption HAZARD or ashfall-dispersion modeling -- this
+          returns the current alert STATUS, not a modeled hazard surface.
+        - Historical / Holocene eruption catalogs (this is the CURRENT snapshot).
+        - Earthquakes (``fetch_usgs_earthquakes``); non-US volcanoes (the USGS
+          monitored list covers the US observatory network only).
+    Honest-empty: a bbox with no monitored US volcano raises
+    VolcanoAlertsNoVolcanoesError (typed), never an empty success-shaped layer.
+    Returns a vector LayerURI (one Point per volcano) -- pass to ``publish_layer``.
 
-    When to use:
-        - The user asks for the current volcano alert status / "which volcanoes
-          are at watch/warning" / "is any volcano erupting" / "volcano alert
-          levels" / "aviation color codes" (e.g. "show me volcanoes on alert",
-          "what is Kilauea's alert level", "any Alaska volcanoes acting up",
-          "map the Cascade volcanoes and their status").
-        - You need the real current alert state — the observatory record — to
-          map, count, or annotate.
-        - Providing volcanic context for an ashfall / aviation / hazard
-          discussion ("which volcanoes are currently elevated?").
-
-    When NOT to use:
-        - PROBABILISTIC eruption HAZARD or ashfall-dispersion modeling — this
-          tool returns the current alert STATUS, not a modeled hazard surface.
-        - Historical eruption catalogs / Holocene eruption records — this is the
-          CURRENT alert snapshot only.
-        - Earthquakes (use ``fetch_usgs_earthquakes``); a volcano's seismicity
-          is not returned here, only its summary alert level.
-        - Non-US volcanoes — the USGS monitored list covers the US volcano-
-          observatory network (Alaska/Aleutians, Hawaii, Cascades, western
-          CONUS, and a few Pacific/Mariana islands).
+    Joins the USGS Volcano Hazards Program HANS alert spine to volcano
+    coordinates; each Point carries the four-stage Volcano Alert Level
+    (NORMAL/ADVISORY/WATCH/WARNING) + the ICAO Aviation Color Code
+    (GREEN/YELLOW/ORANGE/RED), summit elevation, region, and the observatory.
 
     Parameters:
         bbox: Optional ``(west, south, east, north)`` in EPSG:4326 to restrict

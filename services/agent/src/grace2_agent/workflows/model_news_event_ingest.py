@@ -53,7 +53,7 @@ Cross-cutting principles in force:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from grace2_contracts.case_results import (
     DerivedEventParam,
@@ -711,87 +711,58 @@ _RUN_MODEL_NEWS_EVENT_INGEST_METADATA = AtomicToolMetadata(
 @register_tool(_RUN_MODEL_NEWS_EVENT_INGEST_METADATA)
 async def run_model_news_event_ingest(
     sources: list[dict[str, Any]],
-    target_event_type: str = "spill",
+    target_event_type: Literal["spill", "flood", "wildfire", "hurricane"] = "spill",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Ingest news / alert sources and derive event parameters for user review.
+    """Ingest news / alerts and DERIVE event parameters for USER REVIEW -- a
+    review-gate STOP step, NOT a simulation (no solver runs).
 
-    Three-step composition chain (all deterministic Python, zero LLM calls):
-    1. Per-source fetch dispatch:
-       - "url" sources → ``web_fetch(url, extract="main_text")``
-       - "nws_alert" sources → ``fetch_nws_event(area=identifier)``
-       - "storm_event" sources → ``fetch_storm_events_db(year, state)``
-    2. ``aggregate_claims_across_sources(sources, claim_targets)`` — derives
-       best-supported values for location, scale, contaminant, date,
-       casualties with source-agreement confidence scoring.
-    3. ``geocode_location(derived_location_value)`` — converts the aggregated
-       location claim to a bbox for the review modal.
-    Returns an ``EventIngestResult`` with typed ``derived_params`` +
-    ``provenance`` + deterministic ``presentation_text``. STOPS here —
-    review-gated by design (Invariant 9); downstream solvers run only after
+    Use this when:
+        - Case 2 intent: you have one or more sources about a real-world event
+          (news article URLs, NWS alert area codes, Storm Events DB ids) and need
+          derived event params (location/scale/contaminant/date/casualties) for
+          the user to review BEFORE any solver dispatches.
+        - Any "incident report" / "news article about" / "NWS alert" / "storm
+          event database" prompt that precedes a decision to model it.
+    Do NOT use this for:
+        - Running / dispatching a solver -- this STOPS before any solver
+          (Invariant 9 review gate); the user approves the envelope first.
+        - Flood modeling when you already have a bbox/location and no news sources
+          (use ``run_model_flood_scenario`` directly).
+        - Summarizing a single page (use ``web_fetch`` directly).
+    This STOPS for review and DOES NOT SIMULATE: it returns an EventIngestResult
+    (typed derived_params + per-source provenance + bbox + a deterministic
+    presentation_text) for the web review modal; downstream solvers run only after
     user approval.
 
-    When to use:
-        - Case 2 intent: agent has one or more sources about a real-world
-          event (news article URLs, NWS alert area codes, Storm Events DB
-          identifiers) and needs derived event parameters for user review
-          before any solver dispatches.
-        - Any prompt mentioning "incident report", "news article about", "NWS
-          alert", "storm event database" followed by a decision to model it.
-
-    When NOT to use:
-        - Dispatching a downstream solver (this workflow stops before any
-          solver — review-gated by Invariant 9 design).
-        - Flood modeling without news/alert sources (use ``run_model_flood_scenario``
-          directly with bbox / location_query).
-        - Summarizing a single page (use ``web_fetch`` directly).
+    Deterministic chain (zero LLM calls): per-source fetch (web_fetch /
+    fetch_nws_event / fetch_storm_events_db) -> aggregate_claims_across_sources
+    (confidence-scored values) -> geocode_location(derived location) -> bbox.
 
     Params:
         sources: list of dicts each ``{"type": "url" | "nws_alert" |
             "storm_event", "identifier": "<URL or area code or year[:state]>"}``.
             At least one source is required.
         target_event_type: one of ``"spill"`` / ``"flood"`` / ``"wildfire"`` /
-            ``"hurricane"`` — routes the claim-target list used by the
+            ``"hurricane"`` -- routes the claim-target list used by the
             aggregator. Default ``"spill"``.
 
     Returns:
-        The ``EventIngestResult`` serialized as a JSON-compatible dict
-        (``model_dump(mode="json")``) so the LLM tool surface can narrate it
-        directly. Carries ``event_type``, ``derived_params`` (each with
-        ``value`` / ``confidence`` / ``supporting_sources`` / ``alternatives``),
-        ``provenance`` (per-source citation entries), ``bbox`` (or ``None``),
-        and ``presentation_text`` (the deterministic summary the web UI
-        renders for review).
-
-    Side effects:
-        - Per-source atomic tools (``web_fetch``, ``fetch_nws_event``,
-          ``fetch_storm_events_db``) cache their results in GCS per their
-          own TTL classes (``dynamic-1h`` for the first; ``dynamic-1h`` /
-          ``static-30d`` for the latter two). This wrapper itself is
-          ``cacheable=False`` — the workflow's value is the dispatch +
-          aggregation, never the cached return.
-
-    FR-DC-6: This wrapper declares ``cacheable=False`` +
-    ``ttl_class="live-no-cache"`` + ``source_class="workflow_dispatch"`` —
-    the same shape as job-0042's ``run_model_flood_scenario``.
+        The ``EventIngestResult`` as a JSON-compatible dict
+        (``model_dump(mode="json")``): ``event_type``, ``derived_params`` (each
+        with ``value`` / ``confidence`` / ``supporting_sources`` /
+        ``alternatives``), ``provenance`` (per-source citations), ``bbox`` (or
+        ``None``), and ``presentation_text`` (the deterministic review summary).
 
     Cross-tool dependencies:
-        Upstream (step chain):
-        - ``web_fetch(url)`` — called for each "url" source in ``sources``.
-        - ``fetch_nws_event(area)`` — called for each "nws_alert" source.
-        - ``fetch_storm_events_db(year, state)`` — called for each
-          "storm_event" source.
-        - ``aggregate_claims_across_sources(sources, claim_targets)`` — step 2;
-          derives typed event parameter values with confidence scores.
-        - ``geocode_location(location_value)`` — step 3; converts location
-          claim to a bbox.
-        Downstream (feeds):
-        - Sprint-13 MODFLOW / spill-plume solver — the returned
-          ``EventIngestResult`` is the review envelope the user approves;
-          the approved derived params (location bbox, scale, contaminant)
-          become inputs to the next solver dispatch.
+        Upstream step chain: per-source ``web_fetch(url)`` /
+        ``fetch_nws_event(area)`` / ``fetch_storm_events_db(year, state)`` ->
+        ``aggregate_claims_across_sources(sources, claim_targets)`` ->
+        ``geocode_location(location_value)`` -> bbox. Downstream: the returned
+        envelope is what the user approves before a solver (e.g. MODFLOW
+        spill-plume) is dispatched. ``cacheable=False`` (FR-DC-6).
     """
     result = await model_news_event_ingest(
         sources=sources,

@@ -38,6 +38,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     BudgetPartitionLayerURI,
     MODFLOWRunArgs,
@@ -250,46 +251,46 @@ async def run_model_regional_water_budget_scenario(
     zone_partition: str | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model a regional groundwater water-budget partition (where the water goes).
+    """Model a regional groundwater water-BUDGET partition (where the water goes).
 
-    Builds a steady MODFLOW 6 regional groundwater-flow model (a west->east
-    regional gradient over the demo grid), runs it, reads the cell-by-cell flow
-    budget, and partitions it by term (CHD inflow / outflow across the gradient,
-    storage, any wells)  -  narrating where the regional groundwater enters and
-    leaves the domain. Use this for a regional flow-accounting / water-budget
-    summary. The budget is built ONLY from real solver budget terms (never
-    fabricated).
+    A steady MODFLOW 6 regional groundwater-flow run (a west->east regional
+    gradient over the demo grid) whose cell-by-cell flow budget is partitioned by
+    term (CHD inflow / outflow across the gradient, storage, any wells) -- a
+    regional flow-accounting summary of where groundwater enters and leaves.
 
     Use this when:
         - The user asks for a regional groundwater water budget, where the water
           goes / comes from across an area, or a flow-accounting summary.
 
     Do NOT use this for:
-        - A pumping-well drawdown cone (use ``run_model_sustainable_yield_scenario``).
-        - Mine-pit dewatering (use ``run_model_mine_dewatering_scenario``).
-        - A contaminant spill plume (use ``run_modflow_job``).
+        - A single-well drawdown cone -> run_model_sustainable_yield_scenario.
+        - Mine-pit dewatering -> run_model_mine_dewatering_scenario.
+        - A contaminant spill plume -> run_modflow_job.
+
+    The budget is built ONLY from real solver budget terms, never fabricated.
+
+    Returns a RegionalWaterBudgetResult with a budget_layer
+    (BudgetPartitionLayerURI) that auto-renders -- the agent narrates the typed
+    budget_partition_m3_day dict; do not call publish_layer.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
         zone_partition: optional zone-split scheme (e.g.
-            ``"upgradient_downgradient"``). None = whole-domain budget.
+            "upgradient_downgradient"). None = whole-domain budget.
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: FR-CE-3 compute class. Default "standard".
 
-    Returns:
-        On success: a ``RegionalWaterBudgetResult`` JSON dict with the
-        ``budget_layer`` (a ``BudgetPartitionLayerURI`` carrying the
-        ``budget_partition_m3_day`` dict  -  the agent narrates these typed numbers),
-        the ``derived_params``, and the ``summary``. On a recoverable failure the
-        tool returns a typed error the agent narrates honestly.
+    Returns the result as a JSON dict (derived_params + summary alongside the
+    layer). On a recoverable failure the tool returns a typed error the agent
+    narrates honestly.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     try:

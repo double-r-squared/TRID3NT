@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
+
+from grace2_contracts.execution import ComputeClass
 
 from grace2_contracts.swan_contracts import (
     SwanRunArgs,
@@ -133,12 +135,12 @@ _RUN_SWAN_METADATA = AtomicToolMetadata(
 )
 async def run_swan_waves(
     bbox: tuple[float, float, float, float] | list[float] | str | None = None,
-    mode: str = "stationary",
+    mode: Literal["stationary", "nonstationary"] = "stationary",
     boundary_hs_m: float | None = None,
     boundary_tp_s: float | None = None,
     boundary_dir_deg: float | None = None,
     boundary_spread_deg: float | None = None,
-    boundary_side: str | None = None,
+    boundary_side: Literal["N", "S", "E", "W"] | None = None,
     wind_uri: str | None = None,
     n_dir: int = 36,
     n_freq: int = 32,
@@ -150,36 +152,34 @@ async def run_swan_waves(
     friction: bool = True,
     breaking: bool = True,
     triads: bool = True,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> WaveFieldLayerURI | dict[str, Any]:
     """Run a STANDALONE SWAN nearshore spectral wave-field simulation over an AOI.
 
-    Solves the third-generation spectral action-balance equation over real
-    bathymetry, producing a defensible nearshore wave field: a peak significant
-    wave-height (Hs) COG + a per-timestep Hs-frame animation group (nonstationary),
-    plus mean peak period (Tp) and mean direction (Dir) narration scalars. SWAN is
-    the ADDITIVE higher-fidelity comparison engine: it lets the user COMPARE an
-    engineering-grade wave field against the existing SFINCS+SnapWave output on the
-    SAME case.
+    Solves the 3rd-generation spectral action-balance equation over real
+    bathymetry for a defensible nearshore WAVE FIELD: a peak Hs COG + optional
+    Hs animation, plus mean period (Tp) and direction (Dir). The ADDITIVE
+    higher-fidelity comparison engine.
 
     Use this when:
-        - The user wants the DEFENSIBLE nearshore WAVE FIELD itself: significant
-          wave heights / periods / direction (the "show me the incoming waves
-          onshore" ask), engineering-grade wave climate, overtopping inputs, or
+        - The nearshore WAVE FIELD itself -- wave heights / periods / direction
+          ("the incoming waves onshore"), wave climate, overtopping inputs, or
           buoy validation; OR
-        - The user wants to COMPARE SWAN against SFINCS+SnapWave on a coastal case.
+        - COMPARE SWAN against SFINCS+SnapWave on a coastal case.
 
     Do NOT use this for:
-        - Compound-flood / surge inundation DEPTH (use
-          ``run_model_flood_scenario`` - that is SFINCS, which already carries the
-          FAST in-model SnapWave wave-setup path; SWAN is NOT a cheaper
-          compound-flood solver).
-        - Tsunami / dam-break / shallow-water run-up (use
-          ``run_geoclaw_inundation``).
-        - Urban / pluvial drainage (use ``run_swmm_urban_flood``).
+        - Compound-flood / surge inundation DEPTH (use run_model_flood_scenario
+          -- SFINCS, which carries the FAST in-model SnapWave wave-setup; SWAN
+          is NOT a cheaper compound-flood solver).
+        - Tsunami / dam-break / shallow-water run-up (use run_geoclaw_inundation).
+        - Urban / pluvial drainage (use run_swmm_urban_flood).
+
+    Narrate the typed max_hs_m / mean_tp_s / mean_dir_deg it returns, never
+    invented; an empty wave field returns SWAN_OUTPUT_EMPTY, never a silent
+    success (honesty floor).
 
     Params:
         bbox: the computational-domain AOI as ``(min_lon, min_lat, max_lon,

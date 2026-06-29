@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     ASRLayerURI,
     DEFAULT_AQUIFER_K_MS,
@@ -309,50 +310,53 @@ async def run_model_asr_scenario(
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
     aquifer_sy: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model aquifer storage & recovery (ASR): seasonal inject/recover at a well.
-
-    Builds a transient MODFLOW 6 groundwater-flow model with a single ASR well
-    that INJECTS water for the injection months then RECOVERS (extracts) it for
-    the recovery months, repeated for the requested cycles, runs it, and produces
-    an ASR layer: the inject-rise / recover-fall head sawtooth at the well and the
-    recovery efficiency (the fraction of injected water recovered). Use this to
-    assess ASR feasibility / recovery efficiency / seasonal water banking.
+    """Model aquifer storage & recovery (ASR): SEASONAL inject-then-recover at a WELL, with recovery efficiency.
 
     Use this when:
         - The user asks about aquifer storage & recovery, seasonal inject-then-
-          recover water banking, or ASR recovery efficiency.
+          recover water banking through a well, or ASR recovery efficiency (the
+          fraction of injected water recovered).
 
     Do NOT use this for:
-        - A steady recharge-basin mound (use ``run_model_mar_scenario``).
-        - A pumping-well drawdown cone (use ``run_model_sustainable_yield_scenario``).
-        - A contaminant spill plume (use ``run_modflow_job``).
+        - Passive surface / basin recharge that builds a mound with NO recovery
+          (use run_model_mar_scenario) -- ASR actively injects AND recovers
+          through a well across seasons.
+        - A pure pumping / extraction drawdown cone (use run_model_sustainable_yield_scenario).
+        - A contaminant plume (use run_modflow_job).
+
+    Honesty floor: a missing well or rate is a typed USER_INPUT_REQUIRED error
+    (never invented).
+
+    Returns an ASRResult whose asr_layer (an ASRLayerURI) auto-renders and carries
+    recovery_efficiency + head_timeseries -- agent narrates these scalars, do not
+    call publish_layer.
+
+    Builds a transient MODFLOW 6 groundwater-flow model with a single ASR well that
+    INJECTS water for the injection months then RECOVERS (extracts) it for the
+    recovery months, repeated for the requested cycles, producing the inject-rise /
+    recover-fall head sawtooth at the well and the recovery efficiency.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        well_location_latlon: the ASR well ``(lat, lon)``. REQUIRED  -  never
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        well_location_latlon: the ASR well (lat, lon). REQUIRED -- never
             invented; ask the user if absent.
         injection_rate_m3_day: injection rate, POSITIVE magnitude (m^3/day).
             REQUIRED.
         recovery_rate_m3_day: recovery rate, POSITIVE magnitude (m^3/day). REQUIRED.
         injection_months / recovery_months / n_cycles: cycle schedule controls.
         aquifer_k_ms / porosity / aquifer_sy: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: compute class (small/standard/large/gpu). Default "standard".
 
-    Returns:
-        On success: an ``ASRResult`` JSON dict with the ``asr_layer`` (an
-        ``ASRLayerURI`` carrying ``recovery_efficiency`` + ``head_timeseries``  -
-        the agent narrates these typed numbers), the ``derived_params``, and the
-        ``summary``. On a recoverable failure (incl. a missing well / rate) the
-        tool returns a typed error the agent narrates honestly  -  it never
-        fabricates a well.
+    On a recoverable failure (incl. a missing well / rate) the tool returns a typed
+    error the agent narrates honestly -- it never fabricates a well.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     well = _coerce_optional_latlon(well_location_latlon)

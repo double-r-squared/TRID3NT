@@ -85,7 +85,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -508,36 +508,36 @@ def _fetch_gem_gaf_bytes() -> bytes:
 def fetch_fault_sources(
     bbox: list[float] | tuple[float, float, float, float],
     *,
-    catalog: str = "gem",
+    catalog: Literal["gem"] = "gem",
     # Absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer; kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Fetch REAL active-fault seismic sources (traces + slip rates) for an AOI.
+    """Fetch REAL active-fault seismic SOURCES (traces + slip rates) for an AOI
+    as a renderable layer (GEM Global Active Faults) -- a PSHA sub-INPUT, NOT the
+    hazard calc.
 
-    Retrieves harmonized active-fault traces from the GEM Global Active Faults
-    Database and returns the kinematic source records the OpenQuake deck builder
-    turns into physics-based ``simpleFaultSource`` seismic sources (each with a
-    moment-balanced truncated Gutenberg-Richter MFD derived from the fault's
-    slip rate). This is the REAL-SOURCE path for PSHA -- hazard that peaks ON the
-    actual fault trace, not a synthetic uniform-rate rectangle over the AOI.
+    Use this when:
+        - You are about to build an OpenQuake PSHA deck and want REAL fault
+          sources instead of the synthetic AOI area source (hazard "along" a
+          named fault / in a tectonically active area: San Andreas, Hayward,
+          SF Bay; "PGA map near the Hayward fault").
+        - The user wants which active faults cross an area and how fast they slip.
+    Do NOT use this for:
+        - The hazard MAP / ground-shaking itself -- that is
+          ``run_seismic_hazard_psha`` (the PSHA run), which CONSUMES these
+          sources; this only fetches the source model.
+        - Recorded past earthquakes as points (``fetch_usgs_earthquakes``).
+        - Tsunami / surge / flood hazard (unrelated engines).
+    Honest degrade: an AOI with NO mapped active faults returns an EMPTY
+    ``faults`` list + a typed ``note`` and NO layer (NEVER fabricated); report
+    "no mapped active faults here" and fall back to the synthetic area source if
+    a run is still wanted.
 
-    When to use:
-        - The user asks for seismic/earthquake hazard "along" a named fault or
-          in a tectonically active area ("seismic hazard along the San Andreas",
-          "earthquake PSHA for the SF Bay", "PGA map near the Hayward fault").
-        - You are about to build an OpenQuake classical-PSHA deck and want REAL
-          fault sources instead of the synthetic AOI area source.
-        - The user wants to know which active faults pass through an area and
-          how fast they slip.
-
-    When NOT to use:
-        - Historical earthquake CATALOGS / observed events -- this is the fault
-          SOURCE model (where future ruptures nucleate), not a record of past
-          quakes.
-        - Ground-shaking outputs / hazard rasters -- those are produced by the
-          OpenQuake run that CONSUMES these sources, not by this fetcher.
-        - Tsunami / surge / flood hazard -- unrelated engines.
+    Returns the kinematic source records the OpenQuake deck builder turns into
+    physics-based ``simpleFaultSource`` sources (each a moment-balanced truncated
+    Gutenberg-Richter MFD from the fault slip rate) -- hazard that peaks ON the
+    actual trace, not a uniform-rate rectangle over the AOI.
 
     Parameters:
         bbox: ``[min_lon, min_lat, max_lon, max_lat]`` in EPSG:4326. Required.
@@ -547,24 +547,17 @@ def fetch_fault_sources(
 
     Returns:
         On a NON-empty fetch: a ``FaultSourcesResult`` -- a renderable vector
-        ``LayerURI`` (the fault traces AUTO-RENDER on the map as red/orange lines;
-        do NOT call ``publish_layer`` on it) that ALSO carries the source-model
-        records on its ``faults`` field (each ``{name, geometry (lon/lat trace),
+        ``LayerURI`` (the fault traces AUTO-RENDER as red/orange lines; do NOT
+        call ``publish_layer`` on it) that ALSO carries the source-model records
+        on its ``faults`` field (each ``{name, geometry (lon/lat trace),
         net_slip_rate_mm_yr, dip_deg, rake_deg, upper_seis_depth_km,
         lower_seis_depth_km, slip_type, catalog_name}``), plus ``catalog``,
         ``fault_count``, and ``source``. Pass ``.faults`` straight to the worker's
         ``render_fault_source_model_xml``.
 
         On an EMPTY fetch: a plain ``dict`` with ``fault_count=0``, an empty
-        ``faults`` list, and a typed ``note`` -- and NO layer (see below).
-
-    Honest degrade (data-source fallback norm):
-        An AOI with NO mapped active faults returns an EMPTY ``faults`` list and
-        a typed ``note`` -- it is NOT an error, the tool NEVER fabricates a fault,
-        and (the honesty gate) NO map layer is produced, so a "fault lines
-        displayed" claim is never grounded when nothing was drawn. The caller can
-        honestly report "no mapped active faults here" (and fall back to the
-        synthetic area source if a run is still wanted).
+        ``faults`` list, and a typed ``note`` -- and NO layer (the honesty gate:
+        a "fault lines displayed" claim is never grounded when nothing was drawn).
 
     Raises:
         FaultSourcesInputError: malformed bbox or unknown catalog (caller bug).

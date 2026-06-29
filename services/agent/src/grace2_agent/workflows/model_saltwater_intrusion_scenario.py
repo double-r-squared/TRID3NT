@@ -58,6 +58,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -342,44 +343,45 @@ async def run_model_saltwater_intrusion_scenario(
     freshwater_inflow_m3_day: float | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Model a coastal saltwater intrusion wedge (Henry-style variable-density BUY).
 
-    Builds a MODFLOW 6 GWF+GWT BUY (variable-density) vertical cross-section
-    model along a user-supplied coastal transect, runs it, and produces:
-
-      * A Vega-Lite CROSS-SECTION HEATMAP chart (x = distance inland m,
-        y = depth m, colour = salinity ppt, + 50%-isochlor toe rule) -- the
-        primary physical deliverable.
-      * A VECTOR MAP layer: a FlatGeobuf transect LINE (A=seaward -> B=inland)
-        + a toe POINT at the 50%-isochlor penetration depth, rendered teal
-        (#1ABC9C) via the ``saltwater_intrusion`` style preset.
-      * HEADLINE SCALAR: ``intrusion_length_m`` -- bottom-layer 50%-isochlor
-        toe penetration from the seaward boundary, m. Narrate this as the key
-        physical result.
+    Builds a MODFLOW 6 GWF+GWT BUY (variable-density) vertical cross-section along
+    a user-supplied coastal transect to map the seawater wedge / freshwater-
+    saltwater interface. Headline scalar: intrusion_length_m (the 50%-isochlor toe
+    penetration inland from the seaward boundary, m).
 
     Use this when:
-        - The user asks about saltwater intrusion, seawater wedge, coastal
+        - The user asks about saltwater intrusion, a seawater wedge, coastal
           groundwater salinisation, or freshwater/saltwater interface depth.
-        - The user wants to see how far inland the saltwater wedge penetrates.
+        - The user wants how far inland the saltwater wedge penetrates.
 
     Do NOT use this for:
-        - Surface coastal flooding (use ``run_model_flood_scenario`` / SFINCS).
-        - A pumping-well drawdown (use ``run_model_sustainable_yield_scenario``).
-        - Contaminant plume transport (use ``run_modflow_job``).
+        - An inland freshwater contaminant plume (run_modflow_job, or
+          run_model_groundwater_contamination_scenario from a news article).
+        - A pumping-well drawdown cone (run_model_sustainable_yield_scenario).
+        - Surface-water / storm-surge flooding (run_model_flood_scenario -- SFINCS).
 
-    PRECISION CAVEAT: this is a demo Henry-style variable-density simulation
-    (100-column structured cross-section, demo aquifer K=1e-4 m/s). Narrate it
-    as a qualitative wedge illustration, NOT a calibrated intrusion forecast.
+    The coastal transect is NEVER fabricated: a missing coastal_transect_latlon
+    returns a typed USER_INPUT_REQUIRED error (Invariant 9) -- ask the user.
+
+    Returns a SaltwaterIntrusionResult whose intrusion_layer (a vector transect
+    LINE A=seaward -> B=inland + toe POINT, teal #1ABC9C) auto-renders; a Vega-Lite
+    cross-section salinity heatmap is emitted as a side effect; the agent narrates
+    the typed fields (intrusion_length_m, toe_distance_m, seaward_salinity_ppt).
+
+    PRECISION CAVEAT: a demo Henry-style variable-density simulation (100-column
+    structured cross-section, demo aquifer K=1e-4 m/s). Narrate it as a qualitative
+    wedge illustration, NOT a calibrated intrusion forecast.
 
     Params:
         location: place name (geocoded). Supply this OR ``aoi_latlon``.
         aoi_latlon: explicit ``(lat, lon)`` AOI point.
         coastal_transect_latlon: ``[[lat_a, lon_a], [lat_b, lon_b]]`` (A=seaward,
-            B=inland). REQUIRED -- never invented; ask the user if absent (Invariant 9).
+            B=inland). REQUIRED -- never invented; ask the user if absent.
         seawater_salinity_ppt: boundary salinity at the seaward end, ppt. Default
             35.0 (open ocean). Lower for estuarine / brackish conditions.
         n_vertical_layers: number of vertical model layers (default 20; range 4..80).
@@ -389,16 +391,8 @@ async def run_model_saltwater_intrusion_scenario(
         compute_class: FR-CE-3 compute class. Default ``"standard"``. This archetype
             runs LOCAL-ONLY (the Henry demo grid is small + fast; Batch is not used).
 
-    Returns:
-        On success: a ``SaltwaterIntrusionResult`` JSON dict with the
-        ``intrusion_layer`` (a ``SaltwaterWedgeLayerURI`` carrying
-        ``intrusion_length_m`` + ``toe_distance_m`` + ``seaward_salinity_ppt`` +
-        ``transect_endpoints``), the ``derived_params``, and the ``summary``.
-        On a recoverable failure (incl. a missing transect) the tool returns a
-        typed error the agent narrates honestly -- it never fabricates a transect.
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    Cacheable=False / live-no-cache / workflow_dispatch -- the cache shim is not
+    invoked. On a recoverable failure the tool returns a typed error.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
 

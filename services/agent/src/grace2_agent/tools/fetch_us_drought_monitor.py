@@ -637,28 +637,26 @@ def fetch_us_drought_monitor(
 ) -> LayerURI:
     """US Drought Monitor weekly drought-category polygons as a FlatGeobuf layer.
 
-    Fetches the dissolved USDM drought-category (Multi)Polygons intersecting the
-    bbox for the current week (default) or a specified past release ``date``.
-    Returns a FlatGeobuf with one feature per drought class (D0-D4) intersecting
-    the bbox, annotated with ``dm`` (0-4 class), ``label`` (category name),
-    ``period`` (USDM release ``YYYYMMDD``), and ``valid_date`` (ISO date).
+    Fetches the dissolved USDM drought-category (Multi)Polygons (D0-D4)
+    intersecting the bbox for the current week or a past release ``date``.
+    US-only; a categorical expert-synthesis product, NOT a numeric index.
 
-    **When to use:**
-    - User asks for the US Drought Monitor map, current drought conditions, or
-      "how bad is the drought in [region]?".
-    - Agent needs drought-intensity polygons as a wildfire-risk or
-      agricultural-stress context layer (intersect with ag fields, active fire,
-      or fuel/vegetation layers).
-    - User wants a past drought snapshot via the optional ``date`` parameter.
+    Use this when:
+        - User asks for the US Drought Monitor map or current drought conditions
+          ("how bad is the drought in [region]?"), or a past snapshot via ``date``.
+        - Agent needs drought-intensity polygons as a wildfire-risk or
+          agricultural-stress context layer (ag fields, fire, fuels).
 
-    **When NOT to use:**
-    - For continuous soil-moisture / SPI / SPEI indices -> the USDM is a
-      categorical expert-synthesis product, not a numeric index.
-    - For streamflow drought / reservoir levels -> use ``fetch_usgs_nwis_gauges``.
-    - For areas outside the United States and its territories -> the USDM is
-      US-only; an out-of-coverage bbox returns an honest empty layer.
-    - For active-fire detections -> use ``fetch_firms_active_fire`` /
-      ``fetch_goes_active_fire`` (drought is the antecedent dryness, not fire).
+    Do NOT use this for:
+        - Continuous soil-moisture / SPI / SPEI indices (USDM is categorical).
+        - Streamflow drought / reservoir levels (use fetch_usgs_nwis_gauges).
+        - Areas outside the US -- an out-of-coverage bbox returns empty.
+        - Active-fire detections (use fetch_firms_active_fire /
+          fetch_goes_active_fire).
+
+    Each feature carries dm (0-4 class), label, period (USDM release YYYYMMDD),
+    and valid_date; feeds compute_zonal_statistics / clip_vector_to_polygon for
+    drought-on-agriculture demos.
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.

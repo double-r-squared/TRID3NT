@@ -1,4 +1,4 @@
-"""``model_river_seepage_scenario`` — MODFLOW river-seepage composer (J9).
+"""``model_river_seepage_scenario`` -- MODFLOW river-seepage composer (J9).
 
 The end-to-end higher-order workflow for the sprint-17 MODFLOW river-seepage
 North Star: it turns a place + a contaminant + a release into a rendered
@@ -22,7 +22,7 @@ reduced to the simplest RIV head-dependent boundary for v0.1):
 
 Invariants:
 - **1. Determinism boundary: preserves.** Every narrated number comes from a
-  typed field — the derived-args dict (plain arithmetic / lookups) and the
+  typed field -- the derived-args dict (plain arithmetic / lookups) and the
   ``SeepageLayerURI`` scalars. No LLM call anywhere in this module.
 - **2. Deterministic workflows: preserves.** Straight-line Python composition
   over registered atomic tools + the river-seepage bridge tool; typed-exception
@@ -43,6 +43,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -86,7 +87,7 @@ class RiverSeepageResult(GraceModel):
 
     Invariant 1 (Determinism boundary): every narrated number is a typed field.
     ``seepage_layer`` carries the leakage scalars; ``plume_layer`` (when present)
-    carries the plume scalars; ``summary`` mirrors them — all computed.
+    carries the plume scalars; ``summary`` mirrors them -- all computed.
     """
 
     schema_version: str = "v1"
@@ -171,7 +172,7 @@ async def model_river_seepage_scenario(
 
     Args:
         location: a place name (geocoded to the spill point). Supply this OR
-            ``spill_location_latlon`` — exactly one.
+            ``spill_location_latlon`` -- exactly one.
         spill_location_latlon: an explicit ``(lat, lon)`` spill point.
         contaminant: contaminant name (conservative tracer; default ``"TCE"``).
         release_rate_kg_s: contaminant mass-release rate, kg/s (> 0).
@@ -273,7 +274,7 @@ async def model_river_seepage_scenario(
                     invoke=lambda: fetch_dem_fn(bbox=bbox),
                 )
             dem_uri = _layer_uri_field(dem_layer, "uri")
-        except Exception as exc:  # noqa: BLE001 — DEM is optional, demo streambed otherwise
+        except Exception as exc:  # noqa: BLE001 -- DEM is optional, demo streambed otherwise
             logger.warning("river-seepage DEM fetch skipped (non-fatal): %s", exc)
 
     # --- Stage 4: run the river-seepage solver -> seepage + plume ---
@@ -408,53 +409,48 @@ async def run_model_river_seepage_scenario(
     fetch_dem_for_streambed: bool = False,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model river<->aquifer seepage (gaining/losing reaches) + an along-river plume.
-
-    Turns a place (or spill point) + a contaminant into a rendered gaining/losing
-    river-seepage layer plus the contaminant plume: it geocodes the place,
-    fetches the river flowline, drapes it onto a MODFLOW 6 grid as a RIV
-    head-dependent river<->aquifer flux boundary, runs the GWF + MF6-GWT solver
-    with an along-river SRC source, and publishes a DIVERGING seepage layer
-    (where the river leaks into the aquifer vs draws baseflow out).
+    """Model river<->aquifer seepage from a PLACE -- composer: geocodes the place + fetches the river for you.
 
     Use this when:
-        - The user wants to see whether a river reach is GAINING (baseflow out of
-          the aquifer) or LOSING (seepage into the aquifer), or how much the river
-          exchanges with the aquifer.
-        - A contaminant enters the groundwater ALONG a river / stream.
+        - You have a PLACE name (no coordinates / river geometry yet) and want
+          gaining vs losing reaches or how much the river exchanges with the aquifer.
+        - A contaminant enters the groundwater ALONG a river / stream at a named place.
         - The user asks to model river-coupled groundwater / streambed seepage.
 
     Do NOT use this for:
-        - A point spill with NO river (use ``run_modflow_job`` /
-          ``run_model_groundwater_contamination_scenario``).
-        - Surface-water flooding (use ``run_model_flood_scenario`` — SFINCS).
+        - A case where the river geometry + coordinates are ALREADY resolved --
+          call run_river_seepage_job directly (skip geocoding + the river fetch).
+        - A point spill with NO river -- use run_modflow_job /
+          run_model_groundwater_contamination_scenario.
+        - Surface-water flooding -- run_model_flood_scenario (SFINCS).
 
-    Params:
-        location: place name (geocoded). Supply this OR ``spill_location_latlon``.
-        spill_location_latlon: explicit ``(lat, lon)`` point.
-        contaminant: contaminant name (default ``"TCE"``; conservative tracer).
+    Never fabricates the geocode or river geometry; a place with no nearby river
+    -> typed error.
+
+    Returns a JSON dict (RiverSeepageResult) whose seepage_layer auto-renders and
+    carries total_leakage_m3_day + gaining_m3_day + losing_m3_day +
+    river_cell_count the agent narrates (Invariant 1); the plume loads alongside
+    -- do not call publish_layer. On a recoverable failure raises a typed error
+    the agent narrates honestly.
+
+    Params (condensed):
+        location: place name (geocoded). Supply this OR spill_location_latlon.
+        spill_location_latlon: explicit ``(lat, lon)`` point (skips geocoding).
+        contaminant: contaminant name (default "TCE"; conservative tracer).
         release_rate_kg_s: mass-release rate, kg/s (default 0.01).
         duration_days: release + transport duration, days (default 30).
         along_river_source: place the SRC along the reach (default True).
         fetch_dem_for_streambed: also fetch a DEM for streambed elevation
-            (default False — demo streambed otherwise).
+            (default False -- demo streambed otherwise).
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: FR-CE-3 compute class (default "standard").
 
-    Returns:
-        A JSON dict (``RiverSeepageResult.model_dump(mode="json")``) with the
-        ``seepage_layer`` (a ``SeepageLayerURI`` carrying ``total_leakage_m3_day``
-        + ``gaining_m3_day`` + ``losing_m3_day`` + ``river_cell_count`` — the
-        agent narrates these typed numbers), the ``derived_params``, and the
-        ``summary`` narration dict. On a recoverable failure the tool raises a
-        typed error the agent narrates honestly.
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False / live-no-cache / workflow_dispatch -- the cache
+    shim is not invoked.
     """
     point: tuple[float, float] | None = None
     if spill_location_latlon is not None:

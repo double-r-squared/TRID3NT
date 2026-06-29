@@ -1,4 +1,4 @@
-"""``model_groundwater_contamination_scenario`` — Case 2 composer (job-0228).
+"""``model_groundwater_contamination_scenario`` -- Case 2 composer (job-0228).
 
 The Case 2 end-to-end higher-order workflow: it turns a news article about a
 chemical / solvent spill into a rendered groundwater-contaminant plume layer.
@@ -33,14 +33,14 @@ Chain:
 
     2. CONFIRMATION BEFORE CONSEQUENCE (Invariant 9)
        - The composer emits a ``tool-payload-warning`` envelope (reusing the
-         existing user-pause pattern — the only confirmation-gate envelope the
+         existing user-pause pattern -- the only confirmation-gate envelope the
          web client already renders inline in chat) carrying the derived params
          + the demo-aquifer caveat, and BLOCKS until the user confirms.
        - A MODFLOW run is a "consequence" (a solver execution, FR-AS-8 /
          Invariant 9). The submission happens ONLY after the user confirms.
        - ``confirmed=True`` is a documented bypass for programmatic / test use
          (the live-evidence harness + pytest pass it). It does NOT exist to skip
-         the gate in production — the server-side confirmation hook around
+         the gate in production -- the server-side confirmation hook around
          ``run_modflow_job`` is the independent fail-closed backstop.
 
     3. RUN + PUBLISH
@@ -55,7 +55,7 @@ Chain:
 
 Invariants:
 - **1. Determinism boundary: preserves.** Every narrated number comes from a
-  typed field — the derived forcing dict (computed by plain arithmetic) and the
+  typed field -- the derived forcing dict (computed by plain arithmetic) and the
   ``PlumeLayerURI`` scalars. No LLM call anywhere in this module; the
   ``summary`` dict is built from those typed fields, not free text.
 - **2. Deterministic workflows: preserves.** Straight-line Python composition
@@ -71,9 +71,9 @@ Invariants:
 - **10. Minimal parameter surface: preserves.** The signature exposes intent
   (the article text / URL); the spill location, contaminant, release rate, and
   duration are EXTRACTED, and the aquifer K / porosity are demo defaults from
-  the contract — the user supplies none of them.
+  the contract -- the user supplies none of them.
 
-Confirmation seam (TENTATIVE per kickoff — surfaced as
+Confirmation seam (TENTATIVE per kickoff -- surfaced as
 OQ-0228-CONFIRM-ENVELOPE-CHOICE): the composer reuses the
 ``tool-payload-warning`` / ``tool-payload-confirmation`` pair rather than the
 A.4 ``confirmation-request`` / ``confirm-response`` pair, because the kickoff
@@ -95,6 +95,7 @@ from pydantic import Field
 
 from grace2_contracts import new_ulid
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -137,7 +138,7 @@ __all__ = [
 # composer result is an agent-side composition headline, the schema package is
 # concurrently edited by other Stage 2 jobs (shared-file warning), and the
 # contract scope for this job is agent-only. If a future job needs this shape on
-# the wire it can be promoted to ``case_results.py`` by ``schema`` then — for
+# the wire it can be promoted to ``case_results.py`` by ``schema`` then -- for
 # now it carries only typed fields the LLM-facing wrapper dumps with
 # ``model_dump(mode="json")``. Surfaced as OQ-0228-CASE2RESULT-PROMOTION.
 
@@ -151,7 +152,7 @@ class Case2Result(GraceModel):
 
     Invariant 1 (Determinism boundary): every narrated number is a typed field.
     ``plume_layer`` carries ``max_concentration_mgl`` + ``plume_area_km2``; the
-    ``summary`` dict mirrors those plus the derived release rate / duration —
+    ``summary`` dict mirrors those plus the derived release rate / duration --
     all computed, none free-generated.
 
     Fields:
@@ -235,7 +236,7 @@ CONTAMINANT_DENSITY_KG_L: dict[str, float] = {
     "hydrochloric acid": 1.18,
 }
 
-#: Default density (kg/L) when the contaminant is unknown — water-like. Keeps
+#: Default density (kg/L) when the contaminant is unknown -- water-like. Keeps
 #: the mass derivation defined for any extracted contaminant string.
 DEFAULT_CONTAMINANT_DENSITY_KG_L: float = 1.0
 
@@ -264,7 +265,7 @@ _SOLVENT_KEYWORDS: tuple[tuple[str, str], ...] = (
     # Aromatic solvents the aggregator's bag misses but we have densities for.
     ("toluene", "toluene"),
     ("xylene", "xylene"),
-    # Acronyms — word-boundary matched so "PCE" inside another token is ignored.
+    # Acronyms -- word-boundary matched so "PCE" inside another token is ignored.
     (r"\btce\b", "trichloroethylene"),
     (r"\bpce\b", "tetrachloroethylene"),
     (r"\bdcm\b", "dichloromethane"),
@@ -361,7 +362,7 @@ class ConfirmationDeniedError(GroundwaterContaminationError):
 #: pause for the user without reaching into the WebSocket directly. It receives
 #: the ``PayloadWarningEnvelopePayload`` describing the derived params + caveat
 #: and returns ``True`` (proceed) / ``False`` (deny). When no hook is injected
-#: AND ``confirmed`` is not True, the gate fails closed (denies) — a missing
+#: AND ``confirmed`` is not True, the gate fails closed (denies) -- a missing
 #: hook must never silently authorize a solver run.
 ConfirmationHook = Callable[[PayloadWarningEnvelopePayload], Awaitable[bool]]
 
@@ -492,7 +493,7 @@ def _scale_to_mass_kg(
 
     Handles volume units (gallons / liters / barrels) via density and direct
     mass units (tons / tonnes). Returns None for an unconvertible unit (e.g.
-    "acres" — an area, not a release amount).
+    "acres" -- an area, not a release amount).
     """
     u = scale_unit.lower().rstrip("s")  # singularize: "gallons" -> "gallon"
     if u in ("gallon",):
@@ -647,7 +648,7 @@ def extract_spill_parameters(
         try:
             geocode_fn = _registry_fn("geocode_location")
             geo = geocode_fn(location_name)
-        except Exception as exc:  # noqa: BLE001 — geocode failure is fatal here
+        except Exception as exc:  # noqa: BLE001 -- geocode failure is fatal here
             raise ParameterExtractionError(
                 f"geocode_location({location_name!r}) failed: {exc}; "
                 "MODFLOW needs a spill point."
@@ -690,14 +691,14 @@ def _build_confirmation_envelope(
 
     Carries the derived forcing params + the demo-aquifer caveat in
     ``recommendation`` and the structured forcing in ``tool_args`` so the client
-    can render them. ``estimated_mb`` / ``threshold_mb`` are 0 — this is a
+    can render them. ``estimated_mb`` / ``threshold_mb`` are 0 -- this is a
     parameter gate, not a payload-size gate (no cost theater, Invariant 9; the
     only numbers are the structured forcing fields).
     """
     lat, lon = run_args.spill_location_latlon
     caveat = (
         f"Demo aquifer parameterization (K={DEFAULT_AQUIFER_K_MS:g} m/s, "
-        f"porosity={DEFAULT_POROSITY:g}) — NOT site-specific hydrogeology. "
+        f"porosity={DEFAULT_POROSITY:g}) -- NOT site-specific hydrogeology. "
         f"Confirm to run the MODFLOW groundwater-plume simulation for "
         f"{run_args.contaminant} near {derived['location_name']}."
     )
@@ -778,7 +779,7 @@ async def model_groundwater_contamination_scenario(
         confirmation_hook: an awaitable the server injects to pause for the user
             (it renders the confirmation envelope and returns the user's
             decision). When None AND ``confirmed`` is False, the gate FAILS
-            CLOSED — no run proceeds (Invariant 9).
+            CLOSED -- no run proceeds (Invariant 9).
         aquifer_k_ms / porosity: optional overrides for the demo-aquifer
             defaults (narrated as demo values by the agent).
         compute_class: FR-CE-3 compute class for the MODFLOW run.
@@ -848,7 +849,7 @@ async def model_groundwater_contamination_scenario(
         kwargs["porosity"] = float(porosity)
     try:
         run_args = MODFLOWRunArgs(**kwargs)
-    except Exception as exc:  # noqa: BLE001 — pydantic ValidationError
+    except Exception as exc:  # noqa: BLE001 -- pydantic ValidationError
         raise ParameterExtractionError(
             f"derived parameters failed MODFLOWRunArgs validation: {exc}"
         ) from exc
@@ -985,7 +986,7 @@ async def run_model_groundwater_contamination_scenario(
     source_url: str | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0241: server-managed confirmation flag. The solver-confirm gate in
     # server.py strips any LLM-supplied value and injects True only after the
     # user approves the derived parameters. Default False = fail-closed.
@@ -994,72 +995,54 @@ async def run_model_groundwater_contamination_scenario(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model a groundwater contamination plume from a spill news article (Case 2).
+    """Model a groundwater contamination plume FROM a spill news article (Case 2).
 
-    Turns a news article describing a chemical / solvent spill into a rendered
-    groundwater-contaminant plume layer: it extracts the spill location,
-    contaminant, release amount, and release duration from the article text;
-    derives the MODFLOW forcing (mass via density, release rate = mass /
-    duration) with plausibility clamps; CONFIRMS the derived parameters with the
-    user (confirmation-before-consequence — a solver run is a consequence);
-    then runs the MODFLOW 6 + MF6-GWT groundwater-transport model and publishes
-    the plume.
+    Extracts location + contaminant + release amount + duration from a spill
+    article (text or URL), derives the MODFLOW forcing (mass via density, rate =
+    mass / duration) with clamps, confirms with the user, then runs MODFLOW 6 +
+    MF6-GWT and publishes the plume.
 
     Use this when:
-        - The user pastes (or links) a news article about a chemical spill,
-          tanker leak, solvent release, or groundwater-contamination incident
-          and asks to model the resulting plume.
-        - A spill story names a place + a contaminant + an amount + a duration
-          and the user wants "how far does it spread / how concentrated."
+        - The user pastes or links a news article about a chemical / solvent
+          spill or tanker leak and asks to model the resulting plume.
+        - A spill story names place + contaminant + amount + duration.
 
     Do NOT use this for:
-        - Surface-water / inundation flooding (use ``run_model_flood_scenario``
-          — that is SFINCS).
-        - A spill with explicit numeric parameters already in hand (call
-          ``run_modflow_job`` directly with the forcing fields).
-        - Ingesting a news event WITHOUT modeling it (use
-          ``run_model_news_event_ingest`` — it stops before any solver).
+        - A spill you already have explicit coordinates + contaminant + rate for,
+          no article (call run_modflow_job directly).
+        - Which farm fields the plume reaches (run_model_contamination_affected_fields).
+        - Multiple co-released species (run_model_multi_species_scenario).
+        - Coastal saltwater intrusion (run_model_saltwater_intrusion_scenario).
+
+    Never fabricates spill amounts: a field that cannot be extracted raises a
+    typed error the agent narrates honestly (it cannot model what it cannot parse).
+
+    Returns a Case2Result whose plume_layer (PlumeLayerURI carrying
+    max_concentration_mgl + plume_area_km2) auto-renders; the agent narrates those
+    typed numbers, the derived_params (unit conversions + clamps), and the summary.
 
     Params:
         article_text: the pasted article body. Supply this OR ``source_url``.
         source_url: a news article URL (fetched via ``web_fetch``). Supply this
-            OR ``article_text`` — exactly one.
+            OR ``article_text`` -- exactly one.
         aquifer_k_ms: optional hydraulic-conductivity override (m/s). Defaults
             to the demo value (narrate as a demo default).
         porosity: optional effective-porosity override. Defaults to the demo
             value (narrate as a demo default).
         compute_class: FR-CE-3 compute class. Default ``"standard"``.
 
-    Returns:
-        A JSON dict (``Case2Result.model_dump(mode="json")``) with the
-        ``plume_layer`` (a ``PlumeLayerURI`` carrying ``max_concentration_mgl``
-        + ``plume_area_km2`` — the agent narrates these typed numbers, never
-        invents them), the ``derived_params`` (with explicit unit conversions +
-        any clamps applied), the ``summary`` narration dict, and the
-        ``confirmation_envelope`` that gated the run. On a recoverable failure
-        (extraction / confirmation / solver) the tool raises a typed error the
-        agent narrates honestly.
-
-    Confirmation-before-consequence (Invariant 9): the MODFLOW run is gated
-    behind a user-confirm. The server's solver-confirm gate
-    (``server.SOLVER_CONFIRM_TOOLS`` → ``_gate_on_solver_confirm``, job-0241)
-    runs the pure extraction, shows the user the derived forcing on a
-    ``tool-payload-warning`` card, and injects ``confirmed=True`` only on an
-    explicit proceed. Without that injection this wrapper fails closed.
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
-
-    Cross-tool dependencies:
-        Upstream (step chain): ``web_fetch`` (when ``source_url`` is given),
-        ``aggregate_claims_across_sources`` (location + scale extraction),
-        ``geocode_location`` (location -> spill point), ``run_modflow_job``
-        (deck build -> mf6 -> postprocess -> publish -> ``PlumeLayerURI``).
+    Confirmation-before-consequence (Invariant 9): the MODFLOW run is gated behind
+    the server solver-confirm gate (``server.SOLVER_CONFIRM_TOOLS`` ->
+    ``_gate_on_solver_confirm``), which shows the derived forcing on a
+    ``tool-payload-warning`` card and injects ``confirmed=True`` only on an explicit
+    proceed; without it this wrapper fails closed. Cacheable=False / live-no-cache /
+    workflow_dispatch -- the cache shim is not invoked. Step chain: web_fetch ->
+    aggregate_claims_across_sources -> geocode_location -> run_modflow_job.
     """
     # job-0241 (Stage 3 live-gate fix): ``confirmed`` is injected as True by the
     # server-side solver-confirm gate (server.SOLVER_CONFIRM_TOOLS) ONLY after
     # the user approves the derived parameters on the tool-payload-warning
-    # card. Default False = fail-closed — the previous hardcoded
+    # card. Default False = fail-closed -- the previous hardcoded
     # ``confirmed=True`` relied on a "server hook around run_modflow_job" that
     # never existed, and the live Case 2 acceptance (job-0235) proved the
     # solver ran with zero user confirmation. The server also STRIPS any

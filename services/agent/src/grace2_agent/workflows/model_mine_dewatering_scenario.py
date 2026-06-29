@@ -36,6 +36,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DewaterLayerURI,
@@ -293,48 +294,50 @@ async def run_model_mine_dewatering_scenario(
     well_pumping_rate_m3_day: float | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model an open-pit mine's dewatering rate (groundwater inflow to the pit).
+    """Model an open-pit MINE's dewatering rate (groundwater inflow to the pit).
 
-    Builds a steady MODFLOW 6 groundwater-flow model with an unconfined water
-    table and a DRN drain over the user-supplied pit footprint, runs it, and
-    produces a DEWATERING-RATE layer: the per-cell drain outflow over the pit and
-    the TOTAL pump-to-dewater rate the pit needs to stay dry. Use this to estimate
-    open-pit groundwater inflow / required dewatering capacity.
+    A steady MODFLOW 6 groundwater-flow run with an unconfined water table and a
+    DRN drain over the user-supplied pit footprint, producing the per-cell drain
+    outflow over the pit and the TOTAL pump-to-dewater rate the pit needs to stay
+    dry.
 
     Use this when:
         - The user asks how much water a mine pit must pump to stay dewatered, the
           groundwater inflow to an open pit, or required dewatering capacity.
 
     Do NOT use this for:
-        - A pumping-well drawdown cone (use ``run_model_sustainable_yield_scenario``).
-        - A contaminant spill plume (use ``run_modflow_job``).
-        - Surface-water flooding (use ``run_model_flood_scenario``  -  SFINCS).
+        - A single pumping well's drawdown cone -> run_model_sustainable_yield_scenario.
+        - A contaminant spill plume -> run_modflow_job.
+        - Surface-water flooding -> run_model_flood_scenario (SFINCS).
+
+    Never fabricates the pit: a missing pit footprint returns a typed
+    USER_INPUT_REQUIRED error (ask the user to draw it) rather than inventing one.
+
+    Returns a MineDewateringResult with a dewater_layer (DewaterLayerURI) that
+    auto-renders -- the agent narrates the typed scalars (dewatering_rate_m3_day,
+    drain_cell_count); do not call publish_layer.
 
     Params:
-        location: place name (geocoded). Supply this OR ``aoi_latlon``.
-        aoi_latlon: explicit ``(lat, lon)`` AOI point.
-        pit_footprint_lonlat: the pit outline as ``[(lon, lat), ...]`` or a
-            GeoJSON polygon. REQUIRED  -  never invented; ask the user if absent.
+        location: place name (geocoded). Supply this OR aoi_latlon.
+        aoi_latlon: explicit (lat, lon) AOI point.
+        pit_footprint_lonlat: the pit outline as [(lon, lat), ...] or a GeoJSON
+            polygon. REQUIRED -- never invented; ask the user if absent.
         drain_elevation_m: the target dewatered head (m). Demo default if None.
         drain_conductance_m2_day: per-cell DRN conductance. Demo default if None.
         well_pumping_rate_m3_day: optional supplemental sump WEL (m^3/day).
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: FR-CE-3 compute class. Default "standard".
 
-    Returns:
-        On success: a ``MineDewateringResult`` JSON dict with the
-        ``dewater_layer`` (a ``DewaterLayerURI`` carrying ``dewatering_rate_m3_day``
-        + ``drain_cell_count``  -  the agent narrates these typed numbers), the
-        ``derived_params``, and the ``summary``. On a recoverable failure (incl.
-        a missing pit) the tool returns a typed error the agent narrates honestly
-         -  it never fabricates a pit.
+    Returns the result as a JSON dict (derived_params + summary alongside the
+    layer). On a recoverable failure (incl. a missing pit) the tool returns a
+    typed error the agent narrates honestly.
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     aoi = _coerce_optional_latlon(aoi_latlon)
     try:

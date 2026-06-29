@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
+
+from grace2_contracts.execution import ComputeClass
 
 from grace2_contracts.geoclaw_contracts import (
     GeoClawDepthLayerURI,
@@ -79,7 +81,7 @@ _RUN_GEOCLAW_METADATA = AtomicToolMetadata(
 )
 async def run_geoclaw_inundation(
     bbox: tuple[float, float, float, float] | list[float] | str | None = None,
-    scenario: str = "dam_break",
+    scenario: Literal["dam_break", "tsunami", "surge"] = "dam_break",
     sim_duration_s: float = 3600.0,
     dam_break_depth_m: float = 10.0,
     source_lonlat: tuple[float, float] | list[float] | None = None,
@@ -97,7 +99,7 @@ async def run_geoclaw_inundation(
     extra_topo_uris: list[str] | None = None,
     coastal_gauge_lonlat: tuple[float, float] | list[float] | None = None,
     fgmax_arrival_tol_m: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -117,10 +119,15 @@ async def run_geoclaw_inundation(
 
     Do NOT use this for:
         - Rain-driven riverine / coastal compound flooding (use
-          ``run_model_flood_scenario`` - that is SFINCS).
+          run_model_flood_scenario -- that is SFINCS).
         - Urban / pluvial / drainage / stormwater flooding (use
-          ``run_swmm_urban_flood`` - that is SWMM).
-        - Groundwater contamination plumes (use ``run_modflow_job``).
+          run_swmm_urban_flood -- that is SWMM).
+        - Groundwater contamination plumes (use run_modflow_job).
+
+    On success renders the peak-depth COG + a per-timestep animation group;
+    narrate the typed max_depth_m / flooded_area_km2 / max_inundation_m it
+    carries, never invented numbers (Invariant 1). On empty/failed solve it
+    returns a typed error, never a silently-empty layer as success.
 
     Params:
         bbox: the computational-domain AOI as ``(min_lon, min_lat, max_lon,

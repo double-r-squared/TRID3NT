@@ -49,6 +49,7 @@ from typing import Any
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -502,54 +503,50 @@ async def run_model_multi_species_scenario(
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
     duration_days: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model multiple co-released groundwater contaminants as N distinct plumes.
+    """Model multiple co-released groundwater contaminants as N distinct plumes (multi-species transport).
 
-    Builds a MODFLOW 6 model with ONE shared groundwater-flow field driving N
-    solute-transport models (one per species), runs it, and produces N plume
-    layers  -  one ``PlumeLayerURI`` per species, each carrying that species' peak
-    concentration + plume footprint. Each species has its own release rate,
-    optional sorption (retardation) and first-order decay, and may name a parent
-    species in a degradation chain (e.g. TCE -> cis-DCE -> VC). Use this when a
-    single spill released SEVERAL contaminants whose plumes differ.
+    ONE shared MODFLOW 6 flow field drives N solute-transport models -> N plume
+    layers (one PlumeLayerURI each: own release rate, optional sorption, decay,
+    parent->daughter chain).
 
     Use this when:
-        - The user describes a spill of MULTIPLE contaminants / solutes and wants
-          each plume (multiple species, a solvent mixture, a degradation chain
-          like TCE -> cis-DCE -> VC).
+        - A single spill released SEVERAL contaminants / solutes and the user
+          wants each distinct plume (a solvent mixture, a degradation chain such
+          as TCE -> cis-DCE -> VC).
 
     Do NOT use this for:
-        - A single-contaminant spill (use ``run_modflow_job`` or
-          ``run_model_groundwater_contamination_scenario``).
-        - Pumping drawdown / dewatering / recharge mounding (the other MODFLOW
-          archetype tools).
-        - Surface-water flooding (use ``run_model_flood_scenario``  -  SFINCS).
+        - A SINGLE-contaminant spill (use run_modflow_job, or
+          run_model_groundwater_contamination_scenario for a news/spill article).
+        - Which farm fields a plume reaches (run_model_contamination_affected_fields).
+        - Surface-water flooding (run_model_flood_scenario -- SFINCS).
+
+    Honesty floor: the species list is REQUIRED + never invented; a missing or
+    sourceless list is a typed USER_INPUT_REQUIRED error.
+
+    Returns a MultiSpeciesResult with plume_layers (one PlumeLayerURI per species)
+    that auto-render; the agent narrates each species' typed max_concentration_mgl
+    + plume_area_km2. Do not call publish_layer.
 
     Params:
         location: place name (geocoded to the spill point). Supply this OR
-            ``spill_location_latlon``.
-        spill_location_latlon: explicit ``(lat, lon)`` spill point.
-        species: the list of contaminants, each ``{name, release_rate_kg_s,
-            sorption_kd?, decay_per_day?, parent?}``. REQUIRED, non-empty, with at
-            least one positive release rate  -  never invented; ask the user which
-            contaminants were released + how much if absent.
+            spill_location_latlon.
+        spill_location_latlon: explicit (lat, lon) spill point.
+        species: the list of contaminants, each {name, release_rate_kg_s,
+            sorption_kd?, decay_per_day?, parent?}. REQUIRED, non-empty, with at
+            least one positive release rate -- ask the user which contaminants were
+            released + how much if absent.
         aquifer_k_ms / porosity: optional demo-aquifer overrides.
         duration_days: optional transport duration (days). Demo default if None.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        compute_class: FR-CE-3 compute class. Default "standard".
 
-    Returns:
-        On success: a ``MultiSpeciesResult`` JSON dict with ``plume_layers`` (one
-        ``PlumeLayerURI`` per species  -  the agent narrates each species'
-        ``max_concentration_mgl`` + ``plume_area_km2`` typed numbers), the
-        ``derived_params``, and the ``summary``. On a recoverable failure (incl. a
-        missing / empty / sourceless species list) the tool returns a typed error
-        the agent narrates honestly  -  it never fabricates a contaminant.
-
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"``  -  the cache shim is NOT invoked.
+    Returns on a recoverable failure (incl. a missing / empty / sourceless species
+    list) a typed error the agent narrates honestly -- it never fabricates a
+    contaminant. FR-DC-6: cacheable=False + ttl_class="live-no-cache" +
+    source_class="workflow_dispatch" -- the cache shim is NOT invoked.
     """
     point = _coerce_optional_latlon(spill_location_latlon)
     try:

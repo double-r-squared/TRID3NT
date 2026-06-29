@@ -1,15 +1,15 @@
-"""Atomic tool ``run_modflow_job`` — MODFLOW groundwater-plume engine (job-0227).
+"""Atomic tool ``run_modflow_job`` -- MODFLOW groundwater-plume engine (job-0227).
 
 The LLM-facing exposure of the MODFLOW 6 + MF6-GWT groundwater-contamination
 engine. ``run_modflow_job(...)`` takes the ``MODFLOWRunArgs`` forcing-parameter
-fields, runs the deterministic deck-build → submit → wait → postprocess chain
+fields, runs the deterministic deck-build -> submit -> wait -> postprocess chain
 (``workflows/run_modflow.py`` + ``workflows/postprocess_modflow.py``), and
 returns a ``PlumeLayerURI`` the emitter loads onto the map (it subclasses
 ``LayerURI`` so the ``emit_tool_call`` ``add_loaded_layer`` gate fires).
 
 This is the MODFLOW analogue of ``run_model_flood_scenario`` (SFINCS). Like that
 wrapper it declares ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-``source_class="workflow_dispatch"`` (FR-DC-6 — workflow exposure surface;
+``source_class="workflow_dispatch"`` (FR-DC-6 -- workflow exposure surface;
 never touches the cache shim).
 
 Two execution paths, selected by ``GRACE2_MODFLOW_LOCAL``:
@@ -17,9 +17,9 @@ Two execution paths, selected by ``GRACE2_MODFLOW_LOCAL``:
   * **Cloud (default).** Stage the deck to the cache bucket, submit a
     ``grace-2-modflow-orchestrator`` Cloud Workflows execution
     (``submit_modflow_run``), poll it with the SFINCS-shared
-    ``wait_for_completion`` (tools/solver.py — its ``ExecutionHandle`` cancel
+    ``wait_for_completion`` (tools/solver.py -- its ``ExecutionHandle`` cancel
     seam is solver-agnostic), then postprocess the run's UCN output. Confirmation
-    before consequence (Invariant 9 — a solver run) is enforced by the server
+    before consequence (Invariant 9 -- a solver run) is enforced by the server
     confirmation hook around this tool, not re-implemented here.
 
   * **Local (``GRACE2_MODFLOW_LOCAL=1``).** Run the staged deck against a local
@@ -28,7 +28,7 @@ Two execution paths, selected by ``GRACE2_MODFLOW_LOCAL``:
 
 Determinism boundary (Invariant 1): every plume number the agent narrates comes
 from the typed ``PlumeLayerURI.max_concentration_mgl`` / ``.plume_area_km2``
-fields the postprocess computed — never free-generated.
+fields the postprocess computed -- never free-generated.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from grace2_contracts.execution import RunResult
+from grace2_contracts.execution import ComputeClass, RunResult
 from grace2_contracts.modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
@@ -103,60 +103,48 @@ async def run_modflow_job(
     duration_days: float | None = None,
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> PlumeLayerURI | dict[str, Any]:
-    """Run a MODFLOW 6 groundwater-contamination (spill) plume simulation.
-
-    Builds a MODFLOW 6 GWF (steady-state flow) + MF6-GWT (transient solute
-    transport) deck from the spill parameters, runs the ``mf6`` solver (Cloud
-    Run Job via Cloud Workflows, or a local binary when
-    ``GRACE2_MODFLOW_LOCAL=1``), reads the final-timestep contaminant
-    concentration field, reprojects it to an EPSG:4326 plume COG, and returns a
-    ``PlumeLayerURI`` carrying the peak concentration + plume footprint the
-    agent narrates.
+    """Run a raw MODFLOW 6 groundwater point-spill plume from EXPLICIT inputs -- raw job (no geocoding/news).
 
     Use this when:
-        - The user asks to model a groundwater contamination spill, simulate a
-          contaminant plume, estimate how far a chemical spill spreads in an
-          aquifer, or run a MODFLOW groundwater-transport scenario.
-        - A spill event (location + contaminant + release rate + duration) needs
-          a plume extent + peak concentration.
+        - You already hold the explicit spill location, contaminant, release rate,
+          and duration and want a plume extent + peak concentration.
+        - The user asks to model a contaminant plume from given parameters.
 
     Do NOT use this for:
-        - Surface-water / inundation flooding (use ``run_model_flood_scenario``
-          — that is SFINCS).
-        - Reactive transport with sorption or biodegradation (v0.1 models a
-          conservative tracer only).
-        - Cancelling a running plume simulation (use the WS ``cancel`` envelope;
-          cancellation propagates through ``wait_for_completion``).
+        - A spill in a NEWS / SPILL ARTICLE --
+          run_model_groundwater_contamination_scenario (extracts + geocodes).
+        - River-coupled seepage -- run_river_seepage_job (you hold the river
+          geometry) or run_model_river_seepage_scenario (from a place).
+        - Multiple co-released species -- run_model_multi_species_scenario.
+        - Which farm fields a plume reaches -- run_model_contamination_affected_fields.
+        - Surface flooding -- run_model_flood_scenario (SFINCS).
 
-    Params:
-        spill_location_latlon: ``(lat, lon)`` of the spill in EPSG:4326 degrees
-            (lat-first — a point, not a bbox).
-        contaminant: contaminant name (e.g. ``"benzene"``, ``"TCE"``). The
-            transport math treats it as a conservative tracer.
-        release_rate_kg_s: contaminant mass-release rate in kg/s (> 0).
-        duration_days: release + transport duration in days (> 0).
-        aquifer_k_ms: aquifer hydraulic conductivity in m/s (> 0). Optional;
-            defaults to the demo value (1e-4 m/s) — narrate as a demo default.
-        porosity: aquifer effective porosity in (0, 1]. Optional; defaults to
-            the demo value (0.3) — narrate as a demo default.
-        compute_class: FR-CE-3 compute class. Default ``"standard"``.
+    Never fabricates inputs/numbers; missing required params -> typed error.
 
-    Returns:
-        On success: a ``PlumeLayerURI`` (a ``LayerURI`` subtype) — the emitter
-        appends it to ``session-state.loaded_layers`` and the map renders it.
-        It carries ``max_concentration_mgl`` + ``plume_area_km2`` (Invariant 1 —
-        the agent narrates these typed numbers, never invents them).
+    Returns a PlumeLayerURI that auto-renders (carries max_concentration_mgl +
+    plume_area_km2 the agent narrates, Invariant 1) -- do not call publish_layer.
+    On failure returns a dict with status="error" + error_code + error_message.
 
-        On failure: a dict with ``status="error"`` + ``error_code`` +
-        ``error_message`` so the LLM narrates the failure honestly (no layer).
+    Params (condensed):
+        spill_location_latlon: ``(lat, lon)`` of the spill, EPSG:4326 degrees
+            (lat-first, a point not a bbox).
+        contaminant: contaminant name (e.g. "benzene", "TCE"); conservative tracer.
+        release_rate_kg_s: mass-release rate, kg/s (> 0).
+        duration_days: release + transport duration, days (> 0).
+        aquifer_k_ms: aquifer hydraulic conductivity, m/s (> 0); optional, demo
+            default 1e-4 m/s (narrate as a demo default).
+        porosity: effective porosity in (0, 1]; optional, demo default 0.3.
+        compute_class: FR-CE-3 compute class (default "standard").
 
-    FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
+    Execution: cloud Batch mf6 by default, or a local mf6 binary when
+    GRACE2_MODFLOW_LOCAL=1; the SFINCS-shared wait/cancel poller drives
+    completion. FR-DC-6: cacheable=False / live-no-cache / workflow_dispatch --
+    the cache shim is not invoked.
     """
     # --- Validate + coerce into the MODFLOWRunArgs contract -----------------
     # The contract owns range validation (lat/lon, positivity, porosity bound).
@@ -200,7 +188,7 @@ async def run_modflow_job(
         if porosity is not None:
             kwargs["porosity"] = float(porosity)
         run_args = MODFLOWRunArgs(**kwargs)
-    except Exception as exc:  # noqa: BLE001 — pydantic ValidationError or coercion
+    except Exception as exc:  # noqa: BLE001 -- pydantic ValidationError or coercion
         return {
             "status": "error",
             "error_code": "MODFLOW_PARAMS_INVALID",
@@ -271,7 +259,7 @@ async def run_modflow_job(
             handle = await asyncio.to_thread(
                 submit_modflow_run, staging, compute_class=compute_class
             )
-            # Reuse the SFINCS-shared poller — its ExecutionHandle cancel seam
+            # Reuse the SFINCS-shared poller -- its ExecutionHandle cancel seam
             # is solver-agnostic (Invariant 8 cancel chain propagates here).
             from .solver import wait_for_completion
 
@@ -295,7 +283,7 @@ async def run_modflow_job(
                 or f"gs://{_runs_prefix()}/{run_result.run_id}/"
             )
 
-        # --- Step 3: postprocess UCN → plume COG → PlumeLayerURI ------------
+        # --- Step 3: postprocess UCN -> plume COG -> PlumeLayerURI ----------
         # audit #4: postprocess reads the UCN, reprojects to a COG, uploads it,
         # and calls publish_layer - all synchronous and IO/CPU-bound. Offload to
         # a worker thread. EMITTER SUBTLETY: postprocess_modflow calls
@@ -372,7 +360,7 @@ async def run_modflow_job(
             "error_code": exc.error_code,
             "error_message": str(exc),
         }
-    except Exception as exc:  # noqa: BLE001 — defensive catch-all
+    except Exception as exc:  # noqa: BLE001 -- defensive catch-all
         logger.exception("run_modflow_job unexpected failure")
         return {
             "status": "error",

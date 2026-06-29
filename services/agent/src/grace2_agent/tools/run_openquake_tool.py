@@ -31,6 +31,7 @@ import asyncio
 import logging
 from typing import Any
 
+from grace2_contracts.execution import ComputeClass
 from grace2_contracts.openquake_contracts import (
     OpenQuakeRunArgs,
     SeismicHazardLayerURI,
@@ -92,59 +93,57 @@ async def run_seismic_hazard_psha(
     b_value: float = 1.0,
     min_magnitude: float = 5.0,
     max_magnitude: float = 7.5,
-    compute_class: str = "standard",
+    compute_class: ComputeClass = "standard",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> SeismicHazardLayerURI | dict[str, Any]:
-    """Run a probabilistic seismic-hazard (PSHA) calculation over an AOI.
-
-    Builds a classical-PSHA OpenQuake deck (a ``job.ini`` + a seismic source model
-    + a single-GMPE logic tree) over a regular site grid covering the AOI, runs the
-    OpenQuake engine headless on AWS Batch, rasterizes the per-site hazard value at
-    the requested probability of exceedance onto a COG, and returns a
-    ``SeismicHazardLayerURI`` carrying the hazard map + the narration scalars. The
-    resulting ground-motion hazard is the canonical input to the Pelicun building
-    damage/impact path.
-
-    REAL faults vs synthetic source (task #199): the composer automatically fetches
-    the REAL active-fault traces (GEM Global Active Faults) that intersect the AOI
-    and, when present, builds a physics-based ``simpleFaultSource`` model so the
-    hazard PEAKS ON the actual fault traces (and refines the site grid to resolve
-    that gradient). When NO mapped active fault intersects the AOI, it falls back
-    to a synthetic Gutenberg-Richter area source over the AOI. The returned layer
-    reports which path was used in ``source_model_kind`` (``"real-fault"`` /
-    ``"synthetic-area"``) + ``source_model_note`` — narrate those HONESTLY and
-    NEVER claim real faults when the run fell back to the synthetic source.
+    """Run a probabilistic seismic-hazard (PSHA) ground-motion map over an AOI
+    (OpenQuake classical PSHA on AWS Batch -> a hazard COG).
 
     Use this when:
-        - The user asks for seismic / earthquake HAZARD, a probabilistic
-          seismic-hazard map, a ground-motion / PGA / spectral-acceleration map,
-          or the ground motion with some chance of exceedance over a window
-          (e.g. "10% in 50 years", the 475-year return-period hazard).
-        - Setting up the ground-motion input for an earthquake building-damage
-          (Pelicun) assessment.
-
+        - Seismic/earthquake HAZARD: a probabilistic ground-motion / PGA /
+          spectral-acceleration map, or "X% chance of exceedance in Y years"
+          (e.g. "10% in 50 years", the 475-year hazard).
+        - Building the ground-motion INPUT for a Pelicun earthquake damage run.
     Do NOT use this for:
-        - Surface-water / riverine / coastal flooding (``run_model_flood_scenario``
-          = SFINCS), urban/pluvial flooding (``run_swmm_urban_flood``), or
-          groundwater contamination (``run_modflow_job``).
-        - Estimating building damage/losses (that is the Pelicun impact tool —
-          this produces the hazard INPUT it consumes).
-        - Cancelling a running hazard calc (use the WS ``cancel`` envelope).
+        - Flooding (run_model_flood_scenario/SFINCS, run_swmm_urban_flood) or
+          groundwater contamination (run_modflow_job).
+        - Building damage/losses (Pelicun tool -- this is its hazard INPUT).
+        - Recorded past earthquakes as points (fetch_usgs_earthquakes).
+    Honesty: uses REAL faults when mapped faults hit the AOI, else a synthetic
+    area source; narrate source_model_kind/_note as-is, never claim real faults
+    on the synthetic fallback.
+
+    Builds a classical-PSHA OpenQuake deck (``job.ini`` + a seismic source model +
+    a single-GMPE logic tree) over a regular site grid covering the AOI, runs the
+    engine headless on AWS Batch, rasterizes the per-site hazard at the requested
+    probability of exceedance onto a COG, and returns a ``SeismicHazardLayerURI``
+    carrying the hazard map + the narration scalars (the canonical input to the
+    Pelicun building damage/impact path).
+
+    REAL faults vs synthetic source (task #199): the composer automatically fetches
+    the REAL active-fault traces (GEM Global Active Faults) intersecting the AOI
+    and, when present, builds a physics-based ``simpleFaultSource`` so hazard PEAKS
+    ON the actual trace (and refines the site grid to resolve that gradient); when
+    NO mapped active fault intersects, it falls back to a synthetic
+    Gutenberg-Richter area source. The layer reports the path in
+    ``source_model_kind`` (``"real-fault"`` / ``"synthetic-area"``) +
+    ``source_model_note`` -- narrate HONESTLY, never claim real faults on the
+    synthetic fallback.
 
     Params:
         bbox: AOI as ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326
             (lon-first). A regular site grid is laid over it.
         imt: Intensity Measure Type. ``"PGA"`` (DEFAULT, Peak Ground Acceleration
-            in g — the Pelicun fragility input), ``"PGV"`` (cm/s), or
+            in g -- the Pelicun fragility input), ``"PGV"`` (cm/s), or
             ``"SA(<period>)"`` such as ``"SA(0.3)"`` / ``"SA(1.0)"``.
         poe: probability of exceedance for the hazard map, in (0, 1). Default
             0.10. With ``investigation_time_years=50`` this is the standard "10%
             in 50 years" (475-year return period) engineering hazard map.
         investigation_time_years: the PoE window, years (> 0). Default 50.
         site_grid_spacing_km: requested PSHA site-grid spacing, km (> 0).
-            Default 5. Keep the AOI modest — OpenQuake is RAM-hungry, so a fine
+            Default 5. Keep the AOI modest -- OpenQuake is RAM-hungry, so a fine
             spacing over a wide AOI is coarsened to fit the budget.
         max_distance_km: maximum source-to-site integration distance, km (> 0).
             Default 300.
@@ -159,11 +158,11 @@ async def run_seismic_hazard_psha(
             should size up for a larger site grid).
 
     Returns:
-        On success: a ``SeismicHazardLayerURI`` (a ``LayerURI`` subtype) — the
+        On success: a ``SeismicHazardLayerURI`` (a ``LayerURI`` subtype) -- the
         emitter appends it to ``session-state.loaded_layers`` and the map renders
         the hazard COG. It carries ``max_hazard_value`` + ``hazard_area_km2`` +
         ``return_period_years`` + ``n_sites`` + ``source_model_kind`` /
-        ``source_model_note`` (Invariant 1 — the agent narrates these typed
+        ``source_model_note`` (Invariant 1 -- the agent narrates these typed
         fields, never invents them; in particular the real-vs-synthetic source
         narration MUST come from ``source_model_kind``, not a free claim).
 
@@ -171,7 +170,7 @@ async def run_seismic_hazard_psha(
         ``error_message`` so the LLM narrates the failure honestly (no layer).
 
     FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
-    ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
+    ``source_class="workflow_dispatch"`` -- the cache shim is NOT invoked.
     """
     if bbox is None:
         return {

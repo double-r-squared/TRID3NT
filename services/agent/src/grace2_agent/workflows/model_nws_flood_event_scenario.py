@@ -62,7 +62,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -867,7 +867,7 @@ async def run_model_nws_flood_event_scenario(
     bbox: tuple[float, float, float, float] | None = None,
     state: str | None = None,
     warning_index: int | None = None,
-    accumulation: str = "24h",
+    accumulation: Literal["1h", "6h", "24h", "72h"] = "24h",
     return_period_yr: int = 100,
     duration_hr: int | None = None,
     compute_class: str = "medium",
@@ -875,36 +875,40 @@ async def run_model_nws_flood_event_scenario(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Model the flood from a live NWS flood warning (Case 3: NWS → MRMS → SFINCS).
+    """Model the flood from a LIVE NWS flood warning (Case 3: NWS -> MRMS -> SFINCS).
 
-    Five-step deterministic composition (zero LLM calls inside):
+    LIVE-DATA composer: picks an active NWS flood warning, forces SFINCS with the
+    OBSERVED MRMS radar-gauge precip over the warned area (NOT a design storm),
+    and returns a 3-layer stack -- warning polygon + precip raster + flood depth.
+
+    Use this when:
+        - User asks to "model the flood that's happening", "model the current
+          flood warning", "show flood warnings in Idaho and model the flood", or
+          any request tying an ACTIVE NWS flood / flash-flood warning to an
+          inundation model over the warned area.
+
+    Do NOT use this for:
+        - A hypothetical / design-storm flood for a named place with no active
+          warning (use run_model_flood_scenario with a return_period_yr).
+        - Just listing active alerts with no modeling (use
+          fetch_nws_alerts_conus or fetch_nws_event directly).
+        - Non-flood hazards.
+
+    Cite flood_envelope.flood.metrics (max/mean depth, inundated area) verbatim;
+    on no active warning it returns a structured no-op (never a fabricated flood).
+
+    Five-step deterministic composition:
     1. ``fetch_nws_alerts_conus(event_types=["Flood Warning", "Flash Flood
-       Warning"])`` — active NWS flood-warning polygons, published as a map layer.
+       Warning"])`` -- active NWS flood-warning polygons, published as a layer.
     2. Select the highest-severity (or ``warning_index``-th) flood warning with
        a usable polygon and extract its bounding box.
-    3. ``fetch_mrms_qpe(bbox=warning_bbox, accumulation)`` — observed accumulated
+    3. ``fetch_mrms_qpe(bbox=warning_bbox, accumulation)`` -- observed accumulated
        radar-gauge precipitation over the warning area.
     4. ``run_model_flood_scenario(bbox=warning_bbox,
-       forcing_raster_uri=mrms_uri)`` — SFINCS inundation forced by the OBSERVED
+       forcing_raster_uri=mrms_uri)`` -- SFINCS inundation forced by the OBSERVED
        precip (not a design storm).
     5. Return the warning polygon, the precip raster, AND the flood-depth layer
        (a 3-layer accumulation the client renders together).
-
-    When to use:
-        - User asks to "model the flood that's happening", "model the current
-          flood warning", "show flood warnings in Idaho and model the flood",
-          or any request that ties an ACTIVE NWS flood/flash-flood warning to a
-          flood inundation model over the warned area.
-        - Real-data, real-time flood scenario (observed precipitation), as
-          opposed to a hypothetical return-period design storm.
-
-    When NOT to use:
-        - A hypothetical / design-storm flood for a named place with no active
-          warning — use ``run_model_flood_scenario`` with a
-          ``return_period_yr`` instead.
-        - Just listing active alerts with no modeling — use
-          ``fetch_nws_alerts_conus`` or ``fetch_nws_event`` directly.
-        - Non-flood hazards.
 
     Params:
         bbox: optional ``(min_lon, min_lat, max_lon, max_lat)`` (EPSG:4326) to

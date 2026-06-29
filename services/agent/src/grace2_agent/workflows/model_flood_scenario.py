@@ -64,7 +64,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts import new_ulid
 from grace2_contracts.envelope import (
@@ -4764,7 +4764,7 @@ async def run_model_flood_scenario(
     coastal: bool = False,
     quadtree: bool = False,
     building_obstacles: bool | str = False,
-    building_obstacle_mode: str = "exclude",
+    building_obstacle_mode: Literal["exclude", "raise"] = "exclude",
     output_interval_min: float | None = None,
     # NATE 2026-06-26: SFINCS scenario-coverage intents (fluvial / compound /
     # wind / infiltration / levee-breach / tsunami). All default to today's
@@ -4788,39 +4788,48 @@ async def run_model_flood_scenario(
 ) -> LayerURI | dict[str, Any]:
     """Run the full deterministic SFINCS flood-modeling workflow end-to-end.
 
-    Nine-step composition chain (all deterministic Python, zero LLM calls):
-    1. ``geocode_location(location_query)`` — optional; derives bbox from
+    The PRIMARY flood composer: SFINCS inundation for design-storm (Atlas-14),
+    riverine / fluvial, compound coastal-surge, and observed-precip floods over
+    a named place or bbox. Fetches inputs, builds + solves, publishes a
+    peak-depth COG + animation.
+
+    Use this when:
+        - Model a flood scenario / inundation, peak flood depth, or flood extent
+          for a place or bbox.
+        - Any "return period" / "design storm" / "ARI" / "storm surge" /
+          "flood extent" request.
+
+    Do NOT use this for:
+        - Urban / pluvial / drainage flooding around buildings (use
+          run_swmm_urban_flood -- PySWMM).
+        - Dam-break / embankment-failure / tsunami run-up (use
+          run_geoclaw_inundation).
+        - The flood from a LIVE NWS warning + observed MRMS precip (use
+          run_model_nws_flood_event_scenario).
+        - Custom solver dispatch (use run_solver directly).
+
+    Narrate the typed metrics the returned LayerURI / envelope carries, never
+    invented; a partial-failure envelope with empty layers NEVER reads
+    status=ok (honesty floor). For coastal/surge set coastal=True; for
+    fluvial set river=True; for compound set compound=True.
+
+    Nine-step composition chain:
+    1. ``geocode_location(location_query)`` -- optional; derives bbox from
        a free-text place name when ``bbox`` is not provided.
-    2. ``fetch_dem(bbox)`` — downloads USGS 3DEP or CoastalDEM to a COG.
-    3. ``fetch_landcover(bbox)`` — downloads NLCD landcover for Manning's
+    2. ``fetch_dem(bbox)`` -- downloads USGS 3DEP or CoastalDEM to a COG.
+    3. ``fetch_landcover(bbox)`` -- downloads NLCD landcover for Manning's
        roughness parameterization.
-    4. ``fetch_river_geometry(bbox)`` — downloads NHD river geometry for
+    4. ``fetch_river_geometry(bbox)`` -- downloads NHD river geometry for
        channel routing.
     5. ``lookup_precip_return_period(bbox, return_period_years, duration_hours)``
-       — looks up NOAA Atlas 14 design-storm precipitation depth.
+       -- looks up NOAA Atlas 14 design-storm precipitation depth.
     6. ``build_sfincs_model(dem_uri, landcover_uri, river_uri, forcing, bbox)``
-       — assembles the HydroMT-SFINCS deck in GCS with NLCD validation gate.
-    7. ``run_solver(model_setup)`` — submits the SFINCS Cloud Run Job.
-    8. ``wait_for_completion(run_id)`` — polls until SUCCEEDED or FAILED;
+       -- assembles the HydroMT-SFINCS deck with NLCD validation gate.
+    7. ``run_solver(model_setup)`` -- submits the SFINCS solve.
+    8. ``wait_for_completion(run_id)`` -- polls until SUCCEEDED or FAILED;
        emits progress events per FR-WC-12.
-    9. ``postprocess_flood(run_outputs_uri)`` → ``publish_layer(flood_depth_cog)``
-       — extracts peak depth COG, uploads to the runs bucket, and publishes
-       to QGIS Server WMS.
-
-    When to use:
-        - User asks to model a flood scenario, simulate flood inundation,
-          compute peak flood depth, run a flood simulation, or estimate flood
-          extent for a named location.
-        - Any request mentioning "return period", "design storm", "ARI",
-          "flood risk", "inundation depth", or "flood extent" for a named
-          location or bounding box.
-
-    When NOT to use:
-        - Custom solver dispatch (use ``run_solver`` + ``wait_for_completion``
-          directly).
-        - Non-flood hazards (separate workflow milestones).
-        - Cancelling a running flood scenario (use the WS ``cancel`` envelope;
-          cancellation propagates through ``wait_for_completion``).
+    9. ``postprocess_flood(run_outputs_uri)`` -> ``publish_layer(flood_depth_cog)``
+       -- extracts peak depth COG, uploads to the runs bucket, and publishes it.
 
     Examples:
         - "model the flood from a 100-year storm in Fort Myers, FL"
@@ -4846,11 +4855,11 @@ async def run_model_flood_scenario(
             durations 5-min through 60-day. Default 24.
             (Alias ``duration_hr`` is accepted for backward compat.)
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
-        forcing_raster_uri: optional ``gs://...`` URI of an OBSERVED
+        forcing_raster_uri: optional ``s3://...`` URI of an OBSERVED
             accumulated-precipitation raster (e.g. an MRMS QPE COG from
             ``fetch_mrms_qpe``). When provided, the workflow forces SFINCS
             with the AREA-MEAN of this raster over the model domain (converted
-            to a uniform rain rate) INSTEAD of the Atlas 14 design storm — this
+            to a uniform rain rate) INSTEAD of the Atlas 14 design storm -- this
             is the Case 3 real-data forcing path. ``duration_hours`` is reused
             as the accumulation window. Leave unset (``None``) for the standard
             return-period design-storm scenario.

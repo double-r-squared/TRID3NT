@@ -1,4 +1,4 @@
-"""``model_contamination_affected_fields`` — the which-farm-fields composer.
+"""``model_contamination_affected_fields`` -- the which-farm-fields composer.
 
 The contamination-plume x Fields-of-the-World demo composer (section-7 step S3
 of reports/design/demo_spike_contamination_fotw.md): given a farmland AOI (a
@@ -36,7 +36,7 @@ Chain:
        - The MODFLOW run is gated behind the existing solver-confirm machinery
          (``confirmed`` injected True by the server gate only after the user
          approves the derived forcing). Without that injection AND without a
-         proceeding ``confirmation_hook``, the gate FAILS CLOSED — no run.
+         proceeding ``confirmation_hook``, the gate FAILS CLOSED -- no run.
 
     4. RUN PLUME
        - ``run_modflow_job`` builds the GWF+GWT deck, runs mf6 (Batch / local),
@@ -46,7 +46,7 @@ Chain:
     5. FETCH FIELDS
        - ``fetch_field_boundaries`` returns the FTW / fiboa field polygons for
          the AOI (each carrying a ``crop_name``). Outside FTW coverage it raises
-         ``FIELDS_NO_COVERAGE`` — surfaced HONESTLY, never fabricated.
+         ``FIELDS_NO_COVERAGE`` -- surfaced HONESTLY, never fabricated.
 
     6. ANALYZE
        - ``analyze_affected_fields`` intersects the plume COG against each field,
@@ -83,12 +83,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import Field
 
 from grace2_contracts.common import GraceModel
-from grace2_contracts.execution import LayerURI
+from grace2_contracts.execution import ComputeClass, LayerURI
 from grace2_contracts.modflow_contracts import (
     DEFAULT_AQUIFER_K_MS,
     DEFAULT_POROSITY,
@@ -341,7 +341,7 @@ def _build_confirmation_envelope(
     caveat = (
         f"Demo aquifer parameterization (K={run_args.aquifer_k_ms:g} m/s, "
         f"porosity={run_args.porosity:g}) with a regional west->east gradient "
-        f"(spill placed up-gradient, west of the fields) — NOT site-specific "
+        f"(spill placed up-gradient, west of the fields) -- NOT site-specific "
         f"hydrogeology. Confirm to run the MODFLOW plume for "
         f"{run_args.contaminant} near {location_name} and intersect it against "
         f"the farm-field boundaries."
@@ -500,7 +500,7 @@ async def model_contamination_affected_fields(
         kwargs["porosity"] = float(porosity)
     try:
         run_args = MODFLOWRunArgs(**kwargs)
-    except Exception as exc:  # noqa: BLE001 — pydantic ValidationError
+    except Exception as exc:  # noqa: BLE001 -- pydantic ValidationError
         raise ContaminationAffectedFieldsInputError(
             f"derived parameters failed MODFLOWRunArgs validation: {exc}"
         ) from exc
@@ -641,39 +641,34 @@ async def run_model_contamination_affected_fields(
     spill_location_latlon: tuple[float, float] | list[float] | None = None,
     upgradient_offset_km: float = DEFAULT_UPGRADIENT_OFFSET_KM,
     threshold_mgl: float | None = None,
-    rank_by: str = "peak",
+    rank_by: Literal["peak", "area"] = "peak",
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
-    compute_class: str = "standard",
-    # job-0241: server-managed confirmation flag — the solver-confirm gate strips
+    compute_class: ComputeClass = "standard",
+    # job-0241: server-managed confirmation flag -- the solver-confirm gate strips
     # any LLM-supplied value and injects True only after the user approves.
     confirmed: bool = False,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Which farm fields a modeled contaminant plume reaches — end to end.
+    """Which farm fields a modeled contaminant plume reaches -- end to end.
 
-    Models a groundwater contaminant spill UP-GRADIENT of a farmland area, runs
-    the MODFLOW plume, fetches the agricultural field boundaries (Fields of The
-    World / fiboa), and reports WHICH farm fields the plume reaches and HOW
-    BADLY — each affected field's peak + mean concentration and affected area,
-    ranked, plus a headline. The single-call demo behind "model a spill near
-    <farmland> and tell me which fields it reaches".
+    Places a spill UP-GRADIENT of a farmland AOI, runs the MODFLOW plume, fetches
+    the agricultural field boundaries (Fields of The World / fiboa), and reports
+    WHICH farm fields the plume reaches + HOW BADLY (each field's peak + mean
+    concentration + affected area, ranked, plus a headline).
 
     Use this when:
-        - The user wants to model a contaminant / solvent spill near farmland
-          and find out which agricultural fields it affects (ranked, with crops).
-        - A US-cropland AOI is named (Ames, Iowa / Nebraska / Central Valley) —
-          the Fields of The World coverage region.
+        - The user wants to model a spill near farmland and find which fields it
+          affects (ranked, with crops). FTW coverage is US-cropland (Ames, Iowa /
+          Nebraska / Central Valley).
 
     Do NOT use this for:
-        - Surface-water flooding over fields (use the flood composers / SFINCS).
-        - A plume with no farm-field question (use
-          ``run_model_groundwater_contamination_scenario`` — that stops at the
-          plume) or a generic raster-over-polygon summary
-          (``compute_zonal_statistics``).
-        - Areas outside FTW coverage — the tool returns an honest
-          ``CONTAMINATION_AFFECTED_FIELDS_NO_COVERAGE`` error rather than guessing.
+        - Just building / visualizing the plume with no farm-field question
+          (run_modflow_job or run_model_groundwater_contamination_scenario).
+        - Surface flooding over fields (the flood / SFINCS composers).
+        - A generic raster-over-polygon summary (compute_zonal_statistics).
+        - Areas outside FTW coverage -- returns an honest NO_COVERAGE error.
 
     Params:
         location_query: the farmland AOI as a place name (geocoded). Supply this
@@ -684,9 +679,9 @@ async def run_model_contamination_affected_fields(
             ``article_text`` is supplied (extracted from the article instead).
         release_rate_kg_s: mass release rate, kg/s (default 0.05).
         duration_days: release duration, days (default 1.0).
-        article_text: optional spill news article — when supplied, the
+        article_text: optional spill news article -- when supplied, the
             contaminant + release schedule + location are extracted from it.
-        spill_location_latlon: explicit spill point ``(lat, lon)`` — overrides
+        spill_location_latlon: explicit spill point ``(lat, lon)`` -- overrides
             the automatic up-gradient (west-of-the-fields) placement.
         upgradient_offset_km: how far west of the field centroid to place the
             auto spill (default 3 km; the demo deck's gradient runs west->east).
@@ -699,7 +694,7 @@ async def run_model_contamination_affected_fields(
 
     Returns:
         A JSON dict (``AffectedFieldsResult.model_dump(mode="json")``) with the
-        ``plume_layer`` (``PlumeLayerURI`` — ``max_concentration_mgl`` +
+        ``plume_layer`` (``PlumeLayerURI`` -- ``max_concentration_mgl`` +
         ``plume_area_km2``), the ``fields_layer`` (FTW boundaries), the
         ``affected`` readout (ranked ``affected_fields`` + counts + ``headline``),
         the ``summary`` narration dict, the placed ``spill_location_latlon``, and
