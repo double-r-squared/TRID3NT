@@ -1122,6 +1122,15 @@ export interface StreamState {
   messages: ChatMessage[];
   pipeline: PipelineInlineState;
   charts: ChartPayload[];
+  /**
+   * First-arrival seq per chart STACK (keyed by created_turn_id, or
+   * ``__singleton__<chart_id>`` for turn-less singletons - the same key
+   * buildChartStacks groups on). Lets a chart stack interleave INLINE in the
+   * chat stream at the chronological point it was surfaced (like tool /
+   * credential cards), instead of docking as a trailing section at the bottom
+   * of the transcript.
+   */
+  chartSeqs: Map<string, number>;
   sandboxRequests: CodeExecRequestPayload[];
   sandboxResults: Map<string, CodeExecResultPayload>;
   sandboxDecisions: Map<string, SandboxCardDecision>;
@@ -1193,6 +1202,7 @@ export function emptyStreamState(): StreamState {
     messages: [],
     pipeline: { live: null, history: [], currentPipelineFromSession: null },
     charts: [],
+    chartSeqs: new Map(),
     sandboxRequests: [],
     sandboxResults: new Map(),
     sandboxDecisions: new Map(),
@@ -1504,6 +1514,24 @@ export function routeChartEmission(
   // De-dupe on chart_id so hub-delivered + direct arrivals don't double-stack.
   if (s.charts.some((c) => c.chart_id === p.chart_id)) return;
   s.charts = [...s.charts, p];
+  // Record the stack's first-arrival seq so it interleaves INLINE at the point
+  // it was surfaced (not as a trailing bottom section). Keyed by the SAME stack
+  // key buildChartStacks groups on, so every chart of a turn shares one slot.
+  recordChartSeq(s, p);
+}
+
+/**
+ * Ensure the chart's owning STACK has a first-arrival seq on the stream. The
+ * stack key matches buildChartStacks (``created_turn_id`` or a per-chart
+ * singleton key), so all charts of one turn collapse to a single interleaved
+ * slot at the turn's arrival position. Idempotent per stack key.
+ */
+function recordChartSeq(s: StreamState, p: ChartPayload): void {
+  const stackKey = p.created_turn_id ?? `__singleton__${p.chart_id}`;
+  if (!s.chartSeqs.has(stackKey)) {
+    s.arrivalSeq += 1;
+    s.chartSeqs.set(stackKey, s.arrivalSeq);
+  }
 }
 
 export function routeCodeExecRequest(
@@ -1790,6 +1818,10 @@ export function routeCaseOpen(
     const s = existing ?? emptyStreamState();
     replayStreamFromChatHistory(s, session.chat_history ?? []);
     s.charts = chartsFromSession(session);
+    // Assign interleave seqs AFTER the history replay so rehydrated charts sort
+    // after the replayed transcript (preserving the prior trailing placement for
+    // persisted charts) while still riding the same inline chart-stack path.
+    for (const c of s.charts) recordChartSeq(s, c);
     cs.streams.set(caseId, s);
   }
   return caseId;
@@ -4614,6 +4646,13 @@ export function Chat({
           spatialSeqs={visible.spatialSeqs}
           spatialResolved={visible.spatialResolved}
           onSpatialCancel={handleSpatialCancel}
+          charts={charts}
+          chartSeqs={visible.chartSeqs}
+          onOpenChartGallery={(stackCharts, idx) => {
+            setGalleryCharts(stackCharts);
+            setGalleryInitialIndex(idx);
+            setGalleryOpen(true);
+          }}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -4632,33 +4671,12 @@ export function Chat({
           )}
         />
 
-        {/* sprint-13 job-0231: inline chart stacks. Charts group by
-            created_turn_id; singletons (null turn_id) render alone.
-            Stacks appear after the interleaved tool/message stream because
-            they arrive on a separate envelope type that doesn't carry
-            an arrivalSeq (chart-emission is not interleaved with
-            pipeline-state — it's a distinct session-scoped envelope that
-            arrives asynchronously). We render them as a trailing section
-            below the message stream. Each stack is independently clickable
-            to open the ChartGallery overlay. */}
-        {charts.length > 0 && (
-          <div
-            data-testid="chart-stack-section"
-            style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 4 }}
-          >
-            {buildChartStacks(charts).map((stack) => (
-              <ChartStack
-                key={stack[0]!.chart_id}
-                charts={stack}
-                onOpenGallery={(stackCharts, idx) => {
-                  setGalleryCharts(stackCharts);
-                  setGalleryInitialIndex(idx);
-                  setGalleryOpen(true);
-                }}
-              />
-            ))}
-          </div>
-        )}
+        {/* sprint-13 job-0231 (NATE 2026-06-29): chart stacks now render INLINE
+            in the InterleavedChatStream above, at the turn's first-arrival seq
+            (visible.chartSeqs) - exactly like tool / pipeline / credential
+            cards - instead of as a trailing bottom-docked section here. Charts
+            still group by created_turn_id into one clickable stack per turn;
+            clicking opens the ChartGallery overlay (state owned below). */}
 
         {/* sprint-13 job-0234: sandbox code-exec cards.
             Rendered sorted by arrival seq so they interleave chronologically
@@ -5121,6 +5139,20 @@ export type InterleavedEntry =
       requestId: string;
       request: SpatialInputRequestPayload;
       resolved: SpatialInputResolution | null;
+    }
+  | {
+      // sprint-13 job-0231 (NATE 2026-06-29): a generated chart STACK INTERLEAVED
+      // into the chat scroll at the turn's first-arrival seq - exactly like a
+      // tool / pipeline card - instead of docking as a trailing section glued to
+      // the bottom of the transcript. ``charts`` is the already-grouped stack
+      // (buildChartStacks); clicking opens the ChartGallery via the
+      // component-bound onOpenChartGallery callback (kept off this pure
+      // view-model). ``stackKey`` is the buildChartStacks group key (stable
+      // React key + dedupe).
+      kind: "chart-stack";
+      seq: number;
+      stackKey: string;
+      charts: ChartPayload[];
     };
 
 export function buildInterleavedStream(
@@ -5154,6 +5186,11 @@ export function buildInterleavedStream(
   spatialInputs: SpatialInputRequestPayload[] = [],
   spatialSeqs: Map<string, number> = new Map(),
   spatialResolved: Map<string, SpatialInputResolution> = new Map(),
+  // Chart stacks interleave INLINE at the turn's first-arrival seq (chartSeqs)
+  // instead of docking as a trailing section. Defaulted so existing callers /
+  // tests that don't pass them keep working unchanged.
+  charts: ChartPayload[] = [],
+  chartSeqs: Map<string, number> = new Map(),
 ): InterleavedEntry[] {
   const out: InterleavedEntry[] = [];
   // Messages — seq comes from messageOrder; absent → fall back to a large
@@ -5289,6 +5326,16 @@ export function buildInterleavedStream(
       resolved: spatialResolved.get(si.request_id) ?? null,
     });
   }
+  // Chart stacks - seq from chartSeqs (the turn's first-arrival), so the stack
+  // lands at its natural chat slot at the point it was surfaced. Each stack
+  // (charts sharing a created_turn_id; singletons alone) is one interleaved row.
+  for (const stack of buildChartStacks(charts)) {
+    const first = stack[0];
+    if (!first) continue;
+    const stackKey = first.created_turn_id ?? `__singleton__${first.chart_id}`;
+    const seq = chartSeqs.get(stackKey) ?? Number.MAX_SAFE_INTEGER;
+    out.push({ kind: "chart-stack", seq, stackKey, charts: stack });
+  }
   // Stable sort by seq; ties broken by insertion order (preserved by the
   // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
   // ES2019). Insertion order here is: messages first then tools, so a
@@ -5362,6 +5409,12 @@ interface InterleavedChatStreamProps {
   spatialSeqs: Map<string, number>;
   spatialResolved: Map<string, SpatialInputResolution>;
   onSpatialCancel: (requestId: string) => void;
+  // Chart stacks interleave INLINE at the turn's first-arrival seq (chartSeqs),
+  // rendered as a ChartStack at its natural chat slot. Clicking opens the
+  // ChartGallery via onOpenChartGallery (the overlay state lives in Chat).
+  charts: ChartPayload[];
+  chartSeqs: Map<string, number>;
+  onOpenChartGallery: (charts: ChartPayload[], initialIndex: number) => void;
 }
 
 function InterleavedChatStream({
@@ -5393,6 +5446,9 @@ function InterleavedChatStream({
   spatialSeqs,
   spatialResolved,
   onSpatialCancel,
+  charts,
+  chartSeqs,
+  onOpenChartGallery,
 }: InterleavedChatStreamProps): JSX.Element | null {
   const stream = buildInterleavedStream(
     messages,
@@ -5412,6 +5468,8 @@ function InterleavedChatStream({
     spatialInputs,
     spatialSeqs,
     spatialResolved,
+    charts,
+    chartSeqs,
   );
   if (stream.length === 0) return null;
   return (
@@ -5530,6 +5588,19 @@ function InterleavedChatStream({
               request={entry.request}
               resolved={entry.resolved}
               onCancel={() => onSpatialCancel(entry.request.request_id)}
+            />
+          );
+        }
+        if (entry.kind === "chart-stack") {
+          // sprint-13 job-0231 (NATE 2026-06-29): the chart stack renders INLINE
+          // at its surfacing point in the transcript (no longer a trailing
+          // bottom-docked section). Clicking opens the full-viewport
+          // ChartGallery overlay (state owned by Chat).
+          return (
+            <ChartStack
+              key={entry.stackKey}
+              charts={entry.charts}
+              onOpenGallery={onOpenChartGallery}
             />
           );
         }

@@ -32,7 +32,7 @@
 //   - MapLibre navigation controls move to TOP-LEFT (under the
 //     leftCollapsed hamburger)  -  Map.tsx owns the addControl call.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth, clampSheetHeight } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
@@ -1214,7 +1214,19 @@ export function App(): JSX.Element {
   // cycling we must avoid). Here we only push the value into the EXISTING
   // socket. The null-guard covers the brief construct/teardown window; the open
   // handler reads the latest currentCaseId at connect time regardless.
-  useEffect(() => {
+  //
+  // CROSS-CASE LAYER FLASH FIX (NATE 2026-06-29) - this is a useLayoutEffect, NOT
+  // a useEffect, on purpose. The Lane 1b clear below (setLayers([]) + the empty
+  // authoritative bus.pushSessionState) must run BEFORE the browser paints the
+  // switched-into Case. As a passive useEffect it fired AFTER paint, so on a
+  // case->case switch React committed + PAINTED one frame with activeCaseId =
+  // the NEW Case but App's lifted `layers` (and the still-mounted LayerPanel
+  // reducer, which only re-seeds from the bus, not from a changed `initialLayers`
+  // prop) still holding the PREVIOUS Case's layers - the brief foreign-layer
+  // flash NATE reported (Boulder layers blinking into the seismic Case). Running
+  // the clear in a layout effect flushes the empty replace synchronously before
+  // paint, so no prior-Case layer is ever painted in the new Case.
+  useLayoutEffect(() => {
     wsRef.current?.setCurrentCaseId(activeCaseId);
     // CASE-SWITCH LAYER LEAK FIX  -  keep the ref the stable onSessionState
     // closure reads in lockstep with the active Case so a trailing snapshot
