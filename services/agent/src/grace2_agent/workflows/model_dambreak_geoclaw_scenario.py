@@ -259,10 +259,15 @@ async def model_dambreak_geoclaw_scenario(
     )
 
     n_active = int(getattr(staging, "n_active_cells", 0) or 0)
-    if n_active > 0:
-        effective_compute_class = select_compute_class(n_active)
-    else:
-        effective_compute_class = compute_class
+    auto_class = select_compute_class(n_active) if n_active > 0 else compute_class
+    # Honor an explicit HIGHER compute_class from the caller: take the larger of
+    # the auto-sized tier and the requested tier so vertical auto-scaling still
+    # scales UP for big domains, but a user asking for "large"/"xlarge" (quicker
+    # turnaround) is never silently downgraded to the small/standard auto pick.
+    _CLASS_RANK = {"small": 0, "standard": 1, "large": 2, "xlarge": 3}
+    effective_compute_class = max(
+        auto_class, compute_class, key=lambda c: _CLASS_RANK.get(c, 1)
+    )
     _vcpus = AWS_BATCH_COMPUTE_CLASS_SIZING.get(effective_compute_class, {}).get(
         "vcpus"
     )
