@@ -120,10 +120,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH"
 
 # Minimal runtime OS deps. ca-certificates: HTTPS to Bedrock/Cognito-JWKS/S3/the
-# data sources. libexpat1 + the python runtime libs come with the slim base.
+# data sources. libexpat1: GDAL/rasterio link libexpat.so.1 and the slim base
+# does NOT ship it (importing the tools registry crashes without it). libgomp1:
+# OpenMP runtime that scipy/numba/rasterio load at import/call time on slim.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        libexpat1 \
+        libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # The whole app + its deps live in the venv; copy it verbatim from the builder.
