@@ -91,7 +91,7 @@ import math
 import os
 import tempfile
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -554,65 +554,56 @@ def _fetch_fields_bytes(
 )
 def fetch_field_boundaries(
     bbox: tuple[float, float, float, float],
-    dataset: str | None = None,
+    dataset: Literal["us_usda_cropland", "japan", "denmark"] | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Agricultural FIELD BOUNDARIES (Fields of The World / fiboa) for an AOI.
+    """Agricultural FIELD-BOUNDARY polygons (Fields of The World / fiboa) for an AOI.
 
-    **What it does:** Fetches published agricultural field-boundary polygons —
-    individual farm parcels / fields — for the requested bbox from the Fields of
-    The World (FTW) / fiboa open datasets on Source Cooperative, clips them to
-    the exact AOI, and returns them as a vector layer that renders inline on the
-    map automatically (like roads / protected areas). NO API key required. The
-    resulting vector renders inline — do NOT call ``publish_layer`` on it.
+    Use this when:
+    - the user wants farm fields / agricultural parcels / field boundaries over
+      an AOI in the US, Japan, or Denmark.
+    - a hazard analysis needs cropland PARCEL geometry as context (which fields
+      a flood footprint covers, agricultural exposure mapping).
+    - you pair fields with flood / drought / fire layers to quantify ag impact.
 
-    **Coverage (IMPORTANT — regional, not global yet):** This serves the
-    PUBLISHED FTW/fiboa benchmark, which covers specific regions, currently:
-    the contiguous United States (USDA Crop Sequence Boundaries), Japan, and
-    Denmark. A bbox outside every covered region returns a structured
-    ``FIELDS_NO_COVERAGE`` error — there are simply no published boundaries
-    there. On-demand field-boundary INFERENCE from satellite imagery for an
-    arbitrary AOI (running an FTW model anywhere on Earth) is a SEPARATE future
-    tool and is not available through this one.
+    Do NOT use this for: land-cover CLASSIFICATION rasters, per-pixel crop type
+    (use ``fetch_landcover`` -- NLCD/ESA WorldCover); cadastral / legal property
+    parcels (these are agricultural FIELD units, not ownership parcels);
+    administrative boundaries (use ``fetch_administrative_boundaries``).
 
-    **When to use:**
-    - User wants to see farm fields / agricultural parcels / field boundaries
-      over an AOI in the US, Japan, or Denmark.
-    - A hazard analysis needs cropland parcel geometry as context (e.g. which
-      fields a flood footprint covers, agricultural exposure mapping).
-    - Pairs with flood / drought / fire layers to quantify agricultural impact.
-
-    **When NOT to use:**
-    - Land-cover CLASSIFICATION rasters (use ``fetch_landcover`` / NLCD) — this
-      returns vector PARCEL boundaries, not a per-pixel crop-type raster.
-    - Cadastral / legal property parcels — these are agricultural FIELD units,
-      not legal land-ownership parcels (use a county assessor source for those).
-    - Areas outside the covered regions — the tool will honestly report no
-      coverage rather than guess; do not retry the same out-of-coverage bbox.
-    - Administrative boundaries (use ``fetch_administrative_boundaries``).
-
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Keep it small (a county or smaller); a continent-sized bbox returns far
-      too many parcels. Example (Ames, Iowa cropland):
-      ``(-93.70, 42.00, -93.60, 42.08)``.
-    - ``dataset`` (str | None): force a specific source key
-      (``"us_usda_cropland"``, ``"japan"``, ``"denmark"``). Default ``None``
-      auto-selects the dataset whose coverage contains the bbox.
-
-    **Returns:** A ``LayerURI`` (``layer_type="vector"``, ``role="context"``,
-    ``units=None``) pointing at a FlatGeobuf of field polygons. Each feature
-    carries a ``crop_name`` property (the source crop / land-type label where
-    the dataset provides one). An AOI with coverage but no fields (e.g. urban /
+    Honesty: COVERAGE IS REGIONAL, not global -- only the published FTW/fiboa
+    benchmark (currently CONUS via USDA Crop Sequence Boundaries, Japan,
+    Denmark). A bbox outside every covered region returns a structured
+    ``FIELDS_NO_COVERAGE`` error (do NOT retry the same out-of-coverage bbox).
+    On-demand inference from satellite imagery anywhere on Earth is a SEPARATE
+    future tool, not this one. An AOI with coverage but no fields (urban /
     water) returns a valid 0-feature layer, not an error.
 
-    **Cross-tool dependencies:**
-    - Typically layered over flood / fire / drought hazard rasters as context.
-    - Pairs with ``compute_zonal_statistics`` to summarize a hazard over fields.
-    - Use ``fetch_administrative_boundaries`` first if you need a county/AOI
-      bbox to query within.
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS inline on the map
+    -- do NOT call ``publish_layer`` on it.
+
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Keep it
+            small (a county or smaller); a continent-sized bbox returns far too
+            many parcels. Example (Ames, Iowa): ``(-93.70, 42.00, -93.60,
+            42.08)``.
+        dataset: force a source key (``"us_usda_cropland"``, ``"japan"``,
+            ``"denmark"``). Default ``None`` auto-selects the dataset whose
+            coverage contains the bbox.
+
+    Returns:
+        A ``LayerURI`` (``layer_type="vector"``, ``role="context"``,
+        ``units=None``) pointing at a FlatGeobuf of field polygons. Each
+        feature carries a ``crop_name`` property where the dataset provides one.
+
+    Cross-tool dependencies:
+        - Typically layered over flood / fire / drought rasters as context.
+        - Pairs with ``compute_zonal_statistics`` to summarize a hazard over
+          fields.
+        - Use ``fetch_administrative_boundaries`` first if you need a county /
+          AOI bbox to query within.
 
     FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key is
     SHA-256 over ``(bbox-6dp, dataset_key)``.

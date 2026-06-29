@@ -535,57 +535,40 @@ def fetch_esri_landcover_10m(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch the Esri / Impact Observatory 10 m global land-cover for a bbox.
+    """Fetch Esri / Impact Observatory 10 m global land-cover for a bbox [raster fetcher].
 
-    **What it does:** Searches the Microsoft Planetary Computer for the Impact
-    Observatory ``io-lulc-annual-v02`` 10 m annual Land-Use Land-Cover items
-    covering ``bbox`` in ``year``, warps+window-reads each intersecting UTM-zone
-    tile to EPSG:4326 at 10 m (nearest, categorical), mosaics them, and returns a
-    single-band categorical COG with the official 9-class color table baked in.
-    ``publish_layer`` colorizes it directly from the embedded palette (no
-    rescale/colormap override), the same path NLCD ``fetch_landcover`` uses.
+    Use this when:
+    - The user wants land cover ("forest vs crops vs urban", "what land cover is
+      here?") for a NON-US or cross-border area (Africa, Asia, South America,
+      Europe) -- the GLOBAL complement to US-only NLCD ``fetch_landcover``.
+    - A consistent 10 m global land-cover layer for exposure/context, or a
+      two-year change comparison (call twice with different ``year``).
 
-    Classes: 1=Water, 2=Trees, 4=Flooded vegetation, 5=Crops, 7=Built area,
+    Do NOT use this for: US analysis that must match the NLCD class schema /
+    Manning's roughness (use ``fetch_landcover``); extracting ONE class as a mask
+    (use ``extract_landcover_class``); a natural-color picture (use
+    ``fetch_sentinel2_truecolor``); continuous greenness (use ``compute_ndvi``).
+
+    Honesty: if no item covers the bbox in the year (or the mosaic is all-nodata)
+    a typed ``EsriLandcoverNoCoverageError`` is raised -- never a fabricated layer.
+
+    Action: returns a single-band categorical raster ``LayerURI`` that auto-renders
+    from its embedded 9-class palette -- do not call ``publish_layer``.
+
+    Classes: 1=Water, 2=Trees, 4=Flooded veg., 5=Crops, 7=Built area,
     8=Bare ground, 9=Snow/Ice, 10=Clouds, 11=Rangeland (0=No Data).
 
-    This is GLOBAL  --  the worldwide complement to the US-only NLCD
-    ``fetch_landcover``. Use it for land cover anywhere outside CONUS (Africa,
-    Asia, South America, Europe) or when you want a consistent 10 m schema
-    across borders.
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required,
+            AOI-scoped (<= 0.5 deg^2).
+        year: vintage in [2017, 2023]. Default: latest (2023). Out-of-range is a
+            typed ``EsriLandcoverYearError``.
 
-    **When to use:**
-    - User asks "what land cover is here?" / "show forest vs crops vs urban" for
-      a NON-US (or cross-border) area.
-    - A consistent 10 m global land-cover layer for exposure / context anywhere.
-    - Compare two years (call twice with different ``year``) to see change.
-
-    **When NOT to use:**
-    - US analysis that must match the NLCD class schema / Manning's roughness
-      mapping  --  use ``fetch_landcover`` (NLCD, CONUS).
-    - A natural-color picture of the area  --  use ``fetch_sentinel2_truecolor``.
-    - Continuous greenness  --  use ``compute_ndvi``.
-    - A single-point class lookup  --  this returns a raster.
-
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. AOI-scoped (<= 0.5 deg^2).
-    - ``year`` (int, optional): vintage in ``[2017, 2023]``. Default: the latest
-      available (2023). An out-of-range year is an honest typed error.
-
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="input"``)
-    pointing at a single-band categorical COG in the ``static-30d`` /
-    ``esri_landcover_10m`` cache prefix. ``style_preset="categorical_landcover"``
-    (embedded-palette passthrough  --  no single-band rescale),
-    ``units="esri_io_lulc_class_code"``.
-
-    **Data source:** Esri / Impact Observatory 10m Annual LULC (9-class) V2 via
-    the Microsoft Planetary Computer STAC (``io-lulc-annual-v02``).
-
-    Honesty: no covering item (or an all-nodata mosaic) raises a typed
-    ``EsriLandcoverNoCoverageError``  --  never a fabricated layer.
-
-    FR-CE-8: routed through ``read_through`` so identical ``(bbox, year)`` calls
-    reuse the cached COG.
+    Returns a ``LayerURI`` (``layer_type="raster"``, ``role="input"``,
+    ``style_preset="categorical_landcover"``, ``units="esri_io_lulc_class_code"``).
+    Data source: Impact Observatory 10 m Annual LULC V2 via the Microsoft
+    Planetary Computer STAC (``io-lulc-annual-v02``). FR-CE-8: ``read_through``
+    cached on ``(bbox, year)``.
     """
     _validate_bbox(bbox)
     q_bbox = _round_bbox(bbox)

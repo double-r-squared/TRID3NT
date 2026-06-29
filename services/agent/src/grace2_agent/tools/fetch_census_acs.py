@@ -682,7 +682,7 @@ def _compute_value(
 
 
 # ---------------------------------------------------------------------------
-# Features → FlatGeobuf bytes.
+# Features -> FlatGeobuf bytes.
 # ---------------------------------------------------------------------------
 
 
@@ -807,55 +807,43 @@ def fetch_census_acs(
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """US Census ACS 5-year demographics as a census-tract choropleth FlatGeobuf.
+    """US Census ACS 5-year demographics as a census-tract choropleth (vector) [vector fetcher].
 
-    Joins authoritative U.S. census-tract geometry (Census TIGERweb, keyless)
-    to ACS 5-year estimates (Census ``data.census.gov`` backend, keyless) by
-    11-digit GEOID, returning a FlatGeobuf choropleth clipped to ``bbox``. The
-    ``variable`` param maps friendly names (``median_income``, ``median_age``,
-    ``median_home_value``, ``poverty_rate``, ``pct_renters``, ``pct_no_vehicle``)
-    to ACS detailed-table codes; a raw ACS estimate code (``B19013_001E``) is
-    also accepted. Generalizes the population-only fetchers to arbitrary
-    demographics for vulnerability / environmental-justice analysis.
-
-    **When to use:**
-    - User asks for a specific demographic (income, age, home value, poverty,
+    Use this when:
+    - The user asks for a specific demographic (income, age, home value, poverty,
       renters, car-free households) for an area, or "median income by tract".
-    - Agent needs a demographic surface to intersect with a hazard footprint
-      for exposure / equity analysis.
+    - A demographic surface to intersect with a hazard footprint for exposure /
+      environmental-justice analysis ("median income of the inundated tracts").
 
-    **When NOT to use:**
-    - For composited social-vulnerability *percentile ranks* -> ``fetch_cdc_svi``.
-    - For a gridded population *raster* -> ``fetch_hrsl_population``.
-    - For areas outside the U.S. -> ACS is U.S.-only; an empty FGB is returned.
+    Do NOT use this for: composited social-vulnerability PERCENTILE RANKS (use
+    ``fetch_cdc_svi`` -- this returns raw estimates, not ranks); a gridded
+    population RASTER (use ``fetch_hrsl_population`` / ``fetch_ghsl_population`` /
+    ``fetch_population`` / ``fetch_worldpop`` -- this returns tract POLYGONS +
+    table fields, not a raster); areas outside the U.S. (ACS is US-only; an empty
+    FGB is returned).
 
-    **Parameters:**
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required;
-            ``supports_global_query=False``. County-or-smaller extent. Example
-            for Houston / Harris County TX: ``(-95.45, 29.65, -95.25, 29.85)``.
-        variable: friendly name (see registry) or raw ACS estimate code.
+    Honesty: TIGERweb / data.census.gov failures raise a typed
+    ``CensusACSUpstreamError``; a bad bbox / unknown variable raises
+    ``CensusACSInputError`` -- never a silently wrong layer.
+
+    Action: returns a vector ``LayerURI`` (``style_preset="acs_choropleth"``)
+    that auto-renders -- do not call ``publish_layer``.
+
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required
+            (``supports_global_query=False``); county-or-smaller recommended.
+        variable: a friendly name -- ``median_income``, ``median_age``,
+            ``median_home_value``, ``poverty_rate``, ``pct_renters``,
+            ``pct_no_vehicle`` -- or a raw ACS estimate code (``B19013_001E``).
             Default ``"median_income"``. Unknown -> ``CensusACSInputError``.
-        year: ACS 5-year vintage end-year. Default ``2022``.
+        year: ACS 5-year vintage end-year. Default ``2022`` (supported 2009-2030).
 
-    **Returns:**
-        ``LayerURI`` -> FlatGeobuf. Each feature is a Polygon (census tract) in
-        EPSG:4326. Properties: ``geoid`` (str, 11-digit), ``name`` (str),
-        ``state`` (str FIPS), ``county`` (str FIPS), ``variable`` (str),
-        ``value`` (float|null), ``units`` (str). ``layer_type="vector"``,
-        ``role="primary"``, ``style_preset="acs_choropleth"``.
-
-    **Error types (FR-AS-11):**
-        - ``CensusACSInputError``: bad bbox / unknown variable / nonexistent
-          ACS table (retryable=False).
-        - ``CensusACSUpstreamError``: TIGERweb or data.census.gov network / HTTP
-          / parse failure (retryable=True).
-        - ``CensusACSEmptyError``: no tracts in bbox (not raised by default --
-          an empty FGB is returned instead).
-
-    Cache: ``static-30d``, ``source_class="census_acs"``. Cache key is bbox
-    (6 dp) + variable + year. No API key required (optional ``CENSUS_API_KEY``
-    env var, if set, uses the classic Data API as primary with the keyless
-    backend as fallback).
+    Returns a ``LayerURI`` (``layer_type="vector"``, ``role="primary"``). Each
+    feature is a tract Polygon (EPSG:4326) with ``geoid`` / ``name`` / ``state`` /
+    ``county`` / ``variable`` / ``value`` / ``units`` properties. Sources
+    (keyless): Census TIGERweb tract geometry + ``data.census.gov`` ACS
+    estimates, joined by GEOID. Cache: ``static-30d`` on bbox (6 dp) + variable
+    + year (optional ``CENSUS_API_KEY`` uses the classic Data API as primary).
     """
     # ---- Input validation ----
     if not isinstance(bbox, tuple):

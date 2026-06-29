@@ -543,92 +543,73 @@ def fetch_usace_nsi(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """USACE National Structure Inventory as a point FlatGeobuf — buildings +
-    HAZUS occupancy class + per-structure replacement value (USD).
+    """USACE National Structure Inventory points -- per-structure HAZUS + replacement value.
 
-    What it does: queries the U.S. Army Corps of Engineers (USACE) National
-    Structure Inventory (NSI) REST API for every documented building inside
-    a bbox and returns a FlatGeobuf of point features (one per structure),
-    each carrying its HAZUS occupancy class (``occtype``), structure
-    replacement value (``val_struct``, USD), content value (``val_cont``),
-    square footage, year built, foundation type/height, FEMA FIRM flood
-    zone, AM/PM population, and ground elevation. NSI is the authoritative
-    U.S.-wide structure inventory used by FEMA / USACE / HAZUS for flood
-    loss estimation.
+    Use this when:
+    - the user asks for buildings or "structure inventory" in a US area, or
+      "what buildings are in the floodplain?".
+    - you need the asset layer for ``run_pelicun_damage_assessment`` /
+      ``run_pelicun_with_buildings`` -- NSI carries HAZUS occupancy class AND
+      per-structure ``val_struct``, the PREFERRED Pelicun asset substrate
+      inside CONUS (removes the density default-RES1 + class-default fallback).
+    - you need exposed value / repair-cost estimates with a real ``val_struct``
+      per structure, or counts by occupancy class (RES1 / COM1 / IND1 / EDU1).
 
-    When to use:
-        - User asks for the buildings or "structure inventory" inside an
-          area (e.g. "show me every building in Fort Myers Beach", "what
-          buildings are in the floodplain?").
-        - As the asset layer for ``run_pelicun_damage_assessment`` /
-          ``run_pelicun_with_buildings`` — NSI carries the HAZUS occupancy
-          class AND per-structure replacement value, removing both the
-          ``compute_building_density`` default-RES1 proxy AND the
-          ``_REPLACEMENT_VALUE_DEFAULTS_USD`` per-class fallback. This is
-          the **preferred** Pelicun asset substrate inside CONUS.
-        - User asks for exposed value or repair cost estimates that need a
-          real ``val_struct`` per structure.
-        - Counting buildings by occupancy class (RES1 / COM1 / IND1 / EDU1
-          / etc.) in a small area.
+    Do NOT use this for: bare OSM building FOOTPRINT polygons with no loss
+    attributes (use ``fetch_buildings``); a building-DENSITY raster, counts per
+    cell (use ``compute_building_density``); persons-per-cell population (use
+    ``fetch_hrsl_population``); anything OUTSIDE the US -- NSI covers only CONUS
+    + AK + HI + US territories (use ``fetch_buildings`` /
+    ``compute_building_density`` internationally).
 
-    When NOT to use:
-        - Outside the United States — NSI only covers CONUS + AK + HI + the
-          U.S. territories. Use ``compute_building_density`` (Microsoft
-          Global ML Building Footprints) for international queries instead.
-        - For bbox spans larger than ~1 degree per axis — NSI rejects
-          oversized queries with a 500. Split into tiles and call once per
-          tile, or use ``compute_building_density`` for the regional
-          aggregate.
-        - For aggregate building density rasters — ``compute_building_density``
-          is the right primitive when you want a raster of building counts
-          per cell, not point features.
-        - For HRSL population grids — ``fetch_hrsl_population`` is the
-          dedicated tool when you only need persons-per-cell, not per-
-          structure attributes.
+    Honesty: NSI is the authoritative US-wide inventory used by FEMA / USACE /
+    HAZUS; spans larger than ~1 degree per axis are rejected by the NSI server
+    with a 500 -- tile and call once per tile rather than guessing.
+
+    Action: returns a vector ``LayerURI`` (NSI Points); call ``publish_layer``
+    to render, or pass ``LayerURI.uri`` as the Pelicun ``assets_uri``.
 
     Parameters:
         bbox: REQUIRED ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            Valid range: ``min_lon`` in [-180, 180], ``max_lat`` in [-90, 90],
-            min < max on each axis. Span on each axis must be ≤ 1.0 degree
-            (NSI server-side cap; oversized envelopes return 500). Example:
-            ``(-81.880, 26.620, -81.860, 26.660)`` for a Fort Myers Beach
-            neighborhood (~0.02 deg, ~50-200 structures).
+            ``min_lon`` in [-180, 180], ``max_lat`` in [-90, 90], min < max on
+            each axis. Span on each axis must be <= 1.0 degree (NSI server cap;
+            oversized envelopes return 500). Example: ``(-81.880, 26.620,
+            -81.860, 26.660)`` (~0.02 deg, ~50-200 structures).
 
     Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf of NSI Point features (one
-        per structure) at
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/<key>.fgb``.
-        ``layer_type="vector"``, ``role="primary"``, ``units=None``,
-        ``style_preset="usace_nsi"``. Each feature carries:
+        A ``LayerURI`` pointing at a FlatGeobuf of NSI Point features (one per
+        structure) in the internal cache bucket. ``layer_type="vector"``,
+        ``role="primary"``, ``units=None``, ``style_preset="usace_nsi"``. Each
+        feature carries:
 
-        - ``fd_id`` (int) — NSI persistent feature ID.
-        - ``occtype`` (str) — HAZUS occupancy class (``RES1``, ``RES3A``,
+        - ``fd_id`` (int) -- NSI persistent feature ID.
+        - ``occtype`` (str) -- HAZUS occupancy class (``RES1``, ``RES3A``,
           ``COM1``, ``IND1``, ``EDU1``, ...). Downstream Pelicun reads this.
-        - ``component_type`` (str) — duplicate of ``occtype`` under the
+        - ``component_type`` (str) -- duplicate of ``occtype`` under the
           column name Pelicun's ``run_pelicun_damage_assessment`` looks for.
-        - ``st_damcat`` (str) — Structure damage category (RES, COM, IND).
-        - ``bldgtype`` (str) — Construction type (W=wood, S=steel, C=concrete,
+        - ``st_damcat`` (str) -- Structure damage category (RES, COM, IND).
+        - ``bldgtype`` (str) -- Construction type (W=wood, S=steel, C=concrete,
           M=masonry).
-        - ``found_type`` (str) — Foundation type (S=slab, B=basement,
+        - ``found_type`` (str) -- Foundation type (S=slab, B=basement,
           C=crawlspace, P=pier).
-        - ``found_ht`` (float) — Foundation height above ground (ft).
-        - ``num_story`` (int) — Number of stories.
-        - ``sqft`` (float) — Building square footage.
-        - ``med_yr_blt`` (int) — Median year built (Census block).
-        - ``val_struct`` (float) — Structure replacement value (USD).
-        - ``replacement_value`` (float) — duplicate of ``val_struct`` under
+        - ``found_ht`` (float) -- Foundation height above ground (ft).
+        - ``num_story`` (int) -- Number of stories.
+        - ``sqft`` (float) -- Building square footage.
+        - ``med_yr_blt`` (int) -- Median year built (Census block).
+        - ``val_struct`` (float) -- Structure replacement value (USD).
+        - ``replacement_value`` (float) -- duplicate of ``val_struct`` under
           the column name Pelicun reads.
-        - ``val_cont`` (float) — Content replacement value (USD).
-        - ``val_vehic`` (float) — Vehicle replacement value (USD).
-        - ``firmzone`` (str|None) — FEMA FIRM flood zone (``AE``, ``X``,
+        - ``val_cont`` (float) -- Content replacement value (USD).
+        - ``val_vehic`` (float) -- Vehicle replacement value (USD).
+        - ``firmzone`` (str|None) -- FEMA FIRM flood zone (``AE``, ``X``,
           ``VE``, or None).
-        - ``cbfips`` (str) — Census block FIPS code.
-        - ``ground_elv`` / ``ground_elv_m`` (float) — Ground elevation
+        - ``cbfips`` (str) -- Census block FIPS code.
+        - ``ground_elv`` / ``ground_elv_m`` (float) -- Ground elevation
           (ft / m).
         - ``pop2amu65`` / ``pop2amo65`` / ``pop2pmu65`` / ``pop2pmo65``
-          (int) — Population AM/PM, under/over 65.
-        - ``students`` (int) — Student count (schools).
-        - ``source`` (str) — NSI source tier (E=Estimated, P=Parcel, ...).
+          (int) -- Population AM/PM, under/over 65.
+        - ``students`` (int) -- Student count (schools).
+        - ``source`` (str) -- NSI source tier (E=Estimated, P=Parcel, ...).
 
     Cross-tool dependencies:
         - Consumed by ``run_pelicun_damage_assessment`` (and the composer
@@ -638,7 +619,7 @@ def fetch_usace_nsi(
           the Pelicun damage loop uses real HAZUS occupancy + structure
           values rather than the ``"RES1"`` / class-default fallback. This
           is the **preferred** Pelicun asset substrate when the bbox is
-          inside CONUS — the composer should prefer NSI when available and
+          inside CONUS -- the composer should prefer NSI when available and
           fall back to ``compute_building_density`` only outside the US.
         - Complementary to ``fetch_hrsl_population`` (population grid),
           ``fetch_administrative_boundaries`` (admin polygons for zonal
@@ -663,7 +644,7 @@ def fetch_usace_nsi(
     be marked ``source_authority_tier=1`` in any ``ClaimSet`` aggregation.
 
     Payload estimation (FR-DC-9 / Wave-1.5 hook): see ``estimate_payload_mb``
-    — bbox-area-driven, with the dense-urban upper bound (~50 MB / deg²).
+    -- bbox-area-driven, with the dense-urban upper bound (~50 MB / deg^2).
     Typical city-scale ~0.1-degree queries land in single-digit MB; the
     full 1-degree max can push past 25 MB and trip the chat-warning gate.
     """

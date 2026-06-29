@@ -1,16 +1,14 @@
-"""Atomic tool ``extract_landcover_class`` — NLCD binary-mask extractor (job-0094, FR-TA-2, FR-CE-8, FR-DC).
+"""Atomic tool ``extract_landcover_class`` -- NLCD binary-mask extractor (job-0094, FR-TA-2, FR-CE-8, FR-DC).
 
 This module registers one atomic tool that filters an NLCD landcover raster to a
 set of requested class codes and returns a binary mask raster:
 
-    ``extract_landcover_class(landcover_uri, classes, bbox=None) → LayerURI``
+    ``extract_landcover_class(landcover_uri, classes, bbox=None) -> LayerURI``
 
 The result is a single-band uint8 GeoTIFF where pixels matching any of the
 requested NLCD class codes are 1, other valid pixels are 0, and nodata pixels
 are preserved as 255. The output is LZW-compressed and is stored under the
-FR-DC-3 cache shim at:
-
-    ``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover_class/<key>.tif``
+FR-DC-3 cache shim (S3, ``static-30d`` / ``landcover_class`` prefix).
 
 **Typical use cases:**
 
@@ -39,7 +37,7 @@ needed. The output raster covers exactly the bbox (clipped to the source
 extent); when ``bbox`` is None the entire source raster is processed.
 
 **Cache key** is derived from ``(landcover_uri, sorted(classes), bbox_rounded_6dp,
-year="2021")`` — all four parameters materially affect the output pixels. The
+year="2021")`` -- all four parameters materially affect the output pixels. The
 ``year`` tag pins to NLCD 2021 (the default vintage for ``fetch_landcover``)
 and is reserved for a future-vintage opt-in.
 
@@ -50,12 +48,12 @@ and is reserved for a future-vintage opt-in.
 - **Invariant 2 (Deterministic workflows): preserves.** Pure rasterio + numpy
   pipeline, no LLM calls, deterministic given inputs.
 - **FR-DC-6 (cacheable): honors.** ``cacheable=True``, ``ttl_class="static-30d"``,
-  ``source_class="landcover_class"`` — a binary mask of a static NLCD COG is
+  ``source_class="landcover_class"`` -- a binary mask of a static NLCD COG is
   stable for the 30-day window.
 - **NFR-R-1 (resilience): preserves.** Read / parse failures surface as
   ``LandcoverClassError`` (typed; never an unhandled exception).
 - **Job-0086 codified lesson (geographic correctness):** the live test asserts
-  that the mask aligns with the known geography of the source raster — a pixel
+  that the mask aligns with the known geography of the source raster -- a pixel
   classified as Open Water (NLCD 11) must remain 1 in the mask after
   extraction, and a Developed (NLCD 21-24) pixel must become 0 if those classes
   aren't requested. The mask is verified against ``np.isin`` of the source array
@@ -102,12 +100,12 @@ class LandcoverClassError(RuntimeError):
     pipeline strip (NFR-R-1 typed-error requirement).
 
     Codes:
-    - ``CLASSES_EMPTY`` — ``classes`` argument was empty.
-    - ``CLASSES_INVALID`` — a class code is out of NLCD uint8 range (0-254).
-    - ``BBOX_INVALID`` — bbox is malformed (wrong arity, non-finite, degenerate).
-    - ``RASTER_OPEN_FAILED`` — rasterio cannot open the landcover raster.
-    - ``WINDOW_EMPTY`` — the requested bbox does not intersect the source raster.
-    - ``WRITE_FAILED`` — rasterio could not write the output GeoTIFF.
+    - ``CLASSES_EMPTY`` -- ``classes`` argument was empty.
+    - ``CLASSES_INVALID`` -- a class code is out of NLCD uint8 range (0-254).
+    - ``BBOX_INVALID`` -- bbox is malformed (wrong arity, non-finite, degenerate).
+    - ``RASTER_OPEN_FAILED`` -- rasterio cannot open the landcover raster.
+    - ``WINDOW_EMPTY`` -- the requested bbox does not intersect the source raster.
+    - ``WRITE_FAILED`` -- rasterio could not write the output GeoTIFF.
     """
 
     def __init__(self, error_code: str, message: str) -> None:
@@ -132,7 +130,7 @@ _METADATA = AtomicToolMetadata(
 _NODATA_OUT = 255
 
 # NLCD source classes can legally be 0-254 (uint8). The output sentinel 255 is
-# reserved for nodata; if the caller asks to extract 255 we refuse — it would
+# reserved for nodata; if the caller asks to extract 255 we refuse -- it would
 # silently merge with nodata.
 _NLCD_MAX_CLASS = 254
 
@@ -209,13 +207,13 @@ def _open_source(landcover_uri: str) -> Any:
     job-0305: this is a CONTEXT MANAGER (was a plain return-the-dataset
     function). For the s3:// in-memory path the prior code did
     ``MemoryFile(...).open()`` and returned the dataset, ORPHANING the
-    MemoryFile — Python could GC it (freeing the /vsimem/ buffer) mid-read, so
+    MemoryFile -- Python could GC it (freeing the /vsimem/ buffer) mid-read, so
     reads returned valid pixels PLUS uninitialized garbage. Yielding the
     dataset from inside a nested ``with MemoryFile(...)`` pins the buffer for
     the dataset's whole lifetime (the same bug + fix as the NLCD validation
     gate in sfincs_builder). The sole caller already uses ``with``.
     """
-    # sprint-14-aws (job-0293b): s3:// reads via boto3 stage-then-open —
+    # sprint-14-aws (job-0293b): s3:// reads via boto3 stage-then-open --
     # GDAL's /vsis3/ creds don't resolve the EC2 instance role in this env
     # (see clip modules), so we open from staged bytes in-memory. NOTE: only
     # the OPEN is wrapped in the RASTER_OPEN_FAILED try; ``yield src`` (the
@@ -355,7 +353,7 @@ def _extract_mask_bytes(
         "tiled": True,
         # 256x256 blocksize for COG-friendly tiling; rasterio enforces a
         # multiple-of-16 constraint and falls back to a strip layout when the
-        # raster is too small for tiling — we accept that fallback.
+        # raster is too small for tiling -- we accept that fallback.
         "blockxsize": 256,
         "blockysize": 256,
     }
@@ -437,90 +435,47 @@ def extract_landcover_class(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NLCD landcover-class binary mask extractor.
+    """Extract one or more NLCD landcover classes as a binary mask raster [raster writer].
 
-    Reads an NLCD landcover GeoTIFF (typical: USGS NLCD 2021 CONUS, or any
-    NLCD-coded raster produced by ``fetch_landcover``), filters to the requested
-    integer class codes, and returns a binary raster mask: ``1`` where any pixel
-    matches one of the requested classes, ``0`` for other valid pixels, ``255``
-    preserved as nodata. The result is a single-band uint8 LZW-compressed
-    GeoTIFF in the FR-DC cache and is map-renderable as well as suitable as a
-    ``zone_input`` for ``compute_zonal_statistics``.
+    Use this when:
+    - You already have an NLCD landcover raster (e.g. from ``fetch_landcover``)
+      and need a single- or multi-class binary mask (1 = in-class, 0 = other,
+      255 = nodata) -- a water mask (class 11), a forest mask (41/42/43), a
+      developed mask (21-24), a wetland mask (90/95).
+    - The mask is map-renderable and works as a ``zone_input`` for
+      ``compute_zonal_statistics`` (value-in-class aggregates).
 
-    Use this when: the agent has an NLCD landcover raster (e.g. from
-    ``fetch_landcover``) and needs a single-class or multi-class binary mask
-    to drive downstream analysis — examples include:
+    Do NOT use this for: FETCHING landcover -- this CONSUMES an existing raster,
+    so get one from ``fetch_landcover`` (NLCD/ESA) or ``fetch_esri_landcover_10m``
+    (global 10 m) first; a continuous impervious fraction (use
+    ``compute_impervious_surface``); per-pixel multi-class statistics (run
+    ``compute_zonal_statistics`` directly on the NLCD raster).
 
-      - Building a "water" mask from class 11 to compute zonal statistics of
-        flood depth over open-water pixels only.
-      - A forest mask from classes 41/42/43 for habitat / fuel-availability
-        analysis.
-      - A developed mask from classes 21-24 for population / building
-        exposure.
-      - A wetland mask from classes 90/95 for tidal-flood inundation analysis.
+    Honesty: a typed ``LandcoverClassError`` is raised on empty/out-of-range
+    classes, a bad bbox, an unreadable source, or a non-intersecting bbox --
+    never a fabricated mask.
 
-    Do NOT use this for: extracting from non-NLCD landcover (ESA WorldCover
-    has different class codes — see OQ-0094-WORLDCOVER for the future
-    extension); RGB / palette-indexed NLCD displays (use ``fetch_landcover``
-    with the WCS path so canonical NLCD codes are returned, not palette
-    indices — see job-0044's OQ-42-NLCD-WMS-PALETTE-ENCODING); per-pixel
-    statistics across multiple classes simultaneously (use
-    ``compute_zonal_statistics`` directly on the NLCD raster with the
-    landcover raster as the value layer).
+    Action: returns a single-band raster ``LayerURI`` that auto-renders -- do not
+    call ``publish_layer``.
 
     Params:
-        landcover_uri: source NLCD GeoTIFF URI — ``gs://`` GCS path or
-            absolute local file path. Must be NLCD-coded (canonical class
-            integers, not palette indices). The output of
-            ``fetch_landcover(...)["raster_uri"]`` satisfies this.
-        classes: list of NLCD integer class codes to extract. At least one
-            code required. Most common (NLCD 2021):
+        landcover_uri: source NLCD GeoTIFF -- an ``s3://`` URI or a local path.
+            Must be NLCD-coded (canonical class integers, not palette indices);
+            ``fetch_landcover(...)`` output satisfies this.
+        classes: list of NLCD integer class codes to extract (>= 1). Common
+            (NLCD 2021): 11 Open Water; 21-24 Developed; 31 Barren; 41-43 Forest;
+            52 Shrub; 71-74 Herbaceous; 81/82 Pasture/Cropland; 90/95 Wetlands.
+            De-duplicated; order-independent; 255 is rejected (nodata sentinel).
+        bbox: optional ``(min_lon, min_lat, max_lon, max_lat)`` clip window in the
+            source CRS (typically EPSG:4326). ``None`` (default) processes the
+            whole raster.
 
-              11 = Open Water
-              21,22,23,24 = Developed (Open, Low, Medium, High intensity)
-              31 = Barren Land
-              41,42,43 = Forest (Deciduous, Evergreen, Mixed)
-              52 = Shrub/Scrub
-              71-74 = Herbaceous
-              81,82 = Pasture / Cropland
-              90,95 = Wetlands (Woody, Emergent Herbaceous)
+    Returns a ``LayerURI`` (``layer_type="raster"``, ``role="context"``,
+    ``style_preset="categorical_landcover"``, ``units=None``). FR-CE-8: routed
+    through ``read_through`` (30-day cache) so repeat ``(uri, classes, bbox)``
+    calls reuse the mask.
 
-            Duplicates are de-duplicated; order does not affect the output.
-            ``255`` is rejected (reserved for the output nodata sentinel).
-        bbox: optional ``(min_lon, min_lat, max_lon, max_lat)`` clip window in
-            the source raster's CRS units (typically EPSG:4326 lon/lat).
-            When provided, only the windowed slice is read — the output covers
-            only the bbox-intersection with the source raster. When ``None``
-            (default), the entire source raster is processed.
-
-    Returns:
-        A ``LayerURI`` pointing at the binary-mask GeoTIFF in the cache
-        bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover_class/<key>.tif``
-        - ``layer_type="raster"``
-        - ``role="context"`` (mask is contextual, not a primary hazard layer)
-        - ``style_preset="categorical_landcover"`` for client rendering
-        - ``units=None`` (binary mask is unitless)
-
-    LLM guidance:
-        - When a question mentions a specific landcover term ("water",
-          "forest", "wetland", "developed", "cropland"), map it to the NLCD
-          code(s) above and pass the integer list — do not invent new codes.
-        - Multi-class extracts (e.g. all forest classes) collapse to one
-          binary mask: pass ``[41, 42, 43]``, not three separate calls.
-        - The output is appropriate as a ``zone_input`` in
-          ``compute_zonal_statistics`` to compute "value-in-class" aggregates.
-
-    FR-CE-8: Results are routed through ``read_through`` so repeat calls with
-    the same ``(landcover_uri, classes, bbox)`` triple reuse the cached mask
-    without re-reading or re-computing. TTL is 30 days (NLCD vintages are
-    stable for years).
-
-    Raises:
-        LandcoverClassError: with a typed ``error_code`` if classes is empty
-            or out of range, the bbox is malformed, the source raster
-            cannot be opened, the bbox does not intersect the source, or
-            writing the output GeoTIFF fails.
+    Raises ``LandcoverClassError`` (typed ``error_code``) per the honesty note.
     """
     effective_bucket = _bucket or CACHE_BUCKET
 
@@ -532,7 +487,7 @@ def extract_landcover_class(
     bbox_rounded = _round_bbox(bbox) if bbox is not None else None
 
     # Cache key on (landcover_uri, sorted classes, bbox, year tag). The year
-    # tag pins to NLCD 2021 — when the engine bumps the default vintage the
+    # tag pins to NLCD 2021 -- when the engine bumps the default vintage the
     # cache key naturally changes, avoiding silent staleness.
     params: dict[str, object] = {
         "landcover_uri": landcover_uri,
@@ -567,7 +522,7 @@ def extract_landcover_class(
         cls_label = f"NLCD {classes_sorted[0]}"
     else:
         cls_label = f"NLCD [{','.join(str(c) for c in classes_sorted)}]"
-    name = f"Landcover mask — {cls_label}"
+    name = f"Landcover mask -- {cls_label}"
 
     return LayerURI(
         layer_id=layer_id,

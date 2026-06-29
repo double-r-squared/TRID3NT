@@ -54,7 +54,7 @@ import math
 import os
 import tempfile
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -623,72 +623,63 @@ def _fetch_osm_roads_bytes(
 )
 def fetch_roads_osm(
     bbox: tuple[float, float, float, float],
-    road_classes: list[str] | None = None,
+    road_classes: list[
+        Literal[
+            "motorway", "trunk", "primary", "secondary", "tertiary",
+            "unclassified", "residential", "service", "motorway_link",
+            "trunk_link", "primary_link", "secondary_link", "tertiary_link",
+            "living_street", "pedestrian", "road",
+        ]
+    ] | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """OpenStreetMap road LineStrings via Overpass API.
+    """OpenStreetMap road LineStrings (vector road network) for a bbox.
 
-    **What it does:** Queries the OpenStreetMap Overpass API for
-    ``highway``-tagged way features inside the requested bbox, clips the
-    matching road LineStrings to the EXACT requested bbox so no road spills
-    outside the AOI, serializes them to FlatGeobuf, and caches the result for
-    30 days. Returns one LineString per in-AOI road segment with attributes
-    ``osm_id``, ``name``, ``highway``, ``lanes``, and ``maxspeed`` (a road
-    that crosses the bbox boundary several times yields several segments that
-    share the source way's attributes). The resulting vector renders inline
-    on the map automatically — do NOT call ``publish_layer`` on it.
+    Use this when:
+    - the user asks to "show roads" or "overlay the road network" for any area.
+    - a flood-impact map needs road context ("which roads are under water?").
+    - evacuation-routing or accessibility analysis needs a carriageway network
+      as a context or input layer (OSM is global -- CONUS + international).
 
-    **When to use:**
-    - User asks to "show roads" or "overlay the road network" for any area.
-    - Flood-impact map needs road context to communicate which streets are
-      inundated ("which roads are under water?").
-    - Evacuation-routing or accessibility analysis needs a carriageway
-      network as a context or input layer.
-    - Any workflow step that needs named road-centreline vectors for CONUS
-      or international areas (OSM is global).
+    Do NOT use this for: parcel / lot boundaries (use
+    ``fetch_administrative_boundaries`` -- TIGER/Line); pedestrian / bicycle /
+    rail (``footway`` / ``cycleway`` / ``railway`` are excluded by design);
+    turn-by-turn routing / lane-level topology (Overpass returns simplified
+    LineStrings, not a routable graph); highly dynamic changes (30-day cache).
 
-    **When NOT to use:**
-    - DO NOT use for parcel or lot boundaries — use
-      ``fetch_administrative_boundaries`` (TIGER/Line) for those.
-    - DO NOT use for pedestrian paths, bicycle routes, or rail lines —
-      those OSM tags (``footway``, ``cycleway``, ``railway``) are excluded
-      from this tool's valid ``road_classes`` set by design.
-    - DO NOT use when turn-by-turn routing, signal phasing, or lane-level
-      topology is needed; Overpass returns simplified LineStrings, not a
-      routable graph with all OSM topology tags.
-    - DO NOT use for highly dynamic road changes — the 30-day cache means
-      road geometry is refreshed at most once per month.
+    Honesty: clips to the EXACT bbox so no road spills outside the AOI; a road
+    crossing the boundary yields several segments sharing the source way's
+    attributes.
 
-    **Parameters:**
-    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
-      max_lon, max_lat)`` in EPSG:4326. Required. Example for Fort Myers:
-      ``(-82.0, 26.4, -81.7, 26.7)``.
-    - ``road_classes`` (list[str] | None, default None): OSM ``highway``
-      tag values to include. ``None`` returns the default major-plus-arterial
-      set: ``motorway``, ``trunk``, ``primary``, ``secondary``, ``tertiary``,
-      plus ``_link`` ramp variants. Pass a narrower list (e.g.
-      ``["motorway", "trunk"]``) for interstates-only, or add
-      ``["residential"]`` for local streets.
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS inline on the map
+    -- do NOT call ``publish_layer`` on it.
 
-    **Returns:** A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
-    (``gs://grace-2-hazard-prod-cache/cache/static-30d/osm_roads/<key>.fgb``).
-    ``layer_type="vector"``, ``role="context"``, ``units=None``. Properties
-    per feature: ``osm_id`` (int), ``name`` (str | None), ``highway``
-    (str), ``lanes`` (str | None), ``maxspeed`` (str | None).
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.
+        road_classes: OSM ``highway`` tag values to include. ``None`` (default)
+            returns the major-plus-arterial set (``motorway``, ``trunk``,
+            ``primary``, ``secondary``, ``tertiary`` plus ``_link`` ramps).
+            Pass a narrower list (e.g. ``["motorway", "trunk"]``) for
+            interstates-only, or add ``["residential"]`` for local streets.
 
-    **Cross-tool dependencies:**
-    - Typically layered over ``fetch_dem`` or flood-output rasters as a
-      context overlay.
-    - Pairs with ``compute_zonal_statistics`` or intersection tools to
-      quantify road-length under flood inundation.
-    - Overpass inserts a 1 s polite delay before each network request to
-      respect rate limits; cache hits skip this delay.
+    Returns:
+        A ``LayerURI`` pointing at a FlatGeobuf in the internal cache bucket.
+        ``layer_type="vector"``, ``role="context"``, ``units=None``. Per
+        feature: ``osm_id`` (int), ``name`` (str | None), ``highway`` (str),
+        ``lanes`` (str | None), ``maxspeed`` (str | None).
 
-    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key
-    is SHA-256 over ``(bbox-6dp, road_classes_sorted)`` so caller-supplied
-    ordering does not affect the key.
+    Cross-tool dependencies:
+        - Typically layered over ``fetch_dem`` or flood rasters as context.
+        - Pairs with ``compute_zonal_statistics`` / intersection tools to
+          quantify road-length under flood inundation.
+        - Overpass inserts a 1 s polite delay per network request; cache hits
+          skip it.
+
+    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key is
+    SHA-256 over ``(bbox-6dp, road_classes_sorted)`` so caller ordering does
+    not affect the key.
     """
     # 1. Input validation.
     _validate_bbox(bbox)

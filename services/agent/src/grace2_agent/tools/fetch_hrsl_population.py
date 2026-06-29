@@ -65,7 +65,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -457,57 +457,56 @@ def _fetch_hrsl_bytes(
 def fetch_hrsl_population(
     bbox: tuple[float, float, float, float],
     year: int = 2020,
-    source: str = "meta_hrsl",
+    source: Literal["meta_hrsl"] = "meta_hrsl",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch Meta + CIESIN HRSL gridded population clipped to a bbox.
+    """Highest-res open population raster (~30m Meta HRSL) clipped to a bbox.
 
-    **What it does:** Opens the global Meta High-Resolution Settlement Layer
-    (HRSL) VRT mosaic on AWS Open Data via GDAL ``/vsicurl/`` HTTP byte-range,
-    reads only the window covering the requested bbox, and writes a
-    Cloud-Optimized GeoTIFF of persons-per-cell values. Resolution ~1 arcsecond
-    (~30 m at the equator); float32, NaN nodata, EPSG:4326. Cached ``static-30d``.
-    Coverage: global land areas between approximately −56° and +72° latitude
-    (excludes Antarctica + far Arctic). No API key required.
+    Use this when:
+    - exposure modeling: "how many people live inside the flood inundation
+      zone?", population-at-risk for surge / wildfire / any hazard footprint.
+    - you want the FINEST open population grid (~30m) globally -- preferable to
+      WorldPop for sub-city-block analyses.
+    - Pelicun damage/loss needs the population-density input for the exposure
+      term.
 
-    **When to use:**
-    - Exposure modeling: "how many people live inside the flood inundation zone?"
-    - Population-at-risk summaries for storm surge, wildfire evacuation zones,
-      or any hazard footprint overlay.
-    - Pelicun damage/loss assessment: HRSL provides the population-density input
-      for the exposure term.
-    - Highest-resolution open population raster available globally; preferable
-      to WorldPop for sub-city-block analyses.
+    Do NOT use this for: a coarser 100m global cross-check with a different
+    method (use ``fetch_ghsl_population`` -- JRC GHS-POP); the WorldPop 100m
+    raster or US Census tracts (use ``fetch_population``); authoritative US
+    tract polygons with demographics (use ``fetch_census_acs``); per-building
+    occupancy (HRSL is gridded -- combine with ``fetch_buildings``); real-time
+    counts (annual model output, not live).
 
-    **When NOT to use:**
-    - Per-building occupancy counts (HRSL is gridded, not parcel-level; combine
-      ``fetch_buildings`` footprints with HRSL for building-level occupancy).
-    - Authoritative US census tabulation for reporting (use US Census API).
-    - Real-time or near-real-time population counts (HRSL is an annual model
-      output, not a live measurement).
-    - Bboxes covering Antarctica or far-north Arctic (raises ``HRSLEmptyError``).
+    Honesty: bbox is REQUIRED (no global query -- full mosaic is hundreds of
+    GB); bboxes over Antarctica / far-north Arctic raise ``HRSLEmptyError``
+    rather than returning empty pixels.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      **Required** (``supports_global_query=False`` — the full mosaic is
-      hundreds of GB). Example: ``(-81.95, 26.3, -81.7, 26.7)`` for Fort Myers FL.
-    - ``year`` (int): HRSL release year; default 2020. v0.1 ignores this
-      (bucket exposes a single "latest" VRT); accepted for forward compatibility.
-    - ``source`` (str): currently only ``"meta_hrsl"`` supported.
+    Action: returns a raster ``LayerURI``; call ``publish_layer`` to render.
 
-    **Returns:**
-    ``LayerURI(layer_type="raster", role="primary", units="persons_per_cell")``
-    pointing at a COG (.tif). EPSG:4326, float32, NaN nodata, ~30 m pixels.
-    Tagged with ``units=persons_per_cell`` and ``source=Meta_HRSL_v1.5_latest``.
+    What it does: opens the global Meta High-Resolution Settlement Layer (HRSL)
+    VRT mosaic on AWS Open Data via GDAL ``/vsicurl/`` byte-range, reads only
+    the bbox window, and writes a persons-per-cell COG. ~1 arcsecond (~30 m at
+    the equator); float32, NaN nodata, EPSG:4326; ``static-30d`` cache. No API
+    key. Coverage: global land roughly -56 to +72 latitude.
 
-    **Cross-tool dependencies:**
-    - Downstream of: ``geocode_location`` (provides bbox), ``fetch_dem``
-      (co-registered for elevation-weighted exposure).
-    - Upstream of: ``compute_zonal_statistics`` (sum population within a polygon),
-      Pelicun impact post-processor, any population-at-risk workflow step.
-    - Pairs with: ``fetch_buildings`` (combine for occupancy-weighted analyses).
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.
+        year: HRSL release year; default 2020. v0.1 ignores it (bucket exposes
+            a single "latest" VRT); accepted for forward compatibility.
+        source: currently only ``"meta_hrsl"``.
+
+    Returns:
+        ``LayerURI(layer_type="raster", role="primary",
+        units="persons_per_cell")`` pointing at a COG (.tif). EPSG:4326,
+        float32, NaN nodata, ~30 m pixels.
+
+    Cross-tool dependencies:
+        - Downstream of: ``geocode_location`` (bbox), ``fetch_dem``
+          (co-registered for elevation-weighted exposure).
+        - Upstream of: ``compute_zonal_statistics`` (sum population in a
+          polygon), Pelicun impact post-processor.
     """
     _validate_bbox(bbox)
     # Type-narrow after validation

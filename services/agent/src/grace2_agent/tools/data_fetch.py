@@ -67,7 +67,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import requests
 
@@ -1142,59 +1142,55 @@ def _write_buildings_tags_sidecar(
 )
 def fetch_buildings(
     bbox: tuple[float, float, float, float],
-    source: str = "osm",
+    source: Literal["osm", "msft"] = "osm",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch building footprints (polygons) for a bbox.
+    """Fetch building FOOTPRINT polygons (OSM/MS) for a bbox -- vector geometry.
 
-    Use this when: the agent needs building polygons for damage / exposure
-    estimation, risk scoring, or display of the built environment.
+    Use this when:
+    - you need building polygons for damage / exposure estimation, risk
+      scoring, or display of the built environment.
+    - you want the raw footprint geometry (closed ways + multipolygons),
+      clipped to the exact bbox.
 
-    Sources (data-source fallback norm — primary → fallback, never a silent
-    dead-end):
-        - ``"osm"`` (DEFAULT, RELIABLE PRIMARY): OpenStreetMap building
-          footprints via the Overpass API. Global, free, no API key. Returns
-          building ``Polygon``s (closed ways) and ``MultiPolygon``s
-          (multipolygon relations with holes), clipped to the exact bbox.
-          This is the dependable path — use it unless you have a specific
-          reason to prefer MS.
-        - ``"msft"`` (BEST-EFFORT FALLBACK): Microsoft Open Maps ML-derived
-          footprints via the Planetary Computer STAC catalog. Wider rural
-          coverage in some areas, but the public catalog often exposes only
-          ``abfs://`` GeoParquet stores that cannot be downloaded by-asset, so
-          this path frequently fails — treat it as best-effort only.
+    Do NOT use this for: per-structure replacement cost / occupancy / HAZUS
+    loss attributes (use ``fetch_usace_nsi`` -- National Structure Inventory
+    points); a building-DENSITY raster, counts per cell (use
+    ``compute_building_density``); live address / parcel / cadastral lookups
+    (different source); 3D building heights (separate dataset).
 
-    Robustness: whichever ``source`` you request is tried FIRST; if it raises
-    an ``UpstreamAPIError`` (upstream failure, no coverage, empty result), the
-    tool automatically FALLS BACK to the other source. If BOTH fail, an honest
-    ``UpstreamAPIError`` naming both attempts is raised — the agent never
-    receives a fabricated success. The cache key reflects the source actually
-    used, so the two sources never collide and a fallback result is cached
-    under its real source.
+    Honesty: data-source fallback norm -- the requested ``source`` is tried
+    FIRST; on ``UpstreamAPIError`` (upstream failure, no coverage, empty) it
+    falls back to the OTHER source; if BOTH fail an honest ``UpstreamAPIError``
+    naming both attempts is raised (never a fabricated success).
 
-    Do NOT use this for: live address/parcel lookups (those need a different
-    cadastral source); per-structure replacement cost / occupancy / HAZUS
-    attributes for loss modeling (use ``fetch_usace_nsi`` — the National
-    Structure Inventory point tool — instead); 3D building heights (heights
-    are a separate dataset); querying buildings by name or use class (filter
-    post-fetch).
+    Action: returns a vector ``LayerURI`` (FlatGeobuf); call ``publish_layer``
+    to render it.
+
+    Sources:
+        - ``"osm"`` (DEFAULT, RELIABLE PRIMARY): OpenStreetMap footprints via
+          the Overpass API. Global, free, no API key -- the dependable path.
+        - ``"msft"`` (BEST-EFFORT FALLBACK): Microsoft Open Maps ML footprints
+          via the Planetary Computer STAC catalog. Wider rural coverage in
+          places, but the public catalog often exposes only ``abfs://``
+          GeoParquet stores that cannot be downloaded by-asset, so this path
+          frequently fails -- best-effort only.
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
         source: ``"osm"`` (default, reliable primary) or ``"msft"``
-            (best-effort fallback). The requested source is tried first; the
-            tool falls back to the other on ``UpstreamAPIError``.
+            (best-effort fallback).
 
     Returns:
         A ``LayerURI`` (``layer_type="vector"``) pointing at a FlatGeobuf in
-        the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/buildings/<key>.fgb``.
-        The ``name`` and ``layer_id`` reflect the source actually used.
+        the internal cache bucket. ``name`` / ``layer_id`` reflect the source
+        actually used. The cache key reflects the source used, so the two
+        sources never collide.
 
-    FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-bbox + source calls reuse the cached artifact.
+    FR-CE-8: routed through ``read_through`` so identical quantized-bbox +
+    source calls reuse the cached artifact.
     """
     if source not in ("msft", "osm"):
         raise BboxInvalidError(
@@ -1699,30 +1695,35 @@ def fetch_population(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch population data for a bbox from WorldPop (Tier-1 default) or Census ACS.
+    """Fetch population for a bbox -- WorldPop 100m raster (default) or US Census ACS.
 
-    Use this when: the agent needs population counts for exposure analysis,
-    risk scoring, or display alongside hazard layers. Anywhere globally, with
-    no API key, at 100m resolution — that's the default WorldPop path.
+    Use this when:
+    - you need population counts for exposure analysis, risk scoring, or
+      display alongside hazard layers, anywhere globally, no API key.
+    - the WorldPop 100m gridded raster is the right default product.
 
-    Do NOT use this for: real-time / daytime population (WorldPop and ACS are
-    both residential count estimates); per-individual data (these are gridded /
-    tract-level aggregates); sub-100m resolution (WorldPop's native grid is
-    100m; finer resolution is a paid LandScan-grade product, not Tier-1).
+    Do NOT use this for: the highest-resolution open population grid, ~30m
+    (use ``fetch_hrsl_population`` -- Meta HRSL); an independent global
+    cross-check with a different disaggregation method (use
+    ``fetch_ghsl_population`` -- JRC GHS-POP); authoritative US tract polygons
+    with demographics (use ``fetch_census_acs``); real-time / daytime
+    population (these are residential count estimates); per-individual data
+    (gridded / tract aggregates only).
 
-    Default behavior (FR-AS-3, Appendix F.1 Tier-1 preference rule):
-        ``dataset="worldpop_2020"`` is the Tier-1 default — WorldPop
-        Unconstrained 100m UN-adjusted gridded population. No API key
-        required; global coverage; windowed read of the country GeoTIFF via
-        rasterio ``/vsicurl/`` so only the bbox window is downloaded.
+    Honesty: a worldpop vintage outside 2000..2020 (e.g. ``"worldpop_2024"``)
+    raises ``UpstreamAPIError`` at parse time rather than 404ing or faking a
+    result; ACS needs a Census API key for non-trivial volumes.
 
-    Tier-2 opt-in:
-        ``dataset="acs_2022"`` routes to the US Census ACS 5-year estimates
-        (B01003_001E total population at tract level) — authoritative for
-        CONUS, finer demographic detail, but **requires a Census API key**
-        for non-trivial volumes (the Tier-2 routing rule per Appendix F.1).
-        Pick this when the agent specifically needs tract-level precision
-        rather than the 100m raster.
+    Action: returns a raster ``LayerURI`` (WorldPop) or a vector one (ACS);
+    call ``publish_layer`` to render.
+
+    Datasets:
+        - ``"worldpop_2020"`` (DEFAULT, Tier-1): WorldPop Unconstrained 100m
+          UN-adjusted gridded population. No API key; global; windowed
+          ``/vsicurl/`` read of the country GeoTIFF.
+        - ``"acs_2022"`` (Tier-2 opt-in): US Census ACS 5-year estimates
+          (B01003_001E total population at tract level). CONUS-only, finer
+          demographic detail, requires a Census API key for non-trivial use.
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
@@ -1737,7 +1738,7 @@ def fetch_population(
             v2024B file URLs stabilize and the range is widened here (tracked
             as OQ-37-WORLDPOP-VINTAGE-YEAR).
         target_resolution_m: ground cell size for the WorldPop branch.
-            Default ``1000`` (the 1km-aggregated product, ~50MB per country —
+            Default ``1000`` (the 1km-aggregated product, ~50MB per country --
             unchanged). Pass ``100`` (or any value ``<= 100``) to opt into the
             native 100m UN-adjusted product. WARNING: the 100m path is a ~4 GB
             upstream whole-country download per cache miss (WorldPop does not
@@ -1746,12 +1747,11 @@ def fetch_population(
             Ignored by the ACS branch.
 
     Returns:
-        A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF (WorldPop branch)
-        or a GeoJSON FeatureCollection (ACS branch) in the cache bucket.
-        - WorldPop: ``gs://grace-2-hazard-prod-cache/cache/static-30d/population/<key>.tif``
-          (100m raster, units = people per 100m cell).
-        - ACS: ``gs://grace-2-hazard-prod-cache/cache/static-30d/population/<key>.json``
-          (tract-level FeatureCollection; geometry enrichment is a follow-up).
+        A ``LayerURI`` in the internal cache bucket:
+        - WorldPop: a Cloud-Optimized GeoTIFF (100m raster, units = people
+          per 100m cell).
+        - ACS: a GeoJSON FeatureCollection (tract-level; geometry enrichment
+          is a follow-up).
 
     FR-CE-8: The fetch is routed through ``read_through`` so identical
     quantized-bbox + dataset calls reuse the cached artifact. FR-DC-4 dedup
@@ -2999,60 +2999,54 @@ def fetch_landcover(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Fetch landcover classification raster (NLCD or ESA WorldCover) for a bbox.
+    """Fetch landcover CLASSIFICATION raster (full NLCD / ESA WorldCover) for a bbox.
 
-    Access pattern: Tier 2 (OGC service — MRLC WCS/WMS endpoint per §F.1.1; live
-    verification 2026-06-07 found NLCD is Tier 2, see OQ-39-NLCD-TIER-DEVIATION).
-
-    **What it does:** Downloads an NLCD or ESA WorldCover landcover GeoTIFF
-    clipped to the requested bbox via the MRLC WCS 1.0.0 GeoServer endpoint.
-    Returns a dict containing a ``LayerURI`` plus a ``nlcd_vintage_year``
-    sidecar field that downstream SFINCS setup uses to validate Manning's
-    roughness mappings before HydroMT invocation (Invariant 7 — no silent
-    wrong answers).
-
-    **When to use:**
-    - ``build_sfincs_model`` requires landcover for Manning's roughness
-      assignment — this is the canonical supply tool.
-    - User asks "what land cover exists in this area?" for a CONUS location.
-    - Exposure analysis: intersect a hazard footprint with impervious-surface
+    Use this when:
+    - ``build_sfincs_model`` needs landcover for Manning's roughness
+      assignment -- this is the canonical supply tool.
+    - the user asks "what land cover exists in this area?" for a CONUS AOI.
+    - exposure analysis intersects a hazard footprint with impervious-surface
       or developed-land classes.
-    - Visualization using the ``categorical_landcover`` QML style preset.
 
-    **When NOT to use:**
-    - Coverage outside CONUS L48 — NLCD covers only the 48 contiguous US
-      states; Alaska, Hawaii, and Puerto Rico have separate MRLC layers not
-      in the v0.1 substrate.
-    - Global landcover — pass ``dataset="esa_worldcover_2021"`` to opt into
-      the ESA WorldCover branch, but that branch currently raises
-      ``UpstreamAPIError`` (forward-looking, OQ-39-ESA-WORLDCOVER-SUBSTRATE).
-    - Single-point landcover classification — this tool returns a raster;
-      use ``extract_landcover_class`` for point lookups once it lands.
-    - Bboxes larger than 10,000 km² — the MRLC WCS server rejects oversized
-      requests; the tool raises ``BboxInvalidError`` at that threshold.
+    Do NOT use this for: a single-POINT landcover class lookup (use
+    ``extract_landcover_class``); the global 10m ESRI/Sentinel-2 land-cover
+    raster (use ``fetch_esri_landcover_10m``); building footprints, population,
+    or field boundaries (those are separate fetchers). NLCD covers only CONUS
+    L48; the ``esa_worldcover_2021`` branch is forward-looking and currently
+    raises ``UpstreamAPIError``.
 
-    **Parameters:**
-    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
-      max_lat)`` in EPSG:4326. Max area 10,000 km².
-    - ``dataset`` (str, default ``"nlcd_2021"``): NLCD vintage string
-      (``"nlcd_2021"``, ``"nlcd_2019"``, ``"nlcd_2016"``, etc.) or
-      ``"esa_worldcover_2021"`` (forward-looking). Valid NLCD years:
-      2001, 2004, 2006, 2008, 2011, 2013, 2016, 2019, 2021.
+    Honesty: bboxes over ~10,000 km^2 raise ``BboxInvalidError`` (MRLC WCS
+    rejects oversized requests); no silent wrong answers.
 
-    **Returns:**
-    A dict with keys:
-    - ``layer`` (LayerURI): COG at
-      ``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/<key>.tif``;
-      ``style_preset="categorical_landcover"``, ``units="nlcd_class_code"``.
-    - ``nlcd_vintage_year`` (int): vintage year consumed by
-      ``build_sfincs_model`` to validate the Manning's mapping CSV.
-    - ``dataset`` (str): echo of the input dataset string for provenance.
-    - ``source`` (str): ``"mrlc-wcs"`` for NLCD.
+    Action: returns a DICT (NOT a bare LayerURI) carrying ``layer`` (the
+    raster ``LayerURI``) plus ``nlcd_vintage_year`` / ``dataset`` / ``source``
+    metadata that downstream SFINCS setup reads to validate the Manning's
+    mapping. Call ``publish_layer`` on the ``layer`` field to render.
 
-    **Cross-tool dependencies:**
-    - Upstream: ``geocode_location`` for bbox derivation.
-    - Downstream: ``build_sfincs_model`` (Manning's roughness), QGIS Server
-      WMS rendering, ``extract_landcover_class``, ``compute_impervious_surface``.
+    Access pattern: Tier 2 (OGC -- MRLC WCS/WMS endpoint per F.1.1; live
+    verification 2026-06-07 found NLCD is Tier 2, OQ-39-NLCD-TIER-DEVIATION).
+
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Max area
+            10,000 km^2.
+        dataset: NLCD vintage string (``"nlcd_2021"`` default, ``"nlcd_2019"``,
+            ``"nlcd_2016"``, ...) or ``"esa_worldcover_2021"`` (forward-
+            looking). Valid NLCD years: 2001, 2004, 2006, 2008, 2011, 2013,
+            2016, 2019, 2021. (Open vintage vocab -- parsed, not enum-bound.)
+
+    Returns:
+        A dict with keys:
+        - ``layer`` (LayerURI): COG in the internal cache bucket;
+          ``style_preset="categorical_landcover"``, ``units="nlcd_class_code"``.
+        - ``nlcd_vintage_year`` (int): consumed by ``build_sfincs_model`` to
+          validate the Manning's mapping CSV.
+        - ``dataset`` (str): echo of the input dataset for provenance.
+        - ``source`` (str): ``"mrlc-wcs"`` for NLCD.
+
+    Cross-tool dependencies:
+        - Upstream: ``geocode_location`` for bbox derivation.
+        - Downstream: ``build_sfincs_model`` (Manning's roughness),
+          ``extract_landcover_class``, ``compute_impervious_surface``.
     """
     if not isinstance(dataset, str) or not dataset:
         raise BboxInvalidError(

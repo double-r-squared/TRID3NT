@@ -427,52 +427,42 @@ def compute_ndvi(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Compute Sentinel-2 NDVI (vegetation vigor) for a bbox + time window.
+    """Compute Sentinel-2 NDVI (vegetation vigor) for a bbox + time window [raster writer].
 
-    **What it does:** Searches the Microsoft Planetary Computer for the
-    least-cloudy Sentinel-2 L2A scene intersecting ``bbox`` inside the time
-    window, reads the Red (B04) and NIR (B08) 10 m bands clipped to the bbox,
-    computes ``NDVI = (NIR - Red) / (NIR + Red)`` per pixel, and returns a
-    single-band float32 NDVI COG (range -1..1) with a green vegetation colormap.
+    Use this when:
+    - The user wants vegetation condition, greenness, canopy vigor, or a
+      "where is the healthy vegetation" map. NDVI is a continuous index
+      (-1..1; water/bare ~0, sparse 0.2-0.5, dense canopy 0.6-0.9).
+    - As the vegetation input to ``model_conservation_priority``, or a two-date
+      vegetation comparison (call twice with different windows).
 
-    NDVI is the standard greenness / live-biomass index: water and bare soil
-    sit near 0 (or negative), sparse vegetation 0.2-0.5, dense healthy canopy
-    0.6-0.9. It is the vegetation layer in the conservation-priority stack.
+    Do NOT use this for: land-cover CLASSES (forest/crop/urban -- use
+    ``fetch_landcover`` / ``extract_landcover_class`` / ``fetch_esri_landcover_10m``;
+    NDVI is an index, not a classifier); a natural-color or aerial PICTURE (use
+    ``fetch_sentinel2_truecolor`` or ``fetch_naip``); surface-water polygons (use
+    ``digitize_water_body``).
 
-    **When to use:**
-    - User wants vegetation condition, greenness, canopy vigor, or a
-      "where is the healthy vegetation" map for an area.
-    - As the vegetation input to ``model_conservation_priority`` (SC-DNR-style
-      species + vegetation + biodiversity stack).
-    - Comparing vegetation between two dates (call twice with different windows).
+    Honesty: NDVI needs the red (B04) + NIR (B08) bands; if no Sentinel-2 scene
+    covers the bbox in the window under the cloud cap a typed ``NDVINoImageryError``
+    is raised -- never a fabricated layer.
 
-    **When NOT to use:**
-    - Land-cover CLASSES (forest / crop / urban)  --  use ``fetch_landcover`` /
-      ``extract_landcover_class``; NDVI is a continuous index, not a classifier.
-    - High-res true-color aerial imagery  --  use ``fetch_naip``.
-    - Areas with persistent cloud cover in the window (raise the window or the
-      ``max_cloud_cover`` ceiling); a no-imagery result is an honest typed error.
+    Action: returns a single-band float32 raster ``LayerURI``
+    (``style_preset="ndvi"``, RdYlGn ramp) that auto-renders -- no
+    ``publish_layer`` call.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. AOI-scoped (<= 1.0 deg^2). AOIs under ~0.5 deg^2 read at native
-      10 m; larger AOIs (up to ~1.0 deg^2) are auto-coarsened to fit the 4096px
-      grid (effective cell ~= bbox_m/4096, ~20-24 m/px); narrow the bbox for
-      native 10 m.
-    - ``start_date`` / ``end_date`` (str, optional): ``"YYYY-MM-DD"`` window
-      bounds. Default: a trailing ~14-month window ending today.
-    - ``max_cloud_cover`` (float, default 30.0): only scenes below this
-      ``eo:cloud_cover`` percent are considered; the least-cloudy is chosen.
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.
+            AOIs under ~0.5 deg^2 read at native 10 m; up to ~1.0 deg^2 are
+            auto-coarsened to the 4096px grid (~20-24 m/px).
+        start_date / end_date: ``"YYYY-MM-DD"`` window. Default: trailing
+            ~14-month window.
+        max_cloud_cover: float percent (default 30.0); the least-cloudy scene
+            below it is chosen.
 
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="primary"``,
-    ``units="NDVI (-1..1)"``) pointing at a single-band float32 COG in the
-    ``static-30d``/``ndvi`` cache prefix. ``style_preset="ndvi"`` (RdYlGn ramp).
-
-    **Data source:** Sentinel-2 Level-2A via the Microsoft Planetary Computer
-    STAC (``sentinel-2-l2a`` collection; bands B04 + B08).
-
-    FR-CE-8: routed through ``read_through`` so identical ``(bbox, window,
-    cloud)`` calls reuse the cached NDVI COG.
+    Returns a ``LayerURI`` (``layer_type="raster"``, ``role="primary"``,
+    ``units="NDVI (-1..1)"``). Data source: Sentinel-2 L2A via the Microsoft
+    Planetary Computer STAC (``sentinel-2-l2a``; bands B04 + B08). FR-CE-8:
+    ``read_through`` cached on ``(bbox, window, cloud)``.
     """
     _validate_bbox(bbox)
     q_bbox = _round_bbox(bbox)

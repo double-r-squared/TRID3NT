@@ -332,44 +332,34 @@ def fetch_naip(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NAIP high-resolution aerial imagery (RGB) for a US bbox.
+    """Fetch NAIP high-resolution (~1 m) aerial RGB imagery for a US bbox [raster fetcher].
 
-    **What it does:** Searches the Microsoft Planetary Computer for a NAIP
-    aerial-imagery item intersecting ``bbox``, reads the R/G/B bands clipped to
-    the bbox at ~1 m, and returns a 3-band uint8 RGB COG that renders directly
-    as the aerial BASE layer (no rescale / colormap  --  the baked colors paint
-    as-is via the multiband passthrough in ``publish_layer``).
-
-    NAIP is leaf-on, ~0.6-1 m, refreshed on a multi-year state cycle  --  the
-    canonical free US aerial basemap for site-level context.
-
-    **When to use:**
-    - User wants a high-res aerial / true-color basemap for a US area.
+    Use this when:
+    - The user wants a high-res aerial / true-color basemap for a US area
+      (site-level context, "what does this parcel look like from the air").
     - As the aerial BASE layer under the conservation-priority stack
-      (``model_conservation_priority``), under species points + NDVI + MoBI.
+      (``model_conservation_priority``), below species points + NDVI + MoBI.
 
-    **When NOT to use:**
-    - Outside the US (NAIP is CONUS + HI + PR + USVI only)  --  a no-coverage
-      result is an honest typed error, not a fabricated layer.
-    - Vegetation index (use ``compute_ndvi``) or land-cover classes (use
-      ``fetch_landcover``).
-    - Very large AOIs  --  NAIP is sub-meter; the tool caps the bbox to a small
-      neighborhood / preserve (~0.06 deg^2).
+    Do NOT use this for: anywhere outside the US (NAIP is CONUS + HI + PR + USVI
+    only -- elsewhere use ``fetch_sentinel2_truecolor``); recent/global natural
+    color (``fetch_sentinel2_truecolor``, 10 m); long-historical or thermal
+    imagery (``fetch_landsat_imagery``); a vegetation index (``compute_ndvi``);
+    land-cover classes (``fetch_landcover`` / ``fetch_esri_landcover_10m``).
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. US-only, AOI-scoped.
+    Honesty: if no NAIP item intersects the bbox a typed ``NAIPNoCoverageError``
+    is raised (offshore / foreign AOI) -- never a fabricated layer.
 
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="context"``  -- 
-    it is a basemap, not the analytical primary) pointing at a 3-band RGB COG in
-    the ``static-30d``/``naip`` cache prefix. ``style_preset="naip_rgb"`` (a
-    multiband passthrough token  --  no single-band rescale).
+    Action: returns a 3-band RGB ``LayerURI`` (``style_preset="naip_rgb"``, a
+    multiband passthrough) that paints directly -- no ``publish_layer`` call.
 
-    **Data source:** USDA NAIP via the Microsoft Planetary Computer STAC
-    (``naip`` collection; ``image`` asset).
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required,
+            US-only, AOI-scoped (<= 0.06 deg^2; NAIP is sub-meter).
 
-    FR-CE-8: routed through ``read_through`` so identical bbox calls reuse the
-    cached RGB COG.
+    Returns a ``LayerURI`` (``layer_type="raster"``, ``role="context"`` -- a
+    basemap, not the analytical primary). Data source: USDA NAIP via the
+    Microsoft Planetary Computer STAC (``naip``; ``image`` asset). FR-CE-8:
+    ``read_through`` cached on the bbox.
     """
     _validate_bbox(bbox)
     q_bbox = _round_bbox(bbox)
