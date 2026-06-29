@@ -1790,6 +1790,75 @@ async def test_densify_runs_in_executor_not_on_loop(tmp_path: Any) -> None:
     assert heartbeats > 100, heartbeats
 
 
+@pytest.mark.asyncio
+async def test_densified_result_is_cached_across_reads(tmp_path: Any) -> None:
+    """A second read of the SAME vector uri is served from cache -- the densify
+    does NOT run again.
+
+    This is the reconnect-storm fix: a session-resume replay re-reads the
+    active-case vector layers on every ~30s reconnect; without the cache each
+    reconnect re-densified tens of thousands of features, which pegged the shared
+    box and fed the reconnect storm. The cache makes the repeat read an O(1) hit.
+    """
+    from grace2_agent import pipeline_emitter as pe
+    from grace2_agent.tools import vector_tiles as vt
+    from grace2_agent.tools.vector_tiles import MAX_INLINE_FEATURES
+
+    fc = _make_dense_fc(MAX_INLINE_FEATURES + 800)
+    path = tmp_path / "cached.geojson"
+    path.write_text(json.dumps(fc))
+    uri = str(path)
+
+    # Isolate: drop any prior cache entry for this uri.
+    pe._DENSIFIED_FC_CACHE_BY_URI.pop(pe._densified_cache_key(uri), None)
+
+    # First read: cache miss -> densify runs, output is capped + cached.
+    out1 = await pe._read_vector_uri_as_geojson(uri)
+    assert out1 is not None
+    assert len(out1["features"]) == MAX_INLINE_FEATURES
+    assert pe._densified_cache_key(uri) in pe._DENSIFIED_FC_CACHE_BY_URI
+
+    # Second read: cache hit -> densify_if_needed must NOT be called again.
+    calls = {"n": 0}
+    real = vt.densify_if_needed
+
+    def counting_densify(*args: Any, **kwargs: Any):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(vt, "densify_if_needed", counting_densify)
+    try:
+        out2 = await pe._read_vector_uri_as_geojson(uri)
+    finally:
+        monkey.undo()
+
+    assert calls["n"] == 0  # served from cache, no re-densify
+    assert out2 is out1  # identical cached object -- byte-for-byte the same FC
+    assert len(out2["features"]) == MAX_INLINE_FEATURES
+
+
+@pytest.mark.asyncio
+async def test_densified_cache_is_fifo_bounded() -> None:
+    """The densified-FC cache FIFO-evicts past the cap so the always-on agent
+    process can never grow it without limit."""
+    from grace2_agent import pipeline_emitter as pe
+
+    cap = pe._MAX_DENSIFIED_FC_CACHE_ENTRIES
+    pe._DENSIFIED_FC_CACHE_BY_URI.clear()
+    try:
+        for i in range(cap + 5):
+            pe._store_densified_fc(
+                f"cachekey-{i}", {"type": "FeatureCollection", "features": []}
+            )
+        assert len(pe._DENSIFIED_FC_CACHE_BY_URI) == cap
+        # Oldest keys evicted; newest survive.
+        assert "cachekey-0" not in pe._DENSIFIED_FC_CACHE_BY_URI
+        assert f"cachekey-{cap + 4}" in pe._DENSIFIED_FC_CACHE_BY_URI
+    finally:
+        pe._DENSIFIED_FC_CACHE_BY_URI.clear()
+
+
 # ``_read_vector_uri_as_geojson`` imports ``densify_if_needed`` from the
 # ``vector_tiles`` module at call time (``from .tools.vector_tiles import
 # densify_if_needed``), so monkeypatching ``vector_tiles.densify_if_needed`` is

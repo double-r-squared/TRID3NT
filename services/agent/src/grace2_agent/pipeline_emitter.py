@@ -683,7 +683,19 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
         key = uri
     ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
 
-    loop = asyncio.get_running_loop()
+    # perf (reconnect-storm fix): a heavy case re-reads + re-densifies the SAME
+    # content-addressed vector artifact on EVERY ~30s session-resume reconnect
+    # (the replay calls this per active-case vector layer). The read + densify is
+    # off-loop, but the cumulative CPU of re-simplifying tens of thousands of
+    # features per layer on each reconnect still pegged the shared box and fed the
+    # reconnect storm. Cache the densified OUTPUT keyed by the content-addressed
+    # uri (+ densify params) so a repeat read is an O(1) hit -- no repeat S3 GET,
+    # no repeat simplify/cap. Behavior is identical: the cached value IS the same
+    # densified FeatureCollection the off-loop path would recompute.
+    cache_key = _densified_cache_key(uri)
+    cached = _DENSIFIED_FC_CACHE_BY_URI.get(cache_key)
+    if cached is not None:
+        return cached
 
     def _read_and_parse() -> dict[str, Any] | None:
         try:
@@ -739,7 +751,18 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
         # (``add_loaded_layer`` + ``reinline_vector_layers``).
         return _densify_off_loop(obj, uri)
 
-    return await loop.run_in_executor(None, _read_and_parse)
+    # Off-loop: the synchronous read + CPU-bound densify run in a worker thread
+    # (asyncio.to_thread) so the simplify/cap of tens of thousands of features
+    # never blocks the WS keepalive on the asyncio event loop. The densify body
+    # is folded into ``_read_and_parse`` (via ``_densify_off_loop``) so the entire
+    # read+densify path is awaited off the loop in one hop.
+    result = await asyncio.to_thread(_read_and_parse)
+    if result is not None:
+        # Only successful reads are cached -- a transient S3 failure (None) must
+        # be retried, never pinned. Cache the densified output so the next
+        # reconnect/case-open skips both the read and the densify.
+        _store_densified_fc(cache_key, result)
+    return result
 
 
 def _densify_off_loop(geojson_obj: Any, uri: str) -> Any:
@@ -792,6 +815,55 @@ def _densify_off_loop(geojson_obj: Any, uri: str) -> Any:
 #: lifetime of the always-on agent process.
 _MAX_DENSITY_META_ENTRIES: int = 256
 _LAST_DENSITY_META_BY_URI: dict[str, Any] = {}
+
+
+#: perf (reconnect-storm fix): cache of the DENSIFIED FeatureCollection keyed by
+#: the content-addressed artifact uri (folded with the densify params). A heavy
+#: case re-reads + re-densifies its active-case vector layers on EVERY ~30s
+#: session-resume reconnect; even off-loop that repeated simplify/cap of tens of
+#: thousands of features pegged the shared box and fed the reconnect storm.
+#: Caching the OUTPUT (already capped to MAX_INLINE_FEATURES, so bounded in size)
+#: makes a repeat read an O(1) hit. Bounded FIFO -- the SAME eviction discipline
+#: as the meta side-table above -- so the always-on process cannot grow it without
+#: limit. Keyed by uri because the artifact is content-addressed (same bytes ->
+#: same densify result), so two sessions reading the same dense layer share one
+#: entry. Only the event loop reads/writes this map (the worker thread never
+#: touches it), so no cross-thread locking is needed.
+_MAX_DENSIFIED_FC_CACHE_ENTRIES: int = 32
+_DENSIFIED_FC_CACHE_BY_URI: dict[str, dict[str, Any]] = {}
+
+
+def _densified_cache_key(uri: str) -> str:
+    """Cache key for ``_read_vector_uri_as_geojson``'s densified output.
+
+    The artifact uri is content-addressed, so the bytes (and thus the densify
+    result) are fully identified by it; the densify params (threshold + cap) are
+    folded in so a config change invalidates stale entries rather than serving a
+    differently-simplified FeatureCollection on a stale key.
+    """
+    try:
+        from .tools.vector_tiles import (
+            DENSE_VECTOR_THRESHOLD,
+            MAX_INLINE_FEATURES,
+        )
+
+        return f"{uri}|t={DENSE_VECTOR_THRESHOLD}|c={MAX_INLINE_FEATURES}"
+    except Exception:  # noqa: BLE001 -- never let key-building block a read
+        return uri
+
+
+def _store_densified_fc(key: str, fc: dict[str, Any]) -> None:
+    """Store a densified FC in the bounded FIFO cache (oldest evicted past cap).
+
+    Mirrors the ``_LAST_DENSITY_META_BY_URI`` eviction: re-insert to move a
+    refreshed key to the tail, then pop from the head until at/under the cap.
+    ``dict`` preserves insertion order, so the head is the oldest entry.
+    """
+    if key in _DENSIFIED_FC_CACHE_BY_URI:
+        del _DENSIFIED_FC_CACHE_BY_URI[key]
+    _DENSIFIED_FC_CACHE_BY_URI[key] = fc
+    while len(_DENSIFIED_FC_CACHE_BY_URI) > _MAX_DENSIFIED_FC_CACHE_ENTRIES:
+        _DENSIFIED_FC_CACHE_BY_URI.pop(next(iter(_DENSIFIED_FC_CACHE_BY_URI)))
 
 
 def _legend_for_layer_uri(uri: str | None) -> Any:
