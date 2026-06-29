@@ -56,7 +56,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -515,38 +515,35 @@ def _fetch_sst_cog_bytes(
 def fetch_noaa_sst(
     bbox: tuple[float, float, float, float],
     date: str | None = None,
-    variable: str | None = "sst",
+    variable: Literal["sst", "anomaly"] = "sst",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a daily NOAA sea-surface-temperature (SST) COG for a bbox.
+    """NOAA sea-surface-temperature (SST) raster COG for a bbox + day (ocean only).
 
-    **What it does:** Subsets the NOAA Coral Reef Watch operational daily 5 km
-    global SST product (via the keyless NOAA CoastWatch ERDDAP griddap endpoint)
-    to a single day + the requested ocean ``bbox``, and returns a single-band
-    float32 COG in degrees Celsius (``style_preset="sst_celsius"``). Pass
-    ``variable="anomaly"`` for the SST ANOMALY (observed minus climatology,
-    degrees C, diverging blue-red ramp ``sst_anomaly``).
+    Subsets the NOAA Coral Reef Watch operational daily 5 km global SST product
+    (keyless NOAA CoastWatch ERDDAP griddap) to one day + the ocean ``bbox``, as a
+    single-band float32 COG in degrees Celsius. Pass ``variable="anomaly"`` for the
+    SST anomaly (observed minus climatology). Global, gap-filled (no cloud holes),
+    daily (~1 day latency), 1985-present.
 
-    The CRW product is global, gap-filled (no cloud holes), updated daily with
-    ~1 day latency, and covers 1985-present  --  the go-to "how warm is the ocean
-    here" / marine-heatwave / coral-bleaching-stress / hurricane-fuel layer.
+    Use this when:
+    - The user wants ocean / sea-surface temperature for an area or date
+      ("how warm is the water off Florida").
+    - Hurricane-fuel, marine-heatwave, or coral-bleaching heat-stress context;
+      ``variable="anomaly"`` for departure-from-normal.
 
-    **When to use:**
-    - User wants ocean / sea-surface temperature for an area or a date
-      ("show SST in the Gulf", "how warm is the water off Florida").
-    - SST ANOMALY / marine-heatwave context (``variable="anomaly"``): how far
-      above or below normal today's water is.
-    - Hurricane-intensification context (warm SST = storm fuel), coral-bleaching
-      heat stress, fisheries / ecosystem temperature context.
+    Do NOT use this for:
+    - LAND-surface temperature -- this is OCEAN ONLY (a land bbox returns an
+      honest no-data error; CRW masks land).
+    - Air / 2 m temperature -- use ``fetch_era5_reanalysis`` or ``fetch_gridmet``.
+    - Sub-5 km coastal detail -- CRW is 5 km.
 
-    **When NOT to use:**
-    - LAND-surface temperature  --  this is OCEAN ONLY; a land bbox returns an
-      honest no-data error (CRW masks land).
-    - Air / 2 m temperature  --  use ``fetch_era5_reanalysis`` /
-      ``fetch_gridmet`` (those are atmospheric, not sea-surface).
-    - Sub-5 km coastal detail  --  CRW is 5 km; for finer SST a higher-res
-      product (e.g. MUR 1 km) would be a separate fetcher.
+    Honesty: a land-only / no-coverage bbox returns an honest typed no-data
+    error, never a fabricated field.
+
+    Action: returns a raster ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.

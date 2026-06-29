@@ -207,8 +207,8 @@ def compute_overtopping(
     nearshore sea state (Hm0, Tp -- typically straight from a SWAN / SnapWave run)
     and a structure geometry (crest freeboard Rc above still-water level, front
     slope, optional roughness/reduction factors), it returns the mean overtopping
-    discharge ``q`` in m^3/s per metre of structure crest length. Use it to turn
-    a wave field into a coastal-defence overtopping rate.
+    discharge ``q`` in m^3/s per metre of structure crest length. Returns a dict
+    of SCALARS, NOT a map layer -- do not call publish_layer.
 
     Use this when:
         - The user has a nearshore wave height + period and a seawall / levee /
@@ -220,7 +220,8 @@ def compute_overtopping(
     Do NOT use this for:
         - Vertical / battered seawalls (EurOtop Chapter 7) -- this version covers
           SLOPED dike/revetment geometry only.
-        - Computing the wave field itself (use ``run_swan_waves``).
+        - Estimating the wave field itself -- the wind-driven Hs/Tp guess is
+          ``compute_wave_nomograph``; the full spectral solve is ``run_swan_waves``.
         - Inland / pluvial flooding (use ``run_swmm_urban_flood``) or surge
           inundation depth (use ``run_model_flood_scenario``).
 

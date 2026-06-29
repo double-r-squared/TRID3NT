@@ -87,7 +87,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -778,44 +778,41 @@ def fetch_tsunami_events(
     bbox: tuple[float, float, float, float] | None = None,
     min_year: int | None = None,
     max_year: int | None = None,
-    observation_type: str = "events",
+    observation_type: Literal["events", "runups"] = "events",
     # Absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch REAL historical tsunamis as a point FlatGeobuf.
+    """Historical tsunami EVENTS (or runup observations) as a point vector layer (observed record).
 
-    Retrieves recorded tsunami SOURCE EVENTS (or coastal RUNUP observations)
-    from the NOAA NCEI / World Data Service **Global Historical Tsunami
-    Database** (the authoritative catalog from 2100 BC to the present, the same
-    record behind the NCEI Natural Hazards viewer) inside a bbox and year
-    window. Returns one Point feature per record carrying the year, the cause
-    (earthquake / volcano / landslide / meteorological / ...), the maximum
-    observed water height (m), the death toll, the source earthquake magnitude,
-    and the NCEI source attribution. This is the canonical OBSERVED
-    historical-tsunami record - what actually happened - NOT a probabilistic
-    tsunami-inundation hazard model.
+    Recorded tsunami SOURCE EVENTS (or coastal RUNUP observations) from the NOAA
+    NCEI / World Data Service Global Historical Tsunami Database (2100 BC to
+    present), one Point per record carrying the year, cause (earthquake / volcano
+    / landslide / ...), maximum observed water height (m), death toll, source
+    earthquake magnitude, and NCEI attribution. The OBSERVED catalog of what
+    actually happened -- NOT a probabilistic / modeled tsunami-inundation hazard.
 
-    When to use:
-        - The user asks for historical / past tsunamis, "tsunami events",
-          "tidal waves", "where have tsunamis happened", a tsunami history, or
-          tsunami deaths / run-up heights for an area (e.g. "show tsunamis near
-          Japan", "historical tsunamis in the Pacific", "what tsunamis hit
-          Indonesia", "biggest tsunamis in Chile", "the 2011 Tohoku tsunami").
+    Use this when:
+        - The user asks for historical / past tsunamis, "tsunami events", a
+          tsunami history, or deaths / run-up heights for an area ("tsunamis near
+          Japan", "biggest tsunamis in Chile", "the 2011 Tohoku tsunami").
         - You need the actual recorded source epicenters, water heights, causes,
-          and death tolls - the real event catalog - to map, count, or annotate
-          a coastal-hazard / SLR / surge discussion.
+          and death tolls to map, count, or annotate a coastal-hazard discussion.
 
-    When NOT to use:
-        - PROBABILISTIC tsunami INUNDATION / run-up HAZARD with a return period,
-          or a modeled inundation extent for a hypothetical event - this tool
-          returns the OBSERVED historical record, not a modeled hazard surface.
-        - Live tsunami WARNINGS / advisories (use a warning feed; this is a
-          historical catalog).
-        - Earthquakes themselves (use ``fetch_usgs_earthquakes`` - this tool
-          returns the tsunamis those quakes generated, with ``eq_magnitude`` as
-          a property).
-        - Coastal sea-level-rise scenarios (use the NOAA SLR tools).
+    Do NOT use this for:
+        - MODELED / probabilistic tsunami INUNDATION or run-up with a return
+          period -- use ``run_geoclaw_inundation`` (this tool is the OBSERVED
+          record, not a hazard model); live WARNINGS are a separate warning feed.
+        - Earthquakes themselves -- use ``fetch_usgs_earthquakes`` (this returns
+          the tsunamis those quakes generated, with ``eq_magnitude`` a property).
+        - Sea-level-rise scenarios -- use ``fetch_noaa_slr_scenarios``.
+
+    Honesty: a bbox/window with no recorded tsunamis raises
+    ``TsunamiNoEventsError`` (NCEI HTTP 200 + ``totalItems=0`` is a real "none"
+    answer), never an empty success-shaped layer.
+
+    Action: returns a vector ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     Parameters:
         bbox: Optional ``(west, south, east, north)`` in EPSG:4326 to restrict

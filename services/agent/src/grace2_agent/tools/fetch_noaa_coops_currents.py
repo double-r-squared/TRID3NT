@@ -101,7 +101,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -738,35 +738,37 @@ def _fetch_coops_currents_bytes(
 )
 def fetch_noaa_coops_currents(
     bbox: tuple[float, float, float, float],
-    product: str = "currents",
+    product: Literal["currents", "currents_predictions"] = "currents",
     # job-0164 / Wave 4.10 convention: absorb LLM-invented kwargs
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NOAA CO-OPS tidal-current stations + latest current as a FlatGeobuf.
+    """NOAA CO-OPS US tidal-CURRENT observations (speed + direction) as a point vector layer.
 
-    **What it does:** Retrieves the latest observed (or predicted) tidal-current
-    speed + direction from the NOAA CO-OPS Data API for all current stations
-    within a bbox. Returns a POINT FlatGeobuf with one feature per station,
-    carrying ``speed_kn`` (knots), ``direction_deg`` (degrees true), and the
-    observation ``datetime``. A current-conditions snapshot — complements the
-    water-level time series from ``fetch_noaa_coops_tides``. Tier-1 free, no API
-    key. Covers US tidal inlets, harbors, and channels (~88 realtime stations).
+    Latest observed (or predicted) tidal-current speed + direction from the NOAA
+    CO-OPS Data API for every current station in the bbox, as one Point feature
+    per station carrying ``speed_kn`` (knots), ``direction_deg`` (degrees true),
+    and the observation ``datetime``. Tier-1 free, no API key. Covers US tidal
+    inlets, harbors, and channels (~88 realtime stations).
 
-    **When to use:**
-    - User asks "what's the tidal current at the Golden Gate / San Francisco
-      Bay / New York Harbor right now" (speed + flood/ebb direction).
-    - Agent needs ebb/flood current context at a tidal inlet for navigation,
-      a spill-drift estimate, or a sediment-transport narrative.
-    - User asks for predicted slack/flood/ebb timing -> use
-      ``product="currents_predictions"``.
+    Use this when:
+    - The user asks for the tidal current at a US inlet/harbor ("current at the
+      Golden Gate right now") -- speed + flood/ebb direction.
+    - You need ebb/flood current context for navigation, spill-drift, or a
+      sediment-transport narrative; ``product="currents_predictions"`` for
+      predicted slack/flood/ebb timing.
 
-    **When NOT to use:**
-    - For water LEVEL / tide height time series -> use ``fetch_noaa_coops_tides``.
-    - For global (non-US) currents -> CO-OPS does not cover; no global tool
-      currently in the catalog.
-    - For deep-ocean / large-scale circulation currents -> CO-OPS is tidal
-      (inlet/channel) only.
-    - For wave height / swell -> CO-OPS does not serve wave products.
+    Do NOT use this for:
+    - Water LEVEL / tide height -- use ``fetch_noaa_coops_tides``.
+    - Global / non-US or deep-ocean circulation currents -- CO-OPS is US tidal
+      (inlet/channel) only; no global current tool in the catalog.
+    - Wave height / swell -- CO-OPS does not serve wave products (see
+      ``compute_wave_nomograph`` / ``run_swan_waves``).
+
+    Honesty: no current station in the bbox raises ``COOPSCurrentsEmptyError`` --
+    a sparse-station snapshot, never a fabricated or gridded field.
+
+    Action: returns a vector ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     **Parameters:**
         bbox: ``(west, south, east, north)`` in EPSG:4326. Required

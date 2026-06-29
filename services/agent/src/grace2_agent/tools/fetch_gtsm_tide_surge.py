@@ -117,7 +117,7 @@ import math
 import os
 import tempfile
 import zipfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -1053,45 +1053,43 @@ def fetch_gtsm_tide_surge(
     bbox: tuple[float, float, float, float],
     start_date: str,
     end_date: str,
-    output: str = "water_level",
+    output: Literal["water_level", "surge_only"] = "water_level",
     api_key: str | None = None,
     secret_ref: Any | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Global Tide and Surge Model v3.0 Tier-2 coastal water-level fetcher.
+    """GTSM v3.0 global tide+surge water-level time series at coastal points (vector).
 
-    **What it does:** Retrieves hourly tide + storm-surge time series from
-    the Deltares GTSM v3.0 reanalysis via the Copernicus Climate Data Store
-    (CDS) ``sis-water-level-change-timeseries-cmip6`` dataset. Downloads the
-    CDS-returned ZIP archive containing monthly NetCDF files, subsets to the
-    requested bbox and date range, and serialises one Point feature per gauge
-    to a FlatGeobuf with the per-station time series embedded inline as a
-    ``time_series_csv`` attribute. Requires a free Copernicus CDS API key.
+    Hourly tide + storm-surge time series from the Deltares GTSM v3.0 reanalysis
+    via the Copernicus Climate Data Store (CDS), as one Point feature per gauge
+    with the per-station series embedded inline as a ``time_series_csv``
+    attribute. Requires a free Copernicus CDS API key.
 
-    **When to use:**
+    Use this when:
+    - You need coastal water-level boundary forcing for a NON-US basin with no
+      NOAA CO-OPS gauge (Bay of Bengal, West Africa, Caribbean island arcs).
+    - You need a historical tide+surge series (1950 to ~2024); pass
+      ``output="surge_only"`` for the meteorological residual alone.
 
-    - SFINCS compound-flood coastal boundary forcing for a non-CONUS basin
-      where NOAA CO-OPS has no tide gauge (e.g. Bay of Bengal, West Africa,
-      Caribbean island arcs). Example: bbox ``(-70.0, 10.0, -60.0, 20.0)``
-      for a Lesser Antilles hurricane scenario, ``start_date="2017-09-05"``,
-      ``end_date="2017-09-11"``.
-    - Post-event surge attribution along arbitrary coastlines to separate
-      tide and meteorological surge components (use ``output="surge_only"``).
-    - Globally-consistent storm-surge climatology for multi-hazard compound
-      flood studies (Eilander et al. 2023; Muis et al. 2020/2023).
+    Do NOT use this for:
+    - US coasts with an operating tide gauge -- use ``fetch_noaa_coops_tides``
+      (GTSM is a model, not a gauge observation).
+    - Tidal-current speed/direction -- use ``fetch_noaa_coops_currents``.
+    - Forecast surge or a gridded surge raster -- use ``run_model_flood_scenario``
+      (SFINCS) with this output as the ``bnd.bzs`` coastal boundary.
 
-    **When NOT to use:**
+    Honesty: a bbox with no GTSM gauge raises ``GTSMEmptyError``; output is a
+    sparse gauge network, never a fabricated or gridded field.
 
-    - CONUS with operating CO-OPS tide gauges — use ``fetch_noaa_coops_tides``
-      for real observational records; GTSM is a model, not a gauge measurement.
-    - Forecasted tide/surge — GTSM v3.0 reanalysis is historical only (1950 to
-      ~2024); use ECMWF/NHC tools for future surge forecasts.
-    - Sub-hourly boundary timesteps — output is pinned to hourly; the GTSM CDS
-      dataset supports 10-min aggregation but SFINCS rarely needs finer steps.
-    - Gridded water-level fields — output is a sparse gauge network; composers
-      interpolate to the SFINCS grid via ``bnd.bzs`` boundary handler.
+    Action: returns a vector ``LayerURI`` (auto-renders) consumed by
+    ``build_sfincs_model`` -- do not call publish_layer.
+
+    Heavy internals below the routing block.
+
+    Downloads the CDS ``sis-water-level-change-timeseries-cmip6`` ZIP of monthly
+    NetCDF files, subsets to the bbox + date range, and serialises to FlatGeobuf.
 
     **Parameters:**
 
@@ -1107,7 +1105,7 @@ def fetch_gtsm_tide_surge(
 
     **Returns:**
 
-    ``LayerURI`` pointing at ``gs://grace-2-hazard-prod-cache/cache/static-30d/gtsm/<key>.fgb``.
+    ``LayerURI`` pointing at the ``static-30d``/``gtsm`` cache prefix.
     FlatGeobuf, Point geometry (EPSG:4326), one feature per GTSM gauge.
     Feature attributes: ``gauge_id``, ``lon``, ``lat``, ``time_start``,
     ``time_end``, ``n_timesteps``, ``wl_min_m`` / ``wl_max_m`` / ``wl_mean_m``

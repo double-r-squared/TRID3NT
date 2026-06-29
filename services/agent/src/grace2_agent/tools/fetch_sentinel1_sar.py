@@ -81,7 +81,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -569,41 +569,36 @@ def fetch_sentinel1_sar(
     bbox: tuple[float, float, float, float],
     start_date: str | None = None,
     end_date: str | None = None,
-    polarization: str = _DEFAULT_POLARIZATION,
-    collection: str = _DEFAULT_COLLECTION,
+    polarization: Literal["vv", "vh"] = _DEFAULT_POLARIZATION,
+    collection: Literal["sentinel-1-rtc", "sentinel-1-grd"] = _DEFAULT_COLLECTION,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a Sentinel-1 C-band SAR backscatter (dB) image for a bbox.
+    """Sentinel-1 C-band SAR backscatter (dB) COG -- all-weather day/night radar (raster).
 
-    **What it does:** Searches the Microsoft Planetary Computer for the
-    Sentinel-1 scene that best COVERS ``bbox`` inside the time window (then the
-    most recent), reads the requested polarization band (``vv`` or ``vh``)
-    clipped to the bbox at ~10 m, converts the linear gamma0 power to decibels
-    (``10*log10(power)``), and returns a single-band float32 dB COG that paints
-    as a grayscale radar image.
+    Finds the Microsoft Planetary Computer Sentinel-1 scene best covering the
+    bbox in the time window, reads the requested polarization band, clips to the
+    bbox at ~10 m, converts gamma0 power to decibels, and returns a single-band
+    float32 dB COG. C-band SAR sees THROUGH cloud, smoke and darkness, so calm
+    open water reads dark (low backscatter) against rough dry land -- the
+    canonical keyless FLOOD-mapping layer when optical sensors go blind.
 
-    Sentinel-1 SAR is its own illumination source and C-band sees THROUGH
-    clouds, smoke and darkness, so it images the ground in ALL WEATHER, DAY OR
-    NIGHT  --  exactly when optical Sentinel-2 / Landsat go blind (hurricane
-    landfall, wildfire smoke, polar night). It is the canonical keyless FLOOD
-    layer: calm open water is specular and reflects radar away from the sensor,
-    so flooded ground reads as anomalously LOW backscatter (dark) against the
-    rougher, brighter dry land; urban / rough surfaces read BRIGHT.
+    Use this when:
+    - Flood-extent mapping under cloud (compare a pre-event and an event-window
+      scene; flood water is low/dark backscatter).
+    - Any "see the ground despite cloud / smoke / night" need (storm, fire);
+      ``vh`` adds vegetation-volume sensitivity.
 
-    **When to use:**
-    - Flood-extent mapping when the sky is clouded (the SAR flood-water signature
-      is low/dark backscatter); compare a pre-event and an event-window scene.
-    - Any "see the ground despite cloud / smoke / night" need (storm, fire).
-    - Surface-roughness / structure context (urban vs water vs bare; ``vh`` adds
-      vegetation-volume sensitivity).
+    Do NOT use this for:
+    - A natural-color "what does it look like" picture -- use
+      ``fetch_sentinel2_truecolor`` (optical) or ``fetch_landsat_imagery``.
+    - A vegetation index -- use ``compute_ndvi``.
 
-    **When NOT to use:**
-    - A natural-color "what does it look like" picture  --  use
-      ``fetch_sentinel2_truecolor`` (10 m optical) or ``fetch_landsat_imagery``.
-    - A vegetation index  --  use ``compute_ndvi``.
-    - Areas / windows with no Sentinel-1 pass (widen the window); a no-imagery
-      result is an honest typed error, never a fabricated layer.
+    Honesty: a bbox/window with no Sentinel-1 pass returns an honest typed error
+    (widen the window), never a fabricated layer.
+
+    Action: returns a raster ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.

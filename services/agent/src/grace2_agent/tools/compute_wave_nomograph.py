@@ -172,30 +172,29 @@ def compute_wave_nomograph(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Estimate significant wave height + peak period from wind speed and fetch.
+    """Wind-wave nomograph: Hs + Tp SCALARS from wind speed + fetch (NOT a map layer).
 
-    A cheap, deterministic coastal REALITY CHECK: given a 10 m wind speed and the
-    over-water fetch the wind blows across, it returns the significant wave height
-    (Hs) and peak wave period (Tp) from the standard fetch-limited deep-water
-    wave-growth ("nomograph") formulas (USACE Shore Protection Manual 1984 /
-    Coastal Engineering Manual Part II-2, JONSWAP form). It is the pre-flight
-    sanity bound on a full spectral run (``run_swan_waves``) -- the lecture's
-    "is this wave field even plausible?" check.
+    A cheap deterministic coastal REALITY CHECK: from a 10 m wind speed and the
+    over-water fetch, returns significant wave height (Hs) and peak period (Tp)
+    via the fetch-limited deep-water wave-growth ("nomograph") formulas (USACE
+    Coastal Engineering Manual Part II-2, JONSWAP form) -- the pre-flight sanity
+    bound on a full ``run_swan_waves`` spectral run.
 
     Use this when:
-        - You want a QUICK sanity estimate of wave height / period from wind and
-          fetch BEFORE (or instead of) running a full SWAN simulation.
-        - The user asks "what waves would a 20 m/s wind build over 50 km of open
-          water?" or "is a 3 m offshore Hs reasonable for this wind and fetch?"
-        - You need a defensible offshore boundary Hs/Tp guess to seed
-          ``run_swan_waves`` when no measured spectrum is available.
+        - You want a QUICK Hs/Tp estimate from wind + fetch BEFORE (or instead
+          of) a full SWAN run ("what waves would a 20 m/s wind build over 50 km?").
+        - You need a defensible offshore boundary Hs/Tp to seed ``run_swan_waves``
+          when no measured spectrum is available.
 
     Do NOT use this for:
-        - A defensible nearshore wave field over real bathymetry (use
-          ``run_swan_waves`` -- the actual SWAN spectral solver).
-        - Surge / inundation depth (use ``run_model_flood_scenario``).
-        - Shallow-water depth-limited breaking -- this tool is DEEP-WATER only;
-          if ``depth_m`` is given it is reported but no breaking cap is applied.
+        - A defensible nearshore wave field over real bathymetry -- use
+          ``run_swan_waves`` (the SWAN spectral solver).
+        - Wave OVERTOPPING discharge at a structure -- use ``compute_overtopping``.
+        - Surge / inundation depth -- use ``run_model_flood_scenario``.
+
+    Honesty + action: DEEP-WATER only (no depth-limited breaking cap; if
+    ``depth_m`` is given it is reported, not applied). Returns a dict of SCALARS
+    (``hs_m``, ``tp_s``, ...), NOT a layer -- do not call publish_layer.
 
     Parameters:
         wind_speed_ms: sustained 10 m wind speed over the water, m/s (> 0).

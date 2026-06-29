@@ -59,8 +59,8 @@ overlay intersections.
         one output FlatGeobuf with a ``slr_ft`` column distinguishing them.
 
 **Returns:**
-    ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-    ``gs://grace-2-hazard-prod-cache/cache/static-30d/noaa_slr_scenarios/<key>.fgb``
+    ``LayerURI`` pointing at a FlatGeobuf in the ``static-30d``/
+    ``noaa_slr_scenarios`` cache prefix.
     Each feature is a Polygon in EPSG:4326. Properties:
     ``slr_ft`` (float, scenario level), ``scenario_label`` (str, e.g.
     "1.0 ft SLR"), ``dissolve`` (int, always 1 — source layer is fully
@@ -701,37 +701,32 @@ def fetch_noaa_slr_scenarios(
     # Wave 4.10 convention: absorb LLM-invented kwargs
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NOAA Sea Level Rise scenario inundation polygons as a FlatGeobuf vector layer.
+    """NOAA SLR scenario inundation FOOTPRINT polygons by sea-level-rise level (vector).
 
-    Fetches dissolved inundation-area polygons from NOAA's Office for Coastal
-    Management (OCM) SLR Viewer for one or more scenario levels (0–10 ft in
-    0.5-ft increments). Returns a FlatGeobuf with one polygon feature per
-    scenario level intersecting the bbox, annotated with ``slr_ft`` and
-    ``scenario_label`` attributes for map display and downstream analysis.
+    Dissolved inundation-area polygons from NOAA's Office for Coastal Management
+    (OCM) SLR Viewer for one or more scenario levels (0 to 10 ft in 0.5-ft
+    increments), as one polygon feature per level intersecting the bbox, annotated
+    with ``slr_ft`` and ``scenario_label``. CONUS coastal only. No API key.
 
-    **When to use:**
-    - User asks for the NOAA sea-level-rise map, SLR inundation scenarios,
-      coastal flooding under X feet of sea-level rise, or "what areas flood if
-      sea level rises by 2 feet?"
-    - Agent needs the static SLR inundation footprint for a planning-level
-      overlay (intersect with building inventory, habitat polygons, roads, etc.).
-    - User wants to compare FEMA 100-year floodplain with future SLR scenarios.
-    - User asks for "1 ft SLR", "2 ft SLR", "3 ft SLR" or any combination
-      simultaneously (pass a list to ``scenario_ft``).
+    Use this when:
+    - The user asks for the NOAA sea-level-rise map / SLR inundation footprint
+      ("what areas flood if sea level rises by 2 feet?").
+    - You need the static SLR inundation polygon for a planning overlay or to
+      compare against the FEMA floodplain (``fetch_fema_nfhl_zones``); pass a
+      list to ``scenario_ft`` for several levels at once.
 
-    **When NOT to use:**
-    - For real-time / event-driven storm-surge inundation → use
-      ``run_model_flood_scenario`` (SFINCS) or ``fetch_gtsm_tide_surge``.
-    - For probabilistic SLR projections with uncertainty ranges → the Sweet et
-      al. (2022) NOAA Technical Report scenarios (Intermediate, High, etc.) are
-      a separate dataset not in the OCM Viewer.
-    - For inland / non-coastal flooding → use ``fetch_fema_nfhl_zones`` or
-      ``run_model_flood_scenario``.
-    - For areas outside CONUS → use ``fetch_gtsm_tide_surge`` (global coastal
-      water-level reanalysis); SLR Viewer data is CONUS-only.
-    - For marsh migration / habitat-transition projections → a separate
-      ``fetch_noaa_slr_marsh`` tool (not yet implemented) covers the
-      ``marsh_*`` MapServer services in the same folder.
+    Do NOT use this for:
+    - SLR mapping CONFIDENCE -- use ``fetch_noaa_slr_confidence``.
+    - SLR MARSH-migration -- use ``fetch_noaa_slr_marsh``.
+    - Event-driven storm-surge inundation -- use ``run_model_flood_scenario``
+      (SFINCS) or ``fetch_gtsm_tide_surge``.
+    - Non-CONUS coasts -- use ``fetch_gtsm_tide_surge`` (SLR Viewer is CONUS-only).
+
+    Honesty: a bbox with no inundation at a level returns a valid empty FGB --
+    never fabricated polygons.
+
+    Action: returns a vector ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.

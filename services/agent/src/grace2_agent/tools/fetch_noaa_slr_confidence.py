@@ -76,26 +76,30 @@ def fetch_noaa_slr_confidence(
     res_deg: float | None = None,
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch the NOAA Sea-Level-Rise mapping-CONFIDENCE raster for one SLR level.
+    """NOAA SLR mapping-CONFIDENCE raster for one sea-level-rise level (raster overlay).
 
-    **What it does:** Reads NOAA OCM's SLR Viewer confidence-of-mapping service for
-    one whole-foot SLR level and returns it as a transparent RGBA raster overlay
-    (the NOAA symbology baked in: blue = HIGH confidence the area is inundated at
-    this level, orange = LOW confidence, transparent = not inundated). This is the
-    mapping-uncertainty companion to ``fetch_noaa_slr_scenarios`` (which returns
-    the inundation-footprint polygons).
+    Reads NOAA OCM's SLR Viewer confidence-of-mapping service for one whole-foot
+    SLR level and returns a transparent RGBA raster overlay (NOAA symbology baked
+    in: blue = HIGH confidence the area is inundated at this level, orange = LOW,
+    transparent = not inundated). The mapping-uncertainty companion to the
+    ``fetch_noaa_slr_scenarios`` inundation footprint. CONUS coastal only.
 
-    **When to use:**
-    - "How confident is the sea-level-rise inundation mapping at 3 ft here?"
-    - "Show the NOAA SLR mapping confidence / uncertainty for this coast."
+    Use this when:
+    - "How confident is the SLR inundation mapping at 3 ft here?"
     - As an overlay on ``fetch_noaa_slr_scenarios`` to flag low-confidence
-      inundation areas before reporting exposure.
+      inundation before reporting exposure.
 
-    **When NOT to use:**
-    - For the inundation FOOTPRINT itself -> ``fetch_noaa_slr_scenarios``.
-    - For marsh-migration projections -> ``fetch_noaa_slr_marsh``.
-    - For event-driven storm surge -> ``run_model_flood_scenario`` / ``fetch_gtsm_tide_surge``.
-    - Outside CONUS -> not covered (CONUS coastal product only).
+    Do NOT use this for:
+    - The inundation FOOTPRINT itself -> ``fetch_noaa_slr_scenarios``.
+    - Marsh-migration projections -> ``fetch_noaa_slr_marsh``.
+    - Event-driven storm surge -> ``run_model_flood_scenario`` /
+      ``fetch_gtsm_tide_surge``. Outside CONUS: not covered.
+
+    Honesty: a bbox with no coverage at this level returns a valid transparent
+    (empty) overlay -- never fabricated content.
+
+    Action: returns a raster ``LayerURI`` (auto-renders) -- do not call
+    publish_layer.
 
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.

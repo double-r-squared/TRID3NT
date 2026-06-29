@@ -1080,34 +1080,36 @@ def fetch_topobathy(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> TopobathyResult:
-    """Fetch a SEAMLESS coastal topo-bathymetry DEM (land + sea floor) for a bbox.
+    """Seamless coastal topo-bathymetry DEM, land + sea floor merged (raster; SFINCS input).
 
-    **What it does:**
-        Builds ONE continuous elevation surface across the shoreline by merging
-        NOAA NCEI CUDEM 1/9 arc-second topo-bathymetry tiles (the canonical US
-        coastal merged topo+bathy product — only the 1/9 arc-second tiles
-        integrate BOTH bathymetry and topography) with the USGS 3DEP land DEM
-        for the same area. CUDEM wins on the coast / nearshore; 3DEP fills the
-        land. Output is a single-band float32 Cloud-Optimized GeoTIFF in
-        EPSG:32616 (UTM 16N), NAVD88 metres, **positive-up** (land positive,
-        bathymetry NEGATIVE, NO sign flip) — byte-format identical to
-        ``fetch_dem`` so ``build_sfincs_model``'s ``setup_dep`` consumes it
-        unchanged.
+    Builds ONE continuous elevation surface across the shoreline by merging NOAA
+    NCEI CUDEM 1/9 arc-second topo-bathy tiles (the canonical US coastal merged
+    topo+bathy product) with the USGS 3DEP land DEM: CUDEM wins on the coast /
+    nearshore, 3DEP fills the land. Output is a single-band float32 COG, NAVD88
+    metres, positive-up (land positive, bathymetry NEGATIVE), byte-identical to
+    ``fetch_dem`` so ``build_sfincs_model``'s ``setup_dep`` consumes it unchanged.
 
-    **When to use:**
-        - A COASTAL flood / surge / run-up workflow (SFINCS coastal) that needs
-          a continuous bed from the hills to the deep water — the canonical
-          North Star entry point. ``fetch_dem`` alone is LAND-ONLY and leaves
-          the nearshore as nodata.
-        - User asks for "topobathy", "bathymetry + topography", "the sea floor
-          and the land together", or "a DEM that includes the water depth".
+    Use this when:
+    - A COASTAL flood / surge / run-up workflow needs a continuous bed from the
+      hills to deep water (the North Star coastal entry point); ``fetch_dem``
+      alone is LAND-ONLY and leaves the nearshore as nodata.
+    - The user asks for "topobathy", "bathymetry + topography", or "a DEM that
+      includes the water depth".
 
-    **When NOT to use:**
-        - A pure inland / pluvial flood with no coast — use ``fetch_dem`` (no
-          bathymetry needed; CUDEM has no inland coverage anyway).
-        - Outside the US coast — NOAA NCEI CUDEM is US-coast-only; the validator
-          raises ``TopobathyInputError`` for a bbox that misses the US coastal
-          envelope.
+    Do NOT use this for:
+    - A pure inland / pluvial flood with no coast -- use ``fetch_dem`` (CUDEM has
+      no inland coverage).
+    - Non-US coasts -- NCEI CUDEM is US-coast-only; the validator raises
+      ``TopobathyInputError`` outside the US coastal envelope.
+
+    Honesty: if CUDEM is missing it DEGRADES to a 3DEP land-only DEM with
+    ``bathymetry_present=False`` + an honest ``fallback_warning``; only if BOTH
+    CUDEM and 3DEP are unavailable does it raise ``TopobathyEmptyError`` -- never
+    fabricated bathymetry.
+
+    Action: returns a ``TopobathyResult`` (a ``LayerURI`` subclass, ``role="input"``,
+    ``auto_publish=False`` -- does NOT auto-render); feed it to
+    ``build_sfincs_model``'s ``setup_dep``.
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Must
@@ -1121,7 +1123,7 @@ def fetch_topobathy(
             reprojected).
         navd88_offset_m: OPTIONAL documented vertical offset (metres) to ADD to
             a CUDEM tile's elevations to bring a tidal-datum (MHW/MSL/LMSL) tile
-            onto NAVD88. Leave ``None`` for the normal NAVD88 path — a
+            onto NAVD88. Leave ``None`` for the normal NAVD88 path -- a
             non-NAVD88 tile with no offset raises ``TopobathyDatumError`` rather
             than silently merging (Invariant 7).
         timeout_s: tile-index download timeout (seconds, default 120).
@@ -1138,14 +1140,14 @@ def fetch_topobathy(
     **Fallback (data-source norm):**
         If CUDEM tiles are missing / unreachable for the AOI, the tool DEGRADES
         to a 3DEP-LAND-ONLY DEM and returns a result with
-        ``bathymetry_present=False`` + an honest ``fallback_warning`` — never a
+        ``bathymetry_present=False`` + an honest ``fallback_warning`` -- never a
         silent dead-end or a fabricated bathymetry. Only if BOTH CUDEM and 3DEP
         are unavailable does it raise ``TopobathyEmptyError``.
 
     **Errors (FR-AS-11 typed-error surface):**
         - ``TopobathyInputError``: bad bbox / outside US coast (retryable=False).
         - ``TopobathyDatumError``: a CUDEM tile is non-NAVD88 with no offset
-          (retryable=False) — Invariant 7.
+          (retryable=False) -- Invariant 7.
         - ``TopobathyUpstreamError``: tile read / merge / COG failure
           (retryable=True).
         - ``TopobathyEmptyError``: no CUDEM AND no 3DEP for the AOI
@@ -1153,7 +1155,7 @@ def fetch_topobathy(
 
     **Cross-tool dependencies (FR-TA-3):**
         - REUSES ``fetch_dem`` for the 3DEP land DEM (does NOT reimplement 3DEP).
-        - Composes INTO ``build_sfincs_model`` (``setup_dep`` elevtn) — drop-in
+        - Composes INTO ``build_sfincs_model`` (``setup_dep`` elevtn) -- drop-in
           for ``fetch_dem`` on the coastal path.
         - Upstream sources: NOAA NCEI CUDEM 1/9 arc-second (public S3
           ``noaa-nos-coastal-lidar-pds``) + USGS 3DEP (via ``fetch_dem``).
