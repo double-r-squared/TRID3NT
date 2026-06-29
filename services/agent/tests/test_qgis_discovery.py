@@ -425,11 +425,18 @@ def test_qgis_process_raises_runtime_error_when_no_backend(monkeypatch) -> None:
     installed on the test host. (The ``_WORKER_SUBMITTER`` binding is NOT
     used by qgis_process anymore — it remains live only for the discovery
     tools, covered by the tests above.)
+
+    Reliability hardening 2026-06-29: on-box ``qgis_process`` RUN is now gated
+    OFF by default (it returns an honest "offloaded" result instead of running
+    on the shared box). The no-backend RuntimeError contract still holds when
+    an operator ENABLES on-box execution, so this test sets
+    ``GRACE2_QGIS_ONBOX_DOCKER=on`` to reach the backend-resolution path.
     """
     import shutil
 
     from grace2_agent.tools.passthroughs import qgis_process
 
+    monkeypatch.setenv("GRACE2_QGIS_ONBOX_DOCKER", "on")
     monkeypatch.delenv("GRACE2_QGIS_DOCKER_IMAGE", raising=False)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 

@@ -34,6 +34,67 @@ __all__ = ["qgis_process"]
 logger = logging.getLogger("grace2_agent.tools.passthroughs")
 
 
+# ---------------------------------------------------------------------------
+# ON-BOX QGIS EXECUTION GATE (reliability hardening 2026-06-29).
+#
+# ``qgis_process`` RUN historically shelled ``docker run -v rundir:/data
+# grace2-qgis qgis_process run ...`` (or a local ``qgis_process`` subprocess)
+# directly ON the shared agent box -- heavy CPU/RAM work that competes with
+# every other session on the single EC2 box and that cannot run at all on a
+# future Fargate/AgentCore task (no docker socket, no QGIS binary). Until the
+# job-0308 QGIS-on-AWS-Batch lift lands, on-box execution is DISABLED by
+# default: the tool returns an HONEST typed "offloaded, did not run" result
+# (honesty floor -- never a fabricated success, never a spawned container).
+#
+# Ops can re-enable the on-box docker/subprocess path for local dev or a
+# deliberate box run by exporting ``GRACE2_QGIS_ONBOX_DOCKER=on`` (the docker
+# code path is kept fully intact behind this flag for the Batch lift).
+# ---------------------------------------------------------------------------
+
+#: Env flag gating on-box ``qgis_process`` RUN execution. Default OFF.
+_QGIS_ONBOX_DOCKER_ENV = "GRACE2_QGIS_ONBOX_DOCKER"
+
+#: Honest typed error code surfaced when on-box execution is disabled.
+QGIS_OFFLOADED_ERROR_CODE = "QGIS_PROCESSING_OFFLOADED"
+
+
+def _qgis_onbox_docker_enabled() -> bool:
+    """True only when ops has explicitly enabled on-box ``qgis_process`` RUN.
+
+    Default OFF: heavy QGIS Processing does not run on the shared agent box
+    (it will run on AWS Batch in an upcoming update). Truthy values
+    (``1``/``true``/``yes``/``on``, case-insensitive) re-enable the docker /
+    local-subprocess path.
+    """
+    import os
+
+    raw = (os.environ.get(_QGIS_ONBOX_DOCKER_ENV) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _qgis_offloaded_result(algorithm: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Honest typed result when on-box ``qgis_process`` RUN is disabled.
+
+    Surfaced INSTEAD of spawning a container / subprocess. Reads as an error
+    (NOT a success) so the model + UI + telemetry know the algorithm did not
+    run, with a clear "offloaded to AWS Batch in an upcoming update" reason."""
+    return {
+        "status": "error",
+        "tool": "qgis_process",
+        "algorithm": algorithm,
+        "error_code": QGIS_OFFLOADED_ERROR_CODE,
+        "retryable": False,
+        "did_run": False,
+        "param_keys": sorted((params or {}).keys()),
+        "message": (
+            "QGIS Processing is temporarily offloaded and will run on AWS "
+            "Batch in an upcoming update; this algorithm did not run. "
+            "Heavy QGIS work is disabled on the shared agent box. If you need "
+            "to run it now, an operator can set GRACE2_QGIS_ONBOX_DOCKER=on."
+        ),
+    }
+
+
 # Module-level handle for dependency injection. Production wiring sets this
 # at startup; tests overwrite it with a stub. Kept as module-level so the
 # registered function stays zero-arg-bindable from ADK's perspective.
@@ -232,6 +293,20 @@ def qgis_process(
     logger.info(
         "qgis_process algorithm=%s param_keys=%s", algorithm, sorted(params.keys())
     )
+
+    # ON-BOX EXECUTION GATE (default OFF): until the job-0308 QGIS-on-Batch lift
+    # lands, do NOT run heavy QGIS Processing on the shared agent box. Return an
+    # honest typed "offloaded, did not run" result instead of spawning a
+    # container / subprocess. The docker + local paths below stay intact behind
+    # ``GRACE2_QGIS_ONBOX_DOCKER=on`` for local dev / the later Batch lift.
+    if not _qgis_onbox_docker_enabled():
+        logger.info(
+            "qgis_process OFFLOADED (on-box docker disabled; set %s=on to run) "
+            "algorithm=%s",
+            _QGIS_ONBOX_DOCKER_ENV,
+            algorithm,
+        )
+        return _qgis_offloaded_result(algorithm, params)
 
     # AWS path (Decision Q / job-0308): run inside the grace2-qgis container via
     # stage-then-mount. Engages when an image is configured OR when no local

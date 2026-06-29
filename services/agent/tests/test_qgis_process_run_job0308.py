@@ -1,5 +1,12 @@
 """job-0308: qgis_process RUN — param translation (stage-then-mount) unit tests."""
-from grace2_agent.tools.passthroughs import _build_qgis_run_args
+from unittest.mock import patch
+
+from grace2_agent.tools.passthroughs import (
+    QGIS_OFFLOADED_ERROR_CODE,
+    _build_qgis_run_args,
+    _qgis_onbox_docker_enabled,
+    qgis_process,
+)
 
 
 def _fake_stager(value, rundir):
@@ -30,3 +37,67 @@ def test_vector_output_ext_preserved():
     args, outputs = _build_qgis_run_args(params, "/tmp/x", _fake_stager)
     assert outputs == {"OUTPUT": "output.gpkg"}
     assert "--DISTANCE=100" in args
+
+
+# ---------------------------------------------------------------------------
+# On-box QGIS execution gate (reliability hardening 2026-06-29): the heavy
+# docker/subprocess RUN path is DISABLED by default so it cannot compete for
+# the shared agent box; an honest typed "did not run" result is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_onbox_gate_default_off(monkeypatch):
+    """The gate is OFF unless GRACE2_QGIS_ONBOX_DOCKER is explicitly truthy."""
+    monkeypatch.delenv("GRACE2_QGIS_ONBOX_DOCKER", raising=False)
+    assert _qgis_onbox_docker_enabled() is False
+    for falsy in ("", "off", "0", "false", "no", "garbage"):
+        monkeypatch.setenv("GRACE2_QGIS_ONBOX_DOCKER", falsy)
+        assert _qgis_onbox_docker_enabled() is False
+    for truthy in ("1", "true", "TRUE", "yes", "on", "On"):
+        monkeypatch.setenv("GRACE2_QGIS_ONBOX_DOCKER", truthy)
+        assert _qgis_onbox_docker_enabled() is True
+
+
+def test_qgis_process_disabled_returns_honest_no_run(monkeypatch):
+    """With the gate OFF, qgis_process returns a typed error and spawns NOTHING.
+
+    No docker / subprocess is launched; the result reads as an error (NOT a
+    fabricated success) so the model + UI + telemetry know it did not run."""
+    monkeypatch.delenv("GRACE2_QGIS_ONBOX_DOCKER", raising=False)
+    # A docker image IS configured -- proving the gate short-circuits BEFORE
+    # the docker path would otherwise engage.
+    monkeypatch.setenv("GRACE2_QGIS_DOCKER_IMAGE", "grace2-qgis:ltr")
+
+    with patch(
+        "grace2_agent.tools.passthroughs._run_qgis_process_docker"
+    ) as run_docker, patch("subprocess.run") as subproc:
+        result = qgis_process(
+            algorithm="native:slope", params={"INPUT": "s3://b/dem.tif"}
+        )
+
+    run_docker.assert_not_called()
+    subproc.assert_not_called()
+    assert result["status"] == "error"
+    assert result["error_code"] == QGIS_OFFLOADED_ERROR_CODE
+    assert result["did_run"] is False
+    assert result["algorithm"] == "native:slope"
+    assert result["retryable"] is False
+    assert "offloaded" in result["message"].lower()
+    # Never reads as a success.
+    assert result["status"] != "succeeded"
+
+
+def test_qgis_process_enabled_runs_docker_path(monkeypatch):
+    """With the gate ON, the existing docker RUN path engages (kept intact)."""
+    monkeypatch.setenv("GRACE2_QGIS_ONBOX_DOCKER", "on")
+    monkeypatch.setenv("GRACE2_QGIS_DOCKER_IMAGE", "grace2-qgis:ltr")
+
+    sentinel = {"status": "succeeded", "tool": "qgis_process"}
+    with patch(
+        "grace2_agent.tools.passthroughs._run_qgis_process_docker",
+        return_value=sentinel,
+    ) as run_docker:
+        result = qgis_process(algorithm="native:slope", params={"INPUT": "x"})
+
+    run_docker.assert_called_once()
+    assert result is sentinel
