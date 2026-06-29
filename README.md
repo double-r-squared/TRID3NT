@@ -38,11 +38,11 @@ Note: the SRS body still describes the project's original GCP/Gemini design; the
 
 ## Demos
 
-| Coastal & pluvial flood depth | Damage & exposure (Pelicun) |
+| Land cover, rivers & buildings (New Orleans) | Coastal elevation, boundaries & footprints (Charleston) |
 | :---: | :---: |
-| ![Flood depth raster over an AOI](web/public/landing/shot_flood_desktop.webp) | ![Impact / exposure assessment](web/public/landing/shot_impact_desktop.webp) |
-| **3D terrain (mobile)** | **Conversational driving (mobile)** |
-| ![3D terrain view](web/public/landing/shot_terrain_mobile.webp) | ![Chat-driven workflow](web/public/landing/shot_chat_mobile.webp) |
+| ![New Orleans NLCD land cover, waterways and OSM building footprints rendered from a single prompt](web/public/landing/shot_neworleans_desktop.webp) | ![Charleston peninsula USGS 3DEP elevation with TIGER boundaries and OSM building footprints](web/public/landing/shot_charleston_desktop.webp) |
+| **Colored-relief terrain (Boulder)** | **Live seismic-hazard solve, narrated (mobile)** |
+| ![Colored-relief elevation over the Boulder, Colorado foothills](web/public/landing/shot_boulder_desktop.webp) | ![A live OpenQuake PSHA solve for the San Francisco Bay Area, narrated step by step on mobile](web/public/landing/shot_seismic_running_mobile.webp) |
 
 Representative runs the agent drives end-to-end today: Hurricane-Ian / Fort Myers
 pluvial flood + Pelicun damage; a Mexico Beach (Hurricane Michael) coastal
