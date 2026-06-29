@@ -284,9 +284,10 @@ class SpatialInputResponsePayload(GraceModel):
         Validates STRUCTURE only (no geometry-library dependency in contracts),
         mirroring ``swmm_contracts._validate_barrier_feature_collection``:
         a ``FeatureCollection`` whose every ``Feature`` carries a
-        ``properties.role`` ∈ {"aoi", "barrier", "point"}; a ``"barrier"``
-        feature must be a ``LineString`` (>= 2 positions) tagged with
-        ``properties.barrier_type`` ∈ {"wall", "flap_gate"}.
+        ``properties.role`` ∈ {"aoi", "barrier", "point", "line"}; a
+        ``"barrier"`` feature must be a ``LineString`` (>= 2 positions) tagged
+        with ``properties.barrier_type`` ∈ {"wall", "flap_gate"}; a ``"line"``
+        feature is a plain (untagged) ``LineString`` (>= 2 positions).
         """
         if value is None:
             return None
@@ -309,7 +310,10 @@ def _validate_spatial_input_feature_collection(
     feats = fc.get("features")
     if not isinstance(feats, list):
         raise ValueError("features.features must be a list")
-    valid_roles = {"aoi", "barrier", "point"}
+    # "line" is a NEUTRAL elevation/section LineString (compute_terrain_profile /
+    # compute_cross_section) -- a drawn line that carries no barrier semantics and
+    # needs no wall/flap_gate tag. ADDITIVE: it never relaxes the barrier rules.
+    valid_roles = {"aoi", "barrier", "point", "line"}
     valid_barrier_types = {"wall", "flap_gate"}
     valid_flap_directions = {"in", "out"}
     valid_protected_sides = {"left", "right"}
@@ -328,6 +332,21 @@ def _validate_spatial_input_feature_collection(
                 f"features.features[{idx}].properties.role must be one of "
                 f"{sorted(valid_roles)}, got {role!r}"
             )
+        if role == "line":
+            # A neutral elevation/section line: a plain LineString (>= 2
+            # positions), NO barrier_type required. Surfaced as the result's
+            # `line`/`linestring` geometry for compute_terrain_profile.
+            if geom.get("type") != "LineString":
+                raise ValueError(
+                    f"features.features[{idx}] role='line' geometry must be a "
+                    f"LineString (got {geom.get('type')!r})"
+                )
+            coords = geom.get("coordinates")
+            if not isinstance(coords, list) or len(coords) < 2:
+                raise ValueError(
+                    f"features.features[{idx}].geometry.coordinates must be a "
+                    f"LineString with >= 2 positions"
+                )
         if role == "barrier":
             if geom.get("type") != "LineString":
                 raise ValueError(
@@ -853,6 +872,18 @@ class SpatialInputRequestPayload(GraceModel):
     mode: Literal["point", "bbox", "vector_draw"]
     title: str
     description: str
+    # ``purpose`` (vector_draw only) selects what a drawn LineString MEANS:
+    #
+    # - ``"barrier"`` (DEFAULT -- the original SWMM urban-flood flow): a drawn
+    #   LineString is a structural barrier that MUST be tagged wall / flap_gate
+    #   before Submit; it round-trips into ``SWMMRunArgs.barriers``.
+    # - ``"line"`` -- a NEUTRAL elevation/section line (e.g. for
+    #   ``compute_terrain_profile`` / ``compute_cross_section``): a drawn
+    #   LineString is submitted as a plain ``role=="line"`` LineString with NO
+    #   barrier tagging required. The reply's first line geometry is surfaced as
+    #   the ``line`` / ``linestring`` fields. ADDITIVE -- the default keeps the
+    #   barrier flow byte-for-byte unchanged.
+    purpose: Literal["barrier", "line"] = "barrier"
     suggested_view: SuggestedView | None = None
     reference_layers: list[ReferenceLayer] = Field(default_factory=list)
     default_timeout_seconds: int = 300

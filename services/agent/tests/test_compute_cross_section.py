@@ -444,6 +444,35 @@ class TestInputValidation:
 # ---------------------------------------------------------------------------
 
 
+def test_registered_via_package_import_path():
+    """FIX 1 (fused-import regression guard): importing the tools PACKAGE alone
+    (NOT the compute_cross_section module directly) must register the tool.
+
+    The other tests in this file import ``compute_cross_section`` directly (which
+    self-registers as a side effect), so they pass even when ``tools/__init__.py``
+    fails to import the module. This test instead asserts registration in a FRESH
+    interpreter that imports ONLY the package -- the path the live agent / catalog
+    / LLM-declaration build actually take. A fused ``from . import ...`` line in
+    ``tools/__init__.py`` that swallows the ``compute_cross_section`` import would
+    FAIL here (a subprocess so it can't be masked by another test's direct
+    import already populating the in-process registry).
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import grace2_agent.tools as t; "
+        "import sys; "
+        "sys.exit(0 if 'compute_cross_section' in t.TOOL_REGISTRY else 1)"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    assert proc.returncode == 0, (
+        "compute_cross_section must register via the tools package import "
+        "(tools/__init__.py must `from . import compute_cross_section`); "
+        f"stderr={proc.stderr.decode()[-2000:]}"
+    )
+
+
 def test_registered_in_tool_registry():
     from grace2_agent.tools import TOOL_REGISTRY
 

@@ -326,3 +326,94 @@ describe("SpatialDrawSurface — submit gate (FR-WC-16 untagged barrier)", () =>
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+// =========================================================================== //
+// FIX 2: NEUTRAL-LINE flow (purpose="line") -- a plain elevation/section line
+// submits WITHOUT any wall/flap_gate tagging, and rides back as a role=="line"
+// LineString. The barrier flow above stays the no-regression control.
+// =========================================================================== //
+
+function neutralLineRequest(): SpatialInputRequestPayload {
+  return {
+    envelope_type: "spatial-input-request",
+    request_id: "01HJSPATIAL00000000000002",
+    mode: "vector_draw",
+    purpose: "line",
+    title: "Draw the elevation profile line",
+    description: "Draw a line across the ridge for the terrain profile.",
+    suggested_view: { bbox: [-85.31, 35.04, -85.30, 35.05], zoom: 15 },
+  };
+}
+
+function renderNeutralLineSurface() {
+  const fake = new FakeTerraDraw();
+  const drawDeps: DrawControllerDeps = {
+    makeDraw: () => fake as unknown as TerraDraw,
+  };
+  const onSubmit = vi.fn<(r: SpatialInputResult) => void>();
+  const onCancel = vi.fn<(id: string) => void>();
+  render(
+    <SpatialDrawSurface
+      map={makeFakeMap()}
+      request={neutralLineRequest()}
+      onSubmit={onSubmit}
+      onCancel={onCancel}
+      drawDeps={drawDeps}
+    />,
+  );
+  return { fake, onSubmit, onCancel };
+}
+
+describe("SpatialDrawSurface -- neutral-line flow (purpose='line')", () => {
+  it("blocks submit until a line is drawn, then submits WITHOUT any tagging", () => {
+    const { fake, onSubmit } = renderNeutralLineSurface();
+
+    // Nothing drawn yet -> blocked with the line-specific reason.
+    expect(submitBtn().disabled).toBe(true);
+    expect(
+      screen.getByTestId("spatial-draw-submit-reason").textContent,
+    ).toContain("Draw a line on the map to submit");
+
+    // Draw a plain line and DO NOT tag it. In the barrier flow this would block
+    // submit ("Tag every barrier ..."); in neutral-line mode it submits as-is.
+    act(() => {
+      fake._add(lineGeom([[-85.309, 35.041], [-85.305, 35.045], [-85.301, 35.049]]), {
+        mode: "linestring",
+      });
+    });
+    expect(submitBtn().disabled).toBe(false);
+    // No "untagged barrier" reason -- there is no barrier tagging at all here.
+    expect(screen.queryByTestId("spatial-draw-submit-reason")).toBeNull();
+    // The count reads as a LINE, not a barrier.
+    expect(screen.getByTestId("draw-counts").textContent).toContain("1 line");
+
+    fireEvent.click(submitBtn());
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const result = onSubmit.mock.calls[0]![0];
+    expect(result.geometryType).toBe("vector_draw");
+    const fc = result.features!;
+    expect(fc.features).toHaveLength(1);
+    const feat = fc.features[0]!;
+    // The drawn line round-trips as role=="line" -- NOT a barrier, NO barrier_type.
+    expect(feat.properties.role).toBe("line");
+    expect(feat.properties.barrier_type).toBeUndefined();
+    expect(feat.geometry.type).toBe("LineString");
+    // No barrier features at all leak into the submitted collection.
+    expect(fc.features.some((f) => f.properties.role === "barrier")).toBe(false);
+  });
+
+  it("does NOT open the barrier tag popover when a neutral line is selected", () => {
+    const { fake } = renderNeutralLineSurface();
+    let id: DrawFeatureId = -1;
+    act(() => {
+      id = fake._add(lineGeom([[-85.309, 35.041], [-85.301, 35.049]]), {
+        mode: "linestring",
+      });
+    });
+    act(() => {
+      fake._select(id);
+    });
+    // The wall/flap-gate tagging popover must never appear in neutral-line mode.
+    expect(screen.queryByTestId("spatial-draw-tag-popover")).toBeNull();
+  });
+});

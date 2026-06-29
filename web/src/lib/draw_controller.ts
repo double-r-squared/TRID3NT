@@ -77,6 +77,15 @@ export type DrawFeatureId = string | number;
  * (the real TerraDraw needs a live MapLibre adapter, which happy-dom lacks). */
 export interface DrawControllerDeps {
   makeDraw?: (map: MapLibreMap) => TerraDraw;
+  /**
+   * NEUTRAL-LINE mode (purpose="line"): when true, an untagged drawn LineString
+   * is read back as role="line" (a plain elevation/section line for
+   * compute_terrain_profile) instead of role="barrier". No wall/flap_gate tag is
+   * ever required and `counts().untaggedBarrier` stays 0 for these lines.
+   * ADDITIVE -- default false keeps the SWMM barrier flow byte-for-byte
+   * unchanged.
+   */
+  neutralLine?: boolean;
 }
 
 /** Properties terra-draw stamps on its own features (mode key) plus our tags. */
@@ -168,6 +177,8 @@ export function buildTerraDraw(map: MapLibreMap): TerraDraw {
 export class DrawController {
   private draw: TerraDraw;
   private started = false;
+  /** NEUTRAL-LINE mode: untagged LineStrings read back as role="line". */
+  private readonly neutralLine: boolean;
   private changeListeners = new Set<() => void>();
   private selectListeners = new Set<(id: DrawFeatureId) => void>();
   private readonly onChange = (): void => {
@@ -179,6 +190,7 @@ export class DrawController {
 
   constructor(map: MapLibreMap, deps: DrawControllerDeps = {}) {
     this.draw = (deps.makeDraw ?? buildTerraDraw)(map);
+    this.neutralLine = deps.neutralLine === true;
   }
 
   /** Begin drawing (registers the adapter + terra-draw layers on the map). */
@@ -319,10 +331,18 @@ export class DrawController {
       const props = (f.properties ?? {}) as DrawProps;
       const geomType = f.geometry.type;
       let role: SpatialDrawRole;
-      if (props.role === "aoi" || props.role === "barrier" || props.role === "point") {
+      if (
+        props.role === "aoi" ||
+        props.role === "barrier" ||
+        props.role === "point" ||
+        props.role === "line"
+      ) {
         role = props.role;
       } else if (geomType === "LineString") {
-        role = "barrier";
+        // NEUTRAL-LINE mode: an untagged drawn LineString is a plain
+        // elevation/section line (role="line"), NOT a SWMM barrier. The default
+        // (barrier) flow is untouched.
+        role = this.neutralLine ? "line" : "barrier";
       } else if (geomType === "Point") {
         role = "point";
       } else {
@@ -346,23 +366,38 @@ export class DrawController {
     return { type: "FeatureCollection", features };
   }
 
-  /** Count drawn barriers / AOIs (toolbar badge / submit-enabled gate). */
-  counts(): { aoi: number; barrier: number; untaggedBarrier: number; point: number } {
+  /** Count drawn barriers / AOIs / lines (toolbar badge / submit-enabled gate).
+   *
+   * In NEUTRAL-LINE mode a drawn LineString counts as a `line` (never a
+   * `barrier`), so `untaggedBarrier` stays 0 and the submit gate is NOT blocked
+   * on tagging. In the default (barrier) mode the line counting is unchanged. */
+  counts(): {
+    aoi: number;
+    barrier: number;
+    untaggedBarrier: number;
+    point: number;
+    line: number;
+  } {
     let aoi = 0;
     let barrier = 0;
     let untaggedBarrier = 0;
     let point = 0;
+    let line = 0;
     for (const f of this.draw.getSnapshot()) {
       const props = (f.properties ?? {}) as DrawProps;
       const geomType = f.geometry.type;
       if (geomType === "Polygon") aoi += 1;
       else if (geomType === "Point") point += 1;
       else if (geomType === "LineString") {
-        barrier += 1;
-        if (!props.barrier_type) untaggedBarrier += 1;
+        if (this.neutralLine) {
+          line += 1;
+        } else {
+          barrier += 1;
+          if (!props.barrier_type) untaggedBarrier += 1;
+        }
       }
     }
-    return { aoi, barrier, untaggedBarrier, point };
+    return { aoi, barrier, untaggedBarrier, point, line };
   }
 }
 

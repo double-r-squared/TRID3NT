@@ -43,6 +43,7 @@ __all__ = ["request_spatial_input", "SPATIAL_INPUT_SENTINEL_KEY"]
 SPATIAL_INPUT_SENTINEL_KEY = "_request_spatial_input"
 
 _VALID_MODES = ("point", "bbox", "vector_draw")
+_VALID_PURPOSES = ("barrier", "line")
 
 
 _REQUEST_SPATIAL_INPUT_METADATA = AtomicToolMetadata(
@@ -67,6 +68,7 @@ async def request_spatial_input(
     mode: str = "vector_draw",
     title: str | None = None,
     description: str | None = None,
+    purpose: str = "barrier",
     suggested_view: dict[str, Any] | None = None,
     default_timeout_seconds: int | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
@@ -84,6 +86,12 @@ async def request_spatial_input(
           ``barriers`` field is the FeatureCollection you pass straight to
           ``run_swmm_urban_flood(barriers=...)``, and ``aoi_bbox`` is the
           ``bbox`` to model.
+        - A NEUTRAL elevation/section LINE (``mode="vector_draw"`` +
+          ``purpose="line"``): the user draws a single plain LineString -- an
+          elevation profile / cross-section line -- with NO wall/flap-gate
+          tagging. Pass the result's ``line`` (``[[lon,lat],...]``) or
+          ``linestring`` (a GeoJSON LineString) straight to
+          ``compute_terrain_profile(line=...)`` / ``compute_cross_section``.
         - A single map click (``mode="point"``) or a drag-rectangle
           (``mode="bbox"``) for a precise location the user could not name.
 
@@ -96,6 +104,11 @@ async def request_spatial_input(
             (drag-rectangle).
         title: short prompt heading shown over the draw surface.
         description: one-line instruction telling the user what to draw.
+        purpose: ``vector_draw`` only. ``"barrier"`` (DEFAULT -- drawn lines are
+            structural SWMM walls / flap gates that the user MUST tag) or
+            ``"line"`` (drawn line is a NEUTRAL elevation/section line for
+            ``compute_terrain_profile`` -- submitted plain, no tagging). Use
+            ``"line"`` when you need an elevation-profile / cross-section line.
         suggested_view: OPTIONAL ``{"bbox": [minLon, minLat, maxLon, maxLat],
             "zoom": <float>}`` camera hint so the map jumps to the right place
             before drawing.
@@ -105,9 +118,12 @@ async def request_spatial_input(
         On a ``vector_draw`` reply: ``{"status": "ok", "geometry_type":
         "vector_draw", "aoi_bbox": [minLon,minLat,maxLon,maxLat] | absent,
         "barriers": <FeatureCollection> | absent, "n_walls": int,
-        "n_flap_gates": int, "points": [[lon,lat],...], "n_aoi": int}``. Pass
-        ``barriers`` straight to ``run_swmm_urban_flood(barriers=...)`` and
-        ``aoi_bbox`` as its ``bbox``.
+        "n_flap_gates": int, "points": [[lon,lat],...], "n_aoi": int,
+        "n_lines": int, "line": [[lon,lat],...] | absent, "linestring":
+        <GeoJSON LineString> | absent}``. For SWMM, pass ``barriers`` straight
+        to ``run_swmm_urban_flood(barriers=...)`` and ``aoi_bbox`` as its
+        ``bbox``. For a ``purpose="line"`` request, pass ``line`` (or
+        ``linestring``) straight to ``compute_terrain_profile(line=...)``.
 
         On a ``point`` / ``bbox`` reply: ``{"status": "ok", "geometry_type":
         ..., "coordinates": [...]}``.
@@ -130,16 +146,30 @@ async def request_spatial_input(
                 f"mode must be one of {list(_VALID_MODES)}, got {mode!r}."
             ),
         }
+    norm_purpose = (purpose or "barrier").strip()
+    if norm_purpose not in _VALID_PURPOSES:
+        return {
+            "status": "error",
+            "error_code": "SPATIAL_INPUT_PARAMS_INVALID",
+            "error_message": (
+                f"purpose must be one of {list(_VALID_PURPOSES)}, got {purpose!r}."
+            ),
+        }
     # This body intentionally does NOT touch the websocket (a catalog tool has
     # no socket). It returns a SENTINEL the server.py turn loop detects and
     # replaces with the real drawn-geometry result via the websocket pause. The
     # validated args ride back so the server builds the request from them.
-    logger.info("request_spatial_input sentinel mode=%s", norm_mode)
+    logger.info(
+        "request_spatial_input sentinel mode=%s purpose=%s",
+        norm_mode,
+        norm_purpose,
+    )
     return {
         SPATIAL_INPUT_SENTINEL_KEY: True,
         "mode": norm_mode,
         "title": title,
         "description": description,
+        "purpose": norm_purpose,
         "suggested_view": suggested_view,
         "default_timeout_seconds": default_timeout_seconds,
     }

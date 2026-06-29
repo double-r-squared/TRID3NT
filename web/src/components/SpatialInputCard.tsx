@@ -20,6 +20,7 @@ import { useState } from "react";
 import type { SpatialInputRequestPayload } from "../contracts";
 import {
   IconBbox,
+  IconLine,
   IconMapPin,
   IconPolygon,
   IconCheck,
@@ -88,15 +89,20 @@ function compactCardStyle(cancelled: boolean): React.CSSProperties {
   };
 }
 
-function modeIcon(mode: string, color: string): JSX.Element {
+function modeIcon(mode: string, color: string, isLine = false): JSX.Element {
   if (mode === "point") return <IconMapPin size={13} color={color} />;
   if (mode === "bbox") return <IconBbox size={13} color={color} />;
-  return <IconPolygon size={13} color={color} />; // vector_draw
+  // vector_draw: a neutral elevation/section line (purpose="line") gets the
+  // line glyph; the default barrier/AOI draw keeps the polygon glyph.
+  if (isLine) return <IconLine size={13} color={color} />;
+  return <IconPolygon size={13} color={color} />;
 }
 
-function modeLabel(mode: string): string {
+function modeLabel(mode: string, isLine = false): string {
   if (mode === "point") return "Click a point on the map";
   if (mode === "bbox") return "Drag a box on the map";
+  // vector_draw: neutral-line requests ask for one plain line.
+  if (isLine) return "Draw a line on the map";
   return "Draw on the map (rectangle / line / polygon)";
 }
 
@@ -107,6 +113,9 @@ export function SpatialInputCard({
 }: SpatialInputCardProps): JSX.Element {
   const [expanded, setExpanded] = useState<boolean>(false);
   const isResolved = resolved === "submitted" || resolved === "cancelled";
+  // NEUTRAL-LINE request (purpose="line"): a plain elevation/section line draw,
+  // no barrier tagging. Affects only the icon + hint copy.
+  const isLine = request.mode === "vector_draw" && request.purpose === "line";
 
   // --- Folded (resolved) compact card ------------------------------------ //
   if (isResolved) {
@@ -217,7 +226,7 @@ export function SpatialInputCard({
             alignItems: "center",
           }}
         >
-          {modeIcon(request.mode, ACCENT)}
+          {modeIcon(request.mode, ACCENT, isLine)}
         </span>
         <strong
           data-testid={`spatial-input-title-${request.request_id}`}
@@ -256,8 +265,8 @@ export function SpatialInputCard({
           gap: 6,
         }}
       >
-        {modeIcon(request.mode, "#93c5fd")}
-        {modeLabel(request.mode)}, then press Submit on the map.
+        {modeIcon(request.mode, "#93c5fd", isLine)}
+        {modeLabel(request.mode, isLine)}, then press Submit on the map.
       </div>
 
       {/* Cancel affordance (mirrors the on-map Cancel; Invariant 8). */}

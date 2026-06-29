@@ -51,7 +51,10 @@ __all__ = [
 # swmm_contracts.BarrierType). Kept local so this module has no contracts dep at
 # import time and stays a pure-structure translator.
 _VALID_BARRIER_TYPES = frozenset({"wall", "flap_gate"})
-_VALID_ROLES = frozenset({"aoi", "barrier", "point"})
+# "line" is a NEUTRAL elevation/section LineString (compute_terrain_profile /
+# compute_cross_section): a drawn line with no barrier semantics -- never tagged
+# wall/flap_gate. ADDITIVE -- the barrier role's parsing is untouched.
+_VALID_ROLES = frozenset({"aoi", "barrier", "point", "line"})
 _VALID_FLAP_DIRECTIONS = frozenset({"in", "out"})
 _VALID_PROTECTED_SIDES = frozenset({"left", "right"})
 
@@ -83,6 +86,11 @@ class ParsedSpatialInput:
             AOI was drawn.
         aoi_features: the raw ``role=="aoi"`` features (for clip-to-polygon).
         points: ``[[lon, lat], ...]`` from the ``role=="point"`` features.
+        line_coords: the FIRST ``role=="line"`` feature's vertices
+            ``[[lon, lat], ...]`` (a NEUTRAL elevation/section line, e.g. for
+            ``compute_terrain_profile``), or ``None`` when no neutral line was
+            drawn. Untagged -- never a barrier.
+        n_lines: count of ``role=="line"`` features.
         n_walls: count of ``barrier_type=="wall"`` features.
         n_flap_gates: count of ``barrier_type=="flap_gate"`` features.
     """
@@ -91,6 +99,8 @@ class ParsedSpatialInput:
     aoi_bbox: tuple[float, float, float, float] | None = None
     aoi_features: list[dict[str, Any]] = field(default_factory=list)
     points: list[list[float]] = field(default_factory=list)
+    line_coords: list[list[float]] | None = None
+    n_lines: int = 0
     n_walls: int = 0
     n_flap_gates: int = 0
 
@@ -291,6 +301,46 @@ def _aoi_bbox(
     return (min_lon, min_lat, max_lon, max_lat)
 
 
+def _line_coords(line_feats: list[dict[str, Any]]) -> list[list[float]] | None:
+    """Extract the FIRST ``role=="line"`` feature's vertices ``[[lon, lat], ...]``.
+
+    A NEUTRAL elevation/section line (compute_terrain_profile / cross-section):
+    a plain LineString with >= 2 positions, no barrier semantics. Returns the
+    first such line's coordinates, or ``None`` when no line was drawn. Raises
+    ``SpatialInputParseError`` on a malformed line (honesty floor).
+    """
+    for idx, feat in enumerate(line_feats):
+        geom = feat.get("geometry") or {}
+        if geom.get("type") != "LineString":
+            raise SpatialInputParseError(
+                "SPATIAL_INPUT_LINE_NOT_LINESTRING",
+                f"line[{idx}] geometry must be a LineString (got "
+                f"{geom.get('type')!r})",
+            )
+        coords = geom.get("coordinates")
+        if not isinstance(coords, list) or len(coords) < 2:
+            raise SpatialInputParseError(
+                "SPATIAL_INPUT_LINE_TOO_SHORT",
+                f"line[{idx}].geometry.coordinates must be a LineString with "
+                f">= 2 positions",
+            )
+        out: list[list[float]] = []
+        for pidx, pt in enumerate(coords):
+            if (
+                not isinstance(pt, (list, tuple))
+                or len(pt) < 2
+                or not all(isinstance(v, (int, float)) for v in pt[:2])
+            ):
+                raise SpatialInputParseError(
+                    "SPATIAL_INPUT_LINE_BAD_COORDS",
+                    f"line[{idx}].geometry.coordinates[{pidx}] must be "
+                    f"[lon, lat]",
+                )
+            out.append([float(pt[0]), float(pt[1])])
+        return out
+    return None
+
+
 def _points(point_feats: list[dict[str, Any]]) -> list[list[float]]:
     """Extract ``[lon, lat]`` from each ``role=="point"`` feature."""
     out: list[list[float]] = []
@@ -329,11 +379,14 @@ def parse_spatial_input_features(fc: dict[str, Any]) -> ParsedSpatialInput:
         buckets["barrier"]
     )
     aoi_feats = buckets["aoi"]
+    line_feats = buckets["line"]
     return ParsedSpatialInput(
         barriers=barriers_fc,
         aoi_bbox=_aoi_bbox(aoi_feats),
         aoi_features=aoi_feats,
         points=_points(buckets["point"]),
+        line_coords=_line_coords(line_feats),
+        n_lines=len(line_feats),
         n_walls=n_walls,
         n_flap_gates=n_flap_gates,
     )

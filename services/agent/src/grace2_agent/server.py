@@ -7859,6 +7859,12 @@ def _build_spatial_input_request_payload(
         "title": title[:200],
         "description": description[:1024],
     }
+    # purpose (vector_draw only): "barrier" (default, SWMM walls/flap-gates) or
+    # "line" (a NEUTRAL elevation/section line for compute_terrain_profile). Only
+    # forwarded when explicitly "line" so the wire default stays "barrier" and the
+    # existing SWMM draw flow is byte-for-byte unchanged.
+    if call_args.get("purpose") == "line":
+        payload_kwargs["purpose"] = "line"
     # suggested_view: {bbox: [..4..], zoom: float} — optional camera hint.
     sv = call_args.get("suggested_view")
     if isinstance(sv, dict) and isinstance(sv.get("bbox"), (list, tuple)):
@@ -7971,9 +7977,11 @@ def _spatial_response_to_result(
       ``{status: "ok", geometry_type, coordinates}``.
     - vector_draw reply                           ->
       ``{status: "ok", geometry_type: "vector_draw", aoi_bbox, barriers,
-         n_walls, n_flap_gates, points, n_aoi}`` — ``barriers`` is the clean
-      engine-ready FeatureCollection (pass straight to
-      ``run_swmm_urban_flood(barriers=...)``).
+         n_walls, n_flap_gates, points, n_aoi, n_lines}`` -- ``barriers`` is the
+      clean engine-ready FeatureCollection (pass straight to
+      ``run_swmm_urban_flood(barriers=...)``). When a NEUTRAL line was drawn
+      (purpose="line"), ``line`` (``[[lon,lat],...]``) + ``linestring`` (a
+      GeoJSON LineString) carry it for ``compute_terrain_profile(line=...)``.
     - structurally invalid drawn FC               ->
       ``{status: "error", error_code: "SPATIAL_INPUT_<...>", ...}`` (honesty
       floor — malformed geometry NEVER reads as a success).
@@ -8041,6 +8049,7 @@ def _spatial_response_to_result(
             "n_walls": parsed.n_walls,
             "n_flap_gates": parsed.n_flap_gates,
             "n_aoi": len(parsed.aoi_features),
+            "n_lines": parsed.n_lines,
             "points": parsed.points,
         }
         if parsed.aoi_bbox is not None:
@@ -8050,6 +8059,17 @@ def _spatial_response_to_result(
             # to run_swmm_urban_flood(barriers=...). It validates field-for-field
             # against SWMMRunArgs.barriers.
             result["barriers"] = parsed.barriers
+        if parsed.line_coords is not None:
+            # A NEUTRAL drawn elevation/section line (purpose="line"): surface the
+            # plain LineString vertices so the LLM can pass them straight to
+            # compute_terrain_profile(line=...) / compute_cross_section(line=...).
+            # `line` is the bare [[lon,lat],...] vertex list; `linestring` is the
+            # GeoJSON LineString geometry -- both resolve via _resolve_line_coords.
+            result["line"] = [list(pt) for pt in parsed.line_coords]
+            result["linestring"] = {
+                "type": "LineString",
+                "coordinates": [list(pt) for pt in parsed.line_coords],
+            }
         return result
     return {
         "status": "error",

@@ -92,15 +92,23 @@ export function SpatialDrawSurface({
   drawDeps,
 }: SpatialDrawSurfaceProps): JSX.Element {
   const isVectorDraw = request.mode === "vector_draw";
+  // NEUTRAL-LINE request (purpose="line"): the user draws ONE plain elevation /
+  // section LineString (for compute_terrain_profile) with NO wall/flap_gate
+  // tagging. ADDITIVE + gated on the request -- the default (barrier) SWMM flow
+  // is byte-for-byte unchanged.
+  const isNeutralLine = isVectorDraw && request.purpose === "line";
 
   // --- vector_draw: DrawController lifecycle ----------------------------- //
   const controllerRef = useRef<DrawController | null>(null);
-  const [activeMode, setActiveMode] = useState<DrawMode>("rectangle");
+  const [activeMode, setActiveMode] = useState<DrawMode>(
+    isNeutralLine ? "linestring" : "rectangle",
+  );
   const [counts, setCounts] = useState({
     aoi: 0,
     barrier: 0,
     untaggedBarrier: 0,
     point: 0,
+    line: 0,
   });
   const [tagTarget, setTagTarget] = useState<TagTarget | null>(null);
   const [flapDirection, setFlapDirection] = useState<"in" | "out">("out");
@@ -134,15 +142,28 @@ export function SpatialDrawSurface({
   // Mount / unmount the DrawController for vector_draw.
   useEffect(() => {
     if (!isVectorDraw) return;
-    const controller = new DrawController(map, drawDeps);
+    // NEUTRAL-LINE mode (purpose="line"): the controller reads back untagged
+    // LineStrings as role="line" (not barrier), and the surface starts in the
+    // line tool. Default (barrier) behavior is unchanged.
+    const controller = new DrawController(map, {
+      ...drawDeps,
+      neutralLine: isNeutralLine || drawDeps?.neutralLine,
+    });
     controllerRef.current = controller;
     controller.start();
-    controller.setMode("rectangle");
-    setActiveMode("rectangle");
+    const startMode: DrawMode = isNeutralLine ? "linestring" : "rectangle";
+    controller.setMode(startMode);
+    setActiveMode(startMode);
     const refresh = (): void => setCounts(controller.counts());
     const unsubChange = controller.onChanged(refresh);
     const unsubSelect = controller.onSelected((id) => {
-      // Only barrier LineStrings get the tag popover; AOIs/points are untyped.
+      // NEUTRAL-LINE mode never opens the barrier tag popover (a neutral line is
+      // submitted plain -- no wall/flap_gate tagging). In the default barrier
+      // flow, only barrier LineStrings get the tag popover.
+      if (isNeutralLine) {
+        setTagTarget(null);
+        return;
+      }
       const snap = controller.getSnapshot().find((f) => f.id === id);
       if (snap && snap.geometry.type === "LineString") {
         setTagTarget({ id });
@@ -288,6 +309,12 @@ export function SpatialDrawSurface({
   // emitting untyped barriers honestly (never silently coercing them).
   const submitBlockReason = useMemo<string | null>(() => {
     if (isVectorDraw) {
+      // NEUTRAL-LINE mode: no barrier tagging is involved at all -- submit is
+      // gated only on having drawn at least one line. (The default barrier flow
+      // below is byte-for-byte unchanged.)
+      if (isNeutralLine) {
+        return counts.line > 0 ? null : "Draw a line on the map to submit";
+      }
       if (counts.untaggedBarrier > 0) {
         return "Tag every barrier as wall or flap-gate to submit";
       }
@@ -297,7 +324,7 @@ export function SpatialDrawSurface({
       return null;
     }
     return pickCoords !== null ? null : "Pick a location on the map to submit";
-  }, [isVectorDraw, counts, pickCoords]);
+  }, [isVectorDraw, isNeutralLine, counts, pickCoords]);
 
   const canSubmit = submitBlockReason === null;
 
@@ -313,8 +340,39 @@ export function SpatialDrawSurface({
         <span style={{ color: "#cbd5e1", fontSize: 12 }}>{request.description}</span>
       </div>
 
-      {/* vector_draw toolbar. */}
-      {isVectorDraw && (
+      {/* vector_draw NEUTRAL-LINE toolbar (purpose="line"): just draw a plain
+          elevation/section line -- no AOI/barrier/tag affordances. ADDITIVE; the
+          default barrier toolbar below is unchanged. */}
+      {isVectorDraw && isNeutralLine && (
+        <div data-testid="spatial-draw-toolbar" style={toolbarStyle}>
+          <ToolbarBtn
+            label="Line"
+            active={activeMode === "linestring"}
+            onClick={() => handleSetMode("linestring")}
+            icon={<IconLine size={16} />}
+            testid="draw-mode-linestring"
+          />
+          <ToolbarBtn
+            label="Select / edit"
+            active={activeMode === "select"}
+            onClick={() => handleSetMode("select")}
+            icon={<IconMapPin size={16} />}
+            testid="draw-mode-select"
+          />
+          <ToolbarBtn
+            label="Clear all"
+            onClick={handleClear}
+            icon={<IconClose size={16} />}
+            testid="draw-clear"
+          />
+          <span data-testid="draw-counts" style={countsStyle}>
+            {counts.line} line{counts.line === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
+
+      {/* vector_draw toolbar (default barrier flow). */}
+      {isVectorDraw && !isNeutralLine && (
         <div data-testid="spatial-draw-toolbar" style={toolbarStyle}>
           <ToolbarBtn
             label="Rectangle (AOI)"
@@ -417,8 +475,9 @@ export function SpatialDrawSurface({
         </div>
       )}
 
-      {/* discard-area control + notice. */}
-      {isVectorDraw && (
+      {/* discard-area control + notice. (Not shown for a neutral-line draw --
+          there are no polygons to discard.) */}
+      {isVectorDraw && !isNeutralLine && (
         <div data-testid="spatial-draw-discard-control" style={discardControlStyle}>
           <label style={{ fontSize: 11, color: "#cbd5e1" }}>
             Min polygon area: {discardArea} m²

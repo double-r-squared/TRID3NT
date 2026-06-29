@@ -312,8 +312,15 @@ describe("DrawController — getFeatureCollection (RESPONSE-PAYLOAD SHAPE)", () 
     )!;
     expect(wallFeature.properties.flap_direction).toBeUndefined();
 
-    // counts() reflects the inventory.
-    expect(c.counts()).toEqual({ aoi: 1, barrier: 2, untaggedBarrier: 0, point: 0 });
+    // counts() reflects the inventory. (line: 0 in the default barrier mode --
+    // LineStrings count as barriers, never neutral lines.)
+    expect(c.counts()).toEqual({
+      aoi: 1,
+      barrier: 2,
+      untaggedBarrier: 0,
+      point: 0,
+      line: 0,
+    });
     c.stop();
   });
 
@@ -325,6 +332,45 @@ describe("DrawController — getFeatureCollection (RESPONSE-PAYLOAD SHAPE)", () 
     expect(fc.features[0]!.properties.role).toBe("barrier");
     expect(fc.features[0]!.properties.barrier_type).toBeUndefined();
     expect(c.counts().untaggedBarrier).toBe(1);
+    c.stop();
+  });
+});
+
+describe("DrawController -- neutral-line mode (purpose='line')", () => {
+  function makeNeutralController(): { c: DrawController; fake: FakeTerraDraw } {
+    const fake = new FakeTerraDraw();
+    const c = new DrawController(fakeMap, {
+      makeDraw: () => fake as unknown as TerraDraw,
+      neutralLine: true,
+    });
+    c.start();
+    return { c, fake };
+  }
+
+  it("reads an untagged LineString back as role='line' (NOT barrier)", () => {
+    const { c, fake } = makeNeutralController();
+    fake._add(lineGeom([[-85.31, 35.04], [-85.305, 35.045], [-85.30, 35.05]]), {
+      mode: "linestring",
+    });
+    const fc = c.getFeatureCollection();
+    expect(fc.features).toHaveLength(1);
+    const feat = fc.features[0]!;
+    expect(feat.properties.role).toBe("line");
+    expect(feat.properties.barrier_type).toBeUndefined();
+    expect(feat.geometry.type).toBe("LineString");
+    c.stop();
+  });
+
+  it("counts a drawn line as `line`, never an untagged barrier", () => {
+    const { c, fake } = makeNeutralController();
+    fake._add(lineGeom([[-85.31, 35.04], [-85.30, 35.05]]), { mode: "linestring" });
+    expect(c.counts()).toEqual({
+      aoi: 0,
+      barrier: 0,
+      untaggedBarrier: 0,
+      point: 0,
+      line: 1,
+    });
     c.stop();
   });
 });

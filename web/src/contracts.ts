@@ -733,8 +733,11 @@ export interface GeoJSONGeometry {
   coordinates: unknown;
 }
 
-/** The `role` a drawn feature plays (mirrors the ws.py validator vocabulary). */
-export type SpatialDrawRole = "aoi" | "barrier" | "point";
+/** The `role` a drawn feature plays (mirrors the ws.py validator vocabulary).
+ * "line" is a NEUTRAL elevation/section LineString (compute_terrain_profile /
+ * compute_cross_section) -- a drawn line with no barrier semantics, never tagged
+ * wall/flap_gate. */
+export type SpatialDrawRole = "aoi" | "barrier" | "point" | "line";
 
 /** Per-segment barrier tag on a role=="barrier" LineString (mirrors
  * swmm_contracts.BarrierType). */
@@ -788,6 +791,11 @@ export interface SpatialInputRequestPayload {
   mode: "point" | "bbox" | "vector_draw";      // pick affordance / draw surface
   title: string;
   description: string;
+  // vector_draw only. "barrier" (default, SWMM walls/flap-gates -- drawn lines
+  // MUST be tagged) or "line" (a NEUTRAL elevation/section line for
+  // compute_terrain_profile -- drawn line submitted plain, no tagging required).
+  // Optional/absent => "barrier" (the existing flow is byte-for-byte unchanged).
+  purpose?: "barrier" | "line";
   suggested_view?: SuggestedView | null;       // camera hint for the pick
   reference_layers?: ReferenceLayer[];          // optional helper layers
   default_timeout_seconds?: number;             // fail-open timeout (default 300)
