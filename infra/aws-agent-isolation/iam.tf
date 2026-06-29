@@ -177,8 +177,11 @@ data "aws_iam_policy_document" "broker_task" {
     }
   }
   statement {
-    sid       = "EcsStopDescribe"
-    actions   = ["ecs:StopTask", "ecs:DescribeTasks"]
+    # TagResource is required because the broker RunTask tags each task with the
+    # session_id + user_ulid (propagateTags) for reaper/ops attribution -- tagging
+    # on create is authorized against the task resource being created.
+    sid       = "EcsStopDescribeTag"
+    actions   = ["ecs:StopTask", "ecs:DescribeTasks", "ecs:TagResource"]
     resources = ["arn:aws:ecs:${local.reg}:${local.acct}:task/${aws_ecs_cluster.agents.name}/*"]
   }
   # ListTasks does not support resource scoping; constrain by the cluster ARN
