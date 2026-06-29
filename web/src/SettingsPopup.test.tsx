@@ -80,6 +80,15 @@ vi.mock("./Chat", () => {
   };
 });
 
+// SHARED-BOX SLEEP (NATE 2026-06-29) - force wake CONFIGURED so the Agent
+// section renders (it is gated on wakeConfigured(), which reads import.meta.env
+// and is false by default in tests). SettingsPopup imports ONLY wakeConfigured
+// from "../lib/wake" now (the box-stop requestSleep call was removed - sleep is
+// a pure client per-session pause), so this minimal mock is sufficient.
+vi.mock("./lib/wake", () => ({
+  wakeConfigured: () => true,
+}));
+
 afterEach(() => cleanup());
 beforeEach(() => localStorage.clear());
 
@@ -447,6 +456,71 @@ describe("SettingsPopup", () => {
       // One dispatch per click, each carrying the chosen tier — proving the
       // live re-apply path is reachable from the Settings control.
       expect(details).toEqual(["low", "high"]);
+    });
+  });
+
+  // SHARED-BOX SLEEP (NATE 2026-06-29) - "Put agent to sleep" is now a
+  // PER-SESSION pause (no box-wide stop). The Agent section renders only when
+  // signed in + wake configured (mocked true here) + onSleepSession wired, and
+  // a two-step confirm fires the local teardown handler exactly once.
+  describe("Agent sleep is a per-session pause (shared box)", () => {
+    it("hides the Agent section unless signed in AND onSleepSession is wired", () => {
+      // Signed in but no handler -> hidden (App always wires it; legacy
+      // fixtures that don't render unchanged).
+      const { rerender } = render(<SettingsPopup {...defaultProps} />);
+      expect(screen.queryByTestId("grace2-settings-agent")).toBeNull();
+      // Handler wired but signed OUT -> still hidden.
+      rerender(
+        <SettingsPopup
+          {...defaultProps}
+          isSignedIn={false}
+          onSleepSession={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId("grace2-settings-agent")).toBeNull();
+    });
+
+    it("renders the Agent section when signed in + handler wired", () => {
+      render(<SettingsPopup {...defaultProps} onSleepSession={vi.fn()} />);
+      expect(screen.getByTestId("grace2-settings-agent")).toBeTruthy();
+      expect(screen.getByTestId("grace2-settings-agent-sleep")).toBeTruthy();
+    });
+
+    it("two-step confirm fires onSleepSession once and shows the honest paused message", () => {
+      const onSleepSession = vi.fn();
+      render(
+        <SettingsPopup {...defaultProps} onSleepSession={onSleepSession} />,
+      );
+      const btn = screen.getByTestId("grace2-settings-agent-sleep");
+      // First click ARMS the confirm - no teardown yet.
+      fireEvent.click(btn);
+      expect(onSleepSession).not.toHaveBeenCalled();
+      expect(btn.textContent).toMatch(/Confirm pause/);
+      // Second click performs the per-session pause exactly once.
+      fireEvent.click(btn);
+      expect(onSleepSession).toHaveBeenCalledTimes(1);
+      // Honest message: paused for THEM, session cleared, shared agent stays up.
+      const status = screen.getByTestId("grace2-settings-agent-sleep-status");
+      expect(status.textContent).toMatch(/Workspace paused/);
+      expect(status.textContent).toMatch(/session is cleared/);
+      expect(status.textContent).toMatch(/shared agent stays available/);
+      // The button latches to a disabled "Workspace paused" state.
+      expect(screen.getByTestId("grace2-settings-agent-sleep")).toHaveProperty(
+        "disabled",
+        true,
+      );
+    });
+
+    it("does not fire again once paused", () => {
+      const onSleepSession = vi.fn();
+      render(
+        <SettingsPopup {...defaultProps} onSleepSession={onSleepSession} />,
+      );
+      const btn = screen.getByTestId("grace2-settings-agent-sleep");
+      fireEvent.click(btn); // arm
+      fireEvent.click(btn); // confirm -> paused
+      fireEvent.click(btn); // disabled no-op
+      expect(onSleepSession).toHaveBeenCalledTimes(1);
     });
   });
 });

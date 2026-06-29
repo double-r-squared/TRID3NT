@@ -17,13 +17,14 @@ import { IconClose, IconPause } from "./icons";
 import type { MapTheme } from "../Map";
 import { SecretsPanel } from "./SecretsPanel";
 import type { ProviderID, SecretRecord } from "../contracts";
-// Agent sleep/wake (NATE 2026-06-18) - the INVERSE of the wake overlay. Settings
-// is the only signed-in surface that lets a user put the agent box to sleep on
-// demand; the token is sourced the SAME way the rest of the app does for the
-// wake/secrets calls (getIdToken). After a successful sleep the existing wake
-// state machine surfaces the wake overlay on its own - no extra wiring here.
-import { requestSleep, wakeConfigured } from "../lib/wake";
-import { getIdToken } from "../auth";
+// Agent sleep (NATE 2026-06-18; reworked 2026-06-29 for the SHARED box). The box
+// is now shared by multiple users, so "sleep" must NOT stop the box out from
+// under everyone. It is a PER-SESSION pause: App tears down THIS session's WS +
+// clears the loaded layers and surfaces the asleep composer, but never POSTs a
+// box stop. The box still auto-stops server-side once ALL sessions are idle.
+// `wakeConfigured()` still gates the section so dev/LAN (no wake endpoint, box
+// never auto-stops -> no asleep/wake affordance) hides it, exactly as before.
+import { wakeConfigured } from "../lib/wake";
 // job-0322 F56 — chat-opacity control. The SHARED localStorage key + the tier
 // type + the read/write helpers are OWNED by Chat.tsx (Group B), which also
 // applies the resulting alpha to both the desktop chat container and the
@@ -123,6 +124,16 @@ export interface SettingsPopupProps {
   }) => void;
   /** Emits the `secret-revoke` envelope for the given secret id. */
   onSecretRevoke?: (secretId: string) => void;
+  /**
+   * SHARED-BOX SLEEP (NATE 2026-06-29): per-session "pause" handler. App owns
+   * the teardown - close THIS session's WS cleanly, clear the loaded layers /
+   * live case-view state, and surface the asleep composer - WITHOUT POSTing a
+   * box stop (the shared box auto-stops server-side only once ALL sessions are
+   * idle). The Agent section renders only when this is wired AND wake is
+   * configured AND the user is signed in. OPTIONAL so legacy fixtures that don't
+   * plumb it render unchanged (the section just stays hidden).
+   */
+  onSleepSession?: () => void;
 }
 
 const overlayStyle: React.CSSProperties = {
@@ -292,6 +303,7 @@ export function SettingsPopup({
   caseId,
   onSecretAdd,
   onSecretRevoke,
+  onSleepSession,
 }: SettingsPopupProps): JSX.Element {
   // job-0322 F56 — chat-opacity tier. Initialised from the persisted per-user
   // value (default "medium"); changing it writes through to the SHARED key so
@@ -346,53 +358,33 @@ export function SettingsPopup({
     onTerrain3dChange?.({ terrain3d: terrain3dEnabled, contours: next });
   }
 
-  // Agent sleep control (NATE 2026-06-18). Two-step: first click ARMS a confirm,
-  // second click fires the POST. `sleepStatus` is the inline outcome line under
-  // the button; `sleeping` disables the control while the request is in flight.
-  // Only ever rendered for a signed-in user with wake configured (dev/LAN has no
-  // box to stop), so the request always carries a bearer token.
+  // SHARED-BOX SLEEP (NATE 2026-06-29). Two-step: first click ARMS a confirm,
+  // the second performs a PER-SESSION pause. This is a PURE client action now -
+  // no network, no token, no box stop: App closes THIS session's WS, clears the
+  // loaded layers, and surfaces the asleep composer. The shared box keeps
+  // serving any other connected users and auto-stops server-side only once ALL
+  // sessions are idle. `paused` latches so the inline honest message persists
+  // and the button reads "Workspace paused" until Settings is reopened.
   const [sleepConfirming, setSleepConfirming] = useState(false);
-  const [sleeping, setSleeping] = useState(false);
-  const [sleepStatus, setSleepStatus] = useState<
-    null | "ok" | "busy" | "unauthorized" | "error"
-  >(null);
+  const [paused, setPaused] = useState(false);
 
-  async function onSleepClick(): Promise<void> {
-    if (sleeping) return;
+  function onSleepClick(): void {
+    if (paused) return;
     if (!sleepConfirming) {
       setSleepConfirming(true);
-      setSleepStatus(null);
       return;
     }
-    // Confirmed - fire the stop request. Never logs/echoes the token value.
+    // Confirmed - per-session pause. Synchronous + local; App owns the teardown.
     setSleepConfirming(false);
-    setSleeping(true);
-    setSleepStatus(null);
-    try {
-      const token = await getIdToken();
-      const result = await requestSleep(token);
-      if (result.status === "ok") {
-        setSleepStatus("ok");
-      } else if (result.status === "busy") {
-        setSleepStatus("busy");
-      } else if (result.status === "unauthorized") {
-        setSleepStatus("unauthorized");
-      } else {
-        // "disabled" should not reach here (the section is gated on
-        // wakeConfigured), but treat it as a generic failure if it does.
-        setSleepStatus("error");
-      }
-    } catch {
-      setSleepStatus("error");
-    } finally {
-      setSleeping(false);
-    }
+    setPaused(true);
+    onSleepSession?.();
   }
 
-  // The agent-sleep section only makes sense when (a) the user is signed in (the
-  // stop endpoint requires a bearer token) AND (b) a wake endpoint is configured
-  // (dev/LAN never auto-stops the box, so there is nothing to put to sleep).
-  const showSleepSection = isSignedIn && wakeConfigured();
+  // The agent-sleep section only makes sense when (a) the user is signed in,
+  // (b) a wake endpoint is configured (dev/LAN never auto-stops the box, so
+  // there is no asleep/wake affordance to pair the pause with), and (c) App has
+  // wired the per-session teardown handler.
+  const showSleepSection = isSignedIn && wakeConfigured() && !!onSleepSession;
 
   // Esc-to-close (memory rule "Cancellation is first-class").
   useEffect(() => {
@@ -571,49 +563,53 @@ export function SettingsPopup({
           )}
         </div>
 
-        {/* Agent section (NATE 2026-06-18) - explicit "Put agent to sleep",
-            the inverse of the wake overlay. Signed-in only + wake-configured
-            (dev/LAN has no auto-stopped box to sleep). Two-step confirm; the
-            outcome is surfaced inline. After a successful sleep the existing
-            wake state machine raises the wake overlay on its own. */}
+        {/* Agent section (NATE 2026-06-29, SHARED box) - "Put agent to sleep"
+            is now a PER-SESSION pause, not a box-wide stop. It tears down THIS
+            session (WS + loaded layers) and surfaces the asleep composer while
+            leaving the shared box up for anyone else; the box auto-stops
+            server-side only once ALL sessions are idle. Signed-in + wake
+            configured + handler wired. Two-step confirm; the honest outcome is
+            surfaced inline. */}
         {showSleepSection && (
           <div style={sectionStyle} data-testid="grace2-settings-agent">
             <div style={sectionTitleStyle}>Agent</div>
             <div style={valueStyle}>
               <span>
-                {sleepConfirming
-                  ? "Put the agent to sleep? It will need to wake up again next time."
-                  : "Put the agent to sleep to save resources"}
+                {paused
+                  ? "Your workspace is paused."
+                  : sleepConfirming
+                    ? "Pause your workspace? Your loaded layers clear here and you reconnect when you return."
+                    : "Pause your workspace to free up resources. Your session here clears; reconnect anytime."}
               </span>
               <button
                 data-testid="grace2-settings-agent-sleep"
-                onClick={() => {
-                  void onSleepClick();
-                }}
-                disabled={sleeping}
+                onClick={onSleepClick}
+                disabled={paused}
                 style={{
                   ...buttonStyle,
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 6,
-                  opacity: sleeping ? 0.6 : 1,
-                  cursor: sleeping ? "default" : "pointer",
+                  opacity: paused ? 0.6 : 1,
+                  cursor: paused ? "default" : "pointer",
                 }}
                 aria-label={
-                  sleepConfirming
-                    ? "Confirm putting the agent to sleep"
-                    : "Put agent to sleep"
+                  paused
+                    ? "Workspace paused"
+                    : sleepConfirming
+                      ? "Confirm pausing your workspace"
+                      : "Put agent to sleep"
                 }
               >
                 <IconPause size={14} />
-                {sleeping
-                  ? "Sending..."
+                {paused
+                  ? "Workspace paused"
                   : sleepConfirming
-                    ? "Confirm sleep"
+                    ? "Confirm pause"
                     : "Put agent to sleep"}
               </button>
             </div>
-            {sleepStatus && (
+            {paused && (
               <div
                 data-testid="grace2-settings-agent-sleep-status"
                 role="status"
@@ -621,21 +617,12 @@ export function SettingsPopup({
                   fontSize: 11,
                   marginTop: 6,
                   lineHeight: 1.5,
-                  color:
-                    sleepStatus === "ok"
-                      ? "#7fd18a"
-                      : sleepStatus === "busy"
-                        ? "#e0b257"
-                        : "#e08a8a",
+                  color: "#7fd18a",
                 }}
               >
-                {sleepStatus === "ok"
-                  ? "Agent going to sleep."
-                  : sleepStatus === "busy"
-                    ? "Agent is busy, it cannot sleep until the current work finishes."
-                    : sleepStatus === "unauthorized"
-                      ? "Please sign in again to put the agent to sleep."
-                      : "Could not put the agent to sleep. Please try again."}
+                Workspace paused. Your session is cleared here -- reopen to
+                reconnect. The shared agent stays available for anyone else who
+                is connected.
               </div>
             )}
           </div>

@@ -682,6 +682,17 @@ export function App(): JSX.Element {
   // once per "unreachable" episode (not on every reconnect tick). Reset on a
   // healthy reconnect.
   const wakeProbeInFlightRef = useRef<boolean>(false);
+  // SHARED-BOX SLEEP (NATE 2026-06-29)  -  an EXPLICIT per-session pause. The box
+  // is shared, so the Settings "Put agent to sleep" no longer stops it (that
+  // would yank the box out from under other connected users); instead THIS
+  // session goes dormant: close our WS, clear our layers, and surface the asleep
+  // composer. `sessionPaused` drives that asleep visual (alongside the probe's
+  // `agentAsleep`) and SUPPRESSES the involuntary visibility-resume reconnect so
+  // the session stays paused until the user explicitly taps Wake (or refreshes).
+  // The ref mirrors it for the stable visibility-effect closure. Cleared on the
+  // wake tap and on any healthy reconnect.
+  const [sessionPaused, setSessionPaused] = useState<boolean>(false);
+  const sessionPausedRef = useRef<boolean>(false);
 
   // Settings popup visibility (job-0143). job-0321 F29  -  the standalone
   // Secrets popup is retired; API-key management now lives INSIDE Settings
@@ -991,7 +1002,9 @@ export function App(): JSX.Element {
   // the App socket NOT being connected (a healthy App socket implies the box is
   // up). The actual asleep classification is `agentAsleep`, set by the GET probe.
   const composerWakeReady =
-    wakeConfigured() && wsStatus !== "connected" && agentAsleep;
+    wakeConfigured() &&
+    wsStatus !== "connected" &&
+    (agentAsleep || sessionPaused);
 
   // Explicit user tap on the composer's "Wake up agent" rectangle: reset the
   // shared waker's debounce so a manual press always fires StartInstances (even
@@ -999,6 +1012,21 @@ export function App(): JSX.Element {
   // path that POSTs wake (never auto-wake). Fire-and-forget  -  never throws. The
   // App socket's onStatus "connected" clears agentAsleep when the box is back.
   const handleWakeTap = useCallback(() => {
+    // SHARED-BOX SLEEP: if THIS session was explicitly paused (Settings), the box
+    // is most likely still up (only OUR socket was torn down). Lift the pause and
+    // revive our own socket so the open handler re-sends auth + session-resume
+    // and the server replays our active Case's layers (per-Case durability). The
+    // close() we did on pause set closedByUser, which stopped the reconnect loop,
+    // so an explicit connect() is required to come back.
+    if (sessionPausedRef.current) {
+      sessionPausedRef.current = false;
+      setSessionPaused(false);
+      wsRef.current?.connect();
+    }
+    // Always ALSO POST wake (debounced, idempotent): the box may have genuinely
+    // auto-stopped (server-side, once ALL sessions went idle) while we were
+    // paused, so StartInstances covers that case; if the box is already up it is
+    // a harmless no-op. This stays the ONLY path that POSTs wake.
     const waker = wakerRef.current;
     if (!waker) return;
     waker.resetDebounce();
@@ -1006,6 +1034,31 @@ export function App(): JSX.Element {
       /* best-effort; the reconnect loop owns recovery */
     });
   }, []);
+
+  // SHARED-BOX SLEEP (NATE 2026-06-29) - the per-session "Put agent to sleep"
+  // teardown wired into SettingsPopup. PURELY local: it NEVER POSTs a box stop
+  // (the shared box auto-stops server-side only once ALL sessions are idle), so
+  // it cannot disrupt other connected users. It (1) marks the session paused so
+  // the composer shows the asleep/Wake card and the visibility-resume reconnect
+  // is suppressed, (2) closes our WS cleanly (closedByUser -> no auto-reconnect),
+  // and (3) clears our live layers / case-view state (App `layers` + an
+  // authoritative empty replace into the LayerPanel/Map bus) so nothing of ours
+  // lingers. activeCaseId + the chat scrollback are intentionally KEPT; tapping
+  // Wake (or a refresh) reconnects and the server replays the Case's layers.
+  const handleSleepSession = useCallback(() => {
+    sessionPausedRef.current = true;
+    setSessionPaused(true);
+    wsRef.current?.close();
+    setLayers([]);
+    bus.pushSessionState({
+      loaded_layers: [],
+      chat_history: [],
+      pipeline_history: [],
+      current_pipeline: null,
+      map_view: null,
+      replace_layers: true,
+    });
+  }, [bus]);
 
   // Mount a GraceWs that routes session-state, map-command, AND secrets-list.
   useEffect(() => {
@@ -1021,8 +1074,12 @@ export function App(): JSX.Element {
         if (s === "connected") {
           // Healthy (re)connect  -  the box is up. Clear the asleep state (the
           // composer flips Connecting/Wake -> Chat) and reset the probe guard so
-          // a future unreachable episode probes again.
+          // a future unreachable episode probes again. SHARED-BOX SLEEP: a
+          // healthy reconnect also lifts an explicit per-session pause (the user
+          // is back online), so clear that too.
           setAgentAsleep(false);
+          sessionPausedRef.current = false;
+          setSessionPaused(false);
           wakeProbeInFlightRef.current = false;
         }
       },
@@ -1317,6 +1374,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     const onVisibility = (): void => {
       if (document.visibilityState !== "visible") return;
+      // SHARED-BOX SLEEP: while THIS session is explicitly paused, do NOT revive
+      // the socket on a tab refocus - the user paused on purpose and stays
+      // dormant until they tap Wake (or refresh). Without this, the not-OPEN
+      // branch below would forceReconnect()/reconnect() and silently un-pause.
+      if (sessionPausedRef.current) return;
       const ws = wsRef.current;
       if (!ws) return;
       // BUG 4a (Wave 4.9)  -  do NOT force-reconnect an already-OPEN socket. A
@@ -2974,6 +3036,13 @@ export function App(): JSX.Element {
           caseId={currentCaseId}
           onSecretAdd={handleSecretAdd}
           onSecretRevoke={handleSecretRevoke}
+          /* SHARED-BOX SLEEP (NATE 2026-06-29): "Put agent to sleep" is now a
+             PER-SESSION pause - close THIS session's WS + clear our layers +
+             surface the asleep composer, never a box-wide stop (the shared box
+             keeps serving others and auto-stops server-side once ALL sessions
+             are idle). The Settings popup stays open so the user reads the
+             honest "workspace paused" line; the composer shows the Wake card. */
+          onSleepSession={handleSleepSession}
         />
       )}
 
