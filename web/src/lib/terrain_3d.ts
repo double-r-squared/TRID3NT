@@ -168,6 +168,45 @@ export function buildFlat2dCameraPose(): CameraPose {
   return { pitch: FLAT_2D_PITCH, bearing: FLAT_2D_BEARING };
 }
 
+// --- draped-raster resampling (3D-only crispness) ------------------------- //
+//
+// NATE 2026-06-29: in 3D the overlay rasters DRAPE over the pitched terrain mesh.
+// The first cut switched them to a flat "linear" resampling to soften the hard
+// nearest-sampled cell blocks - but that made them BLURRY as soon as you zoomed
+// out even a little (linear bilinear-smears the downsampled tiles). NATE wants
+// them to stay CRISP at a moderate zoom-out and only soften when zoomed VERY far.
+//
+// raster-resampling accepts a zoom STEP expression (style-spec: enum,
+// expression { interpolated:false, parameters:["zoom"] }), so we drive it
+// declaratively with NO per-frame JS zoom listener: below the threshold (very far
+// out) -> "linear" (soft, hides far-zoom aliasing of coarse tiles); at/above the
+// threshold (moderate zoom-out through close-in, the zooms NATE works at) ->
+// "nearest" (crisp 1:1 cells). This is 3D-DRAPE-ONLY; the flat 2D path keeps the
+// scalar "nearest" default untouched (per-cell alignment proof, job-0078).
+
+/** The zoom at/above which draped 3D rasters render CRISP ("nearest"). Below it
+ *  (only when zoomed VERY far out) they soften to "linear" to hide aliasing of
+ *  the coarse downsampled tiles. ~6 keeps city / AOI scale (z>=~10) and a
+ *  generous moderate zoom-out band sharp; only continent-scale views soften. */
+export const TERRAIN_3D_CRISP_MIN_ZOOM = 6;
+
+/** A MapLibre `raster-resampling` zoom-step expression: "linear" below
+ *  TERRAIN_3D_CRISP_MIN_ZOOM, "nearest" at/above it. `step` form is
+ *  [ "step", input, output0, stop1, output1 ]. Pure (no MapLibre) so it is
+ *  unit-testable; the caller hands it to setPaintProperty. */
+export type DrapeResamplingExpression = [
+  "step",
+  ["zoom"],
+  "linear",
+  number,
+  "nearest",
+];
+
+/** Build the 3D-drape raster-resampling zoom-step expression (pure). */
+export function buildDrape3dResamplingExpression(): DrapeResamplingExpression {
+  return ["step", ["zoom"], "linear", TERRAIN_3D_CRISP_MIN_ZOOM, "nearest"];
+}
+
 /**
  * Public AWS Terrain Tiles (Terrarium encoding) open dataset. No API key,
  * global coverage, served from S3 over https. This is the zero-backend fallback
@@ -409,6 +448,7 @@ export interface TerrainMapLike {
   setTerrain(spec: { source: string; exaggeration?: number } | null): void;
   setMaxPitch?(pitch: number): void;
   dragRotate?: { enable(): void; disable(): void };
+  dragPan?: { enable(): void; disable(): void };
   touchZoomRotate?: { enableRotation(): void; disableRotation(): void };
   touchPitch?: { enable(): void; disable(): void };
 }
@@ -459,8 +499,16 @@ export function applyTerrain3d(
     m.setTerrain({ source: TERRAIN_DEM_SOURCE_ID, exaggeration: TERRAIN_EXAGGERATION });
 
     // Unlock 3D navigation (the base map is locked 2D: maxPitch 0, no rotate).
+    // dragPan is on by MapLibre default, but a draw gesture (bbox_draw /
+    // SpatialDrawSurface) disables it mid-drag, so a 3D enable that lands while
+    // pan is disabled would feel LOCKED (the user's "can't pan in 3D" report).
+    // Explicitly RE-ENABLE left-drag pan here so entering 3D always restores
+    // normal drag-to-pan across the terrain. Right-drag / two-finger pitch+rotate
+    // (dragRotate + touchZoomRotate + touchPitch) stay enabled alongside it; only
+    // 3D unlocks any of this - the 2D base map stays pan+zoom-only.
     try {
       m.setMaxPitch?.(75);
+      m.dragPan?.enable();
       m.dragRotate?.enable();
       m.touchZoomRotate?.enableRotation();
       m.touchPitch?.enable();

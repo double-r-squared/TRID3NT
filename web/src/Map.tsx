@@ -119,9 +119,11 @@ import {
   removeTerrain3d,
   buildTerrain3dCameraPose,
   buildFlat2dCameraPose,
+  buildDrape3dResamplingExpression,
   TERRAIN_3D_EASE_MS,
   startAoiPulseGlow,
   type TerrainMapLike,
+  type DrapeResamplingExpression,
   type AoiPulseGlowHandle,
 } from "./lib/terrain_3d";
 import {
@@ -3055,19 +3057,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const easeMs = prefersReducedMotion ? 0 : TERRAIN_3D_EASE_MS;
 
-    // NATE 2026-06-26: overlay raster pixelation under 3D. Session-added raster
-    // layers paint with raster-resampling: "nearest" (job-0078) so their COG
-    // cells stay 1:1 with the basemap grid in the flat 2D top-down view - the
-    // only visually-irrefutable proof of per-cell geographic alignment. But when
-    // those nearest-sampled cells DRAPE over a pitched terrain mesh, each cell
-    // reads as a hard ~9px block and the overlay looks extremely pixelated. So
-    // make resampling 3D-aware: switch every overlay raster layer to "linear"
-    // (smooths the drape) while 3D is on, and restore "nearest" (the 2D default)
-    // when 3D is off. We sweep addedSourceIds.current here - rather than at the
-    // raster-add block, whose effect dep array does NOT re-run on the 3D toggle -
-    // so this also fixes rasters that were added BEFORE 3D was enabled.
+    // NATE 2026-06-26 / 2026-06-29: overlay raster crispness under 3D. Session-
+    // added raster layers paint with raster-resampling: "nearest" (job-0078) so
+    // their COG cells stay 1:1 with the basemap grid in the flat 2D top-down view
+    // - the only visually-irrefutable proof of per-cell geographic alignment. When
+    // those nearest-sampled cells DRAPE over a pitched terrain mesh they can read
+    // as hard blocks, so the first cut blanket-switched them to "linear" in 3D -
+    // but that made them BLURRY the moment you zoomed out even a little. NATE
+    // wants them CRISP at a moderate zoom-out and soft ONLY when zoomed VERY far.
+    // So the 3D value is now a zoom-STEP expression (buildDrape3dResamplingExpr:
+    // "linear" below z6, "nearest" at/above) instead of a flat "linear"; 2D
+    // restores the scalar "nearest" default (byte-for-byte unchanged). We sweep
+    // addedSourceIds.current here - rather than at the raster-add block, whose
+    // effect dep array does NOT re-run on the 3D toggle - so this also fixes
+    // rasters that were added BEFORE 3D was enabled.
     const setOverlayRasterResampling = (
-      mode: "linear" | "nearest",
+      mode: "nearest" | DrapeResamplingExpression,
     ): void => {
       const mm = map.current;
       if (!mm) return;
@@ -3154,9 +3159,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // AWS Terrarium tiles. Once the agent emits a per-case DEM COG, thread it
       // through here as a prop -> TiTiler terrain-RGB path (see FOLLOW-UPS).
       applyTerrain3d(tm, { contoursRequested: contoursEnabled });
-      // NATE 2026-06-26: smooth overlay rasters that drape over the pitched
-      // terrain mesh - nearest-sampled cells read as hard ~9px blocks in 3D.
-      setOverlayRasterResampling("linear");
+      // NATE 2026-06-29: keep draped overlay rasters CRISP at moderate zoom-out
+      // (zoom-step "nearest" at/above z6) and soften to "linear" only when zoomed
+      // VERY far out - replaces the old blanket "linear" that blurred them on any
+      // zoom-out. 3D-drape-only; the 2D path keeps the scalar "nearest" default.
+      setOverlayRasterResampling(buildDrape3dResamplingExpression());
       // Pitch the camera so the relief actually reads. applyTerrain3d already
       // unlocked maxPitch (75) + rotate, so this easeTo is not clamped. Keep
       // center + zoom (easeTo merges over the current pose).

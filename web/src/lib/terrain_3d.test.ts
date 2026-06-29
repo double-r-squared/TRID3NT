@@ -31,6 +31,8 @@ import {
   FLAT_2D_BEARING,
   buildTerrain3dCameraPose,
   buildFlat2dCameraPose,
+  buildDrape3dResamplingExpression,
+  TERRAIN_3D_CRISP_MIN_ZOOM,
   type TerrainMapLike,
   type TerrainDemSourceSpec,
   type PulseGlowMapLike,
@@ -127,6 +129,30 @@ describe("terrain_3d - camera poses (Priority 1: make 3D look 3D)", () => {
   });
 });
 
+describe("terrain_3d - draped-raster resampling (3D crispness)", () => {
+  it("crisp threshold sits in a sensible 'very far out' band", () => {
+    // Moderate zoom-out (city/AOI z>=~10 down to ~z6) must stay crisp; only
+    // continent-scale views soften. Keep the cut deep enough to be 'very far'.
+    expect(TERRAIN_3D_CRISP_MIN_ZOOM).toBeGreaterThan(2);
+    expect(TERRAIN_3D_CRISP_MIN_ZOOM).toBeLessThanOrEqual(8);
+  });
+
+  it("builds a zoom-step expr: linear below the threshold, nearest at/above", () => {
+    const expr = buildDrape3dResamplingExpression();
+    expect(expr).toEqual([
+      "step",
+      ["zoom"],
+      "linear",
+      TERRAIN_3D_CRISP_MIN_ZOOM,
+      "nearest",
+    ]);
+    // MapLibre `step` semantics: output before the first stop, then the stop's
+    // output at/above it. So < threshold => "linear" (soft), >= => "nearest".
+    expect(expr[2]).toBe("linear");
+    expect(expr[4]).toBe("nearest");
+  });
+});
+
 // --- a tiny structural Map stub for the side-effect helpers -------------- //
 
 function makeMapStub() {
@@ -142,6 +168,7 @@ function makeMapStub() {
     setTerrain: vi.fn(),
     setMaxPitch: vi.fn(),
     dragRotate: { enable: vi.fn(), disable: vi.fn() },
+    dragPan: { enable: vi.fn(), disable: vi.fn() },
     touchZoomRotate: { enableRotation: vi.fn(), disableRotation: vi.fn() },
     touchPitch: { enable: vi.fn(), disable: vi.fn() },
   };
@@ -164,6 +191,9 @@ describe("terrain_3d - applyTerrain3d", () => {
     });
     // Camera unlocked for 3D.
     expect(raw.setMaxPitch).toHaveBeenCalledWith(75);
+    // Left-drag PAN explicitly re-enabled so 3D is navigable even if a prior
+    // draw gesture left dragPan disabled (the "can't pan in 3D" fix).
+    expect(raw.dragPan.enable).toHaveBeenCalled();
     expect(raw.dragRotate.enable).toHaveBeenCalled();
     expect(raw.touchZoomRotate.enableRotation).toHaveBeenCalled();
     expect(raw.touchPitch.enable).toHaveBeenCalled();
@@ -218,6 +248,9 @@ describe("terrain_3d - removeTerrain3d", () => {
     expect(raw.dragRotate.disable).toHaveBeenCalled();
     expect(raw.touchZoomRotate.disableRotation).toHaveBeenCalled();
     expect(raw.touchPitch.disable).toHaveBeenCalled();
+    // Pan stays available in 2D - removing 3D must NOT disable dragPan (the flat
+    // base map is pan+zoom). Only rotate/pitch re-lock.
+    expect(raw.dragPan.disable).not.toHaveBeenCalled();
   });
 
   it("is safe to call when terrain was never enabled (no throw)", () => {

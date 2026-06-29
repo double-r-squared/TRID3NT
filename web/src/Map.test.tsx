@@ -37,6 +37,7 @@ import {
   TERRAIN_DEM_SOURCE_ID,
   TERRAIN_HILLSHADE_LAYER_ID,
   TERRAIN_SKY_LAYER_ID,
+  buildDrape3dResamplingExpression,
 } from "./lib/terrain_3d";
 
 // --- MapLibre mock -------------------------------------------------------- //
@@ -3818,8 +3819,10 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
   it("switches overlay rasters to linear resampling when 3D is toggled ON (NATE 2026-06-26 pixelation fix)", () => {
     // Overlay rasters paint with raster-resampling: "nearest" (job-0078) for
     // crisp per-cell alignment in flat 2D - but draped over a pitched terrain
-    // mesh those nearest cells read as hard ~9px blocks. Enabling 3D must sweep
-    // every added raster overlay to "linear" so the drape smooths out. The
+    // mesh those nearest cells can read as hard blocks. Enabling 3D sweeps every
+    // added raster overlay to the zoom-STEP resampling expr ("linear" only when
+    // zoomed VERY far out, "nearest" at moderate zoom-out and closer) so the
+    // drape stays CRISP at the zooms NATE works at and softens only far out. The
     // raster is added BEFORE 3D toggles on, proving the sweep also reaches
     // rasters that predate the toggle (the raster-add effect does not re-run).
     const sessionBus = makeSessionBus();
@@ -3856,7 +3859,7 @@ describe("MapView  -  3D terrain toggle (terrain_3d wiring)", () => {
     expect(m.setPaintProperty).toHaveBeenCalledWith(
       "flood-demo",
       "raster-resampling",
-      "linear",
+      buildDrape3dResamplingExpression(),
     );
   });
 
