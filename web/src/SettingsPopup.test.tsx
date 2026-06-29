@@ -499,11 +499,15 @@ describe("SettingsPopup", () => {
       // Second click performs the per-session pause exactly once.
       fireEvent.click(btn);
       expect(onSleepSession).toHaveBeenCalledTimes(1);
-      // Honest message: paused for THEM, session cleared, shared agent stays up.
+      // Honest message (per-session isolation): paused, reconnect starts a fresh
+      // session, your OWN private agent spins up, saved Cases kept. Crucially NO
+      // "shared agent" language (there is no shared agent under isolation).
       const status = screen.getByTestId("grace2-settings-agent-sleep-status");
       expect(status.textContent).toMatch(/Workspace paused/);
-      expect(status.textContent).toMatch(/session is cleared/);
-      expect(status.textContent).toMatch(/shared agent stays available/);
+      expect(status.textContent).toMatch(/fresh session/);
+      expect(status.textContent).toMatch(/private agent/);
+      expect(status.textContent).toMatch(/Cases are kept/);
+      expect(status.textContent).not.toMatch(/shared agent/);
       // The button latches to a disabled "Workspace paused" state.
       expect(screen.getByTestId("grace2-settings-agent-sleep")).toHaveProperty(
         "disabled",

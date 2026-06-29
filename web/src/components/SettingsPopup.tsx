@@ -17,13 +17,13 @@ import { IconClose, IconPause } from "./icons";
 import type { MapTheme } from "../Map";
 import { SecretsPanel } from "./SecretsPanel";
 import type { ProviderID, SecretRecord } from "../contracts";
-// Agent sleep (NATE 2026-06-18; reworked 2026-06-29 for the SHARED box). The box
-// is now shared by multiple users, so "sleep" must NOT stop the box out from
-// under everyone. It is a PER-SESSION pause: App tears down THIS session's WS +
-// clears the loaded layers and surfaces the asleep composer, but never POSTs a
-// box stop. The box still auto-stops server-side once ALL sessions are idle.
-// `wakeConfigured()` still gates the section so dev/LAN (no wake endpoint, box
-// never auto-stops -> no asleep/wake affordance) hides it, exactly as before.
+// Agent sleep (NATE 2026-06-18; reworked 2026-06-29 for the PER-SESSION
+// isolation model). Each session now runs its OWN isolated agent (broker ->
+// per-session Fargate), so "sleep" is a PER-SESSION pause: App tears down THIS
+// session's WS + clears the loaded layers and Chat closes its own socket so the
+// isolated agent spins down. Reconnecting cold-starts a fresh isolated agent (a
+// brief spin-up). `wakeConfigured()` still gates the section so dev/LAN (no wake
+// endpoint) hides it, exactly as before.
 import { wakeConfigured } from "../lib/wake";
 // job-0322 F56 — chat-opacity control. The SHARED localStorage key + the tier
 // type + the read/write helpers are OWNED by Chat.tsx (Group B), which also
@@ -125,13 +125,13 @@ export interface SettingsPopupProps {
   /** Emits the `secret-revoke` envelope for the given secret id. */
   onSecretRevoke?: (secretId: string) => void;
   /**
-   * SHARED-BOX SLEEP (NATE 2026-06-29): per-session "pause" handler. App owns
-   * the teardown - close THIS session's WS cleanly, clear the loaded layers /
-   * live case-view state, and surface the asleep composer - WITHOUT POSTing a
-   * box stop (the shared box auto-stops server-side only once ALL sessions are
-   * idle). The Agent section renders only when this is wired AND wake is
-   * configured AND the user is signed in. OPTIONAL so legacy fixtures that don't
-   * plumb it render unchanged (the section just stays hidden).
+   * PER-SESSION PAUSE (NATE 2026-06-29, isolation model): "pause" handler. App
+   * owns the teardown - close THIS session's WS cleanly, clear the loaded layers
+   * / live case-view state, and surface the full-panel paused overlay (Chat also
+   * closes its own socket so the isolated agent spins down). Reconnecting
+   * cold-starts a fresh isolated agent. The Agent section renders only when this
+   * is wired AND wake is configured AND the user is signed in. OPTIONAL so legacy
+   * fixtures that don't plumb it render unchanged (the section just stays hidden).
    */
   onSleepSession?: () => void;
 }
@@ -358,13 +358,13 @@ export function SettingsPopup({
     onTerrain3dChange?.({ terrain3d: terrain3dEnabled, contours: next });
   }
 
-  // SHARED-BOX SLEEP (NATE 2026-06-29). Two-step: first click ARMS a confirm,
-  // the second performs a PER-SESSION pause. This is a PURE client action now -
-  // no network, no token, no box stop: App closes THIS session's WS, clears the
-  // loaded layers, and surfaces the asleep composer. The shared box keeps
-  // serving any other connected users and auto-stops server-side only once ALL
-  // sessions are idle. `paused` latches so the inline honest message persists
-  // and the button reads "Workspace paused" until Settings is reopened.
+  // PER-SESSION PAUSE (NATE 2026-06-29). Two-step: first click ARMS a confirm,
+  // the second performs the pause. This is a PURE client action now - no network,
+  // no token, no box stop: App closes THIS session's WS, clears the loaded
+  // layers, surfaces the full-panel paused overlay, and Chat closes its own
+  // socket so the isolated agent spins down. Reconnecting cold-starts a fresh
+  // isolated agent. `paused` latches so the inline honest message persists and
+  // the button reads "Workspace paused" until Settings is reopened.
   const [sleepConfirming, setSleepConfirming] = useState(false);
   const [paused, setPaused] = useState(false);
 
@@ -563,13 +563,12 @@ export function SettingsPopup({
           )}
         </div>
 
-        {/* Agent section (NATE 2026-06-29, SHARED box) - "Put agent to sleep"
-            is now a PER-SESSION pause, not a box-wide stop. It tears down THIS
-            session (WS + loaded layers) and surfaces the asleep composer while
-            leaving the shared box up for anyone else; the box auto-stops
-            server-side only once ALL sessions are idle. Signed-in + wake
-            configured + handler wired. Two-step confirm; the honest outcome is
-            surfaced inline. */}
+        {/* Agent section (NATE 2026-06-29, per-session isolation) - "Put agent
+            to sleep" is a PER-SESSION pause, not a box-wide stop. It tears down
+            THIS session (WS + loaded layers), surfaces the full-panel paused
+            overlay, and the isolated agent spins down; reconnecting cold-starts
+            a fresh agent. Signed-in + wake configured + handler wired. Two-step
+            confirm; the honest outcome is surfaced inline. */}
         {showSleepSection && (
           <div style={sectionStyle} data-testid="grace2-settings-agent">
             <div style={sectionTitleStyle}>Agent</div>
@@ -578,8 +577,8 @@ export function SettingsPopup({
                 {paused
                   ? "Your workspace is paused."
                   : sleepConfirming
-                    ? "Pause your workspace? Your loaded layers clear here and you reconnect when you return."
-                    : "Pause your workspace to free up resources. Your session here clears; reconnect anytime."}
+                    ? "Pause now? Your loaded layers clear here and your private agent spins down. Reconnecting starts a fresh session; your saved Cases are kept."
+                    : "Pause your workspace. Your private agent spins down and your session here clears; reconnect anytime to start fresh."}
               </span>
               <button
                 data-testid="grace2-settings-agent-sleep"
@@ -620,9 +619,9 @@ export function SettingsPopup({
                   color: "#7fd18a",
                 }}
               >
-                Workspace paused. Your session is cleared here -- reopen to
-                reconnect. The shared agent stays available for anyone else who
-                is connected.
+                Workspace paused. Reconnect anytime to start a fresh session --
+                your own private agent spins up in a few seconds. Your saved
+                Cases are kept.
               </div>
             )}
           </div>

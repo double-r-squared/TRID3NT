@@ -314,6 +314,153 @@ export function WakeOverlay({
   );
 }
 
+// --- Session-paused overlay (per-session isolation model) ----------------- //
+//
+// PER-SESSION PAUSE (NATE 2026-06-29). Distinct from WakeOverlay (which swaps the
+// composer slot IN PLACE): this is a real full-panel SCRIM that covers the whole
+// chat panel -- transcript + composer -- when the user pauses their workspace from
+// Settings. The fix for "sleep did nothing visible": pausing now tears down THIS
+// session's socket (each session is its OWN isolated agent via the broker), so
+// the agent spins down, and this overlay makes the paused state unmistakable.
+//
+// Visual vocabulary is shared with WakeOverlay: frosted-glass surface + a static
+// accent EDGE on the Reconnect affordance, so wake + sleep feel consistent. The
+// Reconnect button calls back into the SAME wake path (App.handleWakeTap), which
+// lifts the pause and reconnects -- reconnecting cold-starts a fresh isolated
+// agent (a brief spin-up), which the copy states honestly.
+//
+// Renders as `position:absolute; inset:0` -- the parent (the chat panel
+// container) is itself positioned, so the scrim fills the panel on BOTH desktop
+// (right column) and mobile (bottom sheet, forced expanded while paused).
+
+export interface SessionPausedOverlayProps {
+  /**
+   * Tap handler for the Reconnect affordance. Chat wires this to App's wake path
+   * (handleWakeTap), which clears `sessionPaused` and reopens the sockets.
+   */
+  onReconnect: () => void;
+  /** Per-model accent color for the Reconnect button edge (consistency). */
+  accentColor?: string;
+}
+
+export function SessionPausedOverlay({
+  onReconnect,
+  accentColor = DEFAULT_ACCENT,
+}: SessionPausedOverlayProps): JSX.Element {
+  const scrimStyle: CSSProperties = {
+    position: "absolute",
+    inset: 0,
+    zIndex: 60,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    textAlign: "center",
+    gap: 14,
+    padding: "24px 22px",
+    boxSizing: "border-box",
+    // Frosted, mostly-opaque scrim so the paused state reads as a clean stop --
+    // the transcript + composer behind it are intentionally obscured.
+    background: "rgba(14,16,22,0.82)",
+    backdropFilter: "blur(10px) saturate(1.1)",
+    WebkitBackdropFilter: "blur(10px) saturate(1.1)",
+    color: "#e7ecf5",
+    fontFamily:
+      "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+  };
+
+  // The Reconnect button reuses the gradient-EDGE mask trick from the wake card
+  // so the two surfaces feel like one family.
+  const reconnectEdgeStyle: CSSProperties = {
+    backgroundImage: `linear-gradient(${accentColor}, ${accentColor})`,
+    WebkitMask:
+      "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+    WebkitMaskComposite: "xor",
+    mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+    maskComposite: "exclude",
+    position: "absolute",
+    inset: 0,
+    padding: 1.5,
+    borderRadius: 12,
+    pointerEvents: "none",
+  };
+
+  return (
+    <div data-testid="session-paused-overlay" role="status" style={scrimStyle}>
+      <div
+        aria-hidden="true"
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: "50%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "rgba(255,255,255,0.06)",
+          border: `1px solid ${accentColor}`,
+          color: "#dfe6f2",
+        }}
+      >
+        {/* Pause glyph (two bars) -- matches the Settings sleep affordance. */}
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="5" width="4" height="14" rx="1" />
+          <rect x="14" y="5" width="4" height="14" rx="1" />
+        </svg>
+      </div>
+      <div
+        style={{
+          fontSize: 17,
+          fontWeight: 700,
+          letterSpacing: 0.2,
+          textShadow: "0 1px 3px rgba(0,0,0,0.7)",
+        }}
+      >
+        Workspace paused
+      </div>
+      <div
+        data-testid="session-paused-overlay-copy"
+        style={{
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: "#b7c0d0",
+          maxWidth: 320,
+        }}
+      >
+        Your session is cleared and your private agent spins down. Reconnect
+        anytime to start a fresh session -- your own agent spins up in a few
+        seconds. Your saved Cases are kept.
+      </div>
+      <button
+        data-testid="session-paused-reconnect"
+        type="button"
+        onClick={onReconnect}
+        aria-label="Reconnect and start a fresh session"
+        style={{
+          position: "relative",
+          overflow: "hidden",
+          marginTop: 4,
+          padding: "10px 22px",
+          borderRadius: 12,
+          border: "none",
+          background: "rgba(18,20,26,0.55)",
+          backdropFilter: "blur(8px)",
+          WebkitBackdropFilter: "blur(8px)",
+          color: "#eef2f8",
+          fontSize: 14,
+          fontWeight: 700,
+          letterSpacing: 0.2,
+          cursor: "pointer",
+          fontFamily: "inherit",
+          textShadow: "0 1px 3px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span aria-hidden="true" style={reconnectEdgeStyle} />
+        Reconnect
+      </button>
+    </div>
+  );
+}
+
 // --- Connecting spinner (the ONLY motion glyph; connecting phase only) --- //
 //
 // A simple rotating ring. Suppressed under reduced motion (the static edge
