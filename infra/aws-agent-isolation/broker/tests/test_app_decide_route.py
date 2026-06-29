@@ -144,6 +144,65 @@ def test_decide_route_rejects_bad_token():
     assert r is None
 
 
+def test_decide_route_rejects_empty_st_token_reproduces_real_account_race():
+    """REPRO of the live real-account broker rejection (NATE 2026-06-29).
+
+    A signed-in user's FIRST WebSocket dial fired at App mount BEFORE auth.ts'
+    async restore populated `cachedTokens`, so the synchronous `?st` carrier was
+    EMPTY/ABSENT while the `?sid` routing key was still present. `decide_route`
+    computes `claims = verify(token) if token else None` -- an empty/absent token
+    short-circuits to `None` -> reject (the close 4401 NATE saw, no agent
+    provisioned, routes Count=0). The DEMO-CODE path always carried a non-empty
+    `?st` (synchronous token), so it provisioned. The fix is the CLIENT carrying
+    a valid `?st` on the first dial (see web/src/auth.ts getIdTokenSync); this
+    test pins the broker behaviour that made the empty carrier fail.
+    """
+    ddb = FakeDDB({})
+    ecs = FakeECS()
+    # `verify` would succeed for a real token, but an empty `?st` never reaches it.
+    verify = lambda t: {"uid": "sub-nate"}  # noqa: E731
+
+    # (a) EMPTY `?st` (the racing client) -> rejected, never provisions.
+    empty = decide_route(
+        ddb, ecs, _cfg(),
+        request_uri="/ws?st=&sid=S1",
+        subprotocols=None,
+        health_probe=lambda ip, p: True,
+        verify=verify,
+    )
+    assert empty is None
+    # (b) ABSENT `?st` (carrier omitted entirely) -> identical reject.
+    absent = decide_route(
+        ddb, ecs, _cfg(),
+        request_uri="/ws?sid=S1",
+        subprotocols=None,
+        health_probe=lambda ip, p: True,
+        verify=verify,
+    )
+    assert absent is None
+    assert ecs.run_task_calls == []  # never reached task provisioning
+
+
+def test_decide_route_provisions_when_st_token_present_after_fix():
+    """COUNTERPART to the race repro: once the client carries a valid `?st` on the
+    first dial (the auth.ts getIdTokenSync sync fallback), the same verified sub
+    with a live route HITs and proxies -- the real account now provisions exactly
+    like the demo-code path."""
+    users = FakeTable(query_result={"Items": [{"_id": "ULID-NATE", "firebase_uid": "sub-nate"}]})
+    routes = FakeTable(get_item_result=_live_route_item())
+    ddb = FakeDDB({"grace2_users": users, "grace2_session_routes": routes})
+    ecs = FakeECS()
+    r = decide_route(
+        ddb, ecs, _cfg(),
+        request_uri="/ws?st=a.valid.jwt&sid=S1",
+        subprotocols=None,
+        health_probe=lambda ip, p: True,
+        verify=lambda t: {"uid": "sub-nate"},
+    )
+    assert r is not None
+    assert r.task_arn == "arn:task/live"
+
+
 def test_decide_route_rejects_when_provisioning_fails():
     """A verified sub with no ULID is now first-connect-provisioned; the connect is
     rejected ONLY if that provisioning write truly fails (and the sub stays

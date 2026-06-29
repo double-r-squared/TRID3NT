@@ -496,7 +496,39 @@ export function getIdTokenSync(): string | null {
     return injectedUser ? `test-id-token:${injectedUser.uid}` : null;
   }
   const t = cachedTokens;
-  return t && t.idToken ? t.idToken : null;
+  if (t && t.idToken) return t.idToken;
+  // BROKER-AUTH RACE FIX (real-account reload, NATE 2026-06-29). `cachedTokens`
+  // is populated ONLY when `initAuth()`'s ASYNC restore settles -- a same-tab
+  // reload reads sessionStorage, a cold boot awaits the refresh_token grant. But
+  // the WebSocket dial is SYNCHRONOUS and fires at App mount BEFORE that settle
+  // resolves, so on a fresh page load a SIGNED-IN user's first dial read
+  // `cachedTokens === null` -> carried NO `?st` token -> the per-session broker
+  // rejected the connect (close 4401) and never provisioned an agent (routes
+  // Count=0). The DEMO-CODE path never hit this because `signInWithAccessCode()`
+  // sets `cachedTokens` SYNCHRONOUSLY in the same gesture, so its first dial
+  // always carried `?st`. THE FIX: fall back to a SYNCHRONOUS read of the
+  // persisted sessionStorage token set so a same-tab reload carries a valid
+  // `?st` on the VERY FIRST dial, before `initAuth()` resolves. Warm
+  // `cachedTokens` so later sync reads + the in-band `auth-token` handshake see
+  // the same token (idempotent with the value `initAuth()` will store). Only a
+  // NON-EXPIRED id token is returned: handing the broker a definitively-expired
+  // token would hard-reject, whereas null lets the async `getIdToken()` refresh
+  // (+ the existing reconnect) carry a fresh one. Pure sync, no network, no
+  // reconnect -- non-breaking for the demo-code path AND the single box (the box
+  // ignores `?st` and reads the in-band auth-token; anonymous/signed-out/disabled
+  // have no token set here and still return null, so no `?st` rides).
+  try {
+    const raw = sessionStorage.getItem(SS_TOKENS);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as TokenSet;
+    if (parsed && parsed.idToken && parsed.expiresAt > Date.now()) {
+      cachedTokens = parsed;
+      return parsed.idToken;
+    }
+  } catch {
+    // sessionStorage unavailable (private mode) / malformed -> no sync token.
+  }
+  return null;
 }
 
 /**
