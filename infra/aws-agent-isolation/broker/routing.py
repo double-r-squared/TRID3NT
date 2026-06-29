@@ -217,7 +217,7 @@ def _run_task(ecs_client, cfg: RoutingConfig, user_ulid: str, session_id: str) -
                 "awsvpcConfiguration": {
                     "subnets": cfg.task_subnets,
                     "securityGroups": cfg.task_security_groups,
-                    "assignPublicIp": "DISABLED",
+                    "assignPublicIp": "ENABLED",
                 }
             },
             # Tag the task with the owning session so the reaper / ops can

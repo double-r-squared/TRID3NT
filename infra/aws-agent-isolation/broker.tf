@@ -130,7 +130,7 @@ resource "aws_ecs_service" "broker" {
   network_configuration {
     subnets          = var.task_subnet_ids
     security_groups  = [aws_security_group.broker.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
