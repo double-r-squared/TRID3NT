@@ -411,6 +411,40 @@ const SESSION_KEY = "grace2.session_id";
 // authenticated identity takes over and the anonymous hint is moot).
 const ANONYMOUS_USER_ID_KEY = "grace2.anonymous_user_id";
 
+/**
+ * Per-user-agent-isolation (NATE 2026-06-22) — carry the stable per-session id
+ * as a `?sid=<id>` query param on the wss connect URL so the FUTURE per-session
+ * broker can read it PRE-UPGRADE (at the HTTP upgrade handshake, before the
+ * WebSocket is established) and pick / provision the right per-session Fargate
+ * task to route the connection to.
+ *
+ * Why a query param (not the existing `auth-token` / `session-resume`
+ * envelopes): those are application-level frames the agent reads AFTER the
+ * upgrade completes — far too late for a broker that must choose the upstream
+ * task BEFORE proxying the upgrade. The query string is the one piece of
+ * routing data available to the broker at the `GET ...?sid=... Upgrade:
+ * websocket` request line.
+ *
+ * Non-breaking TODAY: the CURRENT single-box agent never inspects the request
+ * query string — an unknown `?sid` is simply ignored by the WebSocket handler,
+ * so the connection behaves identically. The id is the SAME stable session
+ * ULID already minted by {@link loadOrCreateSessionId} (the value sent in the
+ * `session-resume` envelope); we reuse it rather than inventing a parallel id
+ * so the broker's pre-upgrade routing key and the agent's post-upgrade session
+ * binding agree.
+ */
+function withSessionQueryParam(url: string, sessionId: string): string {
+  if (!sessionId) return url;
+  // Preserve any pre-existing query string / fragment. URLs today never carry
+  // one (ws://host:8765, wss://base/ws), but append robustly so a future URL
+  // shape can't silently drop the sid.
+  const hashIdx = url.indexOf("#");
+  const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
+  const frag = hashIdx === -1 ? "" : url.slice(hashIdx);
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}sid=${encodeURIComponent(sessionId)}${frag}`;
+}
+
 function loadOrCreateSessionId(): string {
   try {
     const cached = window.localStorage.getItem(SESSION_KEY);
@@ -1351,7 +1385,12 @@ export class GraceWs {
     this.handlers.onStatus(initialStatus);
     let ws: WebSocket;
     try {
-      ws = new WebSocket(this.url);
+      // Per-user-agent-isolation — carry the stable per-session id as `?sid=`
+      // so the future broker can route this connection to its own per-session
+      // Fargate task at upgrade time. Purely additive: the current single box
+      // ignores the unknown query param (see withSessionQueryParam). The
+      // `auth-token` + `session-resume` handshake below is UNCHANGED.
+      ws = new WebSocket(withSessionQueryParam(this.url, this.sessionId));
     } catch {
       this.scheduleReconnect();
       return;
