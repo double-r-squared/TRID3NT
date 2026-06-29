@@ -38,7 +38,7 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -552,60 +552,45 @@ def _fetch_inat_bytes(
 def fetch_inaturalist_observations(
     taxon_id: int | str,
     bbox: tuple[float, float, float, float],
-    quality_grade: str = "research",
+    quality_grade: Literal["research", "needs_id", "casual", "any"] = "research",
     days_back: int | None = None,
     max_records: int = _DEFAULT_MAX_RECORDS,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch iNaturalist citizen-science observation points for a taxon over a bbox.
+    """iNaturalist citizen-science observation points for a taxon over a bbox. [occurrence points]
 
-    **What it does:** Pages through ``api.inaturalist.org/v1/observations`` for
-    a given taxon and bounding box, optionally restricted by quality grade and
-    observation-date lookback window. Returns a FlatGeobuf Point layer with
-    species name, observation date, observer login, and photo URL per feature.
-    Accepts taxon as an integer ID or a scientific/common name (resolved via
-    ``/v1/taxa``). No API key required. Cached ``static-30d``.
+    Use this when:
+    - You need recent, community-vetted species sightings WITH photo evidence and
+      observer metadata (iNat carries more recent-sighting detail than GBIF).
+    - ``days_back`` enables near-real-time species-response monitoring after a
+      disturbance (e.g. "bird sightings in the week after the fire").
 
-    **When to use:**
-    - Agent needs recent, community-vetted species sightings for a study area
-      (e.g. manatee distribution in coastal Florida over the last 30 days).
-    - Conservation analysis requires observations with photo evidence and
-      observer metadata (iNat provides more detail than GBIF for recent sightings).
-    - ``days_back`` filter enables near-real-time species-response monitoring
-      after a disturbance event (e.g. "bird sightings in the week after the fire").
+    Do NOT use this for:
+    - Broad multi-source occurrence (specimens, eDNA) -- use ``fetch_gbif_occurrences``.
+    - Recent bird sightings -- use ``fetch_ebird_observations``.
+    - Species threat status / range -- use ``fetch_iucn_red_list_range``.
 
-    **When NOT to use:**
-    - Complete species distribution modeling requiring museum specimens or eDNA
-      records (use ``fetch_gbif_occurrences`` for broader source pool).
-    - Threatened-species taxa with location-obfuscated coordinates (iNat policy
-      randomly offsets exact locations; returned points may not match field truth).
-    - Species status assessments (use IUCN Red List).
-    - Protected-area boundaries (use ``fetch_wdpa_protected_areas``).
+    Honesty: iNat randomly OFFSETS exact coordinates for location-obfuscated
+    threatened taxa, so points may not match field truth; empty bbox returns a
+    valid 0-feature layer. No API key required.
 
-    **Parameters:**
-    - ``taxon_id`` (int or str): integer iNat taxon ID (e.g. ``43616`` for West
-      Indian manatee) OR scientific/common name string resolved via ``/v1/taxa``.
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Example: ``(-87.5, 24.5, -80.0, 27.5)`` for Florida coastal waters.
-    - ``quality_grade`` (str): ``"research"`` (default; community-vetted),
-      ``"needs_id"``, ``"casual"``, or ``"any"``.
-    - ``days_back`` (int or None): restrict to last N days from today. ``None``
-      returns all-time observations. Valid positive integers only.
-    - ``max_records`` (int): per-call cap; default 5000.
+    Returns a vector LayerURI that auto-renders -- do not call publish_layer.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
-    FlatGeobuf with fields: ``id`` (int), ``observed_on`` (str), ``user_login``
-    (str), ``photo_url`` (str), ``species_guess`` (str), ``place_guess`` (str).
+    Params:
+        taxon_id: iNat taxon ID int (e.g. ``43616`` West Indian manatee) OR a
+            scientific/common-name str resolved via the iNat ``/v1/taxa`` endpoint
+            (int and name collapse to the same cache entry).
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+        quality_grade: ``"research"`` (default, community-vetted), ``"needs_id"``,
+            ``"casual"``, or ``"any"``.
+        days_back: restrict to last N days, or None for all-time.
+        max_records: per-call cap (default 5000).
 
-    **Cross-tool dependencies:**
-    - Related: ``fetch_gbif_occurrences`` (broader multi-source occurrence data).
-    - Pairs with: ``fetch_wdpa_protected_areas`` (inside/outside protected area),
-      ``fetch_mtbs_burn_severity`` (post-fire species presence).
-    - Name resolution uses ``/v1/taxa`` internally; same taxon_id integer and
-      name string collapse to the same cache entry.
+    Output fields: ``id`` (int), ``observed_on`` (str), ``user_login`` (str),
+    ``photo_url`` (str), ``species_guess`` (str), ``place_guess`` (str). Cached
+    static-30d.
     """
     # 1. Input validation.
     _validate_bbox(bbox)

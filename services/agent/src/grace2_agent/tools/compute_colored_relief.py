@@ -432,77 +432,48 @@ def compute_colored_relief(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Color-tint a DEM by elevation using ``gdaldem color-relief``.
+    """Color-tint a DEM by elevation (hypsometric RGB relief) via ``gdaldem color-relief`` [terrain/DEM-derived raster].
 
-    Applies a named color ramp to a single-band elevation GeoTIFF and returns a
-    3-band (RGB) Cloud-Optimized GeoTIFF. Four presets (terrain, elevation_blue_green,
-    grayscale, viridis) cover the common terrain visualization needs. Result is cached
-    for 30 days and suitable as a QGIS Server WMS basemap layer.
+    Use this when:
+    - The user wants "colored elevation", a "terrain colormap", or an elevation
+      basemap beneath other overlays.
+    - You are building a Swiss-style base: grayscale relief x
+      ``compute_hillshade``, blended by ``compute_blended_composite``.
 
-    When to use:
-        - Producing a colored elevation basemap for display beneath flood, habitat,
-          or hazard overlays.
-        - Building a Swiss-style shaded-relief stack: grayscale colored relief +
-          ``compute_hillshade`` output → multiply-blended cartographic base.
-        - User asks for "colored elevation", "terrain colormap", or "elevation
-          visualization".
-        - Coastal or sea-level scenarios requiring the elevation-blue-green ramp.
+    Do NOT use this for: shaded relief alone (use ``compute_hillshade``);
+    STEEPNESS (use ``compute_slope``); face DIRECTION (use ``compute_aspect``);
+    contour LINES (use ``compute_contours``); LAND-COVER class colors (use
+    ``fetch_landcover`` -- this ramps ELEVATION, not classes); per-zone stats
+    (use ``compute_zonal_statistics``).
 
-    When NOT to use:
-        - Hillshade or shadow visualization (use ``compute_hillshade``).
-        - Slope or aspect analysis (use ``compute_slope`` / ``compute_aspect``).
-        - Computing quantitative elevation statistics (use ``compute_zonal_statistics``).
-        - Animated or time-varying elevation (output is a static single-time raster).
+    Honesty: a static single-time GDAL transform; land-surface DEM only; raises
+    a typed ``ColoredReliefError`` on failure -- never a fake layer.
+
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
+
+    Applies a named color ramp to a single-band elevation GeoTIFF; returns a
+    3-band RGB Cloud-Optimized GeoTIFF in the input CRS and extent.
 
     Ramp presets:
-        "terrain": natural-earth green → brown → white (low → high). Default.
-            Best for general-purpose terrain maps.
-        "elevation_blue_green": ocean-blue at sea-level → green → tan → white
-            at high elevations. Best for coastal / estuarine / sea-level maps
-            where the land-sea transition matters.
-        "grayscale": monochrome (low=dark, high=light). Ideal as a
-            multiply-blend companion for hillshade in a Swiss-style stack —
-            the grayscale colorramp multiplied by the hillshade produces a
-            cartographically pleasing shaded-relief base.
-        "viridis": perceptually-uniform colour ramp (purple → blue → green →
-            yellow). Best when the user wants scientific / quantitative
-            emphasis where equal visual distances represent equal elevation
-            differences.
-
-    LLM guidance:
-        - "terrain" for general natural maps (the safe default)
-        - "grayscale" when stacking with hillshade in a multiply blend
-        - "viridis" when the user asks for a scientific or quantitative view
-        - "elevation_blue_green" when the user mentions ocean / sea / coastal
+        "terrain": green -> brown -> white (default; general terrain maps).
+        "elevation_blue_green": ocean-blue at sea level -> green -> tan -> white;
+            best for coastal / sea-level maps.
+        "grayscale": monochrome; the multiply-blend companion for a hillshade
+            Swiss-style stack.
+        "viridis": perceptually-uniform; scientific / quantitative emphasis.
 
     Params:
-        dem_uri: ``gs://…`` URI of the input DEM. Must be a GeoTIFF (COG or
-            standard) with elevation values in metres. Typically the ``uri``
-            from a preceding ``fetch_dem`` call.
-        ramp: one of the four preset names above. Defaults to ``"terrain"``.
+        dem_uri: URI of a DEM GeoTIFF (typically ``fetch_dem(...).uri``).
+            Single-band, metres.
+        ramp: one of the four presets above (default ``"terrain"``).
 
     Returns:
-        A ``LayerURI`` pointing at a 3- or 4-band Cloud-Optimized GeoTIFF in
-        the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/colored_relief/<key>.tif``.
-        The output shares the DEM's CRS and spatial extent; the units are RGB
-        colour channels (0-255 per band), not elevation metres.
+        A ``LayerURI`` (3-band RGB Cloud-Optimized GeoTIFF, 0-255 per band) in
+        the static-30d cache, sharing the DEM's CRS and extent.
 
-    FR-CE-8: The computation is routed through ``read_through`` so identical
-    ``(dem_uri, ramp)`` calls reuse the cached artefact. Cache key is
-    SHA-256 of ``{dem_uri, ramp, ttl_vintage}``; the 30-day TTL matches the
-    DEM's own cache class since the colorramp output is fully determined by
-    the DEM + ramp choice.
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
-          (gs:// COG) directly as ``dem_uri``.
-        Downstream (feeds):
-        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
-          to register the colored relief with QGIS Server WMS.
-        - ``compute_hillshade`` — combine for a Swiss-style shaded-relief
-          stack (grayscale colored relief × hillshade multiply blend).
+    FR-CE-8: routed through ``read_through`` -- identical ``(dem_uri, ramp)``
+    calls reuse the cached artefact (30-day TTL).
     """
     if ramp not in _VALID_RAMPS:
         raise ColoredReliefError(

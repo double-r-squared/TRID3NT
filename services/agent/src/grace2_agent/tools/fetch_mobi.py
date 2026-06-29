@@ -44,7 +44,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -356,56 +356,47 @@ def _fetch_mobi_cog_bytes(
 )
 def fetch_mobi(
     bbox: tuple[float, float, float, float],
-    layer: str = "species_richness",
+    layer: Literal[
+        "species_richness",
+        "species_richness_vertebrates",
+        "species_richness_plants",
+        "range_size_rarity",
+        "protection_weighted_rsr",
+    ] = "species_richness",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NatureServe Map of Biodiversity Importance (MoBI) for a US bbox.
+    """NatureServe Map of Biodiversity Importance (MoBI) raster for a US bbox. [biodiversity raster]
 
-    **What it does:** Reads the NatureServe MoBI imperiled-species
-    biodiversity-priority raster (via the Microsoft Planetary Computer ``mobi``
-    collection) windowed to ``bbox``, and returns a single-band float32 COG
-    with a YlGn (low->high importance) ramp. The default ``species_richness``
-    layer is the count of imperiled species per cell  --  high values flag
-    biodiversity hotspots / conservation-priority areas.
+    Use this when:
+    - You need imperiled-species biodiversity importance / richness /
+      conservation-priority as a RASTER surface (which cells are hotspots) for a
+      conterminous-US region.
+    - As the biodiversity layer in the ``model_conservation_priority`` workflow.
 
-    MoBI is the headline biodiversity layer in the conservation-priority stack:
-    it shows WHERE at-risk-species concentrations are, complementing the actual
-    occurrence points (``fetch_gbif_occurrences``) and threatened ranges
-    (``fetch_iucn_red_list_range``).
+    Do NOT use this for:
+    - Individual species occurrence points -- use ``fetch_gbif_occurrences`` /
+      ``fetch_inaturalist_observations``.
+    - A single species' threat status / range -- use ``fetch_iucn_red_list_range``.
+    - Protected-area polygons -- use ``fetch_wdpa_protected_areas``.
 
-    **When to use:**
-    - User asks for biodiversity importance / imperiled-species richness /
-      conservation-priority areas for a US region.
-    - As the biodiversity layer in ``model_conservation_priority``.
+    Honesty: MoBI is CONUS-only; a bbox outside coverage (or an all-nodata
+    window) raises a typed ``MoBIEmptyError`` -- never a fabricated layer. No API
+    key required (read via the Microsoft Planetary Computer STAC).
 
-    **When NOT to use:**
-    - Outside the conterminous US (MoBI is CONUS-only)  --  a no-coverage result
-      is an honest typed error, not a fabricated layer.
-    - Individual species occurrences (use ``fetch_gbif_occurrences`` /
-      ``fetch_inaturalist_observations``) or species RANGES (use
-      ``fetch_iucn_red_list_range``).
-    - Protected-area boundaries (use ``fetch_wdpa_protected_areas``).
+    Returns a raster LayerURI that auto-renders -- do not call publish_layer.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. CONUS-only.
-    - ``layer`` (str, default ``"species_richness"``): one of
-      ``species_richness`` (imperiled-species count, the headline product),
-      ``species_richness_vertebrates``, ``species_richness_plants``,
-      ``range_size_rarity`` (range-size-weighted), ``protection_weighted_rsr``
-      (RSR outside protected land).
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326 (CONUS-only).
+        layer: which MoBI product, default ``"species_richness"`` (imperiled-
+            species count, the headline product). Others:
+            ``"species_richness_vertebrates"``, ``"species_richness_plants"``,
+            ``"range_size_rarity"`` (range-size-weighted),
+            ``"protection_weighted_rsr"`` (RSR outside protected land).
 
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="primary"``,
-    ``units="imperiled-species count"`` for richness layers) pointing at a
-    single-band float32 COG in the ``static-30d``/``mobi`` cache prefix.
-    ``style_preset="mobi_biodiversity"`` (YlGn ramp).
-
-    **Data source:** NatureServe Map of Biodiversity Importance via the
-    Microsoft Planetary Computer STAC (``mobi`` collection).
-
-    FR-CE-8: routed through ``read_through`` so identical ``(bbox, layer)``
-    calls reuse the cached COG.
+    Returns a single-band float32 COG (``layer_type="raster"``, ``role="primary"``,
+    YlGn ramp; ``units="imperiled-species count"`` for richness layers). Cached
+    static-30d.
     """
     if layer not in _VALID_LAYERS:
         raise MoBILayerError(

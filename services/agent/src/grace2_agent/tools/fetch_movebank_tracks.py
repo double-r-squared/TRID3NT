@@ -730,97 +730,45 @@ def fetch_movebank_tracks(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Movebank Tier-2 animal-tracking trajectory fetcher.
+    """Movebank animal-tracking telemetry -> FlatGeobuf tracks. [animal tracks]
 
-    Use this when: the agent needs animal-tracking telemetry (bird migration,
-    mammal movement, marine megafauna) for ecological or hazard overlay — e.g.
-    overlaying sandhill crane migration corridors on a wildfire footprint,
-    plotting elephant movement against flood-risk surfaces, or visualizing
-    sea turtle tracks against coastal storm surge. Returns either FlatGeobuf
-    LineStrings (one per individual, vertices ordered by timestamp; default)
-    or Points (one per telemetry fix).
+    Use this when:
+    - You need animal-tracking telemetry as temporally ordered traces for a known
+      Movebank ``study_id`` (e.g. crane corridors on a wildfire footprint).
+    - You want LineStrings (one per individual, default) or Points (one per fix).
 
-    Do NOT use this for: occurrence points without tracking continuity (use
-    ``fetch_gbif_occurrences`` or ``fetch_inaturalist_observations`` —
-    Movebank tracks are temporally ordered movement traces, not static
-    sighting points), live-streaming telemetry (Movebank's API is
-    near-real-time but caches batches; for sub-minute live feeds use the
-    publisher's own SCADA), or species-range polygons (use IUCN Red List
-    range maps instead).
+    Do NOT use this for:
+    - Static sighting points -- use ``fetch_gbif_occurrences`` /
+      ``fetch_inaturalist_observations``.
+    - Species threat status / range -- use ``fetch_iucn_red_list_range``.
+    - A home range or movement metrics directly -- this only FETCHES; feed the
+      ``geometry_type="point"`` output to ``compute_home_range_kde`` or
+      ``compute_movement_trajectory``.
 
-    Wraps the Movebank REST API (https://www.movebank.org/movebank/service/direct-read).
-    Authentication is **always required** — Movebank rejects unauthenticated
-    requests. Most studies further require accepting per-study Data Use
-    Statements on movebank.org BEFORE the API serves data; on first access
-    of a new study the tool surfaces ``MovebankLicenseError`` with the
-    licence-acceptance hint.
+    Honesty: authentication is ALWAYS required (``username``+``password``,
+    ``secret_ref``, or env vars); most studies also need per-study Data Use
+    Statement acceptance or the tool raises ``MovebankLicenseError`` (403).
 
-    Credentials are resolved in priority order:
-    1. Explicit ``username`` + ``password`` kwargs.
-    2. ``secret_ref`` (a ``SecretRecord``) — vault payload may be
-       ``"user:pass"`` (colon-separated) OR a JSON ``{"username": "...",
-       "password": "..."}``.
-    3. ``GRACE2_MOVEBANK_USER`` + ``GRACE2_MOVEBANK_PASSWORD`` env vars
-       (local dev / CI live-test gate).
-
-    Bbox filtering happens **client-side** after the fetch — Movebank does not
-    reliably bbox-filter server-side, so the full study record set is pulled
-    then trimmed. For linestrings the filter is conservative: ALL vertices of
-    an individual's track must lie within the bbox or the individual is
-    dropped (avoids truncated/broken tracks). See
-    OQ-0130-MOVEBANK-LINESTRING-BBOX-CLIPPING for the alternative considered.
+    Returns a vector LayerURI that auto-renders -- do not call publish_layer.
 
     Params:
-        study_id: Movebank ``study_id`` (int). Example: ``1259686571`` is the
-            "Sandhill Crane: Bismarck-Hettinger-Mandan" public study.
-        bbox: optional ``(west, south, east, north)`` in EPSG:4326. ``None``
-            returns the entire study record set.
-        username: explicit Movebank account username. See credential
-            resolution priority above.
-        password: explicit Movebank account password.
-        secret_ref: a ``SecretRecord`` whose vault payload carries the
-            credentials. Looked up via ``Persistence.get_secret_value``.
-        sensor_type_id: optional Movebank ``sensor_type_id`` int (e.g.
-            653 = "GPS"). ``None`` returns every sensor type.
-        time_range: optional ``(start, end)`` ``datetime`` pair filtering on
-            the event timestamp. Inclusive on both ends. Timezone-aware
-            datetimes are converted to UTC; naive datetimes assumed UTC.
-        max_records: cap on records pulled from Movebank before serialization
-            (default 500_000, hard cap 1_000_000). Beyond this the result
-            FlatGeobuf is truncated, NOT an error.
-        geometry_type: ``"linestring"`` (default — one feature per individual)
-            or ``"point"`` (one feature per telemetry fix).
+        study_id: Movebank ``study_id`` int (e.g. ``1259686571`` Sandhill Crane).
+        bbox: optional ``(west, south, east, north)`` EPSG:4326; None = full study.
+        username / password: explicit Movebank credentials (highest priority).
+        secret_ref: per-Case ``SecretRecord`` carrying ``user:pass`` or a JSON pair.
+        sensor_type_id: optional Movebank sensor int (e.g. 653 GPS); None = all.
+        time_range: optional ``(start, end)`` datetimes (inclusive, UTC).
+        max_records: cap before serialization (default 500000, hard cap 1000000;
+            truncates, not an error).
+        geometry_type: ``"linestring"`` (default, one feature per individual) or
+            ``"point"`` (one feature per fix; the input shape the compute tools want).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/movebank/<key>.fgb``
-        containing the tracks/points clipped to the requested bbox (if any),
-        in EPSG:4326. ``layer_type="vector"``, ``role="context"``,
-        ``units=None``, ``style_preset="movebank_tracks"``.
-
-    Output schema:
-        geometry_type="linestring":
-            individual_id    (str)
-            n_points         (int)
-            first_timestamp  (str ISO-8601)
-            last_timestamp   (str ISO-8601)
-            study_id         (int)
-        geometry_type="point":
-            individual_id    (str)
-            timestamp        (str ISO-8601)
-            sensor_type_id   (int | null)
-            study_id         (int)
-
-    FR-CE-8: Routed through ``read_through`` so identical
-    ``(study_id, bbox, username, sensor_type_id, time_range, max_records,
-    geometry_type)`` calls reuse the cached FlatGeobuf. Cache key includes the
-    username because Movebank access varies per account licence acceptance.
-
-    Errors (FR-AS-11 typed surface):
-        MovebankInputError       — bad bbox, missing credentials, bad params (retryable=False)
-        MovebankAuthError        — Movebank rejected credentials (401, retryable=False)
-        MovebankLicenseError     — account has not accepted study's Data Use Statement (403, retryable=False)
-        MovebankUpstreamError    — 5xx / network / malformed response (retryable=True)
+    Output (linestring): ``individual_id``, ``n_points``, ``first_timestamp``,
+    ``last_timestamp``, ``study_id``. Output (point): ``individual_id``,
+    ``timestamp``, ``sensor_type_id``, ``study_id``. Cached static-30d (key
+    includes username -- access varies per account licence). Raises
+    ``MovebankInputError`` / ``MovebankAuthError`` (401) / ``MovebankUpstreamError``
+    (5xx, retryable).
     """
     # ---- Input validation ----
     if not isinstance(study_id, int):

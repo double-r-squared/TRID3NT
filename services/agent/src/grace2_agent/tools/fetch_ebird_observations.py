@@ -805,72 +805,39 @@ def fetch_ebird_observations(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Cornell Lab eBird Tier-2 recent-observations fetcher.
+    """Cornell Lab eBird recent bird sightings over a bbox -> FlatGeobuf. [occurrence points]
 
-    Use this when: the agent needs recent bird sightings for ecological
-    analysis or display — e.g. mapping Bewick's Wren observations over a
-    wildfire footprint, overlaying recent waterfowl sightings on a flooded
-    refuge, or summarizing avian biodiversity within a habitat-restoration
-    bbox. Returns one FlatGeobuf point feature per (eBird subId, speciesCode)
-    sighting reported in the last ``days_back`` days inside the requested
-    bbox. eBird is the world's largest citizen-science bird database
-    (>1B observations to date) — the right tool for "what birds were seen
-    here recently".
+    Use this when:
+    - You need RECENT bird sightings (last ``days_back`` days) for a study area --
+      eBird is the largest citizen-science bird database, the right tool for
+      "what birds were seen here recently".
+    - Overlaying avian observations on a wildfire footprint or flooded refuge.
 
-    Do NOT use this for: HISTORICAL (>30 days back) sightings — eBird's API
-    caps at 30 days; use GBIF or eBird's bulk-download for longer windows.
-    Hot-spot checklists per location (different endpoint:
-    ``data/obs/{regionCode}/recent/hotspot``). Rare-bird alerts (eBird has a
-    different endpoint with sub-hour latency; we use the geo/recent endpoint
-    deliberately for the dynamic-1h cache). Tier-1 GBIF queries (use
-    ``fetch_gbif_occurrences`` for keyless species-occurrence fetch).
-    Protected-area POLYGONS (use ``fetch_wdpa_protected_areas``). Tracking
-    data (Movebank — different tool).
+    Do NOT use this for:
+    - Historical (>30 days) sightings -- API caps at 30 days; use ``fetch_gbif_occurrences``.
+    - Non-bird or multi-taxon occurrence -- use ``fetch_gbif_occurrences`` /
+      ``fetch_inaturalist_observations``.
+    - Species threat status / range -- use ``fetch_iucn_red_list_range``.
 
-    eBird requires a free API key (registration at
-    ``https://ebird.org/api/keygen``). The tool resolves the key in this
-    order: (1) explicit ``api_key=`` kwarg, (2) ``secret_ref=`` per-Case
-    secret via ``Persistence.get_secret_value`` (production path),
-    (3) ``GRACE2_EBIRD_API_KEY`` env var (dev convenience). If none of the
-    three resolve a key, raises ``EBirdMissingKeyError`` BEFORE any network
-    call — the agent surface uses this to route a "needs a key" message
-    via the secrets panel.
+    Honesty: requires a free API key (``api_key=``, per-Case ``secret_ref=``, or
+    ``GRACE2_EBIRD_API_KEY``); raises ``EBirdMissingKeyError`` BEFORE any network
+    call. Points are hard-clipped to the requested bbox.
 
-    eBird does NOT expose a bbox query — only radius queries around a
-    ``(lat, lng)`` point. We tile the bbox into ~50 km circles (eBird's max
-    radius) and dedupe by ``subId``. Per audit.md, sprint-13 will replace
-    the row/col grid with a proper hex-tile cover; the v0.1 grid intentionally
-    overlaps tiles so we don't miss slivers between rows/cols.
+    Returns a vector LayerURI that auto-renders -- do not call publish_layer.
 
     Params:
-        species_code: eBird 4-7 character species code (e.g. ``"bewwre"`` for
-            Bewick's Wren, ``"amrob"`` for American Robin, ``"laggul"`` for
-            Laughing Gull). Codes are at
-            ``https://ebird.org/science/use-ebird-data/ebird-taxonomy``.
-        bbox: ``(west, south, east, north)`` in EPSG:4326 (WGS84 decimal degrees).
-        days_back: how many days of recent observations to return (1-30;
-            default 30). eBird's API caps this at 30.
-        api_key: optional explicit API key — highest-priority resolution path.
-        secret_ref: optional ``SecretRecord`` (from per-Case secrets panel)
-            — resolved via ``Persistence.get_secret_value`` at invocation time.
+        species_code: eBird 4-7 char species code (e.g. ``"bewwre"`` Bewick's
+            Wren, ``"amrob"`` American Robin) from the eBird taxonomy.
+        bbox: ``(west, south, east, north)`` in EPSG:4326.
+        days_back: days of recent observations, 1-30 (default 30; API max 30).
+        api_key: explicit key (highest-priority resolution path).
+        secret_ref: per-Case ``SecretRecord`` resolved via the secrets vault.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/ebird/<key>.fgb``
-        containing the observation points clipped to the requested bbox.
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
-
-    Raises:
-        ``EBirdMissingKeyError``: no API key resolved from any of the three paths.
-        ``EBirdAuthError``: API rejected the key (revoked / rate-limited).
-        ``EBirdInputError``: bad bbox, days_back, species_code, or unknown species.
-        ``EBirdUpstreamError``: eBird API 5xx / network failure (retryable).
-
-    FR-CE-8: Routed through ``read_through`` with ``ttl_class="dynamic-1h"``
-    so identical ``(species_code, bbox, days_back)`` calls inside the same
-    hour reuse the cached FlatGeobuf and a top-of-hour crossing forces a
-    refresh. The cache key intentionally does NOT include the api_key —
-    the underlying observations don't vary by caller.
+    Output fields: ``subId`` (str), ``obsDt`` (str), ``locName`` (str), ``howMany``
+    (int|null), ``comName`` (str), ``sciName`` (str), ``speciesCode`` (str). Cached
+    dynamic-1h (key omits api_key -- observations do not vary by caller).
+    Raises ``EBirdAuthError`` (key rejected) / ``EBirdInputError`` (bad input /
+    unknown species) / ``EBirdUpstreamError`` (5xx, retryable).
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

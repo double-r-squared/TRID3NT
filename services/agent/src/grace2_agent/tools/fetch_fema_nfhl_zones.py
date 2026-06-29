@@ -686,91 +686,53 @@ def fetch_fema_nfhl_zones(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """FEMA NFHL regulatory flood-zone polygons as a FlatGeobuf vector layer.
+    """FEMA NFHL regulatory flood-hazard zone polygons as a FlatGeobuf [vector fetcher].
 
-    Use this when: the user asks for the FEMA flood map, the regulatory
-    floodplain, the 100-year or 500-year floodplain, the Special Flood Hazard
-    Area, FIRM zones, NFIP / flood-insurance rate zones, the Base Flood
-    Elevation (BFE), or any phrasing implying federal / regulatory flood-risk
-    designation for a place. Returns FlatGeobuf polygons in EPSG:4326 with
-    the FEMA flood-zone semantic columns (``FLD_ZONE``, ``ZONE_SUBTY``,
-    ``SFHA_TF``, ``STATIC_BFE``, ``V_DATUM``, ``DEPTH``, ``VELOCITY``,
-    ``DFIRM_ID``, ``SOURCE_CIT``, ``GFID``). Authoritative source: FEMA
-    Map Service Center National Flood Hazard Layer (NFHL).
+    Authoritative source: FEMA Map Service Center National Flood Hazard Layer
+    (NFHL), served from the public hazards.fema.gov ArcGIS cluster.
 
-    Do NOT use this for: real-time / current flood EXTENT (use a SFINCS
-    modeled-flood layer or MRMS QPE-derived inundation — NFHL is a regulatory
-    static product, not a live observation); flood-insurance CLAIMS or paid
-    losses (FEMA OpenFEMA NFIP-claims dataset, separate fetcher); FEMA
-    disaster declarations / public-assistance funding (OpenFEMA, separate
-    fetcher); hurricane storm-surge inundation forecasts (NHC SLOSH product,
-    separate fetcher); coastal sea-level-rise projections (NOAA SLR Viewer,
-    separate fetcher); structure-level flood risk (use ``fetch_usace_nsi``
-    NSI building stock + NFHL polygons intersected client-side); the FEMA
-    National Risk Index multi-hazard composite (separate catalog entry).
+    Use this when:
+    - The user asks for the FEMA flood map, the regulatory floodplain, the
+      100-year / 500-year floodplain, the Special Flood Hazard Area (SFHA),
+      FIRM zones, NFIP / flood-insurance rate zones, or the Base Flood
+      Elevation (BFE) for a place.
 
-    Parameters:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            REQUIRED — NFHL does not support a global query (the polygon corpus
-            is millions of features). Recommended ≤ ~2 deg on a side (≈220 km
-            at the equator); larger envelopes risk hitting the 100k-feature
-            pagination ceiling. Example for Fort Myers, FL:
+    Do NOT use this for: real-time or MODELED flood EXTENT (use
+    ``run_model_flood_scenario`` (SFINCS) or ``fetch_mrms_qpe`` -- NFHL is a
+    static regulatory product, not a live observation); structure-level exposure
+    (intersect ``fetch_usace_nsi`` building stock with these polygons via
+    ``compute_zonal_statistics``); levees (``fetch_usace_levees``); dams
+    (``fetch_usace_dams``).
+
+    Honesty: NFHL is a Tier-1 federal regulatory layer, NOT a forecast or an
+    observation of any specific event -- never narrate it as current flooding.
+    On upstream failure raises a typed retryable error (FR-AS-11).
+
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Pairs with ``fetch_administrative_boundaries`` ->
+    ``clip_vector_to_polygon`` for "FEMA zones in [place]"; feeds
+    ``compute_zonal_statistics`` for "percent of [parcel] inside SFHA". Cached
+    ``static-30d`` (NFHL republishes monthly LOMC / quarterly DFIRM updates).
+
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. REQUIRED
+            (NFHL has no global query). Keep <= ~2 deg per side; larger risks the
+            100k-feature pagination ceiling. Example Fort Myers FL:
             ``(-81.95, 26.55, -81.80, 26.70)``.
-        sfha_only: If True, filter server-side to Special Flood Hazard Area
-            polygons only (``SFHA_TF='T'``: zones A, AE, AH, AO, AR, A99,
-            V, VE — the regulatory 1% annual-chance floodplain that triggers
-            NFIP mandatory-purchase). If False (default), return all zone
-            polygons including 0.2% shaded-X, minimal-hazard X, and undetermined
-            D. Example: ``True`` when the user asks "show the 100-year
-            floodplain"; ``False`` when they ask "show all FEMA flood zones".
-        zone_filter: Optional list of ``FLD_ZONE`` codes to keep, applied
-            client-side after fetch (exact case-insensitive match). Valid
-            codes: ``A``, ``AE``, ``AH``, ``AO``, ``AR``, ``A99``, ``V``,
-            ``VE``, ``X``, ``D``, ``B``, ``C``. None or empty list keeps all
-            designations. Example: ``["VE", "V"]`` to restrict to coastal
-            high-hazard zones.
+        sfha_only: If True, server-side filter to SFHA polygons only
+            (``SFHA_TF='T'``: zones A, AE, AH, AO, AR, A99, V, VE -- the 1%
+            annual-chance floodplain triggering NFIP mandatory purchase). Default
+            False returns all zones (incl. 0.2% shaded-X, minimal-hazard X, D).
+        zone_filter: Optional list of ``FLD_ZONE`` codes kept client-side
+            (case-insensitive). Valid: A, AE, AH, AO, AR, A99, V, VE, X, D, B, C.
+            None / empty keeps all. Example: ``["VE", "V"]`` for coastal
+            high-hazard.
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/fema_nfhl/<key>.fgb``.
-        ``layer_type="vector"``, ``role="primary"``, ``units=None``,
-        ``style_preset="fema_nfhl_zones"`` (downstream QML preset colors AE/A
-        deep blue, VE coastal-high-hazard red, X minimal-hazard pale,
-        D undetermined hatched). Downstream tools consume:
-        ``FLD_ZONE`` (categorical legend), ``STATIC_BFE`` (numeric depth
-        narration), ``SFHA_TF`` (boolean intersect summary by
-        ``compute_zonal_statistics``).
-
-    Cross-tool dependencies:
-        - Often paired with ``fetch_administrative_boundaries`` (TIGER county
-          / city polygon) → ``clip_vector_to_polygon`` to produce the "FEMA
-          flood zones in [place]" clipped output the user typically wants.
-        - Feeds ``compute_zonal_statistics`` for "% of [parcel] inside SFHA"
-          summaries, and ``run_pelicun_damage_assessment`` for the NSI
-          structure inventory × NFHL intersection.
-        - Companion to ``run_model_flood_scenario`` (SFINCS) when the user
-          wants regulatory-vs-modeled comparison side-by-side.
-
-    Cache: ``static-30d`` (FR-DC-2). NFHL is republished through LOMC updates
-    monthly and DFIRM panel revisions quarterly; a 30-day stale window is
-    acceptable for hazard-modeling overlay use. Cache key is SHA-256 of
-    ``(bbox-rounded-6dp, sfha_only, sorted(zone_filter))`` + month vintage.
-
-    External-API resilience (NFR-R-1): FEMA's hazards.fema.gov ArcGIS cluster
-    rate-limits unauthenticated clients and occasionally returns 5xx during
-    named-disaster traffic peaks. On network failure / non-2xx / malformed
-    JSON / ArcGIS error envelope the tool raises
-    ``FEMA_NFHL_ZONESUpstreamError(retryable=True)`` so the agent's FR-AS-11
-    surface decides whether to retry, clarify, or fall back.
-
-    Source-tier: FR-HEP-2 Tier 1 (FEMA is the authoritative federal source
-    for the regulatory floodplain). Claims derived from this tool should be
-    marked ``source_authority_tier=1`` in any ``ClaimSet`` aggregation.
-
-    Payload estimation: ~0.5 MB per square degree, clipped to [0.05, 50] MB.
-    Urban bbox (Houston, Fort Myers metro) typically returns 50-500 KB; rural
-    rangeland returns 5-50 KB; a state-scale bbox can exceed 25 MB and will
-    trigger the chat warning gate.
+        ``LayerURI(layer_type="vector", role="primary",
+        style_preset="fema_nfhl_zones")`` -> FlatGeobuf polygons in EPSG:4326 with
+        FEMA zone columns (``FLD_ZONE``, ``ZONE_SUBTY``, ``SFHA_TF``,
+        ``STATIC_BFE``, ``V_DATUM``, ``DEPTH``, ``DFIRM_ID``, ``SOURCE_CIT``).
     """
     # Validate inputs early.
     _validate_bbox(bbox)

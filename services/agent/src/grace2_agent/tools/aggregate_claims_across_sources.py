@@ -1,54 +1,24 @@
-"""``aggregate_claims_across_sources`` atomic tool — cross-source claim aggregation (job-0093).
+"""``aggregate_claims_across_sources`` atomic tool -- cross-source claim aggregation.
 
-This tool sits at the centre of the FR-HEP news/event-ingest pipeline (FR-HEP-6):
-the agent fetches multiple news articles, agency pages, or similar texts about the
-same event via ``web_fetch``/``search_news``/``fetch_news_article``, then hands the
-``{url, text, fetched_at}`` triples to this aggregator together with the list of
-``claim_targets`` to extract. The tool runs deterministic regex-based extraction
-per target, groups identical values, and scores each candidate by the number of
-sources backing it. The best-supported value per target is returned as the
-``value`` + ``confidence`` + ``supporting_sources``; competing values land in
-``alternatives``.
+Sits at the centre of the FR-HEP news/event-ingest pipeline (FR-HEP-6): the
+agent fetches multiple texts about one event via ``web_fetch`` (or other
+fetchers normalized to the ``{url, text, fetched_at}`` shape), then hands the
+triples to this aggregator together with the ``claim_targets`` to extract. The
+tool runs deterministic regex extraction per target, groups identical values,
+and scores each candidate by how many sources back it. The best-supported value
+per target is returned with ``confidence`` + ``supporting_sources``; competing
+values land in ``alternatives``.
 
-v0.1 deterministic-only strategy (no LLM call):
+Registered ``cacheable=False`` / ``ttl_class="live-no-cache"``: each call's
+output is a function of the (possibly fresh) ``sources`` list and is computed
+fresh in-memory -- the body never touches the cache shim. It DOES NOT emit
+geometry; the "location" claim ``value`` is a place-name STRING (reverse-geocode
+it downstream via ``geocode_location``). v0.1 uses deterministic regex; the
+OQ-93-NEEDS-LLM-EXTRACTION open question upgrades location + contaminant to
+LLM-routed extraction later.
 
-This tool is REGISTERED ``cacheable=False`` / ``ttl_class="live-no-cache"``: each
-call's output is a function of the (possibly fresh) ``sources`` list passed in
-and cannot be reused across different source lists. The tool body itself does
-NOT touch GCS or the cache shim.
-
-Per the audit (job-0093 audit.md), v0.1 uses deterministic regex + keyword
-extraction for "date" / "scale" / "casualties" and naive title-case sweeps for
-"location" / "contaminant". The OQ-93-NEEDS-LLM-EXTRACTION proposes upgrading
-"location" + "contaminant" to LLM-routed extraction in sprint-13 so the agent
-can resolve ambiguous mentions (e.g. "the spill near Longview", town vs county,
-chemical-family names) the way a human would.
-
-Source-agreement scoring rule (audit-specified):
-
-    confidence = 0.5                            if 1 source supports the value
-    confidence = min(0.99, 0.8 + 0.05*(N-2))   if N >= 2 sources support it
-
-So 1 source -> 0.5; 2 sources -> 0.8; 3 sources -> 0.85; 4 sources -> 0.9; ...;
-capped at 0.99 regardless of how many sources agree (we never claim certainty
-from agreement alone, since systematic source-bias / shared upstream wire
-services can drive false agreement).
-
-Typed errors (FR-AS-11):
-    - ``ClaimAggError(retryable=False)`` — bad input shape (non-list sources,
-      missing required keys, unknown claim target).
-
-Geographic-correctness check (job-0086 codified lesson):
-
-This tool DOES NOT emit geometry; it returns a structured claims dict. The
-"location" target's ``value`` is a place-name STRING (reverse-geocoding to a
-bbox is deferred to a downstream ``geocode_event_location`` call, per engine.md
-scope). A round-trip-only acceptance check is therefore sufficient for v0.1;
-when LLM extraction lands in sprint-13 and the tool optionally produces a bbox,
-the acceptance test must add a "is the bbox actually around the named place"
-geographic check.
-
-FR-TA-3 docstring discipline applies to the public ``aggregate_claims_across_sources``.
+The public surface is documented on the ``aggregate_claims_across_sources``
+function docstring below (the tool-catalog description).
 """
 
 from __future__ import annotations
@@ -360,7 +330,7 @@ def _extract_casualties(text: str) -> list[tuple[str, int]]:
 def _extract_contaminants(text: str) -> list[tuple[str, str]]:
     """Return [(raw_substring, normalized_lowercase_name), ...] from text.
 
-    Uses the curated _CONTAMINANT_KEYWORDS list — TENTATIVE deterministic
+    Uses the curated _CONTAMINANT_KEYWORDS list -- TENTATIVE deterministic
     approach, OQ-93-NEEDS-LLM-EXTRACTION proposes LLM upgrade for sprint-13.
     """
     results: list[tuple[str, str]] = []
@@ -443,16 +413,16 @@ def _aggregate_target(
     """Group extractions for one target across sources, score, return claim dict.
 
     ``source_extractions`` is a list of ``(source_url, [(raw, normalized), ...])``
-    tuples — one entry per input source, each carrying every mention found in
+    tuples -- one entry per input source, each carrying every mention found in
     that source's text.
 
     Strategy:
       1. Per source, collapse to the SET of distinct normalized values found
          (a single article mentioning "Longview, Texas" 5 times is still one
-         vote, not five — avoids over-weighting verbose sources).
+         vote, not five -- avoids over-weighting verbose sources).
       2. Across sources, count how many sources support each value.
       3. Best value = the one with the highest source count (ties broken by
-         insertion order — first-seen-first wins, stable for tests).
+         insertion order -- first-seen-first wins, stable for tests).
       4. Confidence per the audit-specified rule. If below ``confidence_threshold``,
          the value is still returned (caller may still want to inspect it) but
          the threshold is recorded in the result for downstream filtering.
@@ -607,10 +577,10 @@ _EXTRACTORS = {
 
 @register_tool(
     _AGG_METADATA,
-    # Annotations: readOnlyHint=True (pure in-memory computation; no GCS or DB
+    # Annotations: readOnlyHint=True (pure in-memory computation; no object-store or DB
     # writes), openWorldHint=False (processes caller-supplied source texts;
     # no external API calls in this tool body), destructiveHint=False,
-    # idempotentHint=True (deterministic regex extraction; same inputs → same output).
+    # idempotentHint=True (deterministic regex extraction; same inputs -> same output).
 )
 def aggregate_claims_across_sources(
     sources: list[dict[str, Any]],
@@ -620,113 +590,65 @@ def aggregate_claims_across_sources(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Cross-source claim aggregation for FR-HEP news/event ingest.
+    """Reconcile claims (date, location, scale, contaminant, casualties) across pre-fetched source texts. [analysis-only: returns a dict, NOT a layer]
 
-    Runs deterministic regex extractors over a list of pre-fetched text sources
-    and returns a per-claim best-supported value with confidence score and
-    provenance URLs. Confidence is source-agreement-based: 1 source → 0.5;
-    N >= 2 sources → min(0.99, 0.80 + 0.05*(N-2)). Not cached (computed fresh
-    from the caller-supplied sources list on every invocation).
+    Use this when:
+        - You have MULTIPLE texts about one event (e.g. several web_fetch results)
+          and want the best-supported value per claim with confidence.
+        - Building derived_params in the news/event-ingest workflow.
+        - Deciding whether to ask the user (nothing clears confidence_threshold).
 
-    When to use:
-        - After fetching multiple texts about the same real-world event (news
-          articles via ``web_fetch``, NWS alerts, NOAA Storm Events DB) and
-          needing a single best-supported value per claim target.
-        - Building the ``derived_params`` dict in the Case 2 event-ingest
-          workflow (``run_model_news_event_ingest`` calls this after the
-          per-source fetch chain).
-        - Triggering the FR-HEP-7 "ask the user" gate when no claim target
-          reaches the ``confidence_threshold``.
+    Do NOT use this for:
+        - A single source -- cross-source agreement scoring adds nothing.
+        - Fetching the texts themselves -- use web_fetch first.
+        - Turning a place name into a bbox -- use geocode_location.
+        - Engine model outputs (they carry their own typed numeric fields).
 
-    When NOT to use:
-        - Numeric model outputs (those carry their own typed fields from the
-          engine, never routed through this surface).
-        - Single-source extraction (the multi-source agreement scoring adds no
-          value; call the per-target regex helpers directly).
-        - Reverse-geocoding a place name to a bbox (use ``geocode_location``).
+    Honesty: a malformed sources list or unknown claim target raises a typed
+    ClaimAggInputError; an empty list returns empty claims, not a guess.
+
+    Action: returns a data-only analysis dict (claims + confidence + supporting
+    URLs + stats); it does NOT render a layer.
+
+    Confidence is source-agreement-based: 1 source -> 0.5; N>=2 ->
+    min(0.99, 0.80 + 0.05*(N-2)). Computed fresh per call (cacheable=False).
 
     Params:
-        sources: list of dicts, each ``{"url": str, "text": str, "fetched_at": str}``.
-            ``fetched_at`` is ISO-8601 UTC. Empty list returns an empty claims
-            dict — not an error.
-        claim_targets: subset of ``("location", "scale", "contaminant", "date",
-            "casualties")``. Any other target raises ``ClaimAggInputError``.
-        confidence_threshold: claims falling below this confidence retain
-            their value but are flagged with ``below_threshold=True`` for
-            downstream filtering. Default 0.6.
+        sources: list of {"url": str, "text": str, "fetched_at": str}. Only
+            "text" is strictly required; url/fetched_at default if omitted. An
+            empty list returns an empty claims dict (not an error).
+        claim_targets: subset of ("location", "scale", "contaminant", "date",
+            "casualties") -- the closed v0.1 set; any other value raises
+            ClaimAggInputError. (Left as str: the validator enforces the set and
+            lists it in the error.)
+        confidence_threshold: claims below this keep their value but are flagged
+            below_threshold=True for downstream filtering. Default 0.6.
 
     Returns:
-        A dict::
+        dict: {"claims": {<target>: {value, confidence, supporting_sources,
+        alternatives, below_threshold?}}, "stats": {sources_consulted,
+        claims_resolved, confidence_threshold}}.
 
-            {
-              "claims": {
-                "<target>": {
-                  "value": str | float | dict | int | None,
-                  "confidence": float,   # 0-1, source-agreement-scored
-                  "supporting_sources": [url, ...],
-                  "alternatives": [{"value": ..., "supporting_sources": [...]}, ...],
-                  "below_threshold": bool,  # present only if True
-                },
-                ...
-              },
-              "stats": {
-                "sources_consulted": int,
-                "claims_resolved": int,  # # of targets where value != None
-                "confidence_threshold": float,
-              },
-            }
-
-    Caching: ``cacheable=False``; the output is a function of the supplied
-    ``sources`` list (which the caller usually just fetched and may differ
-    per call). The shim short-circuits and the dict is computed fresh on
-    every invocation.
+    Extraction (v0.1 deterministic regex; OQ-93 later upgrades location +
+    contaminant to LLM-routed extraction):
+        - date -> ISO-8601 / long-form / US-style, normalized to yyyy-mm-dd.
+        - scale -> magnitude+unit (gallons, liters, tons, barrels, acres, ...)
+          with optional thousand/million/billion, normalized to {value, unit}.
+        - casualties -> "N (people) injured/killed/..." normalized to int.
+        - contaminant -> curated keyword bag (vinyl chloride, benzene, ...).
+        - location -> "Title-case Name, State" against the 50 US states.
 
     Typed errors (FR-AS-11):
-        - ``ClaimAggInputError`` (not retryable) — non-list sources, missing
-          ``url``/``text``/``fetched_at`` keys, unknown claim target.
-
-    Strategy notes (v0.1):
-        - "date" — regex over ISO-8601 / long-form ("February 15, 2026") /
-          US-style ("2/15/2026"). Normalized to ISO ``yyyy-mm-dd``.
-        - "scale" — magnitude+unit regex (gallons, liters, tons, barrels,
-          acres, hectares, cubic meters/feet, square miles/kilometers) with
-          optional "thousand/million/billion" modifier. Normalized to
-          ``{"value": float, "unit": str}``.
-        - "casualties" — "N (people) injured/hurt/wounded/killed/dead" regex.
-          Normalized to int.
-        - "contaminant" — curated keyword bag (vinyl chloride, benzene,
-          ammonia, ...). TENTATIVE per OQ-93-NEEDS-LLM-EXTRACTION; sprint-13
-          upgrades to LLM-routed extraction so the long tail of chemical
-          names is covered.
-        - "location" — "Title-case Name, State" regex against the 50 US
-          states. TENTATIVE per OQ-93-NEEDS-LLM-EXTRACTION; sprint-13
-          upgrades to LLM-routed extraction for international + ambiguous
-          place names.
-
-    Source-agreement scoring (audit-specified):
-        - 1 source -> confidence 0.5
-        - 2 sources -> 0.80
-        - 3 sources -> 0.85
-        - N sources (N >= 2) -> min(0.99, 0.80 + 0.05*(N-2))
-
-    Open Questions:
-        - OQ-93-NEEDS-LLM-EXTRACTION — "location" + "contaminant" deterministic
-          extraction misses the long tail; sprint-13 upgrades to LLM-routed
-          via the agent's Gemini access.
+        - ClaimAggInputError (not retryable) -- non-list sources, missing text
+          key, unknown claim target, or out-of-range confidence_threshold.
 
     Cross-tool dependencies:
-        Upstream (consumes):
-        - ``web_fetch`` — each element of ``sources`` is typically a dict from
-          ``web_fetch`` output (``url``, ``content`` → renamed ``text``,
-          ``fetched_at``).
-        - ``fetch_nws_event`` / ``fetch_storm_events_db`` — other upstream
-          source types normalized to the ``{url, text, fetched_at}`` shape.
-        Downstream (feeds):
-        - ``run_model_news_event_ingest`` — calls this after the per-source
-          fetch chain; the returned ``claims`` dict populates ``derived_params``
-          in the ``EventIngestResult``.
-        - ``geocode_location`` — the ``claims["location"]["value"]`` string is
-          passed to ``geocode_location`` to derive the event bbox.
+        - Upstream: web_fetch (each source is typically its output dict, with
+          content renamed text); fetch_nws_event / fetch_storm_events_db
+          normalized to the {url, text, fetched_at} shape.
+        - Downstream: run_model_news_event_ingest (claims populate
+          derived_params) and geocode_location
+          (claims["location"]["value"] -> event bbox).
     """
     _validate_sources(sources)
     _validate_targets(claim_targets)

@@ -274,73 +274,47 @@ def compute_slope(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Compute terrain slope from a DEM. Wraps ``gdaldem slope``.
+    """Compute terrain SLOPE (steepness in degrees or percent grade) from a DEM [terrain/DEM-derived raster].
 
-    Applies GDAL's slope algorithm to a single-band elevation GeoTIFF and returns
-    a Float32 raster of slope angle (degrees) or percent grade, in the same CRS
-    and grid as the input. Cached for 30 days (static-30d TTL class).
+    Use this when:
+    - The user wants slope, steepness, gradient, or percent grade (landslide /
+      erosion risk, road grade, accessibility, construction site assessment).
+    - You need a slope raster to feed ``compute_zonal_statistics`` (e.g. mean
+      slope per watershed or flood-depth zone).
 
-    When to use:
-        - Landslide susceptibility, mass-movement hazard, or erosion risk mapping.
-        - Urban planning, evacuation routing, or accessibility analysis requiring
-          terrain steepness.
-        - Engineering site assessment or road-grade / construction percent-slope.
-        - Input to ``compute_zonal_statistics`` to aggregate slope by zone (e.g.
-          mean slope per watershed or flood-depth zone).
+    Do NOT use this for: terrain FACE DIRECTION (use ``compute_aspect``); shaded
+    relief (use ``compute_hillshade``); hypsometric color tint (use
+    ``compute_colored_relief``); contour LINES (use ``compute_contours``);
+    per-zone aggregation (use ``compute_zonal_statistics``).
 
-    When NOT to use:
-        - Hillshade / terrain shading visualization (use ``compute_hillshade``).
-        - Colored elevation basemap (use ``compute_colored_relief``).
-        - Aspect / flow-direction analysis (use ``compute_aspect``).
-        - Bathymetry or sub-aqueous terrain.
-        - Dynamic or time-varying slope (output is a static single-time raster).
+    Honesty: a static single-time GDAL transform; land-surface DEM only (no
+    bathymetry); raises a typed ``SlopeComputeError`` on failure -- never a fake
+    layer.
+
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
+
+    Wraps ``gdaldem slope`` over a single-band elevation GeoTIFF; returns a
+    Float32 slope raster in the input CRS and grid.
 
     Params:
-        dem_uri: ``gs://`` URI of a DEM GeoTIFF (typically from ``fetch_dem``).
-            Must be a single-band raster with elevation values in meters.
-        output_unit: ``"degrees"`` (default) — slope angle 0°–90° (0=flat,
-            90=vertical); best for cartographic display and comparison.
-            ``"percent"`` — percent rise/run × 100; best for road-grade /
-            engineering / construction contexts.
-        algorithm: ``"Horn"`` (default) — 3×3 Horn gradient, generally
-            accurate for most terrain. ``"ZevenbergenThorne"`` — alternative
-            gradient estimator that is smoother on rough / noisy DEMs;
-            preferred when the user mentions rough terrain or noisy DEMs.
+        dem_uri: URI of a DEM GeoTIFF (typically ``fetch_dem(...).uri``, or
+            ``fetch_copernicus_dem`` / ``fetch_3dep_extra``). Single-band, metres.
+        output_unit: ``"degrees"`` (default, 0-90) for display; ``"percent"``
+            (rise/run x 100) for road-grade / engineering contexts.
+        algorithm: ``"Horn"`` (default) general-purpose 3x3 gradient;
+            ``"ZevenbergenThorne"`` smoother on rough / noisy DEMs.
 
     Returns:
-        A ``LayerURI`` pointing at a slope GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/slope/<key>.tif``.
-        The output is a single-band Float32 GeoTIFF in the same CRS and grid
-        as the input DEM. Units are degrees (0–90) or percent (0+).
+        A ``LayerURI`` (single-band Float32 raster) in the static-30d cache,
+        same CRS and grid as the input DEM.
 
-    LLM guidance:
-        - Default to ``output_unit="degrees"``. Pick ``"percent"`` when the
-          user mentions road grade, engineering design, construction, or
-          percent slope.
-        - Default to ``algorithm="Horn"``. Pick ``"ZevenbergenThorne"`` if
-          the user mentions rough terrain, noisy DEM, or smoother results.
-
-    FR-CE-8: Results are routed through ``read_through`` so repeat calls with
-    the same ``(dem_uri, output_unit, algorithm)`` triple return the cached
-    slope raster without re-running gdaldem. TTL is 30 days (DEM-derived
-    outputs are stable over that window).
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
-          (gs:// COG) directly as ``dem_uri``.
-        Downstream (feeds):
-        - ``compute_zonal_statistics`` — pass the returned ``LayerURI`` as
-          ``value_raster_uri`` to aggregate slope values by zone.
-        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
-          to display the slope raster on the map.
-        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim the
-          slope layer to a study-area boundary before further analysis.
+    FR-CE-8: routed through ``read_through`` -- repeat ``(dem_uri, output_unit,
+    algorithm)`` calls reuse the cached raster (30-day TTL).
 
     Raises:
-        SlopeComputeError: if gdaldem is unavailable, returns non-zero, or
-            the DEM GCS download fails. Error carries ``error_code`` for the
-            pipeline strip.
+        SlopeComputeError: gdaldem unavailable / non-zero, or the DEM download
+            fails. Carries ``error_code`` for the pipeline strip.
     """
     effective_bucket = _bucket or CACHE_BUCKET
 

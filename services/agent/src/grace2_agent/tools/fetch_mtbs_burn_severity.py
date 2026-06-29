@@ -504,56 +504,44 @@ def fetch_mtbs_burn_severity(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch MTBS historic burn-severity boundary polygons clipped to a bbox.
+    """MTBS historic burn-severity boundary polygons (vector) clipped to a bbox. [post-fire | historical vector]
 
-    **What it does:** Queries the USFS/USGS MTBS (Monitoring Trends in Burn
-    Severity) ArcGIS FeatureServer (EDW_MTBS_v1) for burned-area boundary
-    polygons — one polygon per fire event — filtered to a bbox and optional
-    year range. Returns a FlatGeobuf with fire name, year, type, acres, and
-    provenance fields. MTBS covers CONUS + AK + HI + PR, 1984–present, for
-    fires ≥1000 acres in the West and ≥500 acres in the East. Cached
-    ``static-30d``. No API key required.
+    Queries the USFS/USGS MTBS (Monitoring Trends in Burn Severity) ArcGIS
+    FeatureServer for burned-area boundary polygons -- one polygon per fire event
+    -- filtered to a bbox and optional year range, returned as a FlatGeobuf
+    (fire name, year, type, acres, provenance). Covers CONUS+AK+HI+PR, 1984-
+    present, for fires >=1000 ac (West) / >=500 ac (East). No API key. Cached
+    static-30d.
 
-    **When to use:**
-    - Post-fire hazard setup: identify burn scars in a study area for debris
-      flow, post-fire flood, or erosion risk assessment.
-    - Wildfire history overlay: "show all fires larger than 500 acres that
-      burned in this watershed since 2010."
-    - Conservation context: filter species occurrence queries by
-      recently-burned habitat (GBIF/iNat occurrences inside MTBS polygons).
-    - Mapping wildfire risk exposure near critical infrastructure using
-      historical burn frequency.
+    Use this when:
+    - Post-fire hazard setup: locate burn scars for debris-flow / post-fire flood
+      / erosion risk in a study area.
+    - "Show all fires larger than 500 acres that burned here since 2010" history.
+    - Burned-habitat context for species / conservation overlays.
 
-    **When NOT to use:**
-    - Active or current-year fire perimeters (MTBS lags ~1 year behind the
-      season; use ``fetch_nifc_fire_perimeters`` for current incidents).
-    - Fires smaller than the MTBS minimum thresholds (use a state-level or
-      CAL FIRE / AK DNR dataset).
-    - Per-pixel burn-severity rasters (MTBS BurnSeverityImages are a separate
-      product; this tool returns polygon boundaries only).
-    - Fire-weather forecasts (use NWS fire-weather watches).
+    Do NOT use this for:
+    - Active or current-year fire perimeters (MTBS lags ~1 year) -- use
+      fetch_nifc_fire_perimeters.
+    - Near-real-time satellite detections -- use fetch_firms_active_fire (points),
+      fetch_viirs_day_fire or fetch_goes_active_fire (raster).
+    - Fuel-model / canopy-fuel inputs -- use fetch_landfire_fuels or
+      fetch_usfs_canopy_fuels.
+    - Per-pixel severity rasters (this tool returns polygon boundaries only).
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Required. Example: ``(-124.0, 40.0, -120.0, 43.0)`` for Northern CA/OR.
-    - ``year_range`` (tuple or None): ``(start_year, end_year)`` inclusive,
-      both integers, minimum start 1984. Filters server-side via
-      ``YEAR >= start AND YEAR <= end``. ``None`` returns all years 1984–present.
+    Honesty: an empty bbox / quiet year range returns a valid 0-feature layer
+    (no burns found), never a fabricated polygon.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="primary", units=None)`` pointing at a
-    FlatGeobuf with fields: ``FIRE_ID``, ``FIRE_NAME``, ``YEAR``,
-    ``FIRE_TYPE`` (Wildfire/Prescribed Fire/Wildland Fire Use/Unknown),
-    ``ACRES``, ``LATITUDE``, ``LONGITUDE``, ``MAP_ID``, ``MAP_PROG``,
-    ``ASMNT_TYPE``, ``IRWINID``, ``IG_DATE``. EPSG:4326.
+    Returns a vector LayerURI (FlatGeobuf, EPSG:4326).
 
-    **Cross-tool dependencies:**
-    - Pairs with: ``fetch_nifc_fire_perimeters`` (current active fires),
-      ``fetch_firms_active_fire`` (near-real-time detections in or near scars).
-    - Upstream of: debris-flow / post-fire flood risk workflows, species habitat
-      analysis via ``fetch_gbif_occurrences`` / ``fetch_inaturalist_observations``.
-    - Complements: ``fetch_dem`` + ``compute_slope`` for post-fire watershed
-      erosion context.
+    Parameters:
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required.
+    - year_range (tuple or None): (start_year, end_year) inclusive, ints, min
+      start 1984; None returns all years 1984-present.
+
+    Fields: FIRE_ID, FIRE_NAME, YEAR, FIRE_TYPE, ACRES, LATITUDE, LONGITUDE,
+    MAP_ID, MAP_PROG, ASMNT_TYPE, IRWINID, IG_DATE. Pairs with
+    fetch_nifc_fire_perimeters (current) and fetch_firms_active_fire (recent);
+    upstream of post-fire flood / debris-flow workflows.
     """
     _validate_bbox(bbox)
     normalized_year_range = _validate_year_range(year_range)

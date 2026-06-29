@@ -580,28 +580,33 @@ def fetch_cdc_svi(
     # Wave 4.10 convention: absorb LLM-invented kwargs
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """CDC/ATSDR Social Vulnerability Index (SVI 2022) census-tract choropleth.
+    """CDC/ATSDR Social Vulnerability Index (SVI 2022) census-tract polygons -- a vector choropleth LayerURI.
+
+    Use this when:
+        - User asks for the CDC SVI, social vulnerability, equity /
+          environmental-justice overlay, or "which neighborhoods are most
+          vulnerable".
+        - Agent needs a vulnerability surface to intersect with a hazard
+          footprint (flood, wildfire, heat, plume) for the most vulnerable
+          exposed population.
+    Do NOT use this for:
+        - Raw demographic counts (population, income, race) -> use
+          ``fetch_census_acs`` (SVI publishes percentile rankings, not estimates).
+        - Environmental-burden / pollution exposure -> use ``fetch_epa_ejscreen``
+          (EJ indices by block group).
+        - Areas outside the United States -> SVI is U.S.-only (50 states + DC);
+          an empty FGB is returned for non-U.S. bboxes.
+        - A non-2022 vintage -> this tool pins SVI 2022 (latest published).
+    Returns a vector LayerURI (census-tract polygons, EPSG:4326) that
+    auto-renders -- pass to ``publish_layer`` to draw the choropleth. CDC's
+    ``-999`` null sentinel is normalized to ``null`` so suppressed tracts do not
+    render as extreme-low values.
 
     Fetches U.S. census-tract polygons intersecting a bbox from CDC/ATSDR's
-    public ArcGIS REST FeatureServer and returns a FlatGeobuf choropleth with
-    the overall SVI percentile ranking (``rpl_themes``) plus the four theme
-    rankings (socioeconomic status, household characteristics, racial/ethnic
-    minority status, housing type & transportation). Higher percentile = more
-    socially vulnerable. CDC's ``-999`` null sentinel is normalized to ``null``.
-
-    **When to use:**
-    - User asks for the CDC SVI, social vulnerability, equity / environmental-
-      justice overlay, or "which neighborhoods are most vulnerable".
-    - Agent needs a vulnerability surface to intersect with a hazard footprint
-      (flood, wildfire, heat, plume) to find the most vulnerable exposed
-      population.
-
-    **When NOT to use:**
-    - For raw demographic counts (population, income, race) -> use a Census/ACS
-      fetcher (SVI publishes percentile rankings, not estimates).
-    - For areas outside the United States -> SVI is U.S.-only (50 states + DC);
-      an empty FGB is returned for non-U.S. bboxes.
-    - For a non-2022 vintage -> this tool pins SVI 2022 (latest published).
+    public ArcGIS REST FeatureServer; carries the overall SVI percentile ranking
+    (``rpl_themes``) plus the four theme rankings (socioeconomic status,
+    household characteristics, racial/ethnic minority status, housing type &
+    transportation). Higher percentile = more socially vulnerable.
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.

@@ -49,7 +49,7 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -339,8 +339,8 @@ def _fetch_frame_cog_bytes(
 )
 def fetch_viirs_day_fire(
     bbox: tuple[float, float, float, float],
-    satellite: str = "all",
-    product: str = "day_fire",
+    satellite: Literal["suomi-npp", "noaa-20", "noaa-21", "all"] = "all",
+    product: Literal["day_fire"] = "day_fire",
     sector: str = "conus",
     start_utc: str | None = None,
     end_utc: str | None = None,
@@ -348,69 +348,51 @@ def fetch_viirs_day_fire(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
-    """Build a VIIRS Day Fire JPSS polar animation (ordered per-overpass RGB COGs) over a multi-day window.
+    """VIIRS Day Fire JPSS polar animation -- ordered per-overpass RGB raster frames (auto-render). [fire-animation | polar raster]
 
-    **What it does:** Pulls the ready-made CIRA Polar SLIDER VIIRS Day Fire RGB
-    imagery (sat=jpss) for an AOI over a multi-day UTC window and returns an
-    ORDERED list of per-OVERPASS EPSG:4326 RGB COGs -- one frame per polar pass,
-    DAY-only by default, each labelled with its REAL irregular UTC pass time.
-    This is how you RECREATE a CIRA-style multi-day VIIRS Day Fire animation (the
-    polar analogue of ``fetch_goes_animation``): the imagery + irregular polar
-    cadence are the exact product the CIRA loops are made from. The Day Fire RGB
-    shows thermal-red fire over a near-true-color land/veg/smoke base, so the
-    fire pops against a near-black sea (ideal for an offshore AOI like the
-    Channel Islands).
+    Pulls the ready-made CIRA Polar SLIDER VIIRS Day Fire RGB imagery (sat=jpss)
+    for an AOI over a multi-day UTC window and returns an ORDERED list[LayerURI]
+    -- one RGB COG per polar overpass, DAY-only by default, each labelled with
+    its real irregular UTC pass time. This RECREATES a CIRA-style multi-day VIIRS
+    Day Fire loop (the polar analogue of fetch_goes_animation); thermal-red fire
+    pops over a near-true-color base.
 
-    **When to use:**
-    - "Recreate the JPSS / VIIRS Day Fire animation over this 4-day window",
-      "animate the fire day-by-day from the polar satellites", "VIIRS Day Fire
-      passes over the Channel Islands".
-    - Any MULTI-DAY polar (LEO) fire timelapse, especially offshore AOIs where
-      VIIRS 375 m beats the edge-of-good-geometry GOES sector.
+    Use this when:
+    - "Recreate / animate the VIIRS (JPSS) Day Fire over this multi-day window".
+    - Any multi-day polar (LEO) fire timelapse, especially offshore AOIs where
+      VIIRS 375m beats an edge-of-sector GOES view.
 
-    **When NOT to use:**
-    - An intra-day GEOSTATIONARY 5-minute loop (use ``fetch_goes_animation``).
-    - Active-fire pixel detections (``fetch_firms_active_fire``) -- though that is
-      the same VIIRS instrument and co-registers as a hot-pixel overlay.
-    - Fire perimeters (``fetch_nifc_fire_perimeters``).
+    Do NOT use this for:
+    - An intra-day GEOSTATIONARY 5-minute loop -- use fetch_goes_animation, or
+      fetch_goes_active_fire for the hot-pixel-only overlay frames.
+    - Discrete active-fire POINTS -- use fetch_firms_active_fire (same VIIRS
+      instrument; co-registers as a hot-pixel overlay).
+    - Fire perimeters -- use fetch_nifc_fire_perimeters.
+    - Resolving a fire by NAME first -- use fetch_wfigs_incident.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required.
-    - ``satellite`` (str, default ``"all"``): ``"all"`` (the merged SLIDER jpss
-      pass set), or ``"suomi-npp"`` / ``"noaa-20"`` / ``"noaa-21"`` (the SLIDER
-      jpss index does not tag the per-pass bird, so a specific value records the
-      requested filter in the frame label; use FIRMS for true per-detection
-      satellite attribution).
-    - ``product`` (str, default ``"day_fire"``): the VIIRS Day Fire RGB.
-    - ``sector`` (str, default ``"conus"``): SLIDER jpss sector slug.
-    - ``start_utc`` / ``end_utc`` (str): ISO-8601 UTC window bounds
-      (e.g. ``"2026-05-15T20:47:00Z"`` .. ``"2026-05-19T22:01:00Z"``). When
-      omitted, the most-recent 4 days are used.
-    - ``day_only`` (bool, default True): keep only DAYTIME passes (Day Fire is a
-      daytime product; night passes are black).
+    Honesty: georeferencing is the APPROXIMATE SLIDER sector-extent mapping (the
+    JPSS polar remap has no published projection); the imagery + irregular cadence
+    are the real CIRA product. A pass with no AOI coverage is skipped; a run that
+    produced NO frames raises a typed error (never reports an empty animation as
+    success).
 
-    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
-    uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="viirs_day_fire_animation"``, same ``bbox``) whose ``name`` is
-    ``"VIIRS Day Fire step <N> <ISO> (<SAT>)"`` -- the scrubber-group contract:
-    ``step <N>`` is the monotonic frame value the web parser keys on (the
-    irregular polar-pass ISO alone is not a recognized token), and the ISO pass
-    time is the per-frame display label. Frames are NOT evenly spaced; the labels
-    carry the real pass times.
+    Returns an ordered list[LayerURI] of raster frames (ascending UTC), each
+    named "VIIRS Day Fire step <N> <ISO> (<SAT>)" -- the "step <N>" token is the
+    monotonic scrubber-group key, the ISO is the per-frame pass-time label.
 
-    NOTE: georeferencing is the approximate SLIDER sector-extent mapping (the
-    JPSS polar remap has no published projection -- approximate only); the
-    imagery + irregular cadence are the real CIRA product. A pass with no imagery
-    over the AOI is skipped; a run that produced NO frames raises a typed error
-    (honesty floor).
+    Parameters:
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required.
+    - satellite (default "all"): the merged SLIDER jpss pass set, or
+      "suomi-npp"/"noaa-20"/"noaa-21" (the index does not tag the per-pass bird,
+      so a specific value only records the requested filter in the label; use
+      fetch_firms_active_fire for true per-detection satellite attribution).
+    - product (default "day_fire"): the VIIRS Day Fire RGB.
+    - sector (str, default "conus"): SLIDER jpss sector slug.
+    - start_utc / end_utc (ISO-8601 UTC): window bounds; default = recent 4 days.
+    - day_only (default True): keep only daytime passes (night passes are black).
 
-    **Cross-tool dependencies:**
-    - Upstream: ``fetch_wfigs_incident`` (resolve the offshore island by NAME ->
-      AOI bbox + the window floor).
-    - Pairs with: ``fetch_firms_active_fire`` (same VIIRS instrument; the hot
-      pixels co-register with the Day Fire red pixels) + ``fetch_nifc_fire_perimeters``.
-    - Driven by: ``run_model_satellite_fire_animation``.
+    Upstream: fetch_wfigs_incident (name -> AOI bbox + window floor). Driven by
+    run_model_satellite_fire_animation.
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     if satellite not in VIIRS_SATELLITES:

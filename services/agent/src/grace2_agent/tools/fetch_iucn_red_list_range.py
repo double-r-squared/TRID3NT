@@ -750,79 +750,41 @@ def fetch_iucn_red_list_range(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """IUCN Red List species range info Tier-2 fetcher.
+    """IUCN Red List species threat-status + range info, queried by name. [species range/status]
 
-    Use this when: the agent needs an authoritative species threat-status +
-    range overlay for a Case 1 conservation analysis — e.g. cross-referencing
-    a flood model footprint with the IUCN Red List range of a vulnerable
-    mammal, or building a "species of concern within X km" overlay layer.
-    Returns a single-feature FlatGeobuf carrying the IUCN assessment payload
-    (category, criteria, population trend, habitat systems, elevation bounds)
-    keyed on a placeholder square polygon — see ``OQ-0129-RANGE-SPATIAL``
-    for the v0.2 Spatial Data swap-in plan.
+    Use this when:
+    - You need authoritative species threat status (category, criteria, population
+      trend, habitat systems, elevation bounds) by scientific name -- e.g. "is this
+      species of concern", cross-referencing a hazard footprint with a Red List
+      assessment.
 
-    Do NOT use this for: GBIF/iNaturalist OCCURRENCE POINTS (use
-    ``fetch_gbif_occurrences`` or ``fetch_inaturalist_observations``),
-    actual range POLYGONS pre-v0.2 (the geometry here is a placeholder
-    square — read ``is_placeholder_geometry``), live tracking data
-    (Movebank — different tool), national checklist queries (IUCN's
-    ``species/country`` endpoint is out of scope for v0.1), or
-    bulk-corpus pulls (the Red List API is per-species; for bulk use the
-    IUCN Red List Spatial Data zips out-of-band).
+    Do NOT use this for:
+    - Mapped occurrence POINTS -- use ``fetch_gbif_occurrences`` /
+      ``fetch_inaturalist_observations``.
+    - A true range POLYGON -- the geometry is a PLACEHOLDER square.
+    - Protected-area polygons -- use ``fetch_wdpa_protected_areas``.
 
-    Wraps the IUCN Red List API v3
-    (``https://apiv3.iucnredlist.org/api/v3``). Tier-2 keyed — requires an
-    IUCN Red List API key (free for research, sign up at
-    ``https://apiv3.iucnredlist.org/api/v3/token``). The key resolves via
-    one of three paths (waterfall):
+    Honesty: the polygon is a PLACEHOLDER sentinel (``is_placeholder_geometry=
+    True``), NOT a real range -- use the threat payload, not the shape. Requires a
+    free IUCN key (``api_key=`` / ``secret_ref=`` / env var); raises
+    ``IUCNAuthError`` before any network call. Queried by name (no bbox).
 
-    1. ``api_key="<str>"`` — explicit (CLI / direct invocation).
-    2. ``secret_ref=<SecretRecord>`` — looked up via
-       ``Persistence.get_secret_value(secret_ref)`` (per-Case keyed path,
-       per job-0124).
-    3. ``GRACE2_IUCN_RED_LIST_API_KEY`` env var — local dev fallback.
-
-    If none of the three resolve a non-empty key, ``IUCNAuthError`` is
-    raised BEFORE any network call.
+    Returns a vector LayerURI that auto-renders -- do not call publish_layer.
 
     Params:
-        species_name: scientific binomial (e.g. ``"Puma concolor"``,
-            ``"Panthera tigris"``). Case-insensitive; whitespace is
-            normalized. Required.
-        region: IUCN region key. Defaults to ``"global"`` (uses the global
-            assessment endpoint). Other documented values include
-            ``"europe"``, ``"mediterranean"``, ``"pan-africa"``, etc.
-            See ``https://apiv3.iucnredlist.org/api/v3/region/list``.
-        api_key: explicit IUCN API token (path 1).
-        secret_ref: ``SecretRecord`` with ``provider="iucn_red_list"``
-            (path 2). When passed without a ``persistence=`` resolver the
-            tool raises rather than silently falling back to the env var.
-        persistence: optional ``Persistence`` (or duck-typed equivalent
-            with a sync ``get_secret_value(secret_ref) -> str`` method) for
-            path 2 secret resolution. The production agent runtime binds
-            this via the tool-binding seam; tests pass a mock.
+        species_name: scientific binomial (e.g. ``"Puma concolor"``);
+            case-insensitive, whitespace normalized.
+        region: IUCN region key, default ``"global"``; others include
+            ``"europe"``, ``"mediterranean"``, ``"pan-africa"`` (see the IUCN
+            region/list endpoint).
+        api_key: explicit IUCN token.
+        secret_ref: per-Case ``SecretRecord`` (provider ``"iucn_red_list"``).
+        persistence: optional resolver for ``secret_ref`` (the runtime binds it).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/iucn_red_list/<key>.fgb``
-        carrying the species assessment. ``layer_type="vector"``,
-        ``role="context"``, ``units=None``. The single feature carries the
-        ``is_placeholder_geometry=True`` property; downstream consumers
-        should treat the geometry as a sentinel until the Spatial Data
-        ingest lands.
-
-    Raises:
-        ``IUCNInputError``: bad species name or region.
-        ``IUCNAuthError``: no key resolved, or IUCN rejected the key.
-        ``IUCNNotFoundError``: never raised at v0.1 — unknown species
-            instead returns an FGB carrying ``category="DD"`` with the
-            data-deficient sentinel populated. Reserved for v0.2 hardening.
-        ``IUCNUpstreamError``: network / 5xx / parse failure (retryable).
-
-    FR-CE-8: routed through ``read_through`` so identical
-    ``(species_name_lower, region)`` calls within the 30-day window reuse
-    the cached FlatGeobuf. The api_key value itself is NEVER part of the
-    cache key.
+    Single-feature output carries ``taxonid``, ``scientific_name``, ``category``,
+    ``criteria``, ``population_trend``, habitat-system bools, elevation/depth
+    bounds, and ``is_placeholder_geometry``. Cached static-30d (key never includes
+    the api_key). Raises ``IUCNInputError`` / ``IUCNUpstreamError`` (retryable).
     """
     # ---- Input validation ----
     norm_name = _validate_species_name(species_name)

@@ -693,55 +693,36 @@ def fetch_wdpa_protected_areas(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch World Database on Protected Areas (WDPA) polygons clipped to a bbox.
+    """World Database on Protected Areas (WDPA) polygons clipped to a bbox. [protected-area polygons]
 
-    **What it does:** Queries the UNEP-WCMC WDPA ArcGIS REST FeatureServer
-    (``services5.arcgis.com/Mj0hjvkNtV7NRhA7``) with a spatial envelope filter,
-    paginates all matching protected-area polygons into a FlatGeobuf, and
-    optionally filters by designation type client-side. Global coverage,
-    monthly WDPA releases, cached ``static-30d``. No API key required.
+    Use this when:
+    - You need protected-area boundaries for a study area (e.g. National Parks over
+      a flood-risk surface), the fraction of a hazard footprint on protected land,
+      or classifying occurrence points by protected/unprotected designation.
 
-    **When to use:**
-    - Agent needs protected-area boundaries for a study area — e.g. overlay
-      National Parks or National Wildlife Refuges on a flood risk surface.
-    - Workflow must compute the fraction of a hazard footprint that intersects
-      protected lands (conservation-impact analysis).
-    - User asks about biodiversity context inside vs outside protected status.
-    - Filtering ``fetch_gbif_occurrences`` or ``fetch_inaturalist_observations``
-      results by protected/unprotected designation.
+    Do NOT use this for:
+    - Species occurrence points -- use ``fetch_gbif_occurrences`` /
+      ``fetch_inaturalist_observations`` / ``fetch_ebird_observations``.
+    - Species threat status / range -- use ``fetch_iucn_red_list_range``.
+    - Jurisdictional (county/state) boundaries -- use ``fetch_administrative_boundaries``.
 
-    **When NOT to use:**
-    - Parcel-level land ownership or cadastral boundaries (WDPA covers
-      conservation designations only; use county assessor data for parcels).
-    - Private conservation easements not registered with UNEP-WCMC.
-    - Tribal lands (use TIGER AIANNH or a BIA dataset).
-    - Single-point inside/outside test (fetch the bbox once, test locally).
+    Honesty: an unknown ``designation_filter`` (or a known one matching 0 of N>0
+    areas) fails loud listing accepted/present designations, never a silent empty;
+    an empty bbox over open water returns a valid 0-feature layer. No API key.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Example: ``(-82.0, 25.0, -80.0, 26.5)`` for Everglades region.
-    - ``designation_filter`` (list[str] or None): list of designations to
-      retain, e.g. ``["National Park", "National Wildlife Refuge"]``. Each
-      entry is NORMALIZED to the exact live ``desig_eng`` token, so case
-      variants ("national park"), plurals ("National Parks"), and common
-      abbreviations ("NP", "NWR") all resolve. An unknown designation raises
-      ``WDPADesignationError`` (non-retryable) listing the accepted forms
-      rather than silently filtering everything out. ``None`` returns all
-      designations. Filter is applied client-side after the spatial fetch.
+    Returns a vector LayerURI that auto-renders -- do not call publish_layer.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
-    FlatGeobuf with fields: ``name_eng``, ``desig_eng``, ``iucn_cat``,
-    ``status``, ``status_yr``, ``site_id``. Empty bbox over open water returns
-    a valid 0-feature FlatGeobuf (not an error).
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+        designation_filter: optional list of designations to retain, e.g.
+            ``["National Park", "National Wildlife Refuge"]``. Each entry is
+            normalized to the exact live ``desig_eng`` token (case variants,
+            plurals, and abbreviations like "NP"/"NWR" all resolve); None keeps
+            all. Applied client-side after the spatial fetch.
 
-    **Cross-tool dependencies:**
-    - Pairs with: ``fetch_gbif_occurrences``, ``fetch_inaturalist_observations``
-      (conservation layer context).
-    - Upstream of: ``compute_zonal_statistics`` for inside/outside protected
-      area summaries.
-    - Complemented by: ``fetch_administrative_boundaries`` for jurisdictional
-      boundary overlay.
+    Output fields: ``name_eng``, ``desig_eng``, ``iucn_cat``, ``status``,
+    ``status_yr``, ``site_id``. Cached static-30d. Pairs with
+    ``compute_zonal_statistics`` for inside/outside protected-area summaries.
     """
     _validate_bbox(bbox)
 

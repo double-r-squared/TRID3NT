@@ -81,7 +81,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -1063,7 +1063,11 @@ def _fetch_nid_bytes(
 )
 def fetch_usace_dams(
     bbox: tuple[float, float, float, float] | None = None,
-    hazard_potential: str | list[str] | None = None,
+    hazard_potential: (
+        Literal["High", "Significant", "Low", "Undetermined"]
+        | list[Literal["High", "Significant", "Low", "Undetermined"]]
+        | None
+    ) = None,
     state: str | list[str] | None = None,
     token: str | None = None,
     secret_ref: Any | None = None,
@@ -1071,108 +1075,57 @@ def fetch_usace_dams(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """USACE National Inventory of Dams (NID) as a FlatGeobuf point layer.
+    """USACE National Inventory of Dams (NID) point features as a FlatGeobuf [vector fetcher].
 
-    What it does:
-        Fetches U.S. Army Corps of Engineers National Inventory of Dams
-        records as point features with full NID attribute payload —
-        identification, ownership, physical structure (height, length,
-        storage, drainage area), hazard potential classification,
-        condition assessment, and emergency-action-plan status.
-        Resolves AUTHORITATIVE-first: when a USACE NID token is available
-        (kwarg / per-Case ``secret_ref`` / ``GRACE2_USACE_NID_TOKEN`` env) it
-        queries the regulatory source-of-truth at
-        ``geospatial.sec.usace.army.mil``; otherwise (and on any non-auth
-        authoritative failure) it degrades to the public ESRI Living Atlas
-        mirror of the NID FeatureService. A supplied-but-rejected token
-        raises a credential-shaped error so the agent surfaces a credential
-        card to re-enter a valid token.
+    Resolves AUTHORITATIVE-first: with a NID token (kwarg / per-Case
+    ``secret_ref`` / ``GRACE2_USACE_NID_TOKEN``) it queries the regulatory
+    source-of-truth at ``geospatial.sec.usace.army.mil``; otherwise it degrades to
+    the public ESRI Living Atlas mirror of the NID FeatureService.
 
-    When to use:
-        - User asks about dams in a region ("what dams are upstream of X?",
-          "show me every high-hazard dam in California").
-        - Flood-modeling workflow needs upstream dam locations / spillway
-          capacity / storage volume to gauge dam-break or controlled-release
-          scenarios.
-        - Damage / risk assessment needs to overlay critical infrastructure
-          (high-hazard-potential dams) on hazard footprints.
-        - Pelicun building / asset analysis needs dam infrastructure context.
+    Use this when:
+    - The user asks about dams in a region ("dams upstream of X?", "every
+      high-hazard dam in California").
+    - A flood / dam-break / risk workflow needs dam locations, storage, or
+      hazard-potential class as critical-infrastructure context.
 
-    When NOT to use:
-        - DO NOT use for levees — use a future ``fetch_usace_nld_levees``
-          tool (National Levee Database is a sibling but separate inventory).
-        - DO NOT use for building structures — use ``fetch_usace_nsi``
-          (National Structure Inventory) for Pelicun assets.
-        - DO NOT use for downstream hydrologic routing — query NHD via
-          ``fetch_river_geometry`` or NWM streamflow forecasts separately.
-        - DO NOT use for non-US dams — NID is US-only.
-        - DO NOT use for live reservoir operations data — NID is a static
-          inventory; CWMS / USGS NWIS handle real-time reservoir levels.
+    Do NOT use this for: levees (use ``fetch_usace_levees`` -- the NLD is the
+    sibling inventory); building structures (``fetch_usace_nsi`` /
+    ``fetch_buildings``); downstream hydrologic routing (``fetch_river_geometry``);
+    non-US dams (NID is US-only); live reservoir operations (NID is a static
+    inventory).
 
-    Parameters:
-        bbox: Optional ``(min_lon, min_lat, max_lon, max_lat)`` envelope in
-            EPSG:4326. Type: 4-float tuple, lon/lat ordered min-then-max
-            on each axis. Example: ``(-82.5, 26.0, -81.0, 27.0)`` for the
-            Fort Myers / Cape Coral area returns ~10-20 dam features.
-            When None, the tool sweeps the full CONUS+AK+HI dam population
-            (capped at 50k features); the Wave-1.5 chat-warning gate uses
-            ``estimate_payload_mb`` to warn the user before a global sweep
-            commits.
-        hazard_potential: Optional NID hazard-potential filter. A single value
-            or a list, case-insensitive, each one of ``"High"`` /
-            ``"Significant"`` / ``"Low"`` / ``"Undetermined"``. Applied
-            server-side as ``HAZARD_POTENTIAL IN (...)`` so "show every
-            high-hazard dam in X" pulls only matching dams. Example:
-            ``hazard_potential="High"`` or
-            ``hazard_potential=["High", "Significant"]``.
-        state: Optional NID state filter. A single value or list; full state
-            NAMES (``"Nevada"``, ``"North Carolina"``) or 2-letter USPS
-            abbreviations (``"NV"``) are both accepted and normalized to the
-            NID ``STATE`` column form. Applied server-side as
-            ``STATE IN (...)``.
-        token: Optional explicit USACE NID authoritative-endpoint token
-            (highest-priority resolution path). When set, the authoritative
-            ``geospatial.sec.usace.army.mil`` endpoint is queried first.
-        secret_ref: Optional ``SecretRecord`` (from the per-Case secrets
-            panel) -> resolved to the token via ``Persistence.get_secret_value``
-            at invocation time (the production path). A token that resolves
-            but is rejected by the server raises ``USACEDAMSAuthError`` (the
-            credential-card path); a token that does NOT resolve degrades to
-            the public mirror.
+    Honesty: NID is a Tier-1 static regulatory inventory, not a live reservoir /
+    condition feed. A supplied-but-rejected token raises a credential-shaped error
+    (credential-card re-entry); an unresolved token silently uses the public
+    mirror. On upstream failure raises a typed retryable error (FR-AS-11).
+
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Often downstream of ``geocode_location`` /
+    ``fetch_administrative_boundaries`` (derive bbox), then
+    ``clip_vector_to_polygon`` / ``compute_zonal_statistics``. Cached
+    ``static-30d`` (NID updates quarterly); the token is excluded from the cache
+    key (records do not vary by caller).
+
+    Params:
+        bbox: Optional ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326;
+            None -> CONUS+AK+HI sweep (capped 50k features). Example Fort Myers:
+            ``(-82.5, 26.0, -81.0, 27.0)``.
+        hazard_potential: Optional NID hazard-class filter, single value or list,
+            case-insensitive: ``"High"`` / ``"Significant"`` / ``"Low"`` /
+            ``"Undetermined"``. Default None = no filter. Applied server-side.
+        state: Optional state filter, single value or list; full names
+            (``"Nevada"``) or 2-letter USPS codes (``"NV"``) both accepted.
+        token: Optional explicit NID authoritative-endpoint token
+            (highest-priority path).
+        secret_ref: Optional per-Case ``SecretRecord`` resolved to the token at
+            invocation; a resolved-but-rejected token raises ``USACEDAMSAuthError``.
 
     Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nid_dams/<key>.fgb``
-        containing point geometries (``Point`` in EPSG:4326) and the
-        canonical NID attribute schema — ``NIDID``, ``NAME``, ``STATE``,
-        ``DAM_HEIGHT``, ``NID_STORAGE``, ``HAZARD_POTENTIAL``,
+        ``LayerURI(layer_type="vector", role="primary")`` -> FlatGeobuf of
+        ``Point`` features in EPSG:4326 with the NID schema (``NIDID``, ``NAME``,
+        ``STATE``, ``DAM_HEIGHT``, ``NID_STORAGE``, ``HAZARD_POTENTIAL``,
         ``CONDITION_ASSESSMENT``, ``EAP_PREPARED``, ``YEAR_COMPLETED``,
-        ``PRIMARY_DAM_TYPE``, ``PRIMARY_PURPOSE``, etc. Downstream tools
-        consume ``NIDID`` (join key), ``HAZARD_POTENTIAL`` (filter), and
-        ``NID_STORAGE`` / ``DAM_HEIGHT`` (sizing). ``layer_type="vector"``,
-        ``role="primary"``, ``units=None``.
-
-    Cross-tool dependencies:
-        Consumes optional bbox from ``fetch_administrative_boundaries`` /
-        ``geocode_location`` (typical agent workflow: geocode "Lake Mead" →
-        derive bbox → call this tool). Feeds into ``clip_vector_to_polygon``
-        (clip dams to watershed / county / Case AOI), and into
-        ``compute_zonal_statistics`` / Pelicun composers that pair dam
-        location with hazard footprints from ``run_model_flood_scenario``.
-
-    Cache: ``static-30d`` (NID is updated quarterly at fastest; a 30-day
-    bucket gives ~12x amortization). Cache key: SHA-256 of bbox-rounded-6dp
-    or "global" sentinel.
-
-    External-API resilience (NFR-R-1): The ESRI Living Atlas cluster
-    occasionally returns 5xx during ESRI maintenance windows. On network
-    failure / non-2xx / malformed JSON / ArcGIS error envelope the tool
-    raises ``USACEDAMSUpstreamError(retryable=True)`` so the agent's
-    FR-AS-11 surface decides whether to retry, clarify, or fall back.
-
-    Source-tier: FR-HEP-2 Tier 1 (USACE is the regulatory authority for
-    the NID). Claims derived from this tool should be marked
-    ``source_authority_tier=1`` in any ``ClaimSet`` aggregation.
+        ``PRIMARY_DAM_TYPE``, ``PRIMARY_PURPOSE``).
     """
     # bbox quantization for cache-key stability + pre-flight validation.
     q_bbox: tuple[float, float, float, float] | None

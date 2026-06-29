@@ -582,61 +582,48 @@ def fetch_hifld_transmission_lines(
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """HIFLD electric power transmission lines within a bbox as a FlatGeobuf layer.
+    """HIFLD electric power transmission LINES within a bbox as a FlatGeobuf [vector fetcher].
 
-    Fetches national Homeland Infrastructure Foundation-Level Data (HIFLD)
-    ``Electric Power Transmission Lines`` polyline segments intersecting a bbox,
-    from a public, unauthenticated ArcGIS REST FeatureService. Returns a
-    FlatGeobuf of ``LineString`` / ``MultiLineString`` features in EPSG:4326 with
-    the HIFLD attribute payload (ID, TYPE, STATUS, OWNER, VOLTAGE, VOLT_CLASS,
-    connected substations SUB_1 / SUB_2) plus ``infra_type`` / ``infra_label``.
+    National Homeland Infrastructure Foundation-Level Data (HIFLD) electric power
+    transmission polyline segments intersecting a bbox, from a public ArcGIS REST
+    FeatureService. The LINE (power-grid backbone) complement to the POINT lifeline
+    inventory in ``fetch_hifld_critical_infrastructure``.
 
-    This is the LINE (power-grid backbone) complement to the POINT lifeline
-    inventory in ``fetch_hifld_critical_infrastructure`` — pair the two
-    (power_plants points + transmission lines) for full electric-power exposure.
-
-    **When to use:**
+    Use this when:
     - "Where are the power transmission lines near [place]?"; "show the electric
-      grid in this area"; "what high-voltage lines cross this footprint?".
-    - A hazard / exposure workflow needs the transmission network inside a flood
-      / fire / surge / earthquake footprint (intersect with
+      grid"; "what high-voltage lines cross this footprint?".
+    - A hazard / exposure / lifeline-resilience workflow needs the transmission
+      network inside a flood / fire / surge / earthquake footprint (intersect via
       ``compute_zonal_statistics`` or ``clip_vector_to_polygon``).
-    - Lifeline resilience: which corridors / voltage classes are hazard-exposed.
 
-    **When NOT to use:**
-    - Power PLANTS / hospitals / schools / fire / police POINTS ->
-      ``fetch_hifld_critical_infrastructure``. Dams -> ``fetch_usace_dams``.
-    - Non-US areas (HIFLD is US-only). Real-time grid load / outage status
-      (HIFLD is static). Last-mile distribution lines (HIFLD is bulk transmission).
+    Do NOT use this for: power PLANTS / hospitals / schools / fire / police POINTS
+    (use ``fetch_hifld_critical_infrastructure``); regulated industrial facilities
+    (``fetch_epa_frs_facilities``); dams (``fetch_usace_dams``); non-US, real-time
+    grid load / outage, or last-mile distribution (HIFLD is US-only, static, bulk
+    transmission).
 
-    **Parameters:**
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required —
-            ``supports_global_query=False``. Example Houston metro:
-            ``(-95.8, 29.5, -95.0, 30.1)``.
-        min_voltage_kv: Optional nominal-voltage floor in kV. When set, only
-            segments with ``VOLTAGE >= min_voltage_kv`` are returned (e.g.
-            ``230`` or ``345`` to isolate the high-voltage backbone). Default
-            ``None`` returns all voltage classes.
+    Honesty: HIFLD is a static inventory, NOT a live grid-status feed; upstream
+    failure raises a typed retryable error (FR-AS-11). Empty bbox returns an empty
+    FGB, not an error.
 
-    **Returns:**
-        ``LayerURI`` -> FlatGeobuf of ``LineString`` / ``MultiLineString``
-        features in EPSG:4326. Properties carry the HIFLD source columns plus
-        ``infra_type`` (always ``"transmission_line"``) and ``infra_label``.
-        ``layer_type="vector"``, ``role="primary"``,
-        ``style_preset="hifld_transmission_lines"``, ``units="kV"``.
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Pair with ``fetch_hifld_critical_infrastructure``
+    (power_plants points) for full electric-power exposure. Cached ``static-30d``;
+    no API key required.
 
-    **Error types (FR-AS-11):**
-        - ``HIFLDTransmissionInputError``: bad bbox or min_voltage_kv
-          (retryable=False).
-        - ``HIFLDTransmissionUpstreamError``: HTTP/network failure, ArcGIS error
-          envelope, or FlatGeobuf serialization failure (retryable=True).
-        - ``HIFLDTransmissionEmptyError``: no segments in bbox (retryable=False;
-          not raised by default — empty FGB is returned).
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. REQUIRED (no
+            global query). Example Houston metro: ``(-95.8, 29.5, -95.0, 30.1)``.
+        min_voltage_kv: Optional nominal-voltage floor in kV; only segments with
+            ``VOLTAGE >= min_voltage_kv`` returned (e.g. ``230`` / ``345`` for the
+            high-voltage backbone). Default None returns all classes.
 
-    Cache: ``ttl_class="static-30d"``, ``source_class="hifld_transmission_lines"``.
-    Cache key is SHA-256 of ``(bbox-rounded-6dp, min_voltage_kv)``.
-
-    ``supports_global_query=False``. No API key required.
+    Returns:
+        ``LayerURI(layer_type="vector", role="primary", units="kV",
+        style_preset="hifld_transmission_lines")`` -> FlatGeobuf of ``LineString``
+        / ``MultiLineString`` in EPSG:4326 with HIFLD columns (ID, TYPE, STATUS,
+        OWNER, VOLTAGE, VOLT_CLASS, SUB_1, SUB_2) plus ``infra_type`` /
+        ``infra_label``.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

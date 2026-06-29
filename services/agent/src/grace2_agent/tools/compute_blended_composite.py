@@ -489,120 +489,58 @@ def compute_blended_composite(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Bake/blend/drape TWO raster layers into ONE composite COG, server-side.
+    """Bake TWO rasters into ONE blended composite COG, server-side (shaded relief / shaded land cover) [terrain/raster compositor].
 
-    Reads two rasters, aligns the overlay to the base grid, multiply-blends
-    them per-pixel, and returns a SINGLE new raster ``LayerURI`` (an RGBA COG
-    with overviews). This is how you produce a *shaded land cover* (land-cover
-    RGB x hillshade grayscale), a *shaded relief* (colored relief x hillshade),
-    or any "drape layer A over layer B" composite.
+    Use this when:
+    - The user asks to "blend", "multiply", "drape", "combine", or "shade" two
+      raster layers into one (shaded relief, shaded land cover).
+    - Shaded land cover: ``fetch_landcover`` handle (base, palette-aware) x
+      ``compute_hillshade`` (overlay), multiply.
+    - Shaded relief: ``compute_colored_relief`` (base) x ``compute_hillshade``
+      (overlay), multiply.
 
-    The BASE may be a PALETTED / CATEGORICAL single-band raster (CRITICAL):
-        The base does NOT have to be a 3-band RGB image. A single-band raster
-        that carries an EMBEDDED GDAL color table — e.g. the NLCD land-cover
-        COG returned by fetch_landcover, whose pixels are class indices with a
-        palette attached — is fully supported. This tool reads that embedded
-        color table and applies it (index -> palette RGBA) BEFORE blending, so
-        blending the land cover DIRECTLY yields the real NLCD CLASS colors
-        (forest green, water blue, developed grey, cropland tan, etc.) draped
-        with the hillshade.
+    Do NOT use this for: combining VECTOR layers (raster-only); layers to keep
+    independently toggleable (keep separate); producing the hillshade or colored
+    relief itself (use ``compute_hillshade`` / ``compute_colored_relief`` first,
+    then blend here).
 
-        Therefore, to "bake"/"shade" NLCD land cover, pass the land-cover layer
-        handle (from fetch_landcover) STRAIGHT IN as ``base_layer_uri`` and the
-        hillshade as ``overlay_layer_uri``. Do NOT pre-colorize the land cover
-        first, and do NOT substitute compute_colored_relief as the base in its
-        place — colored_relief is ELEVATION colors (a DEM color ramp), NOT
-        land-cover classes, so using it loses the land-cover information and
-        produces a terrain map, not a shaded land-cover map. (A single-band
-        base with NO color table — a true grayscale base such as a raw
-        hillshade — is broadcast to R=G=B grayscale, the historical behavior.)
+    Honesty: MapLibre cannot multiply-blend rasters in the browser, so baking is
+    the only path -- never tell the user to set a client blend mode. Raises a
+    typed ``BlendedCompositeError`` on failure.
 
-    CRITICAL — NEVER tell the user to set a client-side blend / multiply /
-    opacity blend mode on the map. MapLibre GL (the web client's renderer)
-    CANNOT multiply-blend two raster layers in the browser. The ONLY way to
-    deliver a multiply-blended / shaded / draped composite is to bake it into
-    one raster with THIS tool and publish that single layer. If a user asks to
-    "combine", "blend", "multiply", "drape", "overlay … as a shaded base",
-    "shade the land cover with the hillshade", or "make a shaded relief", call
-    compute_blended_composite — do not instruct the user to change a map blend
-    setting.
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
 
-    When to use:
-        - Shaded / baked land cover: NLCD land cover (base) x hillshade
-          grayscale (overlay), blend_mode="multiply". Pass the fetch_landcover
-          handle DIRECTLY as base_layer_uri — it is palette-aware (see above),
-          so the composite shows the NLCD class colors shaded by terrain. Do
-          NOT colorize it first and do NOT use compute_colored_relief as the
-          base (that is elevation colors, not land-cover classes).
-        - Shaded relief: colored relief (base) x hillshade grayscale (overlay),
-          blend_mode="multiply".
-        - Any request to bake/combine/drape/blend two raster layers into one.
-        - The user wants a cartographic shaded base they can put other overlays
-          on top of.
-
-    When NOT to use:
-        - Combining two VECTOR layers (this is raster-only).
-        - Stacking layers that should stay independently toggleable in the
-          LayerPanel (keep them as separate published layers instead).
-        - Producing the hillshade or colored relief itself (use
-          compute_hillshade / compute_colored_relief first, then blend).
-
-    Blend modes:
-        "multiply" (default): result = base_rgb * (overlay_gray/255). Darkens
-            the base where the overlay (hillshade) is dark — the canonical
-            hillshade-drape / shaded-relief / shaded-landcover blend.
-        "screen": inverse multiply; lightens the base (rarely used for shading).
-        "overlay": multiply in the dark half, screen in the light half —
-            contrast-preserving.
-        "normal": alpha-composite the (grayscale) overlay straight over the
-            base, honoring overlay_opacity as alpha; no shading math.
+    Palette-aware base (CRITICAL): a single-band CATEGORICAL raster with an
+    embedded GDAL color table -- e.g. the NLCD land-cover COG from
+    ``fetch_landcover`` -- is colorized through its color table (index ->
+    palette RGBA) BEFORE blending, so the composite shows real NLCD class colors
+    (forest green, water blue, etc.) draped with the hillshade. Pass the
+    ``fetch_landcover`` handle DIRECTLY as ``base_layer_uri``; do NOT pre-
+    colorize it and do NOT substitute ``compute_colored_relief`` (that is
+    ELEVATION colors, losing the land-cover classes).
 
     Params:
-        base_layer_uri: layer handle (layer_id) OR gs:///s3:// URI of the BASE
-            raster — the colored OR PALETTED/CATEGORICAL layer you want to keep
-            the hue of (e.g. the NLCD land cover from fetch_landcover, or the
-            colored relief). A single-band paletted/categorical base (NLCD land
-            cover) is colorized through its EMBEDDED color table automatically,
-            so pass the fetch_landcover handle DIRECTLY here — do not pre-
-            colorize it and do not swap in compute_colored_relief (elevation
-            colors) when the user wanted land cover. Pass the handle returned by
-            the producing tool (fetch_landcover / compute_colored_relief / …);
-            the server resolves it to the real COG URI.
-        overlay_layer_uri: layer handle OR URI of the OVERLAY raster — typically
-            a grayscale hillshade (compute_hillshade). It is reprojected/
-            resampled onto the base grid automatically; a single-band overlay is
-            used as-is, a multi-band overlay is averaged to grayscale.
-        blend_mode: one of the four modes above. Defaults to "multiply".
-        overlay_opacity: 0.0–1.0. 1.0 (default) = the overlay fully multiplies;
-            0.5 = a half-strength shade; 0.0 = the base unchanged.
+        base_layer_uri: layer handle OR URI of the BASE raster (the colored /
+            paletted layer whose hue is kept -- NLCD land cover or colored
+            relief). The server resolves a handle to its COG URI.
+        overlay_layer_uri: layer handle OR URI of the OVERLAY (typically a
+            grayscale hillshade); reprojected / resampled onto the base grid.
+        blend_mode: ``"multiply"`` (default; canonical shade), ``"screen"``,
+            ``"overlay"``, or ``"normal"`` (alpha-composite, honors opacity).
+        overlay_opacity: 0.0-1.0; 1.0 (default) = overlay fully multiplies.
 
     Returns:
-        A ``LayerURI`` (layer_type="raster") pointing at an RGBA COG in the
-        cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/blended/<key>.tif``.
-        The output shares the BASE's CRS + grid and is clipped to the overlap
-        extent (the base is the canvas; base pixels uncovered by the overlay
-        keep the base color). Pass the returned handle to ``publish_layer`` to
-        put the single shaded layer on the map. layer_id/name are derived like
-        "Shaded <base>".
+        A ``LayerURI`` (``layer_type="raster"``, RGBA COG) in the static-30d
+        cache, sharing the BASE's CRS and grid, clipped to the overlap extent.
 
-    FR-CE-8: routed through ``read_through`` so identical
+    FR-CE-8: routed through ``read_through`` -- identical
     ``(base_layer_uri, overlay_layer_uri, blend_mode, overlay_opacity)`` calls
-    reuse the cached composite. 30-day TTL (the composite is fully determined
-    by its two inputs).
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``fetch_landcover`` / ``compute_colored_relief`` — the BASE raster.
-        - ``compute_hillshade`` — the OVERLAY grayscale hillshade.
-        Downstream (feeds):
-        - ``publish_layer`` — pass the returned handle as ``layer_uri`` to put
-          the single shaded composite on the map.
+    reuse the cached composite (30-day TTL).
 
     Raises:
-        BlendedCompositeError: if either input cannot be fetched, the blend
-            fails, or an unsupported blend_mode is requested. Carries
-            ``error_code`` for the pipeline strip.
+        BlendedCompositeError: an input cannot be fetched, the blend fails, or
+            an unsupported ``blend_mode`` is requested. Carries ``error_code``.
     """
     if blend_mode not in _VALID_BLEND_MODES:
         raise BlendedCompositeError(

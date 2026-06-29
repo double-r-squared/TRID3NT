@@ -469,89 +469,43 @@ def fetch_usfs_canopy_fuels(
     # tool_arg_normalizer, but kept as belt-and-suspenders per job-0164).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch USFS canopy base height (CBH) or canopy bulk density (CBD) raster for a CONUS bbox.
+    """USFS LANDFIRE canopy-fuel raster -- canopy base height (CBH) or bulk density (CBD) -- for a CONUS bbox. [fuels | raster]
 
-    Fetches a 30 m LANDFIRE LF2022 canopy-fuel raster for the requested area.
-    CBH (canopy base height) and CBD (canopy bulk density) are the two canopy
-    structural inputs required by surface-to-crown fire transition models
-    (FlamMap, FARSITE, FSim, ELMFIRE). CBH quantifies how close to the ground
-    the tree canopy begins; CBD quantifies how densely packed the canopy fuel
-    mass is. Together they determine whether a surface fire can transition to a
-    crown fire and how fast the crown fire runs.
+    Fetches a 30m LANDFIRE LF2022 canopy-structure raster from the USGS-hosted
+    ImageServer (lfps.usgs.gov; USDA Forest Service + USGS). CBH = how close to
+    the ground the canopy begins; CBD = how densely packed the canopy fuel mass
+    is -- together the surface-to-crown fire-transition inputs for FlamMap,
+    FARSITE, FSim, ELMFIRE, QUIC-Fire. No API key. Cached static-30d.
 
-    When to use:
-        - User asks for canopy base height, canopy fuel loading, canopy bulk
-          density, or crown fuel structure for a CONUS area.
-        - Agent needs CBH or CBD as input to a wildfire-spread or crown-fire
-          model (FlamMap, FARSITE, FSim, ELMFIRE, QUIC-Fire).
-        - User asks about spotting potential, torching probability, or
-          crown-fire transition risk for a forested area.
-        - Workflow needs to assess how the forest canopy structure affects
-          fire behaviour above the surface fuel bed.
+    Use this when:
+    - User asks for canopy base height, canopy bulk density, crown-fuel
+      structure, spotting / torching / crown-fire transition risk for an area.
+    - Agent needs CBH or CBD as a crown-fire model input.
 
-    When NOT to use:
-        - DO NOT use for surface fuel models (Anderson 13 or Scott-Burgan 40):
-          use ``fetch_landfire_fuels`` with ``layer="fbfm40"`` or
-          ``layer="fbfm13"`` instead.
-        - DO NOT use for active fire perimeters or current fire detections:
-          use ``fetch_nifc_fire_perimeters`` or ``fetch_firms_active_fire``.
-        - DO NOT use for historic burn severity or burned-area boundaries:
-          use ``fetch_mtbs_burn_severity``.
-        - DO NOT use for non-CONUS coverage: AK / HI / PRVI LANDFIRE mosaics
-          exist but are not supported at v0.1
-          (``OQ-A14-CANOPY-FUELS-REGION-DISPATCH``).
+    Do NOT use this for:
+    - Surface fuel models (Anderson 13 / Scott-Burgan 40) -- use
+      fetch_landfire_fuels with layer="fbfm40" or "fbfm13".
+    - Active fire perimeters / detections -- use fetch_nifc_fire_perimeters or
+      fetch_firms_active_fire.
+    - Historic burn severity -- use fetch_mtbs_burn_severity.
+    - Non-CONUS areas (AK/HI/PRVI dispatch deferred at v0.1).
+
+    Honesty: a bbox outside CONUS coverage (all-nodata) raises a typed empty
+    error rather than caching a blank raster.
+
+    Returns a raster LayerURI (GeoTIFF, EPSG:4326, 30m); role="primary";
+    units "m * 10" (CBH) or "kg/m^3 * 100" (CBD) -- divide by 10 / 100 for SI.
 
     Parameters:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            Required (``supports_global_query=False``); CONUS-only at v0.1.
-            Example for San Diego fire country:
-            ``(-117.5, 32.5, -117.0, 33.0)``.
-        layer: Which canopy-fuel layer to fetch:
-            ``"cbh"`` (default): canopy base height, metres × 10 (S16
-                scaled integer). Pixel 50 → 5.0 m height. Value 0 =
-                non-burnable / open water; 1 = non-burnable land.
-                Used by fire models as the height at which crown-fire
-                transition can begin.
-            ``"cbd"``: canopy bulk density, kg/m³ × 100 (S16 scaled
-                integer). Pixel 12 → 0.12 kg/m³. Value 0 = non-burnable.
-                Used by fire models to compute crown-fire rate of spread.
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required,
+      CONUS-only. Example: (-117.5, 32.5, -117.0, 33.0) (San Diego fire country).
+    - layer (default "cbh"): "cbh" (canopy base height, m x 10; pixel 50 -> 5.0 m)
+      or "cbd" (canopy bulk density, kg/m^3 x 100; pixel 12 -> 0.12 kg/m^3).
+      Value 0 = non-burnable / open water.
 
-    Returns:
-        ``LayerURI`` pointing at a GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/usfs_canopy_fuels/<key>.tif``
-        The raster is ``layer_type="raster"``, ``role="primary"``, with
-        ``units`` set to ``"m * 10"`` for CBH or ``"kg/m^3 * 100"`` for CBD.
-        Downstream fire-spread models consume the raw S16 pixel values;
-        divide by 10 (CBH) or 100 (CBD) to get SI units.
-
-    Cross-tool dependencies:
-        - Paired with ``fetch_landfire_fuels`` (``layer="fbfm40"`` or
-          ``"fbfm13"``) to assemble the full 13-layer FARSITE / FlamMap
-          canopy-fuel input deck.
-        - Consumed by the fire-spread workflow alongside surface fuel models,
-          DEM (``fetch_dem``), and weather forcing (``fetch_hrrr_forecast``
-          or ``fetch_raws_weather``) for crown-fire modelling.
-        - Can be intersected with ``fetch_nifc_fire_perimeters`` to assess
-          whether active fire is entering a high-CBD / low-CBH area.
-
-    Raises:
-        ``USFSCanopyFuelsLayerError``: ``layer`` not in ``{"cbh", "cbd"}``;
-            non-retryable.
-        ``USFSCanopyFuelsBboxError``: bbox malformed / out of range /
-            degenerate; non-retryable.
-        ``USFSCanopyFuelsUpstreamError``: LANDFIRE ImageServer network failure,
-            HTTP non-200, JSON error envelope, or non-TIFF body; retryable.
-        ``USFSCanopyFuelsEmptyError``: all-nodata raster — bbox outside CONUS
-            LANDFIRE coverage; non-retryable.
-
-    Cache: ``static-30d`` (FR-DC-2). LANDFIRE LF2022 is a static product;
-    the 30-day window is well inside the publication cadence. Cache key:
-    SHA-256 of ``(layer, bbox-rounded-to-6dp, year="2022")``. A future
-    LF2023 upgrade is a cache-key bump, not silent staleness.
-
-    Source-tier: FR-HEP-2 Tier 1 (USDA Forest Service + USGS authoritative
-    canopy-fuel programme). No API key required. Payload estimate: ~0.5 MB
-    per square degree, clipped to [0.05, 50] MB.
+    Pairs with fetch_landfire_fuels (surface fuels) to assemble the full
+    FARSITE / FlamMap deck; consumed alongside fetch_dem and fetch_hrrr_forecast
+    / fetch_raws_weather; can be intersected with fetch_nifc_fire_perimeters.
     """
     # Validate inputs.
     if layer not in _VALID_LAYERS:

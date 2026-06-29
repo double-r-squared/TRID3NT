@@ -1,53 +1,15 @@
-"""``web_fetch`` atomic tool — generic web page ingest with extraction modes (job-0092).
+"""``web_fetch`` atomic tool -- generic web-page ingest with extraction modes.
 
-This module registers a single atomic tool ``web_fetch`` that fetches an
-arbitrary URL and returns a structured dict with one of four extraction modes:
-``full_html``, ``main_text``, ``json``, or ``metadata``.
+Registers one atomic tool, ``web_fetch``, that fetches an http/https URL and
+returns a structured ``dict`` (one of four extraction modes: ``full_html``,
+``main_text``, ``json``, ``metadata``). Unlike the layer-producing fetchers in
+``data_fetch.py``, the result is a plain dict -- NOT a ``LayerURI`` -- intended
+for the agent's research / event-ingest loop. The 1-hour cache (``dynamic-1h``)
+is keyed on ``(canonicalized url, extract, user_agent)``.
 
-Unlike the layer-producing fetchers in ``data_fetch.py``, this tool returns a
-plain ``dict`` — it is intended for the agent's research / discovery loop
-(e.g. confirming an article subject before extracting event metadata, pulling
-the body of a news article, parsing a small JSON API response). The result is
-NOT a ``LayerURI`` and does not feed the map.
-
-Cache class: ``dynamic-1h`` — web pages change. The 1-hour TTL boundary is
-the only freshness gate (the cache key does not include time directly; the
-TTL-bucket vintage in ``compute_cache_key`` rolls every hour).
-
-Cache key inputs (via ``read_through(params=...)``):
-    - ``url`` (canonicalized: scheme lowercased, default-port stripped,
-      trailing slash on root)
-    - ``extract`` (one of the four modes)
-    - ``user_agent`` (so a UA change forces a refetch and stays attributable)
-
-Output shape (returned as dict; also persisted as JSON blob in the cache):
-    {
-        "url": str (final URL after redirects),
-        "status_code": int,
-        "fetched_at": ISO-8601 str (UTC),
-        "extract_mode": str,
-        "content": str | dict | None,
-        "title": str | None,
-        "lang": str | None,
-        "content_length": int,
-    }
-
-Robots.txt: NOT honored in v0.1 (surfaced as OQ-0092-WEB-FETCH-ROBOTS for
-sprint-13 — a future revision adds a per-host robots cache + allow-check).
-
-Typed errors (FR-AS-11):
-    - ``WebFetchInputError(retryable=False)`` — bad URL (no scheme, malformed)
-      or unknown extract mode.
-    - ``WebFetchUpstreamError(retryable=True)`` — 5xx, timeout, connect error,
-      or JSON decode failure on ``extract="json"``.
-
-External-API resilience (NFR-R-1): per-call timeout, single re-raise on
-fetch failure (no sentinel writes — see ``read_through``). The agent
-FR-AS-11 surface decides retry/clarify/fallback.
-
-FR-TA-3 docstring discipline: the public ``web_fetch`` carries "Use this when"
-and "Do NOT use this for" sections so the FunctionTool surface is
-self-describing to Gemini.
+Public surface, typed errors, and cross-tool seams are documented on the
+``web_fetch`` function docstring below (the tool-catalog description). Internal
+helpers below are implementation detail.
 """
 
 from __future__ import annotations
@@ -163,7 +125,7 @@ def _extract_main_text(html: str) -> tuple[str, str | None, str | None]:
     """Boilerplate-stripped readable text from ``html``.
 
     Strategy: parse with ``lxml`` via BeautifulSoup, remove all boilerplate
-    tags, then preferentially extract from ``<main>`` → ``<article>`` →
+    tags, then preferentially extract from ``<main>`` -> ``<article>`` ->
     ``<body>``. The fallback is the whole soup if none of those land.
 
     Returns ``(text, title, lang)`` so the caller can populate the result
@@ -249,8 +211,8 @@ def _fetch_and_extract_bytes(
 ) -> bytes:
     """Perform the HTTP GET + extraction and return the result dict as JSON bytes.
 
-    The cache shim writes the bytes to GCS verbatim; the tool function then
-    decodes them back to a dict before returning to the caller. This keeps
+    The cache shim writes the bytes to the cache verbatim; the tool function
+    then decodes them back to a dict before returning to the caller. This keeps
     the cache miss/hit paths symmetric (both return JSON-decodable bytes).
     """
     headers = {"User-Agent": user_agent, "Accept": "*/*"}
@@ -363,90 +325,56 @@ def web_fetch(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Generic web-page ingest with content extraction modes.
+    """Fetch one http/https URL; extract its main text, full HTML, JSON, or metadata. [data-only: returns a dict, NOT a map LayerURI]
 
-    Fetches an http/https URL with configurable extraction: stripped article
-    text, full HTML, JSON body, or metadata-only. Results are cached for 1 hour.
-    Returns a structured dict with the extracted content, HTTP status, and
-    provenance fields consumed by downstream claim aggregation.
+    Use this when:
+        - Reading a news-article / incident-report body for event ingest.
+        - Cheaply confirming a page subject (extract="metadata", meta tags only).
+        - Pulling a small public JSON API that has no dedicated fetcher.
 
-    When to use:
-        - Fetching the body of a news article or incident report URL for Case 2
-          event ingest (``run_model_news_event_ingest`` calls this via the
-          registry for "url" sources).
-        - Confirming a page's subject before deeper extraction (use
-          ``extract="metadata"`` — cheapest mode, reads only ``<meta>`` tags).
-        - Pulling a small public-data JSON API response that has no dedicated
-          fetcher tool.
-        - Research or citation checks for a specific URL.
+    Do NOT use this for:
+        - Map layers -- returns text, not geometry; the geospatial fetchers
+          (fetch_dem, fetch_landcover, fetch_administrative_boundaries) render.
+        - Geocoding a place name -- use geocode_location.
+        - Choosing which dataset/endpoint to hit -- use discover_dataset.
+        - The full news->event pipeline -- use run_model_news_event_ingest.
 
-    When NOT to use:
-        - Large file downloads (no streaming surface — use a dedicated fetcher).
-        - Pages requiring JavaScript rendering (server-rendered HTML only; SPA
-          shells with empty bodies will return empty ``content``).
-        - Authenticated endpoints (no credential injection).
-        - Anything a domain-specific atomic tool already covers (``fetch_dem``,
-          ``fetch_landcover``, ``geocode_location``, ``fetch_administrative_boundaries``
-          are always preferred over a raw ``web_fetch`` call to the same upstream).
+    Honesty: a bad URL, 4xx/5xx, or decode failure raises a typed error
+    (WebFetchInputError / WebFetchUpstreamError), never a fake success.
+
+    Action: returns a data-only dict (url, status_code, content, title, lang); it
+    does NOT publish or render a map layer.
 
     Params:
-        url: the absolute http/https URL to fetch. Schemes other than http/https
-            are rejected with ``WebFetchInputError``.
-        extract: one of:
-            - ``"full_html"`` — entire response body as a string in ``content``;
-            - ``"main_text"`` — boilerplate-stripped readable text via
-              BeautifulSoup + lxml (strips ``<script>``, ``<style>``,
-              ``<nav>``, ``<header>``, ``<footer>``, ``<aside>``,
-              ``<noscript>`` and prefers ``<main>``/``<article>`` over
-              ``<body>``); the default — best for article bodies;
-            - ``"json"`` — ``response.json()`` after a Content-Type check
-              (refuses to parse manifestly non-JSON bodies);
-            - ``"metadata"`` — Open Graph + ``<meta>`` tags + ``<title>``
-              only; cheapest mode, no body extraction.
+        url: absolute http/https URL. Other schemes raise WebFetchInputError.
+        extract: "main_text" (default; boilerplate-stripped readable text via
+            BeautifulSoup+lxml, strips script/style/nav/header/footer/aside/
+            noscript, prefers <main>/<article>), "full_html" (raw body), "json"
+            (response.json() after a Content-Type check), or "metadata" (Open
+            Graph + <meta> + <title> only; cheapest).
         timeout_s: per-request timeout in seconds. Default 30.0.
-        user_agent: User-Agent header sent with the request. Defaults to
-            ``"grace2-agent/0.1 (research; contact: grace2-ops@local)"``; the
-            UA is part of the cache key so a change forces a refetch.
+        user_agent: User-Agent header; part of the cache key, so a change forces
+            a refetch.
 
     Returns:
-        A dict with the shape::
+        dict: {url (final, post-redirect), status_code, fetched_at (ISO-8601
+        UTC), extract_mode, content (str|dict|None), title, lang,
+        content_length}. 4xx/5xx never return here -- they raise.
 
-            {
-              "url": str,           # final URL after redirects
-              "status_code": int,   # HTTP status (always 2xx here; 4xx/5xx raise)
-              "fetched_at": str,    # ISO-8601 UTC timestamp of the fetch
-              "extract_mode": str,  # echoes the ``extract`` argument
-              "content": str | dict | None,
-              "title": str | None,  # extracted ``<title>`` if present
-              "lang": str | None,   # extracted ``<html lang=...>`` if present
-              "content_length": int,
-            }
-
-    Caching: the result is cached in GCS at
-    ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/web_fetch/<hash>.json``
-    with the 1-hour TTL window as the only freshness boundary. The cache key
-    inputs are ``(canonicalized url, extract, user_agent)``.
+    Caching: result cached as a JSON blob under the dynamic-1h cache prefix,
+    keyed on (canonicalized url, extract, user_agent); the 1-hour TTL window is
+    the only freshness boundary. (Robots.txt is NOT honored in v0.1.)
 
     Typed errors (FR-AS-11):
-        - ``WebFetchInputError`` (not retryable) — bad URL, unsupported scheme,
-          unknown extract mode, 4xx HTTP response, Content-Type mismatch on
-          ``extract="json"``;
-        - ``WebFetchUpstreamError`` (retryable) — timeout, connection error,
-          5xx response, JSON decode failure.
-
-    Robots.txt: NOT honored in v0.1 (acceptable for research). Surfaced as
-    OQ-0092-WEB-FETCH-ROBOTS for sprint-13 revisit — a future version reads
-    and respects ``robots.txt`` per host before fetching.
+        - WebFetchInputError (not retryable) -- bad URL, unsupported scheme,
+          unknown extract mode, 4xx response, or Content-Type mismatch on json.
+        - WebFetchUpstreamError (retryable) -- timeout, connection error, 5xx,
+          or JSON decode failure.
 
     Cross-tool dependencies:
-        Upstream (consumes):
-        - No tool dependencies — takes a raw URL from the agent or user.
-        Downstream (feeds):
-        - ``aggregate_claims_across_sources`` — the returned dict (with ``url``,
-          ``content``, ``fetched_at``) is passed as an element of the ``sources``
-          list for cross-source claim extraction.
-        - ``run_model_news_event_ingest`` — calls this via the tool registry for
-          each "url"-type source in the ``sources`` input list.
+        - Downstream: aggregate_claims_across_sources (the returned dict feeds
+          the sources list) and run_model_news_event_ingest (calls this per url
+          source).
     """
     if extract not in _ALLOWED_EXTRACT_MODES:
         raise WebFetchInputError(

@@ -561,53 +561,46 @@ def fetch_wfigs_incident(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Resolve a NAMED wildfire incident (NIFC/WFIGS) -> authoritative point + bbox + discovery time.
+    """Resolve a NAMED wildfire incident (NIFC/WFIGS) to a point + AOI bbox + discovery time. DATA-ONLY (not a map layer). [resolver | dict]
 
-    **What it does:** Looks a named wildland-fire incident up in the NIFC WFIGS
-    Incident Locations Current ArcGIS FeatureService and returns its authoritative
-    point of origin (lat/lon), the FireDiscoveryDateTime (ISO UTC), the incident
-    size (acres) + percent contained, the point-of-origin state/county, the IRWIN
-    id, AND a padded AOI bbox built around the point. Resolves BY NAME (a case-
-    insensitive LIKE), so it works for incidents a county geocode would miss
-    (e.g. Santa Rosa Island, an offshore island in Channel Islands National Park).
+    Looks a named wildland-fire incident up in the NIFC WFIGS Incident Locations
+    ArcGIS service (Current, then YearToDate) and returns a DICT: authoritative
+    point (lat/lon), FireDiscoveryDateTime, incident size + percent contained,
+    POO state/county, IRWIN id, AND a padded AOI bbox around the point. Resolves
+    BY NAME (case-insensitive LIKE), so it works for incidents a county geocode
+    would miss (e.g. Santa Rosa Island).
 
-    **When to use:**
-    - The user names a specific active wildfire ("the Iron Fire near Eureka Utah",
-      "the Santa Rosa Island fire") and you need its exact location + when it
-      started before fetching imagery / drawing an AOI.
-    - The upstream step of a satellite fire-animation workflow: resolve the
-      incident -> bbox + a discovery-time sanity floor for the animation window.
-    - Disambiguating a fire by name when a free-text geocode is too coarse.
+    Use this when:
+    - The user names a specific wildfire and you need its exact location + start
+      time before fetching imagery or drawing an AOI.
+    - The upstream "resolve the fire by name -> bbox + window floor" step of a
+      satellite fire-animation workflow.
 
-    **When NOT to use:**
-    - Active-fire pixel detections (use ``fetch_firms_active_fire``).
-    - Fire perimeter polygons (use ``fetch_nifc_fire_perimeters``).
-    - A generic place name with no named incident (use ``geocode_location``).
-    - Historical / contained fires (WFIGS "Current" carries only active
-      incidents; for past fires use ``fetch_mtbs_burn_severity``).
+    Do NOT use this for:
+    - A rendered MAP LAYER -- this returns a data DICT, not a LayerURI; FEED its
+      bbox to fetch_goes_animation / fetch_viirs_day_fire / fetch_goes_active_fire.
+    - Active-fire POINTS -- use fetch_firms_active_fire.
+    - Fire perimeter polygons -- use fetch_nifc_fire_perimeters.
+    - A generic place name with no named incident -- use geocode_location.
+    - Historical / long-contained fires -- use fetch_mtbs_burn_severity.
 
-    **Parameters:**
-    - ``incident_name`` (str): the incident name token, e.g. ``"Iron"`` or
-      ``"Santa Rosa Island"``. A trailing " Fire" is stripped automatically and
-      matching is case-insensitive, so ``"Iron Fire"`` also matches.
-    - ``state`` (str, optional): a US state filter, ``"UT"`` or ``"US-UT"``
-      (either form). Narrows a common name to the right region.
-    - ``bbox_pad_deg`` (float, default 0.25): half-width in degrees of the AOI
-      bbox built around the incident point (E-W widened by 1/cos(lat) so the AOI
-      is roughly square on the ground).
+    Honesty: when both feeds miss, it raises a typed not-found error rather than
+    fabricating a location (no silent / hallucinated hit).
 
-    **Returns:** a JSON-compatible dict with ``incident_name``, ``lat``, ``lon``,
-    ``bbox`` (``[min_lon, min_lat, max_lon, max_lat]`` EPSG:4326),
-    ``fire_discovery_datetime`` (ISO-8601 UTC or null), ``incident_size_acres``,
-    ``percent_contained``, ``poo_state``, ``poo_county``, ``irwin_id``,
-    ``unique_fire_identifier``. Cached ``dynamic-1h``.
+    Returns a JSON-compatible dict with incident_name, lat, lon, bbox
+    ([min_lon, min_lat, max_lon, max_lat] EPSG:4326), fire_discovery_datetime
+    (ISO UTC or null), incident_size_acres, percent_contained, poo_state,
+    poo_county, irwin_id, unique_fire_identifier.
 
-    **Cross-tool dependencies:**
-    - Upstream of: ``fetch_goes_animation`` / ``fetch_viirs_day_fire`` (the AOI
-      bbox + the discovery-time floor for the animation window),
-      ``run_model_satellite_fire_animation``.
-    - Pairs with: ``fetch_firms_active_fire`` + ``fetch_nifc_fire_perimeters``
-      (co-registered hot-pixel + perimeter overlays around the resolved point).
+    Parameters:
+    - incident_name (str): the incident token, e.g. "Iron" or "Santa Rosa
+      Island" (a trailing " Fire" is stripped; matching is case-insensitive).
+    - state (str, optional): US state filter, "UT" or "US-UT" (either form).
+    - bbox_pad_deg (float, default 0.25): half-width in degrees of the AOI bbox
+      (E-W widened by 1/cos(lat) so the AOI is roughly square on the ground).
+
+    Upstream of run_model_satellite_fire_animation; pairs with
+    fetch_firms_active_fire + fetch_nifc_fire_perimeters around the point.
     """
     if not isinstance(incident_name, str) or not incident_name.strip():
         raise WFIGSIncidentInputError(

@@ -614,112 +614,65 @@ def compute_hillshade(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Compute a hillshade raster from a DEM. Wraps ``gdaldem hillshade``.
+    """Compute a HILLSHADE (shaded-relief intensity raster, 0-255) from a DEM [terrain/DEM-derived raster].
 
-    Applies GDAL's hillshade algorithm to a single-band elevation GeoTIFF and
-    returns a single-band uint8 intensity raster (0–255) in the same CRS and
-    grid. Five style presets control illumination direction, blending, and
-    gradient algorithm selection.
+    Use this when:
+    - The user wants a "hillshade", "shaded relief", or "terrain background" to
+      orient other overlays.
+    - You are building a Swiss-style base: grayscale ``compute_colored_relief``
+      x this hillshade, blended by ``compute_blended_composite``.
 
-    When to use:
-        - Providing cartographic terrain context beneath a flood depth, habitat,
-          or hazard overlay so users can orient themselves spatially.
-        - Communicating terrain influence on analysis results (e.g. ridge/valley
-          drainage patterns under a flood scenario).
-        - Constructing a Swiss-style multiply-blend stack: grayscale
-          ``compute_colored_relief`` + hillshade → rich shaded-relief base.
-        - User explicitly requests a "hillshade", "terrain background", or
-          "shaded relief" layer.
+    Do NOT use this for: STEEPNESS (use ``compute_slope``); face DIRECTION (use
+    ``compute_aspect``); quantitative / colored elevation (use
+    ``compute_colored_relief`` or ``compute_zonal_statistics``); contour LINES
+    (use ``compute_contours``).
 
-    When NOT to use:
-        - Slope or aspect analysis (use ``compute_slope`` / ``compute_aspect``).
-        - Quantitative elevation display or statistics (use
-          ``compute_colored_relief`` or ``compute_zonal_statistics``).
-        - Bathymetry or sub-aqueous terrain visualization.
-        - Animated or time-varying terrain (output is a static single-time raster).
+    Honesty: a static single-time GDAL transform; land-surface DEM only (no
+    bathymetry); raises a typed ``HillshadeComputeError`` on failure -- never a
+    fake layer.
 
-    Style preset semantics:
-        "standard": single hillshade, Horn algorithm, azimuth 315°, altitude
-            45° — the GDAL default. Fast, suitable for general use.
-        "swiss_double": two hillshades (Horn @ azimuth 315° + Horn @ 135°)
-            pre-composited via numpy multiply-blend into a single GeoTIFF. The
-            Imhof-style multiply blend gives richer cartographic depth —
-            valleys are darkened (both illuminations see shadow) while ridges
-            remain bright. Best for terrain reading, professional cartography.
-        "multidirectional": single hillshade with GDAL's ``-multidirectional``
-            flag — combines NE/SE/NW/SW illuminations; no dead-lit sides where
-            one direction casts total shadow. Good for complex ridge terrain.
-        "combined": ``-combined`` flag — brightness incorporates slope
-            steepness alongside illumination; best for steep mountainous terrain
-            where standard hillshade washes out high slopes.
-        "smooth": Horn algorithm with ZevenbergenThorne gradient estimator —
-            smoother results on rough or noisy DEMs; less high-frequency noise.
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
 
-    LLM guidance:
-        - Pick "swiss_double" when the user asks for "cartographic" /
-          "professional" / "nice-looking" / "beautiful" terrain rendering.
-        - Pick "multidirectional" when the user mentions "no dead spots" /
-          "see all sides" / "no shadows" on complex terrain.
-        - Pick "combined" for mountains, steep terrain, or when the user wants
-          the slope steepness to be visible in the shading.
-        - Pick "smooth" when the user mentions rough terrain, noisy DEM, or
-          requests smoother results.
-        - Default to "standard" otherwise (cheapest / fastest).
+    Wraps ``gdaldem hillshade``; five ``style`` presets control illumination,
+    blending, and gradient algorithm. Returns a single-band uint8 (0-255)
+    raster in the input CRS and grid.
+
+    Style presets:
+        "standard": single Horn hillshade, azimuth 315 deg, altitude 45 deg
+            (GDAL default). Fast, general use.
+        "swiss_double": two Horn hillshades (315 + 135 deg) numpy
+            multiply-blended -- Imhof-style depth (valleys darkened, ridges
+            bright).
+        "multidirectional": GDAL ``-multidirectional`` (NE/SE/NW/SW); no
+            dead-lit sides. Good for complex ridges.
+        "combined": GDAL ``-combined`` -- brightness folds in slope steepness;
+            best for steep mountains.
+        "smooth": ZevenbergenThorne gradient -- less high-frequency noise on
+            rough / noisy DEMs.
 
     Params:
-        dem_uri: ``gs://`` URI of a DEM GeoTIFF (typically from ``fetch_dem``
-            or a previous fetch pipeline step). Must be a single-band raster
-            with elevation values in meters.
-        style: one of the five preset names above. Controls the illumination
-            algorithm and blending method. Power-user ``algorithm``,
-            ``azimuth``, ``altitude``, and ``z_factor`` overrides are
-            honoured for "standard"; preset-specific behaviour overrides
-            them for other styles (e.g. "smooth" always uses
-            ZevenbergenThorne regardless of ``algorithm``).
-        algorithm: gradient algorithm. ``"Horn"`` (default) — standard 3×3
-            Horn gradient. ``"ZevenbergenThorne"`` — smoother alternative.
-            ``"Igor"`` — Igor's shading (experimental; steep terrain). Only
-            consulted for "standard" and "swiss_double" styles.
-        azimuth: sun azimuth in degrees (0–360, clockwise from north).
-            Default 315° (NW). Only consulted for "standard" and
-            "swiss_double" (primary pass) styles.
-        altitude: sun altitude above the horizon in degrees (0–90). Default
-            45°. Higher values flatten the shading; lower values emphasize
-            terrain relief.
-        z_factor: vertical exaggeration. Default 1.0 (no exaggeration).
-            Values > 1.0 amplify terrain relief — useful for low-relief
-            coastal DEMs.
+        dem_uri: URI of a DEM GeoTIFF (typically ``fetch_dem(...).uri``).
+            Single-band, metres.
+        style: one of the five presets above.
+        algorithm: ``"Horn"`` (default), ``"ZevenbergenThorne"``, or ``"Igor"``;
+            consulted for "standard" / "swiss_double" only.
+        azimuth: sun azimuth degrees (clockwise from north), default 315.
+        altitude: sun altitude degrees above horizon (0-90), default 45.
+        z_factor: vertical exaggeration, default 1.0 (>1 amplifies relief on
+            low-relief coastal DEMs).
 
     Returns:
-        A ``LayerURI`` pointing at a hillshade GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/hillshade/<key>.tif``.
-        For "swiss_double", the URI points at the pre-blended composite;
-        the LLM-visible result is always a single layer. The output is a
-        single-band uint8 GeoTIFF (0–255 intensity) in the same CRS and
-        grid as the input DEM.
+        A ``LayerURI`` (single-band uint8 0-255 raster) in the static-30d
+        cache, same CRS and grid as the input DEM. "swiss_double" returns the
+        single pre-blended composite.
 
-    FR-CE-8: Results are routed through ``read_through`` so repeat calls with
-    the same ``(dem_uri, style, algorithm, azimuth, altitude, z_factor)``
-    tuple return the cached hillshade without re-running gdaldem. TTL is
-    30 days (DEM-derived outputs are stable over that window).
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``fetch_dem`` — primary source of ``dem_uri``; the returned
-          ``LayerURI.uri`` (gs:// COG) is passed directly as ``dem_uri``.
-        Downstream (feeds):
-        - ``publish_layer`` — the returned ``LayerURI`` is passed as
-          ``layer_uri`` to publish the hillshade to QGIS Server WMS.
-        - ``compute_colored_relief`` — combine the two outputs for a
-          Swiss-style shaded-relief stack (colored DEM × hillshade multiply
-          blend).
-        - Any workflow composing a terrain-context base layer, such as
-          ``run_model_flood_habitat_scenario``.
+    FR-CE-8: routed through ``read_through`` -- repeat calls on the same
+    parameter tuple reuse the cached raster (30-day TTL).
 
     Raises:
-        HillshadeComputeError: if gdaldem is unavailable, returns non-zero,
-            the DEM GCS download fails, or the swiss_double blend fails.
-            Error carries ``error_code`` for the pipeline strip.
+        HillshadeComputeError: gdaldem unavailable / non-zero, DEM download
+            fails, or the swiss_double blend fails. Carries ``error_code``.
     """
     effective_bucket = _bucket or CACHE_BUCKET
 

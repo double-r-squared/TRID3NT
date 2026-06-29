@@ -608,55 +608,47 @@ def fetch_hifld_critical_infrastructure(
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """HIFLD critical-infrastructure points by facility type as a FlatGeobuf layer.
+    """HIFLD critical-infrastructure points by facility type as a FlatGeobuf [vector fetcher].
 
-    Fetches national Homeland Infrastructure Foundation-Level Data (HIFLD) point
-    facilities of one ``facility_type`` intersecting a bbox, from a public,
-    unauthenticated ArcGIS REST FeatureService mirror. Returns a FlatGeobuf of
-    ``Point`` features in EPSG:4326 with the HIFLD attribute payload plus
-    ``facility_type`` / ``facility_label`` columns.
+    National Homeland Infrastructure Foundation-Level Data (HIFLD) point
+    facilities of one ``facility_type`` intersecting a bbox, from a public ArcGIS
+    REST FeatureService.
 
-    **When to use:**
-    - "Where are the hospitals / schools / fire stations / police stations near
-      [place]?"; "show critical infrastructure in this area".
-    - A hazard / exposure workflow needs life-safety facility locations inside a
-      flood / fire / surge footprint (intersect with ``compute_zonal_statistics``
+    Use this when:
+    - "Where are the hospitals / schools / fire stations / police / power plants
+      near [place]?"; "show critical infrastructure in this area".
+    - A hazard / exposure workflow needs life-safety POINT facilities inside a
+      flood / fire / surge footprint (intersect via ``compute_zonal_statistics``
       or ``clip_vector_to_polygon``).
-    - Evacuation / shelter / damage-assessment context overlays.
 
-    **When NOT to use:**
-    - Dams -> ``fetch_usace_dams``. Buildings -> ``fetch_usace_nsi``.
-    - Non-US facilities (HIFLD is US-only). Real-time status (HIFLD is static).
-    - An amenity not in the supported set -> use an OSM Overpass fetcher.
+    Do NOT use this for: power transmission LINES (use
+    ``fetch_hifld_transmission_lines``); regulated industrial / waste facilities
+    (use ``fetch_epa_frs_facilities``); dams (``fetch_usace_dams``); buildings
+    (``fetch_usace_nsi``); an amenity outside the supported set (use
+    ``fetch_overpass_pois``); non-US or real-time status (HIFLD is US-only and
+    static).
 
-    **Parameters:**
+    Honesty: HIFLD is a static inventory, NOT a live operational-status feed;
+    upstream failure raises a typed retryable error (FR-AS-11). Empty bbox returns
+    an empty FGB, not an error.
+
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Cached ``static-30d``; no API key required.
+
+    Params:
         facility_type: One of ``"hospitals"``, ``"schools"``, ``"fire_stations"``,
-            ``"police"``, ``"power_plants"`` (aliases accepted: ``"hospital"``,
+            ``"police"``, ``"power_plants"`` (aliases accepted, e.g. ``"hospital"``,
             ``"public_schools"``, ``"fire"``, ``"ems"``, ``"law_enforcement"``,
-            ``"power_plant"``, etc.).
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required —
-            ``supports_global_query=False``. Example Houston metro:
-            ``(-95.8, 29.5, -95.0, 30.1)``.
+            ``"power_plant"``). Kept ``str`` because aliases are resolved
+            server-side.
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. REQUIRED (no
+            global query). Example Houston metro: ``(-95.8, 29.5, -95.0, 30.1)``.
 
-    **Returns:**
-        ``LayerURI`` -> FlatGeobuf of ``Point`` features in EPSG:4326. Properties
-        carry the HIFLD source columns (NAME, ADDRESS, CITY, STATE, ZIP, and
-        type-specific fields) plus ``facility_type`` and ``facility_label``.
-        ``layer_type="vector"``, ``role="primary"``,
-        ``style_preset="hifld_critical_infrastructure"``, ``units=None``.
-
-    **Error types (FR-AS-11):**
-        - ``HIFLDInfraInputError``: unknown facility_type or bad bbox
-          (retryable=False).
-        - ``HIFLDInfraUpstreamError``: HTTP/network failure, ArcGIS error
-          envelope, or FlatGeobuf serialization failure (retryable=True).
-        - ``HIFLDInfraEmptyError``: no features in bbox (retryable=False; not
-          raised by default — empty FGB is returned).
-
-    Cache: ``ttl_class="static-30d"``, ``source_class="hifld_critical_infrastructure"``.
-    Cache key is SHA-256 of ``(facility_key, bbox-rounded-6dp)``.
-
-    ``supports_global_query=False``. No API key required.
+    Returns:
+        ``LayerURI(layer_type="vector", role="primary",
+        style_preset="hifld_critical_infrastructure")`` -> FlatGeobuf of ``Point``
+        features in EPSG:4326 with HIFLD columns (NAME, ADDRESS, CITY, STATE, ZIP,
+        type-specific) plus ``facility_type`` / ``facility_label``.
     """
     # ---- Input validation ----
     facility_key = _resolve_facility_type(facility_type)

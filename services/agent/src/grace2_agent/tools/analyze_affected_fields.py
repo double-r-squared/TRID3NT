@@ -452,47 +452,48 @@ def analyze_affected_fields(
     # tool_arg_normalizer, kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Which farm fields a contaminant plume reaches, ranked — by how badly.
+    """Which farm fields a contaminant plume reaches, ranked by how badly -- a ranked dict, NOT a layer.
 
-    **What it does:** Intersects a MODFLOW groundwater-plume concentration COG
-    (mg/L) against agricultural field-boundary polygons (Fields of The World /
-    fiboa) and reports WHICH fields the plume reaches and HOW MUCH — each
-    affected field's peak + mean concentration and affected area, ranked, plus a
-    headline. Pairs ``run_modflow_job`` (the plume) with ``fetch_field_boundaries``
-    (the fields). The intersection is the existing ``compute_zonal_statistics``
-    vector-zone path; this tool adds the crop_name join, the affected/untouched
-    threshold split, the ranking, and the headline.
+    Use this when:
+        - The user modeled a contaminant spill / groundwater plume near farmland
+          and asks "which fields does it reach", "which farms are affected",
+          "rank the affected fields", or "what crops are hit and how badly".
+        - You have a plume COG (from ``run_modflow_job`` /
+          ``run_model_groundwater_contamination_scenario``) AND a field-boundary
+          vector (from ``fetch_field_boundaries``) in hand.
+    Do NOT use this for:
+        - The end-to-end ask (run the plume + fetch fields + analyze) in one call
+          -- use the ``run_model_contamination_affected_fields`` composer.
+        - Building / structure damage -- use ``compute_impact_envelope`` (Pelicun
+          over a flood layer).
+        - A generic raster-over-polygon summary with no plume semantics -- use
+          ``compute_zonal_statistics`` directly.
+        - Fetching the fields or running the plume (call ``fetch_field_boundaries``
+          / ``run_modflow_job`` first; this tool consumes their outputs).
+    Honest aggregate (Invariant 1): every narrated number is read off the zonal
+    stats + geodesic geometry; an AOI the plume never reaches returns a VALID
+    ``affected_fields=[]`` with an honest headline. Returns a ranked dict, NOT a
+    renderable layer -- cite the readout; nothing to publish_layer here.
 
-    **Use this when:**
-    - The user modeled a contaminant spill / groundwater plume near farmland and
-      asks "which fields does it reach", "which farms are affected", "rank the
-      affected fields", or "what crops are hit and how badly".
-    - You have a plume COG (from ``run_modflow_job`` /
-      ``run_model_groundwater_contamination_scenario``) AND a field-boundary
-      vector (from ``fetch_field_boundaries``) in hand.
-
-    **Do NOT use this for:**
-    - Building / structure damage (use ``compute_impact_envelope`` — that is
-      Pelicun over a flood layer).
-    - A generic raster-over-polygon summary with no plume semantics (use
-      ``compute_zonal_statistics`` directly).
-    - Fetching the fields or running the plume (call ``fetch_field_boundaries``
-      / ``run_modflow_job`` first; this tool consumes their outputs).
+    Intersects a MODFLOW groundwater-plume concentration COG (mg/L) against
+    agricultural field-boundary polygons (Fields of The World / fiboa) via the
+    existing ``compute_zonal_statistics`` vector-zone path, then adds the
+    crop_name join, the affected/untouched threshold split, ranking, and headline.
 
     **Parameters:**
     - ``plume_layer_uri`` (str): the EXACT ``PlumeLayerURI.uri`` a
       ``run_modflow_job`` / ``run_model_groundwater_contamination_scenario`` call
-      returned earlier in this conversation — a plume concentration COG (mg/L,
+      returned earlier in this conversation -- a plume concentration COG (mg/L,
       EPSG:4326). Never invent / construct this value.
     - ``fields_layer_uri`` (str): the EXACT ``LayerURI.uri`` a
-      ``fetch_field_boundaries`` call returned — an FTW / fiboa field-boundary
+      ``fetch_field_boundaries`` call returned -- an FTW / fiboa field-boundary
       FlatGeobuf (each feature carries a ``crop_name``).
     - ``threshold_mgl`` (float | None): the concentration (mg/L) above which a
       field counts as affected. Defaults to the plume detection floor
       (``DEFAULT_THRESHOLD_MGL``) so the affected-field count stays consistent
       with the plume footprint. Raise it to report only fields above a regulatory
       action level.
-    - ``rank_by`` (str): ``"peak"`` (default — rank by peak concentration) or
+    - ``rank_by`` (str): ``"peak"`` (default -- rank by peak concentration) or
       ``"area"`` (rank by affected cropland area).
 
     **Returns:** a dict::
@@ -515,7 +516,7 @@ def analyze_affected_fields(
         }
 
     An AOI whose fields the plume never reaches returns a VALID
-    ``affected_fields=[]`` result with an honest "no fields affected" headline —
+    ``affected_fields=[]`` result with an honest "no fields affected" headline --
     never fabricated content (honesty floor).
 
     **Cross-tool dependencies:**

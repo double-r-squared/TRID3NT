@@ -225,52 +225,44 @@ async def compute_impact_envelope(
     # job-0164: absorb LLM-invented kwargs (Tool argument normalizer ratchet).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Compose flood-layer → structure inventory → Pelicun → ImpactEnvelope.
+    """Aggregate portfolio flood-impact totals into one ImpactEnvelope -- a scalar/dict aggregate, NOT a per-feature damage layer.
+
+    Use this when:
+        - You have a flood-depth LayerURI (from ``run_model_flood_scenario`` /
+          ``run_model_nws_flood_event_scenario`` / a Case's primary flood layer)
+          and the user asks "how much damage", "how many structures impacted",
+          "expected losses", or "displaced population".
+        - The Case summary panel needs a single citable envelope.
+    Do NOT use this for:
+        - Per-asset damage to explore on the map -- call
+          ``run_pelicun_damage_assessment`` or ``run_pelicun_with_buildings``
+          directly; this composer collapses their per-feature output into totals.
+        - Re-aggregating a Pelicun damage layer you already have -- call
+          ``postprocess_pelicun`` directly.
+        - Cases with no flood layer yet (run ``run_model_flood_scenario`` first),
+          or non-flood hazards (the v0.1 fragility set is flood-only).
+    Honest aggregate (Invariant 1): every cited number is read off the typed
+    envelope, never invented. Returns a dict (envelope_summary + narrative), NOT
+    a renderable layer -- cite the totals; nothing to publish_layer here.
 
     Four-step deterministic chain (no LLM in the loop):
 
     1. ``geocode_location(location_query)`` (only when ``bbox`` not given).
-    2. ``fetch_usace_nsi(bbox)`` — preferred for CONUS — OR
-       ``run_pelicun_with_buildings`` (which uses
-       ``compute_building_density``) for international bboxes.
-    3. ``run_pelicun_damage_assessment(flood_layer_uri, <assets_uri>)``
-       (skipped for the MS_BUILDINGS path, where
-       ``run_pelicun_with_buildings`` already runs Pelicun internally).
-    4. ``postprocess_pelicun(damage_uri, flood_layer_uri)`` →
-       ``ImpactEnvelope`` aggregate (SRS Appendix B.6c).
-
-    Use this when:
-        - The user has a flood layer URI in hand (typically from
-          ``run_model_flood_scenario`` / a Case's primary flood layer) and
-          asks for impact / damage / loss / population at risk.
-        - The user asks "how much damage", "how many structures impacted",
-          "expected losses", "displaced population", or "summarize the
-          flood impact" on a generated flood scenario.
-        - The Case summary panel needs a single envelope it can cite.
-
-    Do NOT use this for:
-        - Cases where no flood layer exists yet — run
-          ``run_model_flood_scenario`` first.
-        - Per-feature damage layers for spatial exploration on the map —
-          call ``run_pelicun_damage_assessment`` or
-          ``run_pelicun_with_buildings`` directly. This composer collapses
-          per-feature properties into aggregate totals.
-        - Non-flood hazards (the v0.1 fragility set is flood-only).
-
-    Examples:
-        - "How much damage will the 100-yr flood cause in Fort Myers, FL?"
-          → ``flood_layer_uri = <result of run_model_flood_scenario>``;
-            ``location_query = "Fort Myers, FL"``.
-        - "Estimate displaced population for the Hurricane Ian inundation."
-          → ``flood_layer_uri = <Hurricane Ian flood COG URI>``;
-            ``bbox = (-81.92, 26.55, -81.80, 26.68)``.
+    2. ``fetch_usace_nsi(bbox)`` -- preferred for CONUS -- OR
+       ``run_pelicun_with_buildings`` (which uses ``compute_building_density``)
+       for international bboxes.
+    3. ``run_pelicun_damage_assessment(flood_layer_uri, <assets_uri>)`` (skipped
+       for the MS_BUILDINGS path, where ``run_pelicun_with_buildings`` already
+       runs Pelicun internally).
+    4. ``postprocess_pelicun(damage_uri, flood_layer_uri)`` -> ``ImpactEnvelope``
+       aggregate (SRS Appendix B.6c).
 
     params:
         flood_layer_uri: the flood depth layer to assess. This MUST be the EXACT
             LayerURI value (copied verbatim) that a ``run_model_flood_scenario`` /
             ``run_model_nws_flood_event_scenario`` call returned EARLIER IN THIS
             CONVERSATION. NEVER invent, construct, or guess this value (e.g. a
-            ``flood-depth-peak-<id>`` string you did not receive) — a fabricated id
+            ``flood-depth-peak-<id>`` string you did not receive) -- a fabricated id
             does not exist and the call will fail. If no flood scenario has been run
             yet, call ``run_model_flood_scenario`` FIRST, wait for its result, then
             pass that result's layer URI here. Required; non-empty string.
@@ -279,9 +271,9 @@ async def compute_impact_envelope(
         location_query: free-text place name (geocoded via Nominatim).
             Ignored when ``bbox`` is supplied.
         structure_inventory_source: ``"USACE_NSI"`` (default, CONUS-only,
-            best fidelity — real HAZUS occupancy + per-structure value) or
+            best fidelity -- real HAZUS occupancy + per-structure value) or
             ``"MS_BUILDINGS"`` (international, Microsoft Global ML
-            Buildings density grid → RES1 + class-default values).
+            Buildings density grid -> RES1 + class-default values).
         fragility_set: Pelicun fragility set. Defaults to
             ``"hazus_flood_v6"`` when None.
 
@@ -304,7 +296,7 @@ async def compute_impact_envelope(
         The agent surface cites
         ``envelope_summary.n_structures_damaged`` /
         ``envelope_summary.expected_loss_usd`` /
-        ``envelope_summary.population_at_high_risk`` — never invented
+        ``envelope_summary.population_at_high_risk`` -- never invented
         numbers (Invariant 1).
 
     Cache:

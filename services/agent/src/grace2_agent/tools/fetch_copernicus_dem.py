@@ -456,56 +456,41 @@ def fetch_copernicus_dem(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a GLOBAL 30 m elevation model (Copernicus GLO-30) for a bbox.
+    """Fetch a GLOBAL 30 m elevation model (Copernicus GLO-30) for a bbox [terrain/DEM fetch].
 
-    **What it does:** STAC-searches the Microsoft Planetary Computer for the
-    Copernicus DEM GLO-30 (Copernicus_DSM, 30 m global) tiles covering ``bbox``,
-    reads each tile clipped to the bbox, first-wins mosaics them, and returns a
-    single-band float32 (meters) Cloud-Optimized GeoTIFF rendered with the
-    ``continuous_dem`` terrain ramp.
+    Use this when:
+    - You need terrain elevation for ANY non-US area (Alps, Andes, Himalaya, an
+      African watershed) -- the keyless global complement to ``fetch_dem``.
+    - A terrain step (slope / hillshade / aspect / colored relief / zonal stats)
+      or a hydrology / flood model runs over a non-US AOI.
 
-    **When to use:**
-    - Terrain elevation for ANY non-US area  --  the Alps, the Andes, the
-      Himalaya, an African watershed, etc. ``fetch_dem`` (USGS 3DEP) is US-only;
-      this is the keyless global complement.
-    - A global before/after or multi-region study where a single consistent DEM
-      source is wanted regardless of country.
-    - Any terrain step (slope / hillshade / aspect / colored relief / zonal
-      stats / a hydrology or flood model) over a non-US AOI that needs a DEM.
+    Do NOT use this for: a US AOI where finer 10 m is preferred (use
+    ``fetch_dem``, 10 m) or other 3DEP resolutions (use ``fetch_3dep_extra``);
+    coastal below-water depth (use ``fetch_topobathy`` -- GLO-30 is a surface
+    model, ocean reads ~0 m).
 
-    **When NOT to use:**
-    - A US AOI where the finer 10 m 3DEP product is preferred  --  use
-      ``fetch_dem`` (10 m vs GLO-30's 30 m), or ``fetch_3dep_extra`` for the
-      other 3DEP resolutions.
-    - Bathymetry (below-water depth)  --  GLO-30 is a surface model (ocean reads
-      ~0 m); use a future ``fetch_bathymetry`` for sea-floor depth.
-    - Bboxes larger than 4 deg^2  --  the tool raises ``CopernicusDemBboxError``
-      at that threshold; tile a very large domain.
+    Honesty: keyless, no Earthdata login; a bbox > 4 deg^2 raises
+    ``CopernicusDemBboxError``; an honest ``CopernicusDemEmptyError`` on no
+    coverage (only an off-globe request) -- never a fabricated layer.
 
-    **Parameters:**
-    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
-      max_lat)`` in EPSG:4326. Required. AOI-scoped (<= 4 deg^2).
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
 
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="input"``,
-    ``units="meters"``) pointing at a single-band float32 DEM COG in the
-    ``static-30d`` / ``copernicus_dem`` cache prefix.
-    ``style_preset="continuous_dem"`` (the terrain ramp 3DEP / terrain tools use).
-    CRS EPSG:4326; elevations are meters (Copernicus DEM is EGM2008-referenced).
+    STAC-searches the Microsoft Planetary Computer (``cop-dem-glo-30``), reads
+    each tile clipped to the bbox, first-wins mosaics them, and returns a
+    single-band float32 (metres) Cloud-Optimized GeoTIFF.
 
-    **Data source:** Copernicus DEM GLO-30 via the Microsoft Planetary Computer
-    STAC (``cop-dem-glo-30``; single-band ``data`` asset). Keyless (no API key,
-    no Earthdata login). Honest typed ``CopernicusDemEmptyError`` on no coverage
-    (only possible for an off-globe request)  --  never a fabricated layer.
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required,
+            AOI-scoped (<= 4 deg^2).
 
-    **Cross-tool dependencies:**
-    - Downstream: ``compute_slope``, ``compute_hillshade``, ``compute_aspect``,
-      ``compute_colored_relief``, ``compute_zonal_statistics``, and any
-      DEM-consuming hydrology / flood setup over a non-US AOI.
-    - Typically called after: ``geocode_location`` supplies the bbox.
-    - Sibling: ``fetch_dem`` (USGS 3DEP, US-only 10 m). Prefer ``fetch_dem``
-      inside the US; use this tool everywhere else.
+    Returns:
+        A ``LayerURI`` (raster, ``style_preset="continuous_dem"``,
+        ``units="meters"``, EGM2008-referenced, EPSG:4326) in the static-30d
+        cache. Feeds the same terrain derivatives as ``fetch_dem``; typically
+        called after ``geocode_location`` supplies the bbox.
 
-    FR-CE-8: routed through ``read_through`` so identical ``bbox`` calls reuse
+    FR-CE-8: routed through ``read_through`` -- identical ``bbox`` calls reuse
     the cached DEM COG.
     """
     _validate_bbox(bbox)

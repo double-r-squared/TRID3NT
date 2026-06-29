@@ -278,71 +278,46 @@ def compute_aspect(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Compute terrain aspect (face direction) from a DEM. Wraps ``gdaldem aspect``.
+    """Compute terrain ASPECT (compass direction a slope faces, 0-360 deg) from a DEM [terrain/DEM-derived raster].
 
-    Applies GDAL's aspect algorithm to a single-band elevation GeoTIFF and returns a
-    Float32 raster of compass bearing (0–360°, North=0, East=90) in the same CRS and
-    grid. Flat areas are labelled 0 (default) or -9999. Cached for 30 days.
+    Use this when:
+    - The user asks which way slopes face: solar exposure / insolation,
+      fire-wind alignment, habitat or landslide aspect preference.
+    - You need an aspect raster to feed ``compute_zonal_statistics``.
 
-    When to use:
-        - Solar exposure modeling: south-facing slopes receive more direct insolation.
-        - Wildfire behavior: fire/wind direction correlates with slope aspect.
-        - Landslide or ecological habitat preference analysis requiring aspect.
-        - Any workflow asking "which way do slopes face?" for a study area.
-        - Input to ``compute_zonal_statistics`` to aggregate aspect by zone.
+    Do NOT use this for: STEEPNESS (use ``compute_slope``); shaded relief (use
+    ``compute_hillshade``); hypsometric color tint (use
+    ``compute_colored_relief``); contour LINES (use ``compute_contours``);
+    per-zone aggregation (use ``compute_zonal_statistics``).
 
-    When NOT to use:
-        - Terrain steepness analysis (use ``compute_slope``).
-        - Hillshade / terrain shadow visualization (use ``compute_hillshade``).
-        - Colored elevation basemap (use ``compute_colored_relief``).
-        - Bathymetry or sub-aqueous terrain.
-        - Dynamic or time-varying aspect (output is a static single-time raster).
+    Honesty: a static single-time GDAL transform; land-surface DEM only (no
+    bathymetry); raises a typed ``AspectComputeError`` on failure -- never a
+    fake layer.
+
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
+
+    Wraps ``gdaldem aspect`` over a single-band elevation GeoTIFF; returns a
+    Float32 bearing raster (North=0, East=90) in the input CRS and grid.
 
     Params:
-        dem_uri: ``gs://`` URI of a DEM GeoTIFF (typically from ``fetch_dem``).
-            Must be a single-band raster with elevation values in meters.
-        algorithm: ``"Horn"`` (default) — 3×3 Horn gradient, generally
-            accurate for most terrain. ``"ZevenbergenThorne"`` — alternative
-            gradient estimator that is smoother on rough / noisy DEMs;
-            preferred when the user mentions rough terrain or noisy DEMs.
-        zero_for_flat: if ``True`` (default), flat areas are assigned aspect=0
-            (North). If ``False``, flat areas get ``-9999`` (gdaldem default
-            no-data sentinel). Use ``False`` when downstream consumers need to
-            distinguish flat terrain from north-facing slopes.
+        dem_uri: URI of a DEM GeoTIFF (typically ``fetch_dem(...).uri``).
+            Single-band, metres.
+        algorithm: ``"Horn"`` (default) or ``"ZevenbergenThorne"`` (smoother on
+            noisy DEMs).
+        zero_for_flat: ``True`` (default) labels flat cells aspect=0 (North);
+            ``False`` uses ``-9999`` so consumers can distinguish flat terrain.
 
     Returns:
-        A ``LayerURI`` pointing at an aspect GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/aspect/<key>.tif``.
-        The output is a single-band Float32 GeoTIFF in the same CRS and grid
-        as the input DEM. Values are compass degrees 0–360.
+        A ``LayerURI`` (single-band Float32 raster, compass degrees 0-360) in
+        the static-30d cache, same CRS and grid as the input DEM.
 
-    LLM guidance:
-        - Pick this when user asks about solar exposure, fire/wind direction,
-          landslide aspect preferences, or "which way slopes face".
-        - Default algorithm = Horn; ZevenbergenThorne for noisy DEMs.
-        - Default zero_for_flat = True (flat areas labelled 0 = North).
-
-    FR-CE-8: Results are routed through ``read_through`` so repeat calls with
-    the same ``(dem_uri, algorithm, zero_for_flat)`` triple return the cached
-    aspect raster without re-running gdaldem. TTL is 30 days (DEM-derived
-    outputs are stable over that window).
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
-          (gs:// COG) directly as ``dem_uri``.
-        Downstream (feeds):
-        - ``compute_zonal_statistics`` — pass the returned ``LayerURI`` as
-          ``value_raster_uri`` to aggregate aspect distribution by zone.
-        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
-          to display the aspect raster on the map.
-        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim the
-          aspect layer to a study-area boundary before analysis.
+    FR-CE-8: routed through ``read_through`` -- repeat ``(dem_uri, algorithm,
+    zero_for_flat)`` calls reuse the cached raster (30-day TTL).
 
     Raises:
-        AspectComputeError: if gdaldem is unavailable, returns non-zero, or
-            the DEM GCS download fails. Error carries ``error_code`` for the
-            pipeline strip.
+        AspectComputeError: gdaldem unavailable / non-zero, or the DEM download
+            fails. Carries ``error_code`` for the pipeline strip.
     """
     effective_bucket = _bucket or CACHE_BUCKET
 

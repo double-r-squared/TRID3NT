@@ -623,64 +623,49 @@ def fetch_usace_levees(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """USACE National Levee Database (NLD) features as a FlatGeobuf layer.
+    """USACE National Levee Database (NLD) features as a FlatGeobuf [vector fetcher].
 
     The US-authoritative inventory of federally inspected levee infrastructure
-    (~1500 levee systems / ~3000 leveed areas / ~25000 embankment segments).
-    Wraps the USACE NLD ArcGIS REST FeatureService with server-side bbox
-    filtering, pagination, and a per-layer property subset.
+    (~1500 systems / ~3000 leveed areas / ~25000 embankment segments), from the
+    public USACE NLD ArcGIS REST FeatureService.
 
     Use this when:
-    - User asks "what levees protect [city]?" / "where are the levees in
-      [state]?" / "show me the New Orleans levees".
-    - A flood-modeling workflow needs a levee footprint as a critical-
-      infrastructure context overlay (breach risk, overtopping, FEMA
-      accreditation).
-    - Intersecting flood-warning polygons (``fetch_nws_alerts_conus``) or
-      FEMA flood zones (``fetch_fema_nfhl_zones``) with leveed-area polygons
-      to surface "X people / Y assets in protected areas under warning".
+    - The user asks "what levees protect [city]?" / "where are the levees in
+      [state]?" / "show the New Orleans levees".
+    - A flood workflow needs a levee footprint as critical-infrastructure context
+      (breach / overtopping / FEMA accreditation), or to intersect with flood
+      warnings (``fetch_nws_alerts_conus``) or zones (``fetch_fema_nfhl_zones``).
 
-    Do NOT use this for:
-    - Dam infrastructure (use a future ``fetch_usace_nid``).
-    - Building / structure inventories behind levees (use
-      ``fetch_usace_nsi`` or ``fetch_buildings``).
-    - Flood-zone or floodplain regulatory polygons (use
-      ``fetch_fema_nfhl_zones``).
-    - Private / non-federal levees outside the NLD (small agricultural
-      levees may not appear).
-    - Historical breach / failure case studies (publications, not a
-      FeatureService).
+    Do NOT use this for: dams (use ``fetch_usace_dams`` -- NID is the sibling
+    inventory); buildings / structures behind levees (``fetch_usace_nsi`` or
+    ``fetch_buildings``); regulatory floodplain polygons
+    (``fetch_fema_nfhl_zones``); private / small agricultural levees outside the
+    NLD (may not appear).
 
-    Parameters:
-        bbox: Optional ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326,
-            each value in ``[-180, 180]`` / ``[-90, 90]`` with min < max.
-            None → CONUS+AK+HI sweep. Example: ``(-90.3, 29.7, -89.7, 30.2)``
-            for the New Orleans metro area.
-        layer: One of ``"leveed_areas"`` (default; protected-area polygons,
-            best for impact analysis), ``"system_routes"`` (centerline
-            polylines, one per system_id, best for map overview), or
-            ``"embankments"`` (segment-level alignment polylines, best for
-            per-segment height / condition analysis).
+    Honesty: NLD is a Tier-1 static federal inventory, not a live breach /
+    condition feed; degrades to a typed retryable error on upstream failure.
+
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Typically downstream of ``geocode_location`` /
+    ``fetch_administrative_boundaries`` (derive bbox), then
+    ``clip_vector_to_polygon`` / ``compute_zonal_statistics`` (asset rollups via
+    ``fetch_buildings`` + ``fetch_hrsl_population``). Cached ``static-30d`` (NLD
+    updates quarterly).
+
+    Params:
+        bbox: Optional ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326;
+            None -> CONUS+AK+HI sweep. Example New Orleans:
+            ``(-90.3, 29.7, -89.7, 30.2)``.
+        layer: ``"leveed_areas"`` (default; protected-area polygons, best for
+            impact analysis), ``"system_routes"`` (centerline polylines, best for
+            overview), or ``"embankments"`` (segment alignment polylines, best for
+            per-segment height / condition).
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nld/<key>.fgb``.
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
-        Properties preserved per ``_LAYER_PROPERTIES[layer]``: at minimum
-        ``SYSTEM_ID``, ``SYSTEM_NAME``, ``STATES``, ``COUNTIES``,
-        ``FEMA_ACCREDITATION_RATING``, ``RESPONSIBLE_ORGANIZATION``.
-
-    Cross-tool dependencies: typically downstream of ``geocode_location`` /
-    ``fetch_administrative_boundaries`` to derive bbox; feeds
-    ``clip_vector_to_polygon`` (clip to a state/county polygon),
-    ``compute_zonal_statistics`` (population/asset rollups via
-    ``fetch_buildings`` + ``fetch_hrsl_population``), and intersection with
-    ``fetch_nws_alerts_conus`` flood warnings.
-
-    Cache: ``static-30d`` (NLD updates quarterly). Cache key: SHA-256 of
-    ``(bbox-rounded-6dp-or-"global", layer)``. Source-tier: FR-HEP-2 Tier 1
-    (USACE federal authority). On upstream failure raises
-    ``USACELeveeUpstreamError(retryable=True)`` per FR-AS-11.
+        ``LayerURI(layer_type="vector", role="context",
+        style_preset="usace_levees")`` -> FlatGeobuf with at least ``SYSTEM_ID``,
+        ``SYSTEM_NAME``, ``STATES``, ``COUNTIES``, ``FEMA_ACCREDITATION_RATING``,
+        ``RESPONSIBLE_ORGANIZATION``.
     """
     # Validate inputs early — typos here are caller error, not retryable.
     if layer not in _VALID_LAYERS:

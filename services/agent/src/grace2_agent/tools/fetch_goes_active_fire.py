@@ -118,58 +118,49 @@ def fetch_goes_active_fire(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
-    """Detect ACTIVE FIRE in an AOI from raw GOES ABI via the Matson-Dozier split-window discriminator.
+    """GOES active-fire detection RASTER frames via the Matson-Dozier split-window discriminator (auto-render). [fire-animation | geostationary raster]
 
-    **What it does:** Fetches the raw ``ABI-L2-MCMIPC`` GOES frame(s) for the AOI
-    + time window from the public ``noaa-goes18`` S3 archive (anonymous / no key),
-    runs the Matson-Dozier C07(3.9um)-vs-C13(10.3um) split-window active-fire
-    discriminator on each, and returns the flagged active-fire hotspots as
-    TRANSPARENT RGBA hotspot raster ``LayerURI``(s) -- only the hot pixels are
-    opaque (bright orange-red), everything else is transparent so it overlays a
-    basemap / true-color frame directly.
+    Fetches raw GOES ABI-L2-MCMIPC frame(s) for the AOI + window from the public
+    noaa-goes18 S3 archive (anonymous), runs the C07(3.9um)-vs-C13(10.3um)
+    split-window active-fire detector on each, and returns the flagged hot pixels
+    as TRANSPARENT RGBA hotspot raster LayerURI(s) -- opaque only where fire is
+    detected, so they overlay a basemap / true-color frame directly.
 
-    **The discriminator (Matson & Dozier 1981; MODIS MOD14 / VIIRS heritage):** a
-    pixel is flagged active-fire when BOTH (a) its 3.9um brightness temperature
-    (C07) is hot AND (b) the 3.9um - 10.3um brightness-temperature difference
-    (C07 - C13) is large. The 3.9um channel saturates over a sub-pixel fire far
-    more than the 10.3um window channel, so a big positive split-window difference
-    separates combustion from uniformly warm bare land (which is hot in BOTH bands
-    and so has a SMALL difference).
+    Use this when:
+    - "Where is the active fire in this AOI right now / on this date?" as a
+      geostationary hot-pixel overlay (single frame or a short loop).
+    - The hot-pixel detection step feeding a perimeter / spread analysis.
 
-    **When to use:**
-    - "Where is the active fire in this AOI right now / on this date?" -- a single
-      hot-pixel overlay, no full animation pipeline needed.
-    - As the hot-pixel detection step feeding a fire-perimeter / spread analysis.
+    Do NOT use this for:
+    - A scrubbable true-color / Fire-Temperature loop -- use
+      fetch_goes_animation or fetch_goes_archive_animation (matching band).
+    - A polar (VIIRS) multi-day fire loop -- use fetch_viirs_day_fire.
+    - Discrete active-fire POINTS -- use fetch_firms_active_fire.
+    - Fire perimeters -- use fetch_nifc_fire_perimeters.
+    - Resolving a fire by NAME -- use fetch_wfigs_incident.
 
-    **When NOT to use:**
-    - A scrubbable Fire Temperature / true-color loop (use
-      ``fetch_goes_archive_animation`` with the matching ``band``).
-    - NASA FIRMS / VIIRS point detections (use ``fetch_firms_active_fire``).
+    Honesty: a window with no archived frames OR no detected hot pixels raises a
+    typed error -- it never emits a blank "fire" overlay.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. Example (Utah fire cluster): ``(-114.05, 37.0, -109.04, 42.0)``.
-    - ``satellite`` (str, default ``"goes-18"``): ``"goes-18"`` (West),
-      ``"goes-19"`` (East), or ``"goes-16"`` (historical East).
-    - ``start_utc`` / ``end_utc`` (str): ISO-8601 UTC window bounds. When omitted,
-      the most-recent ~20 min is used (one or two recent frames).
-    - ``bt_c07_min_k`` (float, default 320 K): the 3.9um brightness-temperature
-      floor a pixel must exceed to be a fire candidate.
-    - ``bt_diff_min_k`` (float, default 10 K): the minimum 3.9um - 10.3um split-
-      window difference a fire pixel must exceed (the bare-warm-land discriminator;
-      the MODIS Collection-5 delta-T* heritage value).
+    Returns an ordered list[LayerURI] of transparent RGBA hotspot rasters
+    (ascending UTC) named "GOES Active Fire step <N> <ISO> (<SAT>)".
 
-    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC), each a 4-band
-    transparent RGBA hotspot COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="goes_fire_hotspots_rgba"``, same ``bbox``) named
-    ``"GOES Active Fire step <N> <ISO> (<SAT>)"``. A window with no archived frames
-    OR no detected hot pixels raises a typed error (honesty floor) -- it never
-    emits a blank overlay.
+    The discriminator (Matson & Dozier 1981; MODIS MOD14 / VIIRS heritage): a
+    pixel is flagged when its 3.9um brightness temperature is hot AND the
+    3.9um-10.3um difference is large -- the 3.9um channel saturates over a
+    sub-pixel fire while uniformly warm bare land stays small-difference.
 
-    **Cross-tool dependencies:**
-    - Upstream: ``fetch_wfigs_incident`` (the AOI bbox + the window floor).
-    - Pairs with: ``fetch_goes_archive_animation`` band=``"true_color"`` (the
-      base the hotspots overlay) + ``fetch_nifc_fire_perimeters``.
+    Parameters:
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required.
+    - satellite (str, default "goes-18"): GOES bird; accepts GOES-18/goes18/G18/
+      "GOES West"/18 spellings (also goes-19 East, goes-16 historical East).
+    - start_utc / end_utc (ISO-8601 UTC): window; default = most-recent ~20 min.
+    - bt_c07_min_k (float, default 320 K): 3.9um brightness-temperature floor.
+    - bt_diff_min_k (float, default 10 K): minimum 3.9um-10.3um split-window
+      difference (the bare-warm-land discriminator).
+
+    Upstream: fetch_wfigs_incident (AOI + window floor). Pairs with
+    fetch_goes_animation (the true-color base under the hotspots).
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     # Normalize-then-validate: canonicalize GOES-18/goes18/G18/"GOES West"/18 to

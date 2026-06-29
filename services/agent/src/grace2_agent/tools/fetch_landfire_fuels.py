@@ -488,69 +488,48 @@ def fetch_landfire_fuels(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch LANDFIRE fuels and vegetation raster for a CONUS bounding box.
+    """LANDFIRE 30m wildfire fuel / vegetation raster (fuel models + canopy) for a CONUS bbox. [fuels | raster]
 
-    **What it does:** Downloads a 30 m raster from the LANDFIRE LF2022 CONUS
-    ImageServer (USDA Forest Service + USGS), clips it server-side to the
-    requested bbox, and returns a CRS-tagged GeoTIFF via the 30-day cache.
-    Four layers are available: Scott and Burgan 40 surface fuel models
-    (``fbfm40``), Anderson 13 fuel models (``fbfm13``), canopy base height
-    (``cbh``), and canopy bulk density (``cbd``).
+    Downloads a 30m raster from the LANDFIRE LF2022 CONUS ImageServer (USDA
+    Forest Service + USGS, lfps.usgs.gov), clipped server-side to the bbox, as a
+    CRS-tagged GeoTIFF (cached static-30d, no API key). Four layers: Scott and
+    Burgan 40 surface fuel models (fbfm40), Anderson 13 (fbfm13), canopy base
+    height (cbh), canopy bulk density (cbd).
 
-    **When to use:**
-    - User asks for wildfire fuel conditions, fuel maps, or fire-behavior
-      inputs for a specific area ("show me the fuel models near Flagstaff").
-    - Building a wildfire spread model run with FlamMap, FARSITE, FSim, or
-      ELMFIRE — those engines require LANDFIRE fuel rasters as primary inputs.
-    - Displaying ground-fuel context or canopy structure as a visualization
-      layer in a wildfire-risk narrative.
-    - Any workflow step that needs the USDA / USGS canonical nationwide
-      wildfire-modelling substrate at 30 m resolution.
+    Use this when:
+    - User asks for wildfire fuel models / fuel maps / fire-behavior inputs for
+      an area ("show the fuel models near Flagstaff").
+    - Assembling a fire-spread model deck (FlamMap, FARSITE, FSim, ELMFIRE).
+    - Displaying ground-fuel or canopy-structure context.
 
-    **When NOT to use:**
-    - DO NOT use for live fire perimeters — LANDFIRE is a static fuels grid;
-      use ``fetch_nifc_fire_perimeters`` or ``fetch_firms_active_fire`` for
-      active and recent burn extents.
-    - DO NOT use for burn-severity products — LANDFIRE Disturbance services
-      carry post-fire severity rasters; they are a separate tool surface not
-      covered here.
-    - DO NOT use for weather / climate forcing — LANDFIRE is fuels-only;
-      use ``fetch_mrms_qpe``, ``fetch_hrrr_forecast``, or
-      ``fetch_raws_weather`` for meteorological inputs.
-    - DO NOT use outside CONUS at v0.1 — AK/HI/PRVI LANDFIRE mosaics exist
-      but regional dispatch is deferred (``OQ-0111-LANDFIRE-REGION-DISPATCH``).
+    Do NOT use this for:
+    - Canopy-fuel-ONLY (cbh/cbd) intent -- prefer fetch_usfs_canopy_fuels (the
+      dedicated canopy surface; this tool can also return cbh/cbd).
+    - Live fire perimeters / detections -- use fetch_nifc_fire_perimeters or
+      fetch_firms_active_fire.
+    - Burn-severity history -- use fetch_mtbs_burn_severity.
+    - Weather / climate forcing -- use fetch_mrms_qpe, fetch_hrrr_forecast, or
+      fetch_raws_weather.
+    - Non-CONUS areas (AK/HI/PRVI dispatch deferred at v0.1).
 
-    **Parameters:**
-    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
-      max_lon, max_lat)`` in EPSG:4326. Required; CONUS-only.
-      Example: ``(-112.0, 34.5, -111.0, 35.5)`` (north-central Arizona).
-    - ``layer`` (str, default ``"fbfm40"``): one of ``"fbfm40"`` (Scott and
-      Burgan 40; integer codes 101-204 + 91/92/93/98/99 special classes),
-      ``"fbfm13"`` (Anderson 13; codes 1-13 + specials), ``"cbh"`` (canopy
-      base height, m x 10 scaled int), ``"cbd"`` (canopy bulk density,
-      kg/m^3 x 100 scaled int).
+    Honesty: a bbox outside CONUS coverage (all-nodata) raises a typed empty
+    error rather than caching a blank raster.
 
-    **Returns:** A ``LayerURI`` pointing at a GeoTIFF in the cache bucket
-    (``gs://grace-2-hazard-prod-cache/cache/static-30d/landfire_fuels/<key>.tif``).
-    ``layer_type="raster"``, ``role="primary"``. ``units`` is populated for
-    continuous canopy layers (``"m * 10"`` / ``"kg/m^3 * 100"``), ``None``
-    for categorical fuel-model layers. EPSG:4326, 30 m native resolution,
-    LANDFIRE 2022 vintage.
+    Returns a raster LayerURI (GeoTIFF, EPSG:4326, 30m, LF2022 vintage);
+    role="primary"; units set for canopy layers ("m * 10" / "kg/m^3 * 100"),
+    None for categorical fuel-model layers.
 
-    **Cross-tool dependencies:**
-    - Feeds: FlamMap / FARSITE / FSim wildfire spread workflows (deferred),
-      any engine step that needs fuel category codes per pixel.
-    - Pairs with: ``fetch_raws_weather`` or ``fetch_hrrr_forecast`` for the
-      meteorological forcing stack; ``fetch_dem`` for terrain-slope inputs.
-    - Provides ``fbfm40`` / ``fbfm13`` via ``role="primary"`` so QGIS Server
-      renders with the ``categorical_landcover`` style preset; canopy layers
-      use ``continuous_dem`` ramp.
+    Parameters:
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required,
+      CONUS-only. Example: (-112.0, 34.5, -111.0, 35.5) (north-central Arizona).
+    - layer (default "fbfm40"): "fbfm40" (Scott and Burgan 40; codes 101-204 +
+      91/92/93/98/99), "fbfm13" (Anderson 13; codes 1-13 + specials),
+      "cbh" (canopy base height, m x 10), "cbd" (canopy bulk density,
+      kg/m^3 x 100).
 
-    FR-CE-8: Routed through ``read_through`` so identical ``(bbox, layer)``
-    calls reuse the cached GeoTIFF. Cache key includes ``(layer,
-    bbox-rounded-to-6dp, year="2022")`` so a future year upgrade (e.g.
-    LF2023) is a cache-key change, not a silent staleness
-    (``OQ-0111-LANDFIRE-YEAR-AUTO-ADVANCE``).
+    Feeds FlamMap / FARSITE / FSim decks; pairs with fetch_dem + compute_slope
+    (terrain) and fetch_raws_weather / fetch_hrrr_forecast (forcing). Canopy
+    layers also via the dedicated fetch_usfs_canopy_fuels.
     """
     # Defensive validations on the registered surface.
     if layer not in _VALID_LAYERS:

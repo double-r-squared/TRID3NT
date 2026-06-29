@@ -786,60 +786,47 @@ def fetch_epa_frs_facilities(
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """EPA regulated-facility points by program as a FlatGeobuf layer.
+    """EPA FRS regulated-facility points by program as a FlatGeobuf [vector fetcher].
 
-    Fetches EPA Facility Registry Service (FRS) program-interest point facilities
-    of one ``facility_program`` intersecting a bbox, from a public, unauthenticated
-    EPA ArcGIS REST MapServer (the EPA NEPAssist public layers). Returns a
-    FlatGeobuf of ``Point`` features in EPSG:4326 with a common FRS attribute
-    schema (``registry_id``, ``program``, ``program_id``, ``facility_name``,
-    address columns, ``facility_url``).
+    EPA Facility Registry Service (FRS) program-interest point facilities of one
+    ``facility_program`` intersecting a bbox, from a public EPA ArcGIS REST
+    MapServer (the EPA NEPAssist public layers).
 
-    **When to use:**
+    Use this when:
     - "Show EPA regulated facilities / TRI sites / Superfund sites near [place]".
     - The MODFLOW contamination-plume demo: locate a candidate chemical-source
-      facility, or determine which regulated facilities a modeled plume reaches
-      (intersect with ``compute_zonal_statistics`` / ``clip_vector_to_polygon``).
-    - Any hazard / exposure workflow needing regulated industrial / waste facility
-      locations inside a flood / fire / surge / plume footprint.
+      facility, or find which regulated facilities a modeled plume reaches
+      (intersect via ``compute_zonal_statistics`` / ``clip_vector_to_polygon``).
 
-    **When NOT to use:**
-    - Life-safety facilities (hospitals / schools / fire / police / power) ->
-      ``fetch_hifld_critical_infrastructure``.
-    - Dams -> ``fetch_usace_dams``. Buildings -> ``fetch_usace_nsi``.
-    - Non-US facilities (FRS is US-only). Real-time emission / discharge readings
-      (FRS is a static inventory).
+    Do NOT use this for: life-safety facilities -- hospitals / schools / fire /
+    police / power (use ``fetch_hifld_critical_infrastructure``); power
+    transmission lines (``fetch_hifld_transmission_lines``); dams
+    (``fetch_usace_dams``); buildings (``fetch_usace_nsi``); non-US or real-time
+    emission / discharge readings (FRS is US-only and static).
 
-    **Parameters:**
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required —
-            ``supports_global_query=False``. Example Houston Ship Channel:
+    Honesty: FRS is a static registry, NOT a live emissions feed; upstream failure
+    raises a typed retryable error (FR-AS-11). Empty bbox returns an empty FGB, not
+    an error.
+
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Cached ``static-30d``; no API key required.
+
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. REQUIRED (no
+            global query). Example Houston Ship Channel:
             ``(-95.30, 29.68, -95.05, 29.80)``.
-        facility_program: One of ``"frs"`` (default — union of TRI + water +
-            hazardous-waste + air + brownfields point layers), ``"tri"``,
-            ``"superfund"``, ``"air"``, ``"water"``, ``"hazwaste"``,
-            ``"brownfields"`` (aliases accepted: ``"all"``, ``"toxic_release"``,
-            ``"npl"``, ``"npdes"``, ``"rcra"``, etc.).
+        facility_program: One of ``"frs"`` (default; union of TRI + water +
+            hazardous-waste + air + brownfields), ``"tri"``, ``"superfund"``,
+            ``"air"``, ``"water"``, ``"hazwaste"``, ``"brownfields"`` (aliases
+            accepted, e.g. ``"all"``, ``"npl"``, ``"npdes"``, ``"rcra"``). Kept
+            ``str`` because aliases are resolved server-side.
 
-    **Returns:**
-        ``LayerURI`` -> FlatGeobuf of ``Point`` features in EPSG:4326. Properties
-        carry ``registry_id``, ``program``, ``program_label``, ``program_acronym``,
-        ``program_id``, ``facility_name``, ``address``, ``city``, ``county``,
-        ``state``, ``postal_code``, ``epa_region``, ``facility_url`` (and
-        ``npl_status`` for Superfund). ``layer_type="vector"``, ``role="primary"``,
-        ``style_preset="epa_frs_facilities"``, ``units=None``.
-
-    **Error types (FR-AS-11):**
-        - ``EpaFrsInputError``: unknown facility_program or bad bbox
-          (retryable=False).
-        - ``EpaFrsUpstreamError``: HTTP/network failure, ArcGIS error envelope,
-          or FlatGeobuf serialization failure (retryable=True).
-        - ``EpaFrsEmptyError``: no features in bbox (retryable=False; not raised
-          by default — empty FGB is returned).
-
-    Cache: ``ttl_class="static-30d"``, ``source_class="epa_frs_facilities"``.
-    Cache key is SHA-256 of ``(program_key, bbox-rounded-6dp)``.
-
-    ``supports_global_query=False``. No API key required.
+    Returns:
+        ``LayerURI(layer_type="vector", role="primary",
+        style_preset="epa_frs_facilities")`` -> FlatGeobuf of ``Point`` features in
+        EPSG:4326 with ``registry_id``, ``program``, ``program_label``,
+        ``program_id``, ``facility_name``, address columns, ``epa_region``,
+        ``facility_url`` (and ``npl_status`` for Superfund).
     """
     # ---- Input validation ----
     program_key = _resolve_program(facility_program)

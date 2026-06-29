@@ -463,52 +463,42 @@ def fetch_dem(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a digital elevation model (DEM) for a bounding box from USGS 3DEP.
+    """Fetch a digital elevation model (DEM) for a US bbox from USGS 3DEP [terrain/DEM fetch].
 
-    **What it does:** Downloads a Cloud-Optimized GeoTIFF of ground elevation
-    from the USGS 3D Elevation Program (3DEP) via the ``py3dep`` library and
-    writes it to the 30-day cache. Returns a ``LayerURI`` pointing at the
-    cached COG so downstream SFINCS/HydroMT setup and terrain analysis tools
-    can consume it without re-fetching.
+    Use this when:
+    - Any step needs US land-surface terrain elevation (flood / hydrology model
+      setup, watershed delineation, slope / hillshade / aspect derivatives).
+    - The user asks to "show terrain elevation" for a US area.
 
-    **When to use:**
-    - Any flood workflow step that needs terrain elevation: SFINCS model
-      domain setup, watershed delineation, slope/hillshade computation.
-    - User asks "show me the terrain elevation for [area]" or "what does the
-      ground look like here?" — render with the ``continuous_dem`` QML preset.
-    - ``build_sfincs_model`` requires a DEM for the SFINCS grid; this tool
-      supplies it.
-    - Pre-processing step before ``compute_slope``, ``compute_hillshade``,
-      ``compute_aspect``, or ``compute_zonal_statistics``.
+    Do NOT use this for: non-US terrain (use ``fetch_copernicus_dem``, global
+    GLO-30); other 3DEP resolutions like 1 m / 1/9 arc-second (use
+    ``fetch_3dep_extra``); coastal below-water depth (use ``fetch_topobathy``).
 
-    **When NOT to use:**
-    - Coverage outside the continental US — 3DEP is CONUS-only; a future
-      ``fetch_dem(source="copernicus")`` will handle global queries.
-    - Bathymetry (below-water elevation) — 3DEP is land-only; use a future
-      ``fetch_bathymetry`` routed to NOAA NCEI.
-    - Single-point elevation lookups — the tool fetches a raster window;
-      for a point query use a future ``point_elevation`` tool.
-    - Bboxes larger than 10,000 km² — the tool raises ``BboxInvalidError``
-      at that threshold; use a tiled workflow for very large domains.
+    Honesty: 3DEP is US-only and land-surface (ocean reads ~0 m); a bbox >
+    10,000 km^2 raises ``BboxInvalidError``; a coverage gate guarantees the
+    raster spans the requested bbox or raises -- never a fabricated layer.
 
-    **Parameters:**
-    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
-      max_lat)`` in EPSG:4326. Max area 10,000 km².
-    - ``resolution_m`` (int, default 10): DEM grid spacing in meters.
-      10 m or 30 m are fastest on 3DEP's tile tree; other values interpolate.
+    Action: the returned raster LayerURI auto-renders -- do not call
+    publish_layer. Cached static-30d.
 
-    **Returns:**
-    A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in the cache bucket
-    (``gs://grace-2-hazard-prod-cache/cache/static-30d/dem/<key>.tif``).
-    CRS: EPSG:5070 (py3dep default); units: meters above NAVD88.
-    Fields consumed downstream: ``uri`` → by ``build_sfincs_model`` and QGIS
-    Server WMS; ``style_preset="continuous_dem"`` → map rendering.
+    Downloads a Cloud-Optimized GeoTIFF of ground elevation from USGS 3DEP via
+    ``py3dep`` and writes it to the 30-day cache.
 
-    **Cross-tool dependencies:**
-    - Downstream: ``build_sfincs_model``, ``compute_slope``,
-      ``compute_hillshade``, ``compute_aspect``, ``compute_colored_relief``,
-      ``compute_zonal_statistics``.
-    - Typically called after: ``geocode_location`` supplies the bbox.
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Max area
+            10,000 km^2.
+        resolution_m: DEM grid spacing in metres (default 10). 10 m / 30 m are
+            fastest on the 3DEP tile tree; other values interpolate.
+
+    Returns:
+        A ``LayerURI`` (raster, ``style_preset="continuous_dem"``,
+        ``units="meters"`` above NAVD88, CRS EPSG:5070) at a Cloud-Optimized
+        GeoTIFF in the static-30d cache.
+
+    Cross-tool: feeds ``compute_slope`` / ``compute_hillshade`` /
+    ``compute_aspect`` / ``compute_colored_relief`` / ``compute_contours`` /
+    ``compute_zonal_statistics`` and flood / hydrology model setup. Typically
+    called after ``geocode_location`` supplies the bbox.
     """
     quantized = round_bbox_to_resolution(bbox, resolution_m)
     if _bbox_area_km2(quantized) > 10_000.0:

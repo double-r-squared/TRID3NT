@@ -790,30 +790,33 @@ def fetch_epa_ejscreen(
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """EPA EJScreen environmental-justice indices by census block group.
+    """EPA EJScreen environmental-justice indicators by census block group -- a vector choropleth LayerURI.
+
+    Use this when:
+        - User asks for EJScreen, environmental justice, cumulative environmental
+          burden / exposure, or "which block groups have the worst PM2.5 / ozone
+          / traffic / Superfund proximity".
+        - Agent needs an environmental-burden surface to pair with
+          ``fetch_cdc_svi`` (social vulnerability) + ``fetch_epa_frs_facilities``
+          (the regulated facilities).
+    Do NOT use this for:
+        - The 16-factor social-vulnerability index -> ``fetch_cdc_svi``
+          (tract-level; EJScreen is block-group, environment + demographics).
+        - The regulated-facility POINTS that drive the proximity indices ->
+          ``fetch_epa_frs_facilities``.
+        - Raw ACS demographic counts -> ``fetch_census_acs``.
+        - Areas outside the United States -> EJScreen is U.S.-only; an empty FGB
+          is returned for non-U.S. bboxes.
+    Returns a vector LayerURI (block-group polygons, EPSG:4326) that auto-renders
+    -- pass to ``publish_layer`` to draw the choropleth. One ``indicator`` selects
+    the primary ``value`` column; every feature also carries the full percentile
+    panel + demographic context, so one fetch supports re-styling without re-fetch.
 
     Fetches U.S. census-block-group polygons intersecting a bbox from the
-    preserved national EJScreen 2.x FeatureServer and returns a FlatGeobuf
-    choropleth. The ``indicator`` parameter selects which EJScreen percentile
-    fills the primary ``value`` column (PM2.5, ozone, diesel PM, respiratory
-    hazard, traffic proximity, lead-paint, Superfund/RMP/TSDF proximity, water
-    dischargers, or a demographic / EJ-index rollup). Every feature also carries
-    the full percentile panel + demographic context, so one fetch supports
-    re-styling and cumulative-exposure narration without a re-fetch.
-
-    **When to use:**
-    - User asks for EJScreen, environmental justice, cumulative environmental
-      burden / exposure, or "which block groups have the worst PM2.5 / ozone /
-      traffic / Superfund proximity".
-    - Agent needs an environmental-burden surface to pair with ``fetch_cdc_svi``
-      (social vulnerability) + ``fetch_epa_frs_facilities`` (the facilities).
-
-    **When NOT to use:**
-    - For the 16-factor social-vulnerability index -> ``fetch_cdc_svi``.
-    - For the regulated-facility POINTS -> ``fetch_epa_frs_facilities``.
-    - For raw ACS demographic counts -> ``fetch_census_acs``.
-    - For areas outside the United States -> EJScreen is U.S.-only; an empty FGB
-      is returned for non-U.S. bboxes.
+    preserved national EJScreen 2.x FeatureServer. ``indicator`` accepts PM2.5,
+    ozone, diesel PM, respiratory hazard, traffic proximity, lead-paint,
+    Superfund/RMP/TSDF proximity, water dischargers, or a demographic / EJ-index
+    rollup (aliases accepted, case-insensitive; unknown -> typed input error).
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.

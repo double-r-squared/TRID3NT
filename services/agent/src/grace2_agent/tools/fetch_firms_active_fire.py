@@ -684,64 +684,47 @@ def fetch_firms_active_fire(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NASA FIRMS satellite active-fire detections for a bbox and recent day window.
+    """NASA FIRMS satellite active-fire detection POINTS (VIIRS/MODIS) as a vector layer. [active-fire | points]
 
-    **What it does:** Calls the NASA FIRMS Web Service AREA API
-    (``firms.modaps.eosdis.nasa.gov/api/area/csv``) to retrieve satellite
-    thermal-anomaly / active-fire pixel detections for the last 1–10 days over
-    a bounded geographic region. Parses the CSV response into a FlatGeobuf
-    Point layer with brightness, FRP (Fire Radiative Power), scan, track,
-    acquisition time, satellite, instrument, confidence, and day/night fields.
-    Cached ``dynamic-1h``. Requires a free NASA FIRMS MAP_KEY
-    (``GRACE2_FIRMS_MAP_KEY`` env var). Does not support global queries
-    (``supports_global_query=False``).
+    Calls the NASA FIRMS AREA API (firms.modaps.eosdis.nasa.gov) for satellite
+    thermal-anomaly / active-fire pixel detections over a bbox and recent day
+    window, parsed into a FlatGeobuf Point layer (brightness, FRP, confidence,
+    acquisition time, satellite, instrument). Cached dynamic-1h.
 
-    **When to use:**
-    - Wildfire situational-awareness: "show active fires in California right now".
-    - Near-real-time fire forcing discovery for a wildfire workflow setup.
-    - Smoke-source identification overlaid on an air-quality or population layer.
-    - Multi-sensor comparison (VIIRS vs MODIS detection density) over a study
-      area.
+    Use this when:
+    - "Show active fires / hot pixels in <area> right now" as discrete POINTS.
+    - Near-real-time fire-source discovery; co-registering hot pixels on imagery.
+    - Comparing VIIRS vs MODIS detection density over a study area.
 
-    **When NOT to use:**
-    - Historical fire perimeters or burned-area polygons (use
-      ``fetch_nifc_fire_perimeters`` for current season or
-      ``fetch_mtbs_burn_severity`` for 1984-present archives).
-    - Fuel-load / fuel-moisture inputs (LANDFIRE — separate tool, not yet in
-      catalog).
-    - Fire spread or behavior forecasts (FIRMS is detection-only, not forecast).
-    - Global queries without a bbox (FIRMS AREA API requires a bbox).
+    Do NOT use this for:
+    - A fire RASTER animation / timelapse -- use fetch_viirs_day_fire (polar
+      frames) or fetch_goes_active_fire (geostationary frames).
+    - Current fire-perimeter polygons -- use fetch_nifc_fire_perimeters.
+    - Historical burn-severity polygons -- use fetch_mtbs_burn_severity.
+    - Resolving a fire by NAME -- use fetch_wfigs_incident.
+    - A global query without a bbox (the FIRMS AREA API requires a bbox).
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Required; global queries rejected. Example: ``(-124.0, 32.5, -114.0, 42.0)``
-      for California.
-    - ``days_back`` (int): 1–10 days back from FIRMS "today". Default 1. Higher
-      values accumulate more detections; note FIRMS upstream rejects >5 as of
-      2026-06-08 (surfaces as ``FirmsUpstreamError`` — see OQ-0108-DAYS-RANGE).
-    - ``source`` (str): ``"VIIRS_SNPP_NRT"`` (default; Suomi NPP, 375m),
-      ``"VIIRS_NOAA20_NRT"`` (NOAA-20, 375m), or ``"MODIS_NRT"``
-      (Terra/Aqua, 1km).
-    - ``date`` (str, optional): a historical acquisition day ``"YYYY-MM-DD"``.
-      When given, the tool queries EXACTLY that one day (the FIRMS trailing
-      start-date segment, ``day_range`` forced to 1) -- use this to overlay the
-      hot pixels for a SPECIFIC PAST date (e.g. recreating a past animation
-      window) rather than the rolling ``days_back`` from FIRMS "today". Default
-      ``None`` keeps the rolling-window behaviour.
+    Honesty: an empty window yields a valid 0-feature layer (no fires found in
+    range), never a hallucinated detection; an invalid/missing MAP_KEY raises a
+    typed credential error rather than a silent zero-fire result.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="primary", units=None)`` pointing at a
-    FlatGeobuf with fields: ``brightness``, ``scan``, ``track``, ``acq_date``,
-    ``acq_time``, ``satellite``, ``instrument``, ``confidence``, ``version``,
-    ``bright_t31``, ``frp``, ``daynight``. Cached ``dynamic-1h``.
+    Returns a vector LayerURI of detection points; requires a free FIRMS MAP_KEY
+    (GRACE2_FIRMS_MAP_KEY env var or the per-Case vault).
 
-    **Cross-tool dependencies:**
-    - Upstream of: wildfire spread-model workflow setups, smoke/population
-      impact overlays.
-    - Pairs with: ``fetch_nifc_fire_perimeters`` (current perimeters around FIRMS
-      detections), ``fetch_mtbs_burn_severity`` (historical context).
-    - Auth dependency: set ``GRACE2_FIRMS_MAP_KEY`` env var (register free at
-      ``firms.modaps.eosdis.nasa.gov/api/map_key/``).
+    Parameters:
+    - bbox (tuple): (min_lon, min_lat, max_lon, max_lat) EPSG:4326. Required;
+      global queries rejected. Example: (-124.0, 32.5, -114.0, 42.0) for CA.
+    - days_back (int): 1-10 days back from FIRMS "today" (default 1). FIRMS
+      upstream currently rejects >5 (surfaces as a typed upstream error).
+    - source: one of "VIIRS_SNPP_NRT" (default, Suomi NPP 375m),
+      "VIIRS_NOAA20_NRT" (NOAA-20 375m), "MODIS_NRT" (Terra/Aqua 1km).
+    - date (str, optional): a single historical acquisition day "YYYY-MM-DD"
+      (queries exactly that day); default None keeps the rolling days_back window.
+
+    Returns a FlatGeobuf with fields: brightness, scan, track, acq_date,
+    acq_time, satellite, instrument, confidence, version, bright_t31, frp,
+    daynight. Pairs with fetch_nifc_fire_perimeters (current perimeters),
+    fetch_wfigs_incident (name -> AOI), fetch_mtbs_burn_severity (historical).
     """
     # 1. Validate arguments (typed errors, not crashes — invariant: FR-AS-11).
     if source not in _VALID_SOURCES:

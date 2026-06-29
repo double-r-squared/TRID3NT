@@ -70,7 +70,7 @@ from the single ``S000_JT00`` file, so any segment is one download per state):
 - For *residents* / who lives there -> ``fetch_census_acs`` (ACS population /
   demographics) or ``fetch_hrsl_population`` (gridded residential population).
 - For a gridded population *raster* -> ``fetch_hrsl_population`` /
-  ``fetch_worldpop`` (this tool returns tract polygons).
+  ``fetch_ghsl_population`` (this tool returns tract polygons).
 - For areas outside the United States -> LODES + tract geography is U.S.-only
   (states + DC + PR). An empty FGB is returned for non-U.S. bboxes.
 
@@ -128,7 +128,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -707,32 +707,45 @@ def _fetch_lehd_bytes(
 )
 def fetch_lehd_jobs(
     bbox: tuple[float, float, float, float],
-    segment: str = "total",
+    segment: Literal[
+        "total",
+        "low_wage",
+        "mid_wage",
+        "high_wage",
+        "goods",
+        "trade_transport",
+        "services",
+        "public",
+        "retail",
+        "manufacturing",
+        "health",
+    ] = "total",
     year: int = _DEFAULT_YEAR,
     # Wave 4.10 convention: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Census LEHD LODES workplace employment as a tract choropleth FlatGeobuf.
+    """Census LEHD LODES workplace employment as a tract choropleth -- a vector LayerURI ("where the jobs are").
+
+    Use this when:
+        - "How many jobs are inside this flood / fire / plume footprint?" (feed
+          the choropleth INTO ``compute_zonal_statistics`` over a hazard polygon).
+        - "Show employment density by tract" / daytime-population proxy for a metro.
+        - Recovery planning: tracts concentrating jobs at risk, by wage or sector.
+    Do NOT use this for:
+        - *Residents* / who lives there -> ``fetch_census_acs`` (the residential
+          side; LODES WAC is the workplace side).
+        - A gridded population *raster* -> ``fetch_hrsl_population`` /
+          ``fetch_ghsl_population``.
+        - Social-vulnerability ranks -> ``fetch_cdc_svi``.
+        - Areas outside the U.S. -> LODES is U.S.-only; an empty FGB is returned.
+    Returns a vector LayerURI (census-tract polygons, EPSG:4326) that
+    auto-renders -- pass to ``publish_layer`` to draw the choropleth; a tract
+    with no LODES workplace record carries ``value=null`` (honest, not zero).
 
     Aggregates the Census Bureau's LODES Workplace Area Characteristics (WAC)
     block-level job counts up to census tract and joins them to authoritative
-    tract geometry (TIGERweb, keyless), returning a job-density choropleth
-    clipped to ``bbox``. WAC counts jobs at the *workplace* -- "where the jobs
-    are" -- the canonical economic-exposure / recovery surface to intersect with
-    a hazard footprint ("how many jobs sit inside the inundation extent"). The
+    tract geometry (TIGERweb, keyless). WAC counts jobs at the *workplace*; the
     ``segment`` param selects total jobs, a wage tier, or a sector grouping.
-
-    **When to use:**
-    - "How many jobs are inside this flood / fire / plume footprint?" (feed the
-      choropleth INTO ``compute_zonal_statistics`` over a hazard polygon).
-    - "Show employment density by tract" / daytime-population proxy for a metro.
-    - Recovery planning: tracts concentrating jobs at risk, by wage or sector.
-
-    **When NOT to use:**
-    - For *residents* / who lives there -> ``fetch_census_acs`` or
-      ``fetch_hrsl_population``.
-    - For a gridded population *raster* -> ``fetch_hrsl_population``.
-    - For areas outside the U.S. -> LODES is U.S.-only; an empty FGB is returned.
 
     **Parameters:**
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required;

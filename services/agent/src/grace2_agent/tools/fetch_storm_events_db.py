@@ -1,29 +1,20 @@
-"""``fetch_storm_events_db`` atomic tool — NOAA Storm Events DB Tier-1 fetcher (job-0091).
+"""``fetch_storm_events_db`` atomic tool -- NOAA NCEI Storm Events fetcher.
 
-Downloads the annual NOAA Storm Events Database details CSV (gzip) from
-``https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/``, filters by
-state, event-type, an optional spatial ``bbox`` (W,S,E,N), and an optional
-``begin_date``/``end_date`` temporal window, converts to FlatGeobuf with point
-geometry from ``BEGIN_LAT``/``BEGIN_LON``, and returns a ``LayerURI`` pointing
-at the cached artifact.
+Downloads the annual NOAA Storm Events Database details CSV (gzip) from the NCEI
+directory ``https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/``,
+filters by state / event-type / optional ``bbox`` (W,S,E,N) / optional
+``begin_date``-``end_date`` window, and returns a ``LayerURI`` to a cached
+FlatGeobuf point layer (point per event at ``BEGIN_LAT``/``BEGIN_LON``).
 
-The NOAA Storm Events Database is the authoritative US storm-event catalog
-maintained by NCEI. Files follow the pattern::
+``processed_date`` in the filename is re-stamped on every NCEI reprocessing, so
+the implementation scrapes the directory index to resolve the current file for a
+year rather than hard-coding it. A window may span multiple calendar years, in
+which case every annual CSV it touches is downloaded and concatenated before
+filtering. Identical ``(year, state, event_types, bbox, begin_date, end_date)``
+calls reuse the cached FlatGeobuf (``static-30d``).
 
-    StormEvents_details-ftp_v1.0_d{year}_c{processed_date}.csv.gz
-
-``processed_date`` is volatile (re-stamped on every NCEI reprocessing), so the
-implementation scrapes the HTTP directory index to find the current file for
-``year`` rather than hard-coding the processed date.
-
-A ``begin_date``/``end_date`` window may span more than one calendar year; the
-fetcher then downloads every annual CSV the window touches (``year`` is used as
-the anchor when no window is given) and concatenates the rows before filtering.
-
-FR-TA-2: atomic tool returning ``LayerURI``.
-FR-CE-8 / FR-DC-3/4: routed through ``read_through`` so identical
-``(year, state, event_types, bbox, begin_date, end_date)`` calls reuse the
-cached FlatGeobuf (static-30d).
+The public surface is documented on the ``fetch_storm_events_db`` function
+docstring below (the tool-catalog description).
 """
 
 from __future__ import annotations
@@ -108,7 +99,7 @@ class StormEventsUpstreamError(StormEventsError):
 
 
 class StormEventsEmptyError(StormEventsError):
-    """No events remain after filtering. Not retryable — filter is the cause."""
+    """No events remain after filtering. Not retryable -- filter is the cause."""
 
     error_code = "STORM_EVENTS_EMPTY"
     retryable = False
@@ -210,7 +201,7 @@ def _validate_inputs(
     """Validate year/state/event_types/bbox/window or raise ``StormEventsArgError``.
 
     ``state`` accepts EITHER an ISO 2-letter code (``"OK"``) OR a full US state
-    name (``"Oklahoma"``), case-insensitive — the LLM routinely passes the
+    name (``"Oklahoma"``), case-insensitive -- the LLM routinely passes the
     word the user typed. Both forms are recognized against the NOAA state
     catalog; only a genuinely-unrecognized state is rejected. The query path
     (``_parse_filter_and_serialize``) is already tolerant of both, so we
@@ -674,7 +665,7 @@ def _normalize_state(state: str | None) -> str | None:
     (``"Oklahoma"``), case-insensitive. Returns the NOAA STATE-column spelling
     (e.g. ``"OKLAHOMA"``). ``None`` passes through. An unrecognized token is
     returned upper-cased unchanged (the query filter then matches the raw
-    STATE column directly) — ``_validate_inputs`` is the gate that rejects
+    STATE column directly) -- ``_validate_inputs`` is the gate that rejects
     genuinely-bad states before we get here.
     """
     if state is None:
@@ -762,68 +753,60 @@ def fetch_storm_events_db(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch historical NOAA Storm Events Database records as a FlatGeobuf point layer.
+    """Historical NOAA NCEI Storm Events as point features (one per severe-weather event). [auto-renders a vector layer]
 
-    **What it does:** Downloads the annual NOAA Storm Events DB gzip CSV for a
-    given year from NCEI (``ncei.noaa.gov``), filters by state, event type, an
-    optional spatial ``bbox``, and an optional ``begin_date``/``end_date``
-    window, geocodes each row at ``BEGIN_LAT``/``BEGIN_LON``, and writes a
-    FlatGeobuf Point layer. The DB is the authoritative US storm-event catalog
-    covering 40+ categories (tornado, hurricane, hail, flood, winter storm, …)
-    from 1950 to present. Tier-1 free, no API key. Cached ``static-30d``.
+    Use this when:
+        - You need PAST storm-event locations ("flood events in Lee County FL
+          2022"; a bbox; a date window).
+        - Comparing historical events against a modeled footprint or live alert.
+        - Summarizing event frequency or damage for a year/region.
 
-    **When to use:**
-    - Agent needs historical storm-event locations for spatial context — e.g.
-      "what flood events affected Lee County FL in 2022?"
-    - User asks for storm events inside a specific map view / AOI (pass ``bbox``)
-      or within a date range (pass ``begin_date``/``end_date``).
-    - Workflow requires comparing past event locations against a modeled hazard
-      footprint or a current NWS alert.
-    - User asks for storm frequency, damage summaries, or narrative context for
-      a specific year and region.
-    - Providing historical baseline to accompany a real-time ``fetch_nws_event``
-      or ``fetch_nws_alerts_conus`` result.
+    Do NOT use this for:
+        - LIVE / active weather -- use fetch_nws_event or fetch_nws_alerts_conus.
+        - Federal disaster DECLARATIONS by county -- use fetch_openfema_disasters.
+        - Counting events in a polygon -- pass the result to
+          compute_zonal_statistics.
+        - Non-US events or gridded precip (NCEI is US, per-event only).
 
-    **When NOT to use:**
-    - Real-time or current storm tracking (use ``fetch_nws_event`` for active
-      NWS alerts; NHC ATCF tracks are not in scope for v0.1).
-    - Parcel-level damage loss data (the DB carries summary strings only; use
-      Pelicun post-processor for modeled loss).
-    - Non-US meteorology (Storm Events is US + territories only).
-    - Sub-annual temporal resolution (the DB records are per-event, not
-      gridded time series; use MRMS or NWP output for gridded precipitation).
+    Honesty: no events after filtering raises StormEventsEmptyError; an NCEI
+    download/parse failure raises StormEventsUpstreamError -- never an empty layer.
 
-    **Parameters:**
-    - ``year`` (int): calendar year in range [1950, 2100]. Coverage is sparse
-      before ~1996 and comprehensive from that year onward. Acts as the anchor
-      when no window is given. Example: ``2022``.
-    - ``state`` (str or None): US state — either a full name (``"Oklahoma"``,
-      ``"Florida"``) OR an ISO 2-letter code (``"OK"``, ``"FL"``).
-      Case-insensitive; ``None`` returns all states/territories.
-    - ``event_types`` (list[str] or None): list of NOAA event-type name strings,
-      case-insensitive (e.g. ``["Hurricane", "Flash Flood"]``, ``["Tornado"]``).
-      ``None`` returns all categories.
-    - ``bbox`` (tuple or None): optional spatial filter ``(west, south, east,
-      north)`` in WGS84 degrees; keeps only events whose begin point lies inside
-      the box. A bbox spans state lines (it is spatial, not administrative).
-    - ``begin_date`` / ``end_date`` (str or None): optional inclusive temporal
-      window in ISO ``YYYY-MM-DD`` (or ``YYYY-MM-DDTHH:MM:SS``) form. The window
-      may cross a year boundary - every annual CSV it touches is fetched.
+    Action: returns a LayerURI (vector points, role="context") that auto-renders;
+    props carry event type, dates, casualties, damage.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
-    FlatGeobuf with fields: ``EVENT_ID``, ``EVENT_TYPE``, ``STATE``,
-    ``BEGIN_DATE_TIME``, ``END_DATE_TIME``, ``INJURIES_DIRECT``,
-    ``DEATHS_DIRECT``, ``DEATHS_INDIRECT``, ``DAMAGE_PROPERTY``, ``MAGNITUDE``,
-    ``EPISODE_NARRATIVE``. One point per event at ``BEGIN_LAT``/``BEGIN_LON``,
-    EPSG:4326.
+    Source: NOAA NCEI Storm Events Database (ncei.noaa.gov), the authoritative US
+    storm-event catalog (40+ categories: tornado, hurricane, hail, flood, winter
+    storm, ...) from 1950 to present. Tier-1 free, no API key. Cached static-30d.
 
-    **Cross-tool dependencies:**
-    - Pairs with: ``fetch_nws_event`` / ``fetch_nws_alerts_conus`` (historical
-      baseline alongside current active alerts).
-    - Upstream of: ``compute_zonal_statistics`` (count events inside a polygon),
-      narrative hazard-impact summaries.
-    - Complements: ``fetch_dem``, ``fetch_river_geometry`` for flood context.
+    Params:
+        year (int): calendar year in [1950, 2100]; coverage is comprehensive from
+            ~1996. Acts as the anchor when no window is given. Example: 2022.
+        state (str|None): full name ("Oklahoma") OR ISO 2-letter code ("OK"),
+            case-insensitive; None returns all states/territories.
+        event_types (list[str]|None): NOAA event-type names, case-insensitive
+            (e.g. ["Hurricane", "Flash Flood"]); None returns all categories.
+            (Left as free strings: the category list is matched against the CSV,
+            not a frozen in-code enum.)
+        bbox (tuple|None): spatial filter (west, south, east, north) in WGS84;
+            keeps events whose begin point lies inside. Spans state lines.
+        begin_date / end_date (str|None): inclusive ISO window (YYYY-MM-DD or
+            YYYY-MM-DDTHH:MM:SS); may cross a year boundary (every annual CSV it
+            touches is fetched).
+
+    Returns:
+        LayerURI(layer_type="vector", role="context") -> FlatGeobuf point layer,
+        EPSG:4326, one point per event at BEGIN_LAT/BEGIN_LON. Fields: EVENT_ID,
+        EVENT_TYPE, STATE, BEGIN_DATE_TIME, END_DATE_TIME, INJURIES_DIRECT,
+        DEATHS_DIRECT, DEATHS_INDIRECT, DAMAGE_PROPERTY, MAGNITUDE,
+        EPISODE_NARRATIVE.
+
+    Cross-tool dependencies:
+        - Pairs with fetch_nws_event / fetch_nws_alerts_conus (historical
+          baseline alongside current active alerts).
+        - Upstream of compute_zonal_statistics (count events inside a polygon).
+        - Complements fetch_dem / fetch_river_geometry for flood context;
+          distinct from fetch_openfema_disasters (county declarations, not
+          events).
     """
     _validate_inputs(year, state, event_types, bbox, begin_date, end_date)
 

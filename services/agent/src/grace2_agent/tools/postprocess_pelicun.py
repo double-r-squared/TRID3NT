@@ -686,7 +686,7 @@ async def postprocess_pelicun(
     # job-0164: absorb LLM-invented kwargs (Tool argument normalizer ratchet).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Aggregate a Pelicun per-asset damage FlatGeobuf into an ImpactEnvelope.
+    """Collapse a Pelicun per-asset damage FlatGeobuf into one ImpactEnvelope -- a dict aggregate, NOT a renderable layer.
 
     Use this when:
         - You have just called ``run_pelicun_damage_assessment`` and need
@@ -694,27 +694,30 @@ async def postprocess_pelicun(
           population_displaced, etc.) for narration or the Case summary panel.
         - The user asks "how much damage" / "how many displaced" / "what's the
           expected loss" after a Pelicun damage run.
-
     Do NOT use this for:
+        - The end-to-end ask (fetch inventory + run Pelicun + aggregate) from
+          just a flood layer -- use the ``compute_impact_envelope`` composer.
         - Per-feature damage queries (read the FlatGeobuf directly; this tool
           collapses every per-feature column into an aggregate).
         - Recomputing damage with different inputs (call
           ``run_pelicun_damage_assessment`` instead).
-        - Plain exposure counts without Pelicun (use
-          ``compute_zonal_statistics``).
+        - Plain exposure counts without Pelicun (use ``compute_zonal_statistics``).
+    Honest aggregate (Invariant 1): every field is a deterministic aggregate of
+    the source layer. Returns a dict (ImpactEnvelope), NOT a layer -- cite the
+    totals; there is nothing to publish_layer here.
 
     Parameters:
-        damage_layer_uri: gs:// URI (or local path) to the FlatGeobuf returned
+        damage_layer_uri: s3:// URI (or local path) to the FlatGeobuf returned
             by ``run_pelicun_damage_assessment``. Required.
-        flood_layer_uri: gs:// URI (or local path) to the hazard raster that
-            was the upstream ``hazard_raster_uri``. Optional — carried forward
+        flood_layer_uri: s3:// URI (or local path) to the hazard raster that
+            was the upstream ``hazard_raster_uri``. Optional -- carried forward
             for provenance only.
         fragility_set: the fragility set actually used in the upstream Pelicun
-            run (e.g. ``"hazus_flood_v6"``). Optional — when omitted the
+            run (e.g. ``"hazus_flood_v6"``). Optional -- when omitted the
             envelope reports the back-compatible default. The composer threads
             the real value so the envelope provenance reflects the run.
         realization_count: the Monte-Carlo realization count actually used
-            upstream. Optional — defaults to the back-compatible 100.
+            upstream. Optional -- defaults to the back-compatible 100.
 
     Returns:
         A dict (``ImpactEnvelope.model_dump(mode="json")``) carrying:
@@ -725,7 +728,7 @@ async def postprocess_pelicun(
         - ``total_replacement_value_usd`` / ``damaged_replacement_value_usd``
         - ``population_total`` / ``population_displaced`` / ``population_at_high_risk``
           (None when ``structure_inventory_source != "USACE_NSI"``)
-        - ``impact_area_km2`` (convex hull of DS1+ centroids, geodesic km²)
+        - ``impact_area_km2`` (convex hull of DS1+ centroids, geodesic km2)
         - ``bbox`` (full layer extent in EPSG:4326)
         - ``by_occupancy_class`` (per HAZUS occupancy class breakdown)
         - ``pelicun_run_id`` / ``damage_layer_uri`` / ``flood_layer_uri`` /
@@ -734,7 +737,7 @@ async def postprocess_pelicun(
 
     Raises:
         PelicunPostprocessInputError: bad URI shape / non-string argument.
-        PelicunPostprocessIOError: GCS download or geopandas read failed.
+        PelicunPostprocessIOError: object-store (S3) download or geopandas read failed.
         PelicunPostprocessEmptyError: FlatGeobuf has zero features.
         PelicunPostprocessSchemaError: required Pelicun-output columns
             missing from the FlatGeobuf.

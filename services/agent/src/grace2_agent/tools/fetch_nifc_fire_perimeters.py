@@ -61,7 +61,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -457,58 +457,46 @@ def _fetch_nifc_bytes(
 )
 def fetch_nifc_fire_perimeters(
     bbox: tuple[float, float, float, float] | None = None,
-    status: str = "active",
+    status: Literal["active", "controlled", "out", "all"] = "active",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch current NIFC WFIGS wildland fire perimeter polygons for the US.
+    """Current NIFC/WFIGS active wildland fire-perimeter polygons (vector) for the US. [current-fire | perimeters]
 
-    **What it does:** Queries the National Interagency Fire Center (NIFC) WFIGS
-    Interagency Perimeters Current ArcGIS FeatureService, paginates all active
-    wildfire perimeter polygons (federal + state + tribal agency data fused),
-    and returns a FlatGeobuf vector layer. Supports both CONUS-wide sweeps
-    (``bbox=None``, ``supports_global_query=True``) and spatially filtered
-    queries. Cached ``dynamic-1h`` (active fires update frequently).
-    No API key required. FR-HEP-2 Tier 1 source.
+    Queries the NIFC WFIGS Interagency Perimeters Current ArcGIS FeatureService
+    (federal + state + tribal data fused) and returns active wildfire perimeter
+    polygons as a FlatGeobuf. Supports a CONUS+AK+HI sweep (bbox=None) or a
+    bbox-filtered query. No API key. Cached dynamic-1h.
 
-    **When to use:**
-    - "Show me every active wildfire in California right now."
-    - Wildfire hazard-context overlay on a population or air-quality layer.
-    - Discovery step before fetching FIRMS detections — identify which fires
-      have established perimeters vs. new hotspot clusters.
-    - "What is the biggest active megafire and how contained is it?"
+    Use this when:
+    - "Show every active wildfire perimeter in <area> / the US right now".
+    - Wildfire hazard-context overlay; "what is the biggest active megafire and
+      how contained is it?".
+    - The perimeter step before/around fetching FIRMS detections.
 
-    **When NOT to use:**
-    - Historical wildfire perimeters (NIFC "Current" only carries active
-      incidents; for past fires use ``fetch_mtbs_burn_severity``).
-    - Fire-danger or fire-weather forecasts (use NWS fire-weather products).
-    - Smoke plume or air-quality data (NOAA HRRR-Smoke; different tool).
-    - Satellite thermal anomaly / hotspot detections (use
-      ``fetch_firms_active_fire``).
+    Do NOT use this for:
+    - Historical / past-season perimeters -- use fetch_mtbs_burn_severity.
+    - Satellite hot-pixel detections -- use fetch_firms_active_fire (points),
+      fetch_viirs_day_fire or fetch_goes_active_fire (raster frames).
+    - Resolving ONE fire by NAME to a point -- use fetch_wfigs_incident.
+    - Fire-weather / red-flag warnings -- use fetch_nws_alerts_conus.
 
-    **Parameters:**
-    - ``bbox`` (tuple or None): ``(min_lon, min_lat, max_lon, max_lat)`` in
-      EPSG:4326 for a spatially filtered query. ``None`` (default) returns all
-      currently active perimeters CONUS+AK+HI (typically 20–200 features,
-      ~1 MB payload). Example: ``(-122.5, 37.0, -120.0, 39.0)`` for Northern
-      California.
-    - ``status`` (str): ``"active"`` (default). Accepted: ``active``,
-      ``controlled``, ``out``, ``all``. Note: v0.1 always queries the NIFC
-      "Current" service regardless of value (OQ-0110-STATUS-FILTER-NO-OP).
+    Honesty: a quiet period returns a valid 0-feature layer (no active
+    perimeters), never a fabricated perimeter.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="primary", units=None)`` pointing at a
-    FlatGeobuf with fields: incident name, GIS acres, percent contained,
-    ignition date, ignition cause, POO state, and fire type. EPSG:4326.
+    Returns a vector LayerURI (FlatGeobuf, EPSG:4326).
 
-    **Cross-tool dependencies:**
-    - Pairs with: ``fetch_firms_active_fire`` (satellite detections inside/near
-      perimeters), ``fetch_nws_alerts_conus`` (co-occurring fire-weather watches
-      + red-flag warnings).
-    - Upstream of: smoke/population-impact overlays, evacuation zone analysis.
-    - Historical complement: ``fetch_mtbs_burn_severity`` for 1984-present
-      burned-area polygons.
+    Parameters:
+    - bbox (tuple or None): (min_lon, min_lat, max_lon, max_lat) EPSG:4326 for a
+      filtered query; None (default) returns all active perimeters CONUS+AK+HI
+      (~20-200 features).
+    - status: one of "active" (default), "controlled", "out", "all". Note: v0.1
+      always queries the NIFC "Current" service regardless of value.
+
+    Fields: incident name, GIS acres, percent contained, ignition date/cause,
+    POO state, fire type. Pairs with fetch_firms_active_fire and
+    fetch_nws_alerts_conus; historical complement fetch_mtbs_burn_severity.
     """
     # Validate inputs early — typos here are caller error, not retryable.
     if status not in _VALID_STATUSES:
