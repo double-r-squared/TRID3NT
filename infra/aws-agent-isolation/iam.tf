@@ -69,8 +69,13 @@ data "aws_iam_policy_document" "agent_task" {
   statement {
     sid     = "BedrockInvoke"
     actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    # The live models are CROSS-REGION inference profiles (us.anthropic.*): the
+    # profile resolves in the caller region (us-west-2) but ROUTES the invoke to
+    # foundation models in us-east-1/us-east-2/us-west-2. So the foundation-model
+    # grant MUST span regions (a us-west-2-only scope -> AccessDenied on the routed
+    # region). Region-wildcarded but still narrower than the box role's bare "*".
     resources = [
-      "arn:aws:bedrock:${local.reg}::foundation-model/*",
+      "arn:aws:bedrock:*::foundation-model/*",
       "arn:aws:bedrock:${local.reg}:${local.acct}:inference-profile/*",
     ]
   }
