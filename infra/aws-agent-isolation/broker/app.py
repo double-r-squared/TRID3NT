@@ -262,40 +262,70 @@ async def handle_connection(client_ws, ddb_resource, ecs_client, cfg: RoutingCon
     in-process lock in ``decide_route`` is a ``threading.Lock`` precisely because
     it runs in the thread pool). The proxy itself is fully async.
     """
-    from .proxy import open_upstream, proxy_frames  # local import: optional dep at test time
+    from .proxy import (  # local import: optional dep at test time
+        client_provision_keepalive,
+        open_upstream,
+        proxy_frames,
+    )
 
     request_uri = _connection_path(client_ws)
     subprotocols = _connection_subprotocols(client_ws)
 
-    route = await asyncio.to_thread(
-        decide_route,
-        ddb_resource,
-        ecs_client,
-        cfg,
-        request_uri=request_uri,
-        subprotocols=subprotocols,
-        health_probe=health_probe,
-    )
-    if route is None:
-        # Reject the connect. 4401 (app-defined) signals "unauthorized/unroutable"
-        # so ws.ts can distinguish it from a transient drop; it still triggers the
-        # client's reconnect/backoff.
-        await client_ws.close(code=4401, reason="unauthorized or unroutable")
-        return
+    # COLD-PROVISION KEEPALIVE: a route MISS provisions a COLD Fargate agent
+    # (~40-48s) during which the broker would otherwise send the client ZERO data
+    # frames -- so the web client's 10s DATA-frame pong-deadline fires (~35s) and
+    # it force-reconnects mid-provision, re-entering the wait (the broker-only
+    # reconnect churn). Emit a heartbeat DATA frame on the client leg every ~8s
+    # for the WHOLE resolve+dial window, then cancel it the instant the proxy
+    # takes over (the agent's own 12s heartbeat is the sole keepalive thereafter).
+    # See proxy.HEARTBEAT_INTERVAL_SECONDS for the full rationale.
+    keepalive_task = asyncio.create_task(client_provision_keepalive(client_ws))
 
-    # Connect to the per-session agent task and pump frames both ways until either
-    # side closes. The 12s server-push heartbeat keeps the connection never-idle,
-    # so open_upstream sets ping_interval=None / no read deadline (no broker-side
-    # idle timeout). On a failed upstream dial, close the client so it retries.
+    async def _stop_keepalive() -> None:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
     try:
-        upstream = await open_upstream(route.private_ip, route.port)
-    except Exception as exc:  # noqa: BLE001 - task unreachable -> let the client retry
-        logger.warning(
-            "upstream connect to %s:%d failed (%s); closing client for retry",
-            route.private_ip, route.port, type(exc).__name__,
+        route = await asyncio.to_thread(
+            decide_route,
+            ddb_resource,
+            ecs_client,
+            cfg,
+            request_uri=request_uri,
+            subprotocols=subprotocols,
+            health_probe=health_probe,
         )
-        await client_ws.close(code=1013, reason="agent task not ready")
-        return
+        if route is None:
+            # Reject the connect. 4401 (app-defined) signals "unauthorized/
+            # unroutable" so ws.ts can distinguish it from a transient drop; it
+            # still triggers the client's reconnect/backoff.
+            await client_ws.close(code=4401, reason="unauthorized or unroutable")
+            return
+
+        # Connect to the per-session agent task. On a failed upstream dial, close
+        # the client so it retries. The keepalive stays armed through the dial.
+        try:
+            upstream = await open_upstream(route.private_ip, route.port)
+        except Exception as exc:  # noqa: BLE001 - task unreachable -> client retries
+            logger.warning(
+                "upstream connect to %s:%d failed (%s); closing client for retry",
+                route.private_ip, route.port, type(exc).__name__,
+            )
+            await client_ws.close(code=1013, reason="agent task not ready")
+            return
+    finally:
+        # Hand off liveness to the proxied legs (the agent's 12s heartbeat now
+        # flows through proxy_frames) -- stop the broker's provisioning heartbeat
+        # on EVERY path (route None, dial failure, or success) so it never races
+        # the relay or double-sends.
+        await _stop_keepalive()
+
+    # Pump frames both ways until either side closes. The 12s server-push
+    # heartbeat keeps the connection never-idle (open_upstream sets
+    # ping_interval=None / no read deadline -> no broker-side idle timeout).
     await proxy_frames(client_ws, upstream)
 
 

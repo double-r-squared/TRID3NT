@@ -48,13 +48,57 @@ duck-typed fakes) in an env without ``websockets`` installed.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+import secrets
+import time
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger("grace2.broker.proxy")
 
 #: The agent serves its WS on any path; ``/ws`` mirrors the public client URL.
 AGENT_WS_PATH = "/ws"
+
+#: COLD-PROVISION KEEPALIVE (broker-originated client-leg heartbeat).
+#:
+#: A first-connect for a session is a route MISS: the broker RunTask-provisions a
+#: per-session Fargate agent, which is a COLD start -- measured ~40-48s wall-clock
+#: before the upstream agent leg is connected and its own 12s data-heartbeat
+#: begins flowing to the client. During that whole window the broker sends the
+#: client ZERO application DATA frames (the handler is blocked in
+#: ``decide_route`` -> ``to_thread`` provisioning, then in ``open_upstream``).
+#:
+#: The web client (web/src/ws.ts) runs an app-level watchdog: a ``session-resume``
+#: ping every KEEPALIVE_INTERVAL_MS (25s) that arms a pong-deadline of
+#: KEEPALIVE_PONG_TIMEOUT_MS (10s) cleared ONLY by an inbound *DATA* frame
+#: (browsers hide WS PING control frames, so the broker's protocol-level pings do
+#: NOT reset it -- the SAME reason the agent sends a data-heartbeat at all). With
+#: the first DATA frame ~48s out but the deadline firing at ~35s, the real browser
+#: force-reconnects MID-PROVISION, and each redial re-enters the provisioning wait
+#: -> the reconnect churn observed only through the broker (never on the single box,
+#: where the first frame lands in <1s).
+#:
+#: Fix: while the route is being resolved/provisioned AND while the upstream is
+#: being dialed, the broker emits a lightweight ``heartbeat`` DATA frame on the
+#: client leg every HEARTBEAT_INTERVAL_SECONDS -- BYTE-COMPATIBLE with the agent's
+#: own heartbeat (services/agent/src/grace2_agent/server.py ``_heartbeat_loop``),
+#: which ws.ts already treats as a no-op proof-of-life frame (its dispatch routes
+#: an unknown ``heartbeat`` type to a no-op default and ``noteInboundActivity``
+#: clears the pong deadline for EVERY inbound frame). The task cancels the instant
+#: the proxy takes over, so once the agent's own heartbeat flows there is no
+#: double-heartbeat. Default 8s is comfortably under the client's 10s deadline.
+HEARTBEAT_INTERVAL_SECONDS: float = float(
+    os.environ.get("BROKER_PROVISION_HEARTBEAT_SECONDS", "8.0")
+)
+
+#: Placeholder session_id on the broker's provisioning heartbeat. The client
+#: routes a liveness frame by transport, not session, so a zeros-ULID is fine
+#: (mirrors the agent's pre-handshake heartbeat session_id). 26 chars (ULID len).
+_HEARTBEAT_PLACEHOLDER_SID = "00000000000000000000000000"
+
+_CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 #: RFC6455 close codes a peer must NOT *send* in a Close frame. If an inbound leg
 #: ended with one of these (or none), we substitute a sane sendable code when
@@ -76,6 +120,66 @@ def _sanitize_close_code(code: Optional[int]) -> int:
     if code is None or code in _NON_SENDABLE_CLOSE_CODES:
         return 1001  # going away
     return code
+
+
+def _ulid() -> str:
+    """A time-ordered 26-char Crockford-base32 ULID for the heartbeat id field.
+
+    The client never validates this id (it reads only ``type`` / ``payload``),
+    but a well-formed ULID keeps the frame indistinguishable from the agent's own
+    heartbeat. 48-bit ms timestamp (10 chars) + 80 bits randomness (16 chars).
+    """
+    ts = int(time.time() * 1000)
+    ts_chars = []
+    for _ in range(10):
+        ts_chars.append(_CROCKFORD32[ts & 0x1F])
+        ts >>= 5
+    rand = "".join(_CROCKFORD32[secrets.randbelow(32)] for _ in range(16))
+    return "".join(reversed(ts_chars)) + rand
+
+
+def _heartbeat_frame() -> str:
+    """Build one ``heartbeat`` DATA frame byte-compatible with the agent's
+    ``_heartbeat_loop`` so the web client's pong-deadline watchdog is satisfied."""
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return json.dumps(
+        {
+            "type": "heartbeat",
+            "id": _ulid(),
+            "ts": now,
+            "session_id": _HEARTBEAT_PLACEHOLDER_SID,
+            "case_id": None,
+            "payload": {"ts": now},
+        }
+    )
+
+
+async def client_provision_keepalive(
+    client_ws, *, interval: float = HEARTBEAT_INTERVAL_SECONDS
+) -> None:
+    """Emit a ``heartbeat`` DATA frame on the CLIENT leg every ``interval`` seconds.
+
+    Run as a background task ONLY for the cold-provision window -- from before the
+    blocking route resolution until the upstream proxy takes over -- so the web
+    client's 10s DATA-frame pong-deadline never fires before the agent task is
+    reachable (see HEARTBEAT_INTERVAL_SECONDS for the full rationale). It is
+    cancelled the instant ``proxy_frames`` begins, so the agent's own 12s
+    heartbeat is the sole keepalive once frames flow (no double-heartbeat).
+
+    A per-send failure is swallowed (the socket may be closing); a real close ends
+    the owning handler which cancels this task. Cancellation propagates cleanly.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await client_ws.send(_heartbeat_frame())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - transport liveness; never crash
+            logger.debug(
+                "provision keepalive send ended: %s", type(exc).__name__
+            )
+            return
 
 
 async def open_upstream(private_ip: str, port: int, *, path: str = AGENT_WS_PATH):
