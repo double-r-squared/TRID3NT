@@ -350,77 +350,6 @@ async def _drive_live_solve_progress(
         raise
 
 
-#: Cadence (seconds) for the LIVE pre-solver progress ticks during the long
-#: fetcher chain + SFINCS build. Deliberately WELL UNDER the browser WS
-#: data-frame watchdog window (~25-30 s) so a real ``pipeline-state`` DATA frame
-#: lands on the active connection several times per phase -- this is what keeps
-#: the client from force-reconnecting ("run goes dark / hangs") during the ~70 s
-#: pre-solver phase when the work is off-loop in a worker thread and the turn is
-#: otherwise SILENT. Tunable via env for ops.
-_PRESOLVER_PROGRESS_TICK_S: float = float(
-    os.environ.get("GRACE2_PRESOLVER_PROGRESS_TICK_S", "7")
-)
-
-
-async def _drive_presolver_phase_progress(
-    emitter: Any,
-    *,
-    start_pct: int,
-    end_pct: int,
-    expected_seconds: float,
-) -> None:
-    """Background loop: tick a ``pipeline-state`` DATA frame on the CURRENT
-    running pre-solver step every ``_PRESOLVER_PROGRESS_TICK_S`` seconds.
-
-    THE FIX for the demo-breaking "run hangs / goes dark" symptom: during the
-    long pre-solver phases (the fetcher chain pulling DEM/topobathy/landcover,
-    then ``build_sfincs_model``) the heavy work runs OFF the event loop in a
-    worker thread (Invariant: no sync-blocking on the loop) and the turn emits
-    NOTHING for tens of seconds. With no data frame on the wire, the browser's
-    WS inbound-activity watchdog (~25-30 s window -- the WS-30s-storm class) trips
-    and the client force-reconnects mid-build, so the user sees the run freeze
-    even though it is healthy and proceeds to dispatch server-side. This driver
-    emits a real ``pipeline-state`` frame (via ``update_current_progress``)
-    several times per phase, which (a) resets the client watchdog -> NO reconnect,
-    and (b) creeps the card progress so the user sees it is working.
-
-    The percent CREEPS from ``start_pct`` toward ``end_pct`` on an asymptotic
-    ``elapsed/expected`` curve clamped to 95% of the band, so a slower-than-
-    expected phase never visually "completes" early or stalls at a flat number.
-    ``update_current_progress`` targets the most-recently-added RUNNING step
-    (the active ``substep`` child), so this must run INSIDE the phase's
-    ``substep`` context.
-
-    Best-effort + cancellation-safe: a no-op when ``emitter`` is ``None``
-    (direct/smoke/test call); any emit failure is swallowed (progress is a UX +
-    liveness hint, never a correctness gate); the caller cancels it in a
-    ``finally`` the instant the phase returns/raises.
-    """
-    if emitter is None:
-        return
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    band = max(0, int(end_pct) - int(start_pct))
-    try:
-        while True:
-            await asyncio.sleep(_PRESOLVER_PROGRESS_TICK_S)
-            elapsed = max(0.0, loop.time() - started)
-            frac = min(0.95, elapsed / max(float(expected_seconds), 1.0))
-            pct = int(start_pct) + int(round(band * frac))
-            try:
-                await emitter.update_current_progress(pct)
-            except Exception as exc:  # noqa: BLE001 — liveness hint, never fatal
-                logger.debug(
-                    "model_flood_scenario: pre-solver progress tick failed "
-                    "(non-fatal): %s",
-                    exc,
-                )
-    except asyncio.CancelledError:
-        # Normal teardown when the phase completes — re-raise so the task
-        # finalizes cleanly.
-        raise
-
-
 class WorkflowError(RuntimeError):
     """Raised by the workflow when composition fails fatally (rare).
 
@@ -3383,28 +3312,10 @@ async def model_flood_scenario(
         async with substep(
             emitter, "fetch_topobathy" if is_coastal else "fetch_dem"
         ):
-            # NO-RECONNECT (NATE 2026-06-29): the fetcher chain pulls DEM /
-            # topobathy / landcover OFF the loop in a worker thread and is SILENT
-            # on the wire for tens of seconds (a novel-AOI CUDEM/3DEP merge is the
-            # long pole). Drive a periodic pipeline-state DATA frame so the browser
-            # WS watchdog stays reset (no ~30 s force-reconnect) + the user sees the
-            # fetch is alive. Cancelled the instant the chain returns/raises.
-            _fetch_progress_task = asyncio.ensure_future(
-                _drive_presolver_phase_progress(
-                    emitter, start_pct=5, end_pct=24, expected_seconds=60.0
-                )
+            await asyncio.wait_for(
+                asyncio.to_thread(_fetcher_chain),
+                timeout=_FETCHER_PHASE_TIMEOUT_S,
             )
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(_fetcher_chain),
-                    timeout=_FETCHER_PHASE_TIMEOUT_S,
-                )
-            finally:
-                _fetch_progress_task.cancel()
-                try:
-                    await _fetch_progress_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
     except asyncio.CancelledError:
         # Invariant 8: a true cancel propagates (mark_cancelled fires upstream).
         raise
@@ -3801,46 +3712,24 @@ async def model_flood_scenario(
         # floor) and re-raises to the existing except cascade below, which returns
         # the corresponding failed envelope unchanged. No-op when no emitter bound.
         async with substep(emitter, "build_sfincs_model"):
-            # NO-RECONNECT (NATE 2026-06-29): build_sfincs_model (hydromt: DEM
-            # reproject + active-mask + manning rasterize + deck write + S3
-            # upload) is the longest pre-solver phase (~70 s for a city AOI) and
-            # runs OFF the loop in a worker thread -- SILENT on the wire. Without a
-            # periodic frame the browser WS watchdog trips and force-reconnects
-            # mid-build, so the run appears to hang/go dark even though it is
-            # healthy and dispatches to Batch. Drive a pipeline-state tick so the
-            # connection stays up + the card visibly advances. Cancelled the
-            # instant the build returns/raises (the child is still ``running``
-            # here, so update_current_progress targets THIS step).
-            _build_progress_task = asyncio.ensure_future(
-                _drive_presolver_phase_progress(
-                    emitter, start_pct=30, end_pct=88, expected_seconds=90.0
-                )
-            )
-            try:
-                model_setup = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        build_sfincs_model,
-                        dem_uri=dem_layer.uri,
-                        landcover_uri=landcover_layer.uri,
-                        # job-0307: None when the best-effort river fetch failed
-                        # (pluvial deck ignores it; build_sfincs_model documents
-                        # river_geometry_uri as "may be None").
-                        river_geometry_uri=(
-                            river_layer.uri if river_layer is not None else None
-                        ),
-                        forcing=forcing_spec,
-                        bbox=resolved_bbox,
-                        options=options,
-                        nlcd_vintage_year=nlcd_vintage_year,
+            model_setup = await asyncio.wait_for(
+                asyncio.to_thread(
+                    build_sfincs_model,
+                    dem_uri=dem_layer.uri,
+                    landcover_uri=landcover_layer.uri,
+                    # job-0307: None when the best-effort river fetch failed
+                    # (pluvial deck ignores it; build_sfincs_model documents
+                    # river_geometry_uri as "may be None").
+                    river_geometry_uri=(
+                        river_layer.uri if river_layer is not None else None
                     ),
-                    timeout=_BUILD_PHASE_TIMEOUT_S,
-                )
-            finally:
-                _build_progress_task.cancel()
-                try:
-                    await _build_progress_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                    forcing=forcing_spec,
+                    bbox=resolved_bbox,
+                    options=options,
+                    nlcd_vintage_year=nlcd_vintage_year,
+                ),
+                timeout=_BUILD_PHASE_TIMEOUT_S,
+            )
         # build_sfincs_model may snap grid_resolution_m UP (coarsen) if the
         # estimated active-cell count overruns the per-job cell cap. Refresh the
         # workflow-local resolution from the ACTUALLY-BUILT value so downstream
