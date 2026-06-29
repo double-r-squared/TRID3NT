@@ -474,6 +474,32 @@ export async function getIdToken(forceRefresh = false): Promise<string | null> {
 }
 
 /**
+ * Synchronous, best-effort read of the current Cognito ID token from the
+ * in-memory cache -- NO network, NO refresh, NO promise.
+ *
+ * Returns the SAME id token `getIdToken()` would return when the token is not
+ * near expiry: it reads the very same `cachedTokens` cache that `initAuth()` /
+ * `getIdToken()` populate (so it is NOT a new auth fetch -- it is the existing
+ * token source, read synchronously). Returns null when signed out / disabled.
+ *
+ * ws.ts uses this to carry the id token on the WebSocket subprotocol at DIAL
+ * time, where the socket construction must stay synchronous (the connect path
+ * and its reconnect/keepalive timers depend on it). The authoritative refresh
+ * still happens in the async `getIdToken()` path that feeds the in-band
+ * `auth-token` handshake; this is only the pre-upgrade routing carrier, so a
+ * not-yet-refreshed-but-valid cached token is acceptable here (the broker
+ * re-verifies and the agent's in-band check is authoritative). Mirrors
+ * `getIdToken()`'s injected-test behaviour so unit tests behave consistently.
+ */
+export function getIdTokenSync(): string | null {
+  if (injectedActive) {
+    return injectedUser ? `test-id-token:${injectedUser.uid}` : null;
+  }
+  const t = cachedTokens;
+  return t && t.idToken ? t.idToken : null;
+}
+
+/**
  * Begin sign-in: redirect to the Cognito Hosted UI authorize endpoint
  * (email/password sign-up + confirm + sign-in). Uses the OIDC authorization
  * code flow with PKCE (the SPA app client is public / no secret).

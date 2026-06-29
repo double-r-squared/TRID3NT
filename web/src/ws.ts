@@ -54,7 +54,7 @@ import {
 import type { ImpactEnvelope } from "./components/ImpactPanel";
 import type { ChartPayload } from "./components/ChartStack";
 import type { CodeExecRequestPayload, CodeExecResultPayload } from "./components/SandboxCard";
-import { getIdToken } from "./auth";
+import { getIdToken, getIdTokenSync } from "./auth";
 import { AgentWaker, WakeState } from "./lib/wake";
 // Wire-shape mirrors for the server's source-suggestion candidate envelopes.
 // Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
@@ -110,6 +110,16 @@ export interface AuthTokenPayload {
  * Auth subsystem. Defaults to `getIdToken()` from `./auth`.
  */
 export type IdTokenGetter = () => Promise<string | null>;
+
+/**
+ * Synchronous token-read seam for the pre-upgrade broker-auth carrier — the WS
+ * subprotocol must be supplied to the `WebSocket` constructor, which is a
+ * synchronous call, so the token has to be read WITHOUT awaiting. Injectable so
+ * unit tests can supply a token without a real Cognito subsystem. Defaults to
+ * `getIdTokenSync()` from `./auth`, which reads the SAME cache the async
+ * `getIdToken()` populates (no new fetch).
+ */
+export type IdTokenSyncGetter = () => string | null;
 
 export type ConnectionStatus =
   | "connecting"
@@ -284,6 +294,17 @@ export interface WsHandlers {
    */
   idTokenGetter?: IdTokenGetter;
   /**
+   * Pre-upgrade broker-auth carrier — SYNCHRONOUS id-token reader used to put
+   * the token on the WebSocket subprotocol at dial time (the constructor is
+   * synchronous; we cannot await here). Optional — when absent we fall back to
+   * `getIdTokenSync()` from `./auth`, which reads the SAME token cache the async
+   * `idTokenGetter` / `getIdToken()` use. Injected by tests to supply a token
+   * deterministically. Returning null (anonymous / signed-out / disabled) means
+   * NO subprotocol is offered, so the connect is byte-identical to the
+   * pre-change single-box behaviour.
+   */
+  idTokenSyncGetter?: IdTokenSyncGetter;
+  /**
    * job-0172 Part C — auth-ack handler. Fires once per WebSocket connect
    * after the server has either verified the Firebase ID token OR fallen
    * through to the H.3 anonymous fallback. Optional so existing callers
@@ -443,6 +464,52 @@ function withSessionQueryParam(url: string, sessionId: string): string {
   const frag = hashIdx === -1 ? "" : url.slice(hashIdx);
   const sep = base.includes("?") ? "&" : "?";
   return `${base}${sep}sid=${encodeURIComponent(sessionId)}${frag}`;
+}
+
+/**
+ * Per-user-agent-isolation (NATE 2026-06-22) — carry the Cognito ID token to the
+ * FUTURE per-session broker so it can verify auth PRE-UPGRADE (at the HTTP
+ * upgrade handshake, BEFORE the WebSocket is established) and route the
+ * connection to the right per-session task. The broker CANNOT read the in-band
+ * `auth-token` envelope — that frame arrives only AFTER the upgrade completes,
+ * far too late for a routing decision — so the token must ride the handshake
+ * itself, alongside the `?sid` routing key already appended by
+ * {@link withSessionQueryParam}.
+ *
+ * Carrier = the WebSocket SUBPROTOCOL (`Sec-WebSocket-Protocol`), NOT a `?st=`
+ * query param: a token in the URL query string is logged verbatim in ALB / proxy
+ * access logs, whereas a subprotocol header is not. The broker
+ * (`infra/aws-agent-isolation/broker/app.py` `_extract_identity`) reads the
+ * token from a subprotocol of the form `base64UrlBearerAuthorization.<token>` —
+ * it takes everything after the FIRST `.` as the token (`proto.split(".", 1)[1]`)
+ * so the JWT's own dots are preserved — the same `base64UrlBearerAuthorization`
+ * convention AppSync / API-Gateway use. We carry the RAW Cognito ID JWT after the
+ * prefix: a JWT is base64url segments joined by `.`, every character of which is
+ * a valid RFC-7230 subprotocol `token` char, so no extra encoding is needed (and
+ * the broker does not decode).
+ *
+ * NON-BREAKING on the CURRENT single box: the agent's `serve(...)` configures NO
+ * `subprotocols=`, so the `websockets` server selects none and returns NO
+ * `Sec-WebSocket-Protocol` response header; per RFC 6455 the browser then opens
+ * the connection normally with `ws.protocol === ""`. An unknown offered
+ * subprotocol is simply ignored — purely additive. When there is no token
+ * (anonymous / signed-out / Cognito disabled) we offer NO subprotocol at all, so
+ * the `new WebSocket(url)` call is byte-identical to the pre-change construct.
+ */
+const BEARER_SUBPROTOCOL_PREFIX = "base64UrlBearerAuthorization.";
+// RFC-7230 `tchar` set. The browser `WebSocket` constructor throws a SyntaxError
+// for a subprotocol value with any non-token char; a well-formed base64url JWT
+// (`[A-Za-z0-9_-]` segments joined by `.`) always passes.
+const SUBPROTOCOL_TCHAR_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+function bearerSubprotocols(idToken: string | null): string[] {
+  if (!idToken) return [];
+  const proto = `${BEARER_SUBPROTOCOL_PREFIX}${idToken}`;
+  // Defensive: degrade a malformed token to "no carrier" rather than letting the
+  // constructor throw (the broker still falls back / the in-band handshake still
+  // authenticates). A real Cognito ID JWT always passes this guard.
+  if (!SUBPROTOCOL_TCHAR_RE.test(proto)) return [];
+  return [proto];
 }
 
 function loadOrCreateSessionId(): string {
@@ -1383,14 +1450,35 @@ export class GraceWs {
 
   private openSocket(initialStatus: ConnectionStatus): void {
     this.handlers.onStatus(initialStatus);
+    // Per-user-agent-isolation — carry the Cognito ID token to the FUTURE broker
+    // on the WS subprotocol so it can verify auth PRE-UPGRADE (see
+    // bearerSubprotocols). Re-read FRESH on every (re)connect from the SAME token
+    // cache the in-band `auth-token` handshake uses — a SYNCHRONOUS read so the
+    // socket construction (and the reconnect/keepalive timers it owns) stay
+    // synchronous. No token (anonymous / signed-out / disabled) => no subprotocol
+    // => byte-identical construct. The async `auth-token` + `session-resume`
+    // handshake below is UNCHANGED.
+    let dialToken: string | null = null;
+    try {
+      const syncGetter = this.handlers.idTokenSyncGetter ?? getIdTokenSync;
+      dialToken = syncGetter();
+    } catch {
+      dialToken = null;
+    }
+    const subprotocols = bearerSubprotocols(dialToken);
     let ws: WebSocket;
     try {
-      // Per-user-agent-isolation — carry the stable per-session id as `?sid=`
-      // so the future broker can route this connection to its own per-session
-      // Fargate task at upgrade time. Purely additive: the current single box
-      // ignores the unknown query param (see withSessionQueryParam). The
-      // `auth-token` + `session-resume` handshake below is UNCHANGED.
-      ws = new WebSocket(withSessionQueryParam(this.url, this.sessionId));
+      // Carry the stable per-session id as `?sid=` so the future broker can route
+      // this connection to its own per-session Fargate task at upgrade time, and
+      // (additively) the id token as the `base64UrlBearerAuthorization.<token>`
+      // subprotocol so the broker can verify auth at the same pre-upgrade point.
+      // Purely additive: the current single box ignores BOTH the unknown query
+      // param and the unknown subprotocol.
+      const dialUrl = withSessionQueryParam(this.url, this.sessionId);
+      ws =
+        subprotocols.length > 0
+          ? new WebSocket(dialUrl, subprotocols)
+          : new WebSocket(dialUrl);
     } catch {
       this.scheduleReconnect();
       return;
