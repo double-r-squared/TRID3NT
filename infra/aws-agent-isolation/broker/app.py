@@ -53,6 +53,7 @@ from .cognito_verify import cognito_verify
 from .routing import (
     RoutingConfig,
     Route,
+    provision_user,
     resolve_or_provision,
     resolve_user_ulid,
 )
@@ -69,7 +70,7 @@ def load_config() -> RoutingConfig:
 
     return RoutingConfig(
         routes_table=os.environ.get("ROUTES_TABLE", "grace2_session_routes"),
-        users_table=os.environ.get("USERS_TABLE", "grace2_users"),
+        users_table=os.environ.get("USERS_TABLE", "trid3nt_users"),
         users_firebase_uid_index=os.environ.get("USERS_FIREBASE_UID_INDEX", "firebase_uid-index"),
         ecs_cluster=os.environ.get("ECS_CLUSTER", "grace2-agents"),
         agent_task_definition=os.environ.get("AGENT_TASK_DEFINITION", "grace2-agent-session"),
@@ -95,6 +96,22 @@ def _lock_for(user_ulid: str, session_id: str) -> threading.Lock:
     key = (user_ulid, session_id)
     with _provision_locks_guard:
         return _provision_locks[key]
+
+
+# --------------------------------------------------------------------------- #
+# Per-sub first-connect-provisioning lock. A brand-new sub has NO ULID yet, so the
+# per-(user_ulid, session_id) lock above cannot serialize its dual sockets (both
+# resolve None). This second lock keys on the sub so a tab's App + Chat sockets do
+# not both mint a users row -- the first creates it, the second waits, re-reads,
+# and reuses it (the same convergence pattern, one level earlier).
+# --------------------------------------------------------------------------- #
+_user_provision_locks: "defaultdict[str, threading.Lock]" = defaultdict(threading.Lock)
+_user_provision_locks_guard = threading.Lock()
+
+
+def _user_lock_for(sub: str) -> threading.Lock:
+    with _user_provision_locks_guard:
+        return _user_provision_locks[sub]
 
 
 # --------------------------------------------------------------------------- #
@@ -170,14 +187,29 @@ def decide_route(
     sub = claims.get("uid")
     user_ulid = resolve_user_ulid(ddb_resource, cfg, sub)
     if not user_ulid:
-        # Auto-provision-on-first-connect (the agent does this in-band via
-        # get_user_by_firebase_uid). The broker's read-only resolve cannot create
-        # the user, so on a first-ever connect it returns None here; the agent's
-        # in-band handshake creates the User. OPTION for the canary: a tiny
-        # provisioning write here, OR let the FIRST connect fall through to a
-        # shared bootstrap task that creates the user, then route. Documented TODO.
-        logger.info("connect rejected: sub has no internal ULID yet (first-connect provisioning is a TODO)")
-        return None
+        # First-connect provisioning. A brand-new verified sub (e.g. a code-gate
+        # demo user minted by the demo-token Lambda) has a Cognito identity but no
+        # users row yet -- the agent normally creates it IN-BAND on first connect,
+        # but the broker resolves sub->ULID BEFORE the agent task is ever reached,
+        # so it used to reject here (chicken-and-egg). Mint the row now, mirroring
+        # auth_handshake._resolve_or_provision_user; the agent's in-band handshake
+        # then FINDS this row instead of forking a second identity. Serialized
+        # per-sub so a tab's two sockets do not both create (the second re-reads
+        # under the lock and reuses the first's row).
+        user_lock = _user_lock_for(sub)
+        with user_lock:
+            user_ulid = resolve_user_ulid(ddb_resource, cfg, sub)  # re-read under lock
+            if not user_ulid:
+                user_ulid = provision_user(
+                    ddb_resource,
+                    cfg,
+                    sub,
+                    email=claims.get("email"),
+                    display_name=claims.get("name"),
+                )
+        if not user_ulid:
+            logger.info("connect rejected: first-connect user provisioning failed for sub")
+            return None
 
     lock = _lock_for(user_ulid, session_id)
     with lock:

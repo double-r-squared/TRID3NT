@@ -109,6 +109,141 @@ def resolve_user_ulid(ddb_resource, cfg: RoutingConfig, sub: str) -> Optional[st
 
 
 # --------------------------------------------------------------------------- #
+# First-connect user provisioning -- mint the users row a brand-new verified sub
+# has no row for yet (e.g. a code-gate demo user). The agent normally creates this
+# row IN-BAND on first connect (auth_handshake._resolve_or_provision_user ->
+# Persistence.upsert_user), but the broker resolves sub->ULID BEFORE the agent is
+# ever reached, so on a true first connect resolve_user_ulid returns None and the
+# connect was rejected (chicken-and-egg). We mint the row here instead, mirroring
+# the agent's user shape EXACTLY so the broker- and agent-created rows never drift.
+#
+# ZERO-DRIFT (same discipline as cognito_verify.py): PREFER the agent's real User
+# contract + ULID/timestamp helpers (the broker image installs grace2_agent +
+# grace2_contracts), so a broker-minted row is byte-identical to an agent-minted
+# one. Fall back to a vendored builder only when those are not importable (a
+# minimal image or the unit-test env).
+# --------------------------------------------------------------------------- #
+try:  # pragma: no cover - exercised in the broker image; vendored path in tests
+    from grace2_contracts import new_ulid as _new_ulid, now_utc as _now_utc
+    from grace2_contracts.user import User as _User
+except Exception:  # noqa: BLE001 - contracts not on the path -> vendored fallback
+    _new_ulid = None  # type: ignore
+    _now_utc = None  # type: ignore
+    _User = None  # type: ignore
+
+
+def _vendored_new_ulid() -> str:
+    """A syntactically valid 26-char Crockford-base32 ULID (matches new_ulid())."""
+    try:
+        from ulid import ULID  # python-ulid, the same lib grace2_contracts uses
+
+        return str(ULID())
+    except Exception:  # noqa: BLE001 - last-resort pure-stdlib generator
+        import os
+
+        crock = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+        n = int.from_bytes(os.urandom(16), "big")
+        chars = []
+        for _ in range(26):
+            chars.append(crock[n & 0x1F])
+            n >>= 5
+        return "".join(reversed(chars))[-26:]
+
+
+def _vendored_now_z() -> str:
+    """ISO-8601 UTC with a ``Z`` suffix (matches the contract's UTCDatetime)."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def build_user_item(
+    sub: str,
+    *,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+    ulid: Optional[str] = None,
+) -> dict:
+    """Build the DynamoDB users-row item for a first-connect sub.
+
+    Mirrors auth_handshake._resolve_or_provision_user + Persistence.upsert_user
+    EXACTLY: the item is ``User.model_dump(mode="json")`` with ``_id`` set to the
+    user_id (the dynamo_backend stores the model dump under PK ``_id``). The
+    vendored fallback reproduces the identical key set + value types.
+    """
+    if _User is not None and _new_ulid is not None and _now_utc is not None:
+        user = _User(
+            user_id=ulid or _new_ulid(),
+            firebase_uid=sub,
+            email=email,
+            display_name=display_name,
+            created_at=_now_utc(),
+            is_active=True,
+            prefs={},
+        )
+        body = user.model_dump(mode="json")
+        body["_id"] = user.user_id
+        return body
+    uid = ulid or _vendored_new_ulid()
+    return {
+        "schema_version": "v1",
+        "user_id": uid,
+        "firebase_uid": sub,
+        "email": email,
+        "display_name": display_name,
+        "created_at": _vendored_now_z(),
+        "is_active": True,
+        "prefs": {},
+        "is_anonymous": False,
+        "_id": uid,
+    }
+
+
+def provision_user(
+    ddb_resource,
+    cfg: RoutingConfig,
+    sub: str,
+    *,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> Optional[str]:
+    """Create the users row for a verified ``sub`` with no internal ULID yet and
+    return the new internal ULID (users._id). None if creation truly failed.
+
+    Race/idempotency: the write is a conditional PutItem
+    (``attribute_not_exists(_id)``) so a ULID collision can never clobber an
+    existing row; on ANY write failure -- a conditional-check fail, a concurrent
+    create by a second broker, or a transient error -- we re-read the GSI and
+    adopt whatever ULID is now resolvable, so the loser of a race REUSES the
+    winner's row instead of forking a second identity. app.py additionally
+    serializes provisioning per-sub in-process, which fully covers the common
+    single-broker dual-socket (App + Chat) case.
+    """
+    if not sub:
+        return None
+    item = build_user_item(sub, email=email, display_name=display_name)
+    try:
+        from boto3.dynamodb.conditions import Attr
+    except Exception:  # pragma: no cover - boto3 always present at runtime
+        Attr = None  # type: ignore
+    try:
+        table = ddb_resource.Table(cfg.users_table)
+        if Attr is not None:
+            table.put_item(Item=item, ConditionExpression=Attr("_id").not_exists())
+        else:  # pragma: no cover - test path
+            table.put_item(Item=item)
+        logger.info("first-connect provisioned user _id=%s for a new firebase_uid", item["_id"])
+        return item["_id"]
+    except Exception as exc:  # noqa: BLE001 - collision/race/perm -> re-resolve
+        logger.info("provision_user put failed (%s); re-resolving sub", type(exc).__name__)
+        existing = resolve_user_ulid(ddb_resource, cfg, sub)
+        if existing:
+            return existing
+        logger.warning("provision_user failed and sub still has no internal ULID")
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # Route resolve (ConsistentRead the routes table).
 # --------------------------------------------------------------------------- #
 def resolve_route(

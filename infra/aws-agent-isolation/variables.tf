@@ -82,8 +82,8 @@ variable "routes_table_name" {
 
 variable "users_table_name" {
   type        = string
-  description = "Existing users table the broker resolves Cognito sub -> internal ULID against (firebase_uid-index GSI). Mirrors USERS_TABLE in the case Lambdas + Persistence.get_user_by_firebase_uid."
-  default     = "grace2_users"
+  description = "Existing users table the broker resolves Cognito sub -> internal ULID against (firebase_uid-index GSI) AND first-connect-provisions a row into. Mirrors USERS_TABLE in the case Lambdas + Persistence.get_user_by_firebase_uid. trid3nt_users = the live table post the 2026-06-29 DynamoDB rename (the agent task def already uses the trid3nt_ prefix, so they must match)."
+  default     = "trid3nt_users"
 }
 
 variable "users_firebase_uid_index" {

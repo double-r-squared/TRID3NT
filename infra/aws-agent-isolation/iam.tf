@@ -221,13 +221,26 @@ data "aws_iam_policy_document" "broker_task" {
   }
 
   # The users table firebase_uid-index GSI: the broker resolves sub -> ULID
-  # (read-only). Scoped to the users table + its index.
+  # (read). Scoped to the users table + its index.
   statement {
     sid     = "UsersResolveRead"
     actions = ["dynamodb:Query", "dynamodb:GetItem"]
     resources = [
       "arn:aws:dynamodb:${local.reg}:${local.acct}:table/${var.users_table_name}",
       "arn:aws:dynamodb:${local.reg}:${local.acct}:table/${var.users_table_name}/index/*",
+    ]
+  }
+
+  # First-connect provisioning: the broker mints the users row a brand-new
+  # verified sub has no row for yet (the agent's in-band create cannot run until
+  # AFTER the broker routes). PutItem (conditional create) + UpdateItem (idempotent
+  # upsert). Least-privilege: the users BASE table only -- writes never target a
+  # GSI directly, and no other table is writable from the broker role.
+  statement {
+    sid     = "UsersProvisionWrite"
+    actions = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+    resources = [
+      "arn:aws:dynamodb:${local.reg}:${local.acct}:table/${var.users_table_name}",
     ]
   }
 }
