@@ -379,96 +379,54 @@ def fetch_statsgo_soils(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a STATSGO soils raster (KFFACT or THICK) for a CONUS bbox.
+    """STATSGO soils raster -- KFFACT (erodibility / HSG proxy) or THICK (soil depth cm), CONUS only. [raster]
 
-    What it does:
-        Pulls the requested STATSGO field from the USGS ScienceBase COG
-        collection through the ``pfdf.data.usgs.statsgo.read`` Python
-        wrapper. KFFACT is the soil K-factor (erodibility / hydrologic-
-        soil-group proxy); THICK is the soil thickness in centimeters.
-        Output is a 30-meter Cloud-Optimized GeoTIFF clipped to the
-        requested bbox and rewritten through the GRACE-2 cache.
+    Fetches a STATSGO field from the USGS ScienceBase COG collection (via pfdf)
+    as a 30 m COG clipped to the bbox.
 
-    When to use:
-        - User asks for soil erodibility, soil hydrologic-group / runoff
-          curve-number derivation, or soil-thickness context in a CONUS
-          area ("what's the soil K-factor in this watershed?", "give me
-          soil thickness over Camp Fire footprint").
-        - Post-fire debris-flow workflow (M1 / M3 / M4 logistic models
-          from Staley et al. 2017) needs catchment-aggregated soil
-          covariates. Pair with ``compute_zonal_statistics`` over a
-          burn-perimeter or watershed polygon.
-        - Hydrologic / runoff modeling needs a CONUS-wide soil substrate
-          when SSURGO is too detailed or unavailable for the bbox.
+    Use this when:
+    - The user asks for soil erodibility (K-factor), a hydrologic-soil-group /
+      curve-number proxy, or soil thickness in a CONUS area.
+    - A post-fire debris-flow workflow (Staley 2017 M1/M3/M4) needs catchment
+      soil covariates -- pair with compute_zonal_statistics over a burn /
+      watershed polygon.
 
-    When NOT to use:
-        - DO NOT use for fine-scale (1:24,000) county-level soils — use
-          SSURGO (no atomic tool yet; add in a future job) which is the
-          high-resolution sibling of STATSGO.
-        - DO NOT use outside CONUS — STATSGO does not cover Alaska,
-          Hawaii, Puerto Rico, or other territories; the input validator
-          raises ``STATSGOSoilsInputError`` on out-of-CONUS bbox.
-        - DO NOT use for global soils — use SoilGrids (future tool); for
-          curve numbers use ``fetch_gcn250_curve_numbers`` (global SCS CN
-          raster) which already encodes hydrologic soil group + landcover.
-        - DO NOT use for organic-soil / peat depth — STATSGO THICK is the
-          generic soil-profile thickness, not a peatland-specific layer.
+    Do NOT use this for:
+    - Global soils (texture / pH / organic carbon / bulk density) -- use
+      fetch_soilgrids.
+    - SCS curve numbers for runoff -- use fetch_gcn250_curve_numbers.
+    - Outside CONUS (no AK / HI / territories) -- raises STATSGOSoilsInputError.
+
+    Honesty: a bbox inside CONUS but over water raises STATSGOSoilsEmptyError; a
+    bad field or out-of-CONUS bbox raises STATSGOSoilsInputError -- never a fake
+    layer.
+    The returned raster LayerURI auto-renders -- do not call publish_layer.
 
     Parameters:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            4-float tuple, lon/lat ordered min-then-max on each axis. Must
-            intersect ``(-125, 24, -66.5, 49.5)`` CONUS envelope or
-            ``STATSGOSoilsInputError`` is raised. Recommended scale:
-            watershed / county sized (≤1° × 1°) — larger bboxes still
-            work but emit MB-scale COGs; the Wave-1.5 payload-warning gate
-            uses ``estimate_payload_mb`` to flag big requests.
-            Example for Fort Myers watershed: ``(-82.0, 26.4, -81.7, 26.7)``.
-        field: One of:
-            - ``"KFFACT"`` (default): soil K-factor, USDA RUSLE erodibility
-              (dimensionless, ~0.02 - 0.7). Proxy for hydrologic soil group
-              A-D (low K = sandy/well-drained, high K = silty/runoff-prone).
-            - ``"THICK"``: total soil-profile thickness in centimeters
-              (~25 - 200 cm typical).
-        timeout_s: ScienceBase server connect-and-read timeout in seconds.
-            Defaults to 60.0 (matches pfdf default). Reduce for impatient
-            callers; raise (or set None upstream) only for known-slow links.
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Must intersect
+            the CONUS envelope ``(-125, 24, -66.5, 49.5)``. Watershed / county
+            scale recommended; larger bboxes emit MB-scale COGs.
+        field: ``"KFFACT"`` (default) = soil K-factor, RUSLE erodibility
+            (dimensionless ~0.02-0.7, low = sandy, high = runoff-prone), a
+            proxy for hydrologic soil group A-D; or ``"THICK"`` = soil-profile
+            thickness in centimeters (~25-200 cm).
+        timeout_s: ScienceBase connect/read timeout (s); default 60.
 
     Returns:
-        ``LayerURI`` pointing at a single-band COG in the cache bucket
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/statsgo_soils/<key>.tif``.
-        ``layer_type="raster"``, ``role="input"``,
-        ``style_preset="statsgo_kffact"`` or ``"statsgo_thick"``,
-        ``units="centimeters"`` for THICK and ``None`` for KFFACT.
-        Downstream tools consume the COG as a catchment-aggregation input
-        (typically via ``compute_zonal_statistics`` against a watershed
-        polygon from ``fetch_administrative_boundaries`` /
-        ``fetch_nhdplus_nldi_navigate`` basin).
+        A raster ``LayerURI`` (``layer_type="raster"``, ``role="input"``,
+        ``style_preset="statsgo_kffact"`` / ``"statsgo_thick"``,
+        ``units="centimeters"`` for THICK else None) for a single-band 30 m COG
+        in the static-30d cache.
 
-    Cross-tool dependencies (FR-TA-3):
-        - Composes WITH: ``compute_zonal_statistics`` (catchment-mean
-          KFFACT for pfdf debris-flow scoring); ``clip_raster_to_polygon``
-          (clip to a burn perimeter / watershed); ``publish_layer`` (map
-          display via the ``statsgo_*`` QML preset).
-        - Sibling: ``fetch_gcn250_curve_numbers`` (global SCS CN raster —
-          overlaps semantically with KFFACT-as-HSG-proxy but is global +
-          AMC-tiered; prefer GCN250 when leaving CONUS).
-        - Upstream source: USGS ScienceBase STATSGO COG collection via
-          ``pfdf.data.usgs.statsgo``.
+    Cross-tool: composes with compute_zonal_statistics (catchment-mean KFFACT
+    for pfdf debris-flow scoring) and clip_raster_to_polygon; sibling
+    fetch_gcn250_curve_numbers (global SCS CN -- prefer it when leaving CONUS).
+    Data source: USGS ScienceBase STATSGO via pfdf.data.usgs.statsgo.
 
-    Cache: ``ttl_class="static-30d"``, ``source_class="statsgo_soils"``.
-    STATSGO is a regulatory / archival dataset; the 30-day bucket
-    amortizes well across typical agent sessions.
-
-    Errors (FR-AS-11 typed-error surface):
-        - ``STATSGOSoilsInputError``: bad bbox / unsupported field / bbox
-          outside CONUS (retryable=False).
-        - ``STATSGOSoilsUpstreamError``: ScienceBase 5xx / network error /
-          COG materialization failure (retryable=True).
-        - ``STATSGOSoilsEmptyError``: bbox inside CONUS but the STATSGO
-          raster has no data there (open water / Great Lakes pocket)
-          (retryable=False).
-
-    Tier-1 free. No API key. ``supports_global_query=False``.
+    Errors (FR-AS-11): STATSGOSoilsInputError (bad bbox / field / out-of-CONUS,
+    not retryable); STATSGOSoilsUpstreamError (ScienceBase 5xx / network / COG
+    failure, retryable); STATSGOSoilsEmptyError (in-CONUS but no data there,
+    not retryable). Tier-1 free, no API key, supports_global_query=False.
     """
     if not isinstance(bbox, tuple):
         try:

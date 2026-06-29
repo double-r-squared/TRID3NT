@@ -501,68 +501,52 @@ def fetch_gcn250_curve_numbers(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """GCN250 global SCS curve-number raster for infiltration and runoff modeling.
+    """GCN250 global SCS curve-number raster (~250 m) for infiltration / runoff loss. [raster]
 
-    **What it does:** Fetches the GCN250 global ~250 m SCS curve-number dataset
-    (Jaafar et al. 2019, Figshare DOI 10.6084/m9.figshare.7756202) for the
-    requested bbox and antecedent moisture condition. Opens the global GeoTIFF
-    via GDAL ``/vsicurl/`` byte-range HTTP, windows-reads the requested area,
-    and writes a CRS-tagged GeoTIFF to the 30-day cache. Integer pixel values
-    0-100 represent the SCS curve number; nodata = 255.
+    Fetches the GCN250 global curve-number dataset (Jaafar et al. 2019,
+    Figshare) for a bbox and antecedent moisture condition; returns a clipped
+    int16 GeoTIFF (curve number 0-100, EPSG:4326).
 
-    **When to use:**
-    - Building a SFINCS or HydroMT pluvial-flood scenario for any non-CONUS
-      area where NLCD-derived curve numbers are unavailable — GCN250 covers
-      global land surface (84 N to 57 S).
-    - AMC sensitivity analysis: run the same storm under ``"dry"``,
-      ``"average"``, and ``"wet"`` antecedent conditions to bracket the
-      infiltration-loss range.
-    - User asks for SCS infiltration inputs, curve numbers, or runoff
-      potential outside the continental US.
-    - Research-validated for compound-flood modeling per Eilander et al.
-      (NHESS 2023); the standard global substrate for SFINCS HydroMT workflows.
+    Use this when:
+    - Building a SFINCS / HydroMT pluvial-flood scenario OUTSIDE CONUS where
+      NLCD curve numbers do not exist (GCN250 covers global land, 84N to 57S).
+    - Bracketing infiltration loss via AMC sensitivity (dry / average / wet).
+    - The user asks for SCS curve numbers, infiltration, or runoff potential
+      outside the continental US.
 
-    **When NOT to use:**
-    - DO NOT use for CONUS work when NLCD is available — NLCD-derived curve
-      numbers at ~30 m resolve urban heterogeneity far better than GCN250's
-      250 m grid; use ``compute_impervious_surface`` + ``extract_landcover_class``
-      for the NLCD pipeline.
-    - DO NOT use as a runoff coefficient — CN is an SCS depth-loss method;
-      the rational method uses ``C``, not CN. These are different empirical
-      relationships.
-    - DO NOT use to infer Manning's roughness — CN governs infiltration loss
-      only; surface roughness requires ``fetch_landcover`` + a roughness
-      lookup table.
-    - DO NOT use for Antarctica or above 84 N (GCN250 does not cover those).
+    Do NOT use this for:
+    - CONUS high-resolution curve numbers -- use compute_impervious_surface +
+      extract_landcover_class (NLCD ~30 m resolves urban heterogeneity better).
+    - US map-unit soils (K-factor / HSG) -- use fetch_statsgo_soils.
+    - Global soil texture / pH / organic carbon -- use fetch_soilgrids.
+    - Antarctica or above 84N (not covered).
 
-    **Parameters:**
-    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
-      max_lon, max_lat)`` in EPSG:4326. Required (``supports_global_query=False``
-      — the global mosaic is ~620 MB per AMC). Example for Bangladesh delta:
-      ``(88.0, 21.0, 91.0, 24.0)``.
-    - ``antecedent_moisture`` (str, default ``"average"``): SCS AMC condition.
-      ``"dry"`` = AMC-I (5-day antecedent below 1.4 in growing season;
-      CN reduced ~10-20); ``"average"`` = AMC-II (design CN, default);
-      ``"wet"`` = AMC-III (5-day antecedent above 2.1 in growing season;
-      CN raised ~10-15).
+    Honesty: a bbox outside coverage or an all-nodata window raises a typed
+    GCN250EmptyError -- never a fabricated layer.
+    The returned raster LayerURI auto-renders -- do not call publish_layer.
 
-    **Returns:** A ``LayerURI`` pointing at a GeoTIFF in the cache bucket
-    (``gs://grace-2-hazard-prod-cache/cache/static-30d/gcn250_curve_numbers/<key>.tif``).
-    ``layer_type="raster"``, ``role="primary"``, ``units="curve_number"``.
-    EPSG:4326, int16 (0-100), nodata = 255, ~250 m pixel size. Downstream
-    SFINCS workflows should reproject to a metric CRS before ingestion.
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. REQUIRED
+            (supports_global_query=False; the global mosaic is ~620 MB per AMC).
+        antecedent_moisture: SCS AMC condition. ``"dry"`` = AMC-I (CN reduced
+            ~10-20), ``"average"`` = AMC-II (design CN, default), ``"wet"`` =
+            AMC-III (CN raised ~10-15).
 
-    **Cross-tool dependencies:**
-    - Upstream: ``geocode_location`` for bbox from a place name.
-    - Downstream: ``build_sfincs_model`` (HydroMT infiltration input),
-      pluvial-flood scenario composers.
-    - CONUS alternative: ``compute_impervious_surface`` + ``extract_landcover_class``
-      for higher-resolution NLCD-based curve numbers.
-    - Pairs with: ``fetch_era5_reanalysis`` (precipitation forcing) and
-      ``fetch_dem`` (terrain) for the full SFINCS forcing stack.
+    Returns:
+        A raster ``LayerURI`` (``layer_type="raster"``, ``role="primary"``,
+        ``units="curve_number"``, ``style_preset="curve_number"``) for an int16
+        GeoTIFF (0-100, nodata 255, ~250 m, EPSG:4326) in the static-30d cache.
+        Downstream SFINCS workflows should reproject to a metric CRS.
 
-    FR-CE-8 / FR-DC-3: ``read_through`` with ``ttl_class="static-30d"``; cache
-    key is SHA-256 over ``(bbox-6dp, antecedent_moisture)``.
+    Cross-tool: upstream geocode_location (bbox from a place name); downstream
+    build_sfincs_model (infiltration input); pairs with fetch_era5_reanalysis
+    (precip) + fetch_dem (terrain). Research-validated for compound-flood
+    modeling per Eilander et al. (NHESS 2023).
+
+    Data source: GCN250 (Jaafar et al. 2019, Figshare DOI
+    10.6084/m9.figshare.7756202), Tier-1 free, no API key.
+    FR-CE-8: read_through, ttl_class="static-30d", key = SHA-256 over
+    (bbox-6dp, antecedent_moisture).
     """
     _validate_bbox(bbox)
     # Type-narrow after validation.

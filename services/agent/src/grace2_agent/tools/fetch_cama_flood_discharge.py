@@ -82,7 +82,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -799,73 +799,74 @@ def fetch_cama_flood_discharge(
     bbox: tuple[float, float, float, float],
     start_date: str,
     end_date: str,
-    version: str = "v4.0.1",
+    version: Literal["v4.0.1", "v4.20", "v4.30"] = "v4.0.1",
     base_url: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """CaMa-Flood global river discharge Tier-2 fetcher (compound-flood fluvial forcing).
+    """CaMa-Flood GLOBAL river-discharge RASTER (non-CONUS fluvial forcing) -- auto-renders.
 
-    **What it does:** Downloads a yearly CaMa-Flood v4 NetCDF from the Yamazaki
-    Lab (U.Tokyo) distribution, subsets to the requested bbox and date window,
-    time-averages the discharge variable (``rivout``, m^3/s), and writes
-    a CRS-tagged Cloud-Optimized GeoTIFF (EPSG:4326, float32, nodata=NaN) at the
-    model's native 0.1° (~10 km) resolution. Normalises longitudes 0–360° to
-    -180–180° and sorts latitude ascending before clipping (geographic-correctness
-    gate per job-0086). v4.0.1 is the default; v4.20 and v4.30 also supported.
+    Downloads a yearly CaMa-Flood v4 NetCDF (Yamazaki Lab, U.Tokyo), subsets to
+    the bbox + date window, time-averages discharge (``rivout``, m^3/s), and
+    writes a single-band COG (EPSG:4326, float32, nodata=NaN) at the model's
+    native 0.1 degree (~10 km) resolution. Tier-2; historical reanalysis.
 
-    **When to use:**
-
+    Use this when:
     - Fluvial boundary forcing for SFINCS / GeoFLOOD compound-flood runs in
-      non-CONUS basins — Mekong, Amazon, Niger, Ganges-Brahmaputra, etc.
-      Example: bbox ``(88.0, 21.0, 93.0, 27.0)`` for the Bangladesh delta,
+      non-CONUS basins (Mekong, Amazon, Niger, Ganges-Brahmaputra). Example:
+      bbox ``(88.0, 21.0, 93.0, 27.0)`` for the Bangladesh delta,
       ``start_date="2017-08-01"``, ``end_date="2017-08-31"``.
-    - Global flood-risk substrate where USGS NWIS streamflow gauges do not
-      cover (research-validated: Eilander et al. 2023, HESS).
-    - Multi-year discharge climatology for flood-frequency analysis outside CONUS.
+    - A global flood-risk substrate where USGS NWIS gauges do not reach, or
+      multi-year discharge climatology for flood-frequency analysis outside
+      CONUS.
 
-    **When NOT to use:**
+    Do NOT use this for:
+    - CONUS point/reach discharge -- use ``fetch_noaa_nwm_streamflow`` (modeled)
+      or ``fetch_usgs_nwis_gauges`` (observed gauges).
+    - Real-time or forecast discharge -- CaMa-Flood outputs are historical
+      reanalysis (no live feed).
+    - Sub-10km river networks / channel geometry -- use ``fetch_river_geometry``.
 
-    - CONUS point-discharge time series — use ``fetch_noaa_nwm_streamflow`` or
-      USGS NWIS (gauge-derived, instantaneous, sub-10km rivers).
-    - Real-time or forecast discharge — CaMa-Flood public outputs are historical
-      reanalysis (no live feed available).
-    - Sub-10km river networks — for finer hydrography use ``fetch_river_geometry``
-      + a routing model on NHDPlus sub-grid channels.
+    Honesty: degrades to typed errors (input / unreachable-migration / empty-bbox
+    / upstream); an all-nodata bbox raises rather than returning a blank raster.
+    The returned raster LayerURI auto-renders server-side -- do NOT call
+    ``publish_layer``.
 
-    **KNOWN MIGRATION (OQ-0133-CAMA-DATA-SOURCE-MIGRATION):** The kickoff names
+    Note: longitudes normalise 0-360 -> -180-180 and latitude sorts ascending
+    before clipping (geographic-correctness gate per job-0086).
+
+    KNOWN MIGRATION (OQ-0133-CAMA-DATA-SOURCE-MIGRATION): The kickoff names
     a no-auth U.Tokyo Hydra URL that as of 2026-02-12 returns an HTML redirect
     to https://global-hydrodynamics.github.io/. New distribution is gated
     (Google-Form + Dropbox password). Set ``GRACE2_CAMA_FLOOD_BASE_URL`` or pass
     ``base_url=...`` to a mirror serving netCDFs. Without a mirror configured,
     the tool raises ``CaMaFloodUnreachableError`` with the migration note.
 
-    **Parameters:**
+    Parameters:
 
     - ``bbox``: ``(west, south, east, north)`` EPSG:4326. Required;
-      ``supports_global_query=False`` — global is ~500 MB/day; tile if needed.
-    - ``start_date``: ISO YYYY-MM-DD inclusive. Reasonable range: 1979–present.
+      ``supports_global_query=False`` -- global is ~500 MB/day; tile if needed.
+    - ``start_date``: ISO YYYY-MM-DD inclusive. Reasonable range: 1979-present.
     - ``end_date``: ISO YYYY-MM-DD inclusive. Hard cap 366 days from start.
-    - ``version``: CaMa-Flood release string; allowed ``{"v4.0.1", "v4.20",
-      "v4.30"}``; default ``"v4.0.1"``.
+    - ``version``: CaMa-Flood release; one of ``"v4.0.1"`` (default), ``"v4.20"``,
+      ``"v4.30"``.
     - ``base_url``: optional mirror base URL. Falls back to
       ``GRACE2_CAMA_FLOOD_BASE_URL`` env var, then the legacy Tokyo path.
 
-    **Returns:**
+    Returns:
 
-    ``LayerURI`` pointing at ``gs://grace-2-hazard-prod-cache/cache/static-30d/cama_flood/<key>.tif``.
-    COG, float32, EPSG:4326, nodata=NaN, units m^3/s. Single band:
-    time-mean discharge across the date range. GeoTIFF tags: ``units``,
-    ``source="CaMa-Flood_v4"``, ``version``, ``variable="discharge"``.
-    ``layer_type="raster"``, ``role="primary"``, ``units="m^3/s"``.
+    ``LayerURI`` for a single-band COG in the internal cache bucket. float32,
+    EPSG:4326, nodata=NaN, units m^3/s, time-mean discharge across the date
+    range. GeoTIFF tags: ``units``, ``source="CaMa-Flood_v4"``, ``version``,
+    ``variable="discharge"``. ``layer_type="raster"``, ``role="primary"``.
 
     Raises: ``CaMaFloodInputError`` (bad params, retryable=False),
     ``CaMaFloodUnreachableError`` (legacy URL migration, retryable=False),
     ``CaMaFloodEmptyError`` (no finite pixels in bbox),
     ``CaMaFloodUpstreamError`` (network / 5xx, retryable=True).
 
-    **Cross-tool dependencies:**
+    Cross-tool dependencies:
 
     - Pair with: ``fetch_gtsm_tide_surge`` (coastal boundary) and
       ``fetch_era5_reanalysis`` (atmospheric forcing) for a complete SFINCS

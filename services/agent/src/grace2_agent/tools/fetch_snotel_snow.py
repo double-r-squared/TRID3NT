@@ -685,89 +685,61 @@ def fetch_snotel_snow(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch REAL, OBSERVED NRCS SNOTEL/SCAN snow stations as a point FlatGeobuf.
+    """REAL, OBSERVED NRCS SNOTEL/SCAN snow stations + latest SWE & snow depth as points. [vector]
 
-    Retrieves active USDA NRCS SNOTEL (snow telemetry) and SCAN snow stations
-    inside a bbox plus their LATEST Snow Water Equivalent (SWE, inches) and snow
-    depth (inches), from the NRCS Air-Water Database (AWDB) REST API behind the
-    National Water and Climate Center. Returns one Point feature per station at
-    the station's coordinates, carrying the latest reading. This is the
-    canonical **observed** mountain-snowpack source for western US water supply.
+    Fetches active SNOTEL/SCAN stations inside a bbox plus their latest Snow
+    Water Equivalent (SWE, in) and snow depth (in) from the NRCS Air-Water
+    Database (AWDB) REST API; one Point per station.
 
-    When to use:
-        - The user asks for SNOTEL stations, snow water equivalent / SWE, snow
-          depth, snowpack, or "snow telemetry" sites in a region
-          (e.g. "show me the SNOTEL snow stations in the Colorado Rockies and
-          their current snow water equivalent", "where are the snowpack gauges
-          in the Sierra Nevada", "map SWE at the snow stations near Tahoe").
-        - You need actual measured SWE/depth at instrumented sites for a
-          mountain water-supply or snowmelt-runoff question.
+    Use this when:
+    - The user asks for SNOTEL stations, snow water equivalent / SWE, snow
+      depth, or snowpack in a western-US mountain region (Rockies, Sierra,
+      Cascades, Wasatch, Alaska).
+    - A mountain water-supply or snowmelt-runoff question needs observed
+      SWE/depth at instrumented sites.
 
-    When NOT to use:
-        - Gridded snow-cover imagery / fractional snow cover -> a raster product
-          (e.g. MODIS/VIIRS snow), NOT this point-station tool.
-        - Stream discharge / gage height -> ``fetch_usgs_nwis_gauges`` (observed)
-          or ``fetch_noaa_nwm_streamflow`` (modeled).
-        - Precipitation / design-storm forcing -> ``fetch_mrms_qpe`` or
-          ``lookup_precip_return_period``.
-        - Global / non-mountain-US snow -> not covered (SNOTEL is a western-US +
-          Alaska + scattered eastern SCAN network; supports_global_query=False).
+    Do NOT use this for:
+    - Gridded / fractional snow-cover imagery -- use a raster snow product
+      (e.g. MODIS/VIIRS), not this point tool.
+    - Stream discharge / gage height -- use fetch_usgs_nwis_gauges.
+    - Precipitation / design-storm forcing -- use fetch_mrms_qpe or
+      lookup_precip_return_period.
+    - Global / non-mountain-US snow -- western US + AK + scattered eastern SCAN.
 
-    Spatial selector:
-        bbox: Required ``(west, south, east, north)`` in EPSG:4326. The tool
-            fetches the active SNTL+SCAN catalog and filters to this bbox
-            client-side (there is no service-side bbox parameter). Choose a
-            mountain region; lowland bboxes have no SNOTEL coverage and raise
-            ``SnotelNoStationsError``.
+    Honesty: zero stations in the bbox raises SnotelNoStationsError; an
+    off-season SWE of 0.0 is an HONEST reading, not a gap.
+    The returned vector LayerURI auto-renders -- do not call publish_layer.
+
+    Parameters:
+        bbox: REQUIRED ``(west, south, east, north)`` EPSG:4326 over a mountain
+            region. The active SNTL+SCAN catalog is fetched and filtered to the
+            bbox client-side (no service-side bbox parameter); lowland bboxes
+            have no coverage and raise SnotelNoStationsError.
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``s3://grace2-hazard-cache-226996537797/cache/dynamic-1h/snotel_snow/<key>.fgb``
-        - ``layer_type="vector"``, ``role="primary"``,
-          ``style_preset="snotel_snow"``, ``units="in (SWE / snow depth)"``.
-        - Geometry: Point at each station's coordinates, EPSG:4326.
-        - ``bbox`` is set to the stations' extent so the client camera
-          auto-zooms (the layer renders via the inline-GeoJSON vector path).
-        - Properties per station: ``triplet`` (NRCS station triplet, e.g.
-          ``"335:CO:SNTL"``), ``name``, ``state`` (2-letter), ``network``
-          (``SNTL`` or ``SCAN``), ``elevation_ft``, ``swe_in`` (latest WTEQ snow
-          water equivalent, inches; null if not reported; 0.0 in the off-season
-          is a HONEST reading, not a gap), ``snow_depth_in`` (latest SNWD snow
-          depth, inches; null if not reported), ``date`` (ISO date of the latest
-          reading; null when only locations are available).
+        A vector ``LayerURI`` (``layer_type="vector"``, ``role="primary"``,
+        ``style_preset="snotel_snow"``, ``units="in (SWE / snow depth)"``) for a
+        Point FlatGeobuf in the dynamic-1h cache; ``bbox`` set to the stations'
+        extent. Per-station properties: triplet (e.g. ``"335:CO:SNTL"``), name,
+        state, network (SNTL/SCAN), elevation_ft, swe_in (latest WTEQ; 0.0 in
+        the off-season is honest, null if unreported), snow_depth_in (latest
+        SNWD; null if unreported), date.
 
-    Fallback behaviour (data-source fallback norm -> honest typed error): the
-    stations metadata fetch is the spatial primary. If zero SNTL/SCAN stations
-    fall inside the bbox, ``SnotelNoStationsError`` is raised — never an empty
-    success-shaped layer. If stations exist but the DATA service is unreachable,
-    the tool degrades to station LOCATIONS with null readings (locations are
-    still useful) rather than failing the whole layer. An off-season SWE/depth
-    of 0.0 is reported honestly; a no-data sample is reported as null.
+    Fallback (data-source fallback norm -> honest typed error): the stations
+    fetch is the spatial primary. Zero stations -> SnotelNoStationsError. If
+    stations exist but the DATA service is unreachable, the tool degrades to
+    station LOCATIONS with null readings rather than failing the layer.
 
-    Cache: ``ttl_class="dynamic-1h"``, ``source_class="snotel_snow"``. Cache key
-    is SHA-256 of the bbox-rounded-6dp, so identical-scope calls within the hour
-    reuse the FGB.
+    Cross-tool: geocode_location / fetch_administrative_boundaries upstream;
+    cross-checks fetch_usgs_nwis_gauges (downstream snowmelt discharge) and
+    fetch_dem (snowpack-by-elevation). Data source: NRCS AWDB REST
+    (wcc.sc.egov.usda.gov/awdbRestApi/services/v1 -- stations + data).
 
-    Cross-tool dependencies (FR-TA-3):
-        - Composes WITH: ``publish_layer`` (map overlay), ``geocode_location``
-          (derive a bbox from a mountain place name BEFORE this call),
-          ``fetch_administrative_boundaries`` (state/county framing).
-        - Cross-checks: ``fetch_usgs_nwis_gauges`` (downstream snowmelt
-          discharge), ``fetch_dem`` / terrain tools (snowpack-by-elevation).
-        - Upstream data source: NRCS AWDB REST
-          (wcc.sc.egov.usda.gov/awdbRestApi/services/v1/stations + /data).
-
-    Errors (FR-AS-11 typed-error surface):
-        - ``SnotelInputError``: no bbox / bad bbox (retryable=False).
-        - ``SnotelUpstreamError``: NRCS network failure / HTTP 5xx / bad body
-          (retryable=True).
-        - ``SnotelNoStationsError``: no SNOTEL/SCAN stations in the bbox
-          (retryable=False).
-
-    Source-tier: FR-HEP-2 Tier 1 (USDA NRCS federal snow network). Claims from
-    SNOTEL readings should be marked ``source_authority_tier=1``.
-
-    Tier-1 free. No API key. ``supports_global_query=False`` (US mountains).
+    Errors (FR-AS-11): SnotelInputError (no / bad bbox, not retryable);
+    SnotelUpstreamError (NRCS network / 5xx, retryable); SnotelNoStationsError
+    (no stations in bbox, not retryable). FR-HEP-2 Tier 1 (mark claims
+    source_authority_tier=1). Tier-1 free, no API key,
+    supports_global_query=False.
     """
     # 1. Resolve + validate the bbox selector.
     if bbox is None:

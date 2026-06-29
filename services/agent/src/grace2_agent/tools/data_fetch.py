@@ -3801,55 +3801,54 @@ def _fetch_nhdplushr_geometry_bytes(
 )
 def fetch_river_geometry(
     bbox: tuple[float, float, float, float],
-    source: str = "nhdplus_hr",
+    source: Literal["nhdplus_hr", "osm"] = "nhdplus_hr",
     waterway_type: str | list[str] | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch river and stream flowline geometry for a bbox (OSM + NHDPlus HR).
+    """River/stream/canal centerline VECTOR (OSM Overpass + NHDPlus HR) -- auto-renders.
 
-    **What it does:** Returns river/stream/canal LineStrings that fill the
-    requested bbox, as a FlatGeobuf that renders inline on the map (Wave 4.9
-    vector path). Access pattern: Tier 2/Tier 4 with an internal fallback
-    chain (data-source-fallback norm):
+    Returns river/stream/canal LineStrings filling the bbox as a FlatGeobuf
+    LayerURI (``layer_type="vector"``). OSM Overpass ``waterway`` is the PRIMARY
+    path (global, true per-bbox), USGS NHDPlus HR is the fallback.
 
-    1. PRIMARY — OSM Overpass ``waterway`` query over the bbox
-       (river/stream/canal). Global, true per-bbox: fills the WHOLE bbox, not
-       just a seed-connected sub-network. Clipped to the bbox.
-    2. FALLBACK — USGS NHDPlus High Resolution NHDFlowline (Tier 4 region
-       download + local clip), used when the bbox routes to one of the v0.1
-       HUC4 envelopes and OSM is unavailable.
-    3. Typed honest error if both fail — never a silent dead-end.
+    Use this when:
+    - You need channel/flowline GEOMETRY to display a stream network / watershed
+      drainage, or to hydro-condition a DEM for ``build_sfincs_model``
+      (HydroMT's ``setup_rivers_from_dem`` burns channel geometry).
+    - A fluvial-flood workflow needs the channel network to place boundary
+      conditions (upstream inflow nodes, downstream outlets).
 
-    Both paths serialize to FlatGeobuf and clip to the requested bbox. The
-    30-day cache absorbs repeat calls.
+    Do NOT use this for:
+    - Observed discharge/stage at instrumented gauges -- use
+      ``fetch_usgs_nwis_gauges``.
+    - Modeled streamflow on the reach network -- use
+      ``fetch_noaa_nwm_streamflow``.
+    - Tracing the network upstream/downstream from a seed -- use
+      ``fetch_nhdplus_nldi_navigate``.
+    - Areas larger than 5,000 km^2 -- a guardrail raises ``BboxInvalidError``.
 
-    **When to use:**
-    - ``build_sfincs_model`` needs river flowlines for DEM hydro-conditioning
-      (HydroMT's ``setup_rivers_from_dem`` step burns channel geometry).
-    - Fluvial flood workflow requires channel network for boundary-condition
-      placement (upstream inflow nodes, downstream outlets).
-    - User asks to visualize stream networks or watershed drainage patterns.
-    - Watershed delineation: ``delineate_watershed`` tool consumes the
-      flowline outlet point to route upstream.
+    Honesty: degrades OSM -> NHDPlus HR -> typed error; never a silent dead-end.
+    The returned vector LayerURI auto-renders inline on the map (Wave 4.9 GeoJSON
+    path) -- do NOT call ``publish_layer`` (that path is raster-only).
 
-    **When NOT to use:**
-    - Real-time streamflow measurements — use ``fetch_streamflow`` (NWIS
-      USGS gauges) for discharge time series.
-    - Flow-direction / accumulation grids — derive from the DEM inside
-      HydroMT; NHDPlus HR publishes those separately.
-    - Areas larger than 5,000 km² — the tool enforces a guardrail to keep a
-      single fetch tractable (use a smaller bbox or a future tiled workflow).
+    Access pattern: Tier 2/Tier 4 with an internal fallback chain:
+    1. PRIMARY -- OSM Overpass ``waterway`` query over the bbox
+       (river/stream/canal), clipped to the bbox.
+    2. FALLBACK -- USGS NHDPlus HR NHDFlowline (Tier 4 HUC4 region download +
+       local clip) when the bbox routes to a v0.1 HUC4 envelope and OSM is
+       unavailable.
+    3. Typed honest error if both fail.
+    Both paths serialize to FlatGeobuf and clip to the bbox; a 30-day cache
+    absorbs repeats.
 
-    **Parameters:**
+    Parameters:
     - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
-      max_lat)`` in EPSG:4326. Max area 5,000 km².
-    - ``source`` (str, default ``"nhdplus_hr"``): preferred hydrography
-      source label. ``"nhdplus_hr"`` and ``"osm"`` are accepted; the internal
-      fallback chain (OSM primary, NHDPlus HR fallback) runs regardless so the
-      tool stays reliable across all bboxes. Unsupported labels (e.g.
-      ``"merit_hydro"``) raise ``BboxInvalidError``.
+      max_lat)`` in EPSG:4326. Max area 5,000 km^2.
+    - ``source`` (default ``"nhdplus_hr"``): preferred hydrography label,
+      ``"nhdplus_hr"`` or ``"osm"``; the OSM-primary fallback chain runs
+      regardless so the tool stays reliable across all bboxes.
     - ``waterway_type`` (str | list[str] | None, default ``None``): widens or
       narrows the OSM ``waterway`` tag set on the PRIMARY (OSM Overpass) path.
       ``None`` keeps the default channel network (``river``/``stream``/
@@ -3857,7 +3856,7 @@ def fetch_river_geometry(
       ``"canal"``, ``"ditch"``, ``"drain"``) singly, comma/plus-joined
       (``"ditch,drain"``), or as a list (``["ditch", "drain"]``); or a
       convenience alias: ``"all"`` (every class incl. ditch+drain),
-      ``"drainage"`` / ``"ditches"`` (ditch+drain only — the artificial
+      ``"drainage"`` / ``"ditches"`` (ditch+drain only -- the artificial
       drainage channels that dominate drained-agriculture / tiled-field
       landscapes), or ``"default"`` / ``"rivers"`` / ``"channels"``
       (river+stream+canal). ``ditch``/``drain`` are opt-in because they
@@ -3865,17 +3864,14 @@ def fetch_river_geometry(
       ``BboxInvalidError``. Distinct ``waterway_type`` values get distinct
       cache keys. The NHDPlus HR fallback is unaffected (no OSM waterway tag).
 
-    **Returns:**
+    Returns:
     A ``LayerURI`` pointing at a FlatGeobuf of river/stream LineStrings in the
-    cache bucket (``gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/<key>.fgb``).
-    ``layer_type="vector"``, ``role="input"``. The FlatGeobuf renders inline
-    on the map via the Wave 4.9 GeoJSON path (``add_loaded_layer``) — it is
-    NOT published through ``publish_layer`` (that path is raster-only).
+    internal cache bucket. ``layer_type="vector"``, ``role="input"``.
 
-    **Cross-tool dependencies:**
+    Cross-tool dependencies:
     - Upstream: ``geocode_location`` for bbox derivation.
     - Downstream: ``build_sfincs_model`` (river-burning DEM step),
-      ``delineate_watershed``, stream-network display in map panel.
+      stream-network display in the map panel.
     """
     if source not in ("nhdplus_hr", "osm"):
         # Reserved future sources (NHDPlus V2, MERIT-Hydro) — not in v0.1.
@@ -4354,47 +4350,40 @@ def lookup_precip_return_period(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.
+    """NOAA Atlas 14 design-storm precip depth at a POINT -- returns a SCALAR dict, NOT a layer.
 
-    Access pattern: Tier 3 (direct HTTPS point query to the NOAA PFDS endpoint).
+    Point query to the NOAA HDSC Precipitation Frequency Data Server (PFDS):
+    returns the precipitation depth (inches) for a given return period (ARI) and
+    storm duration at one lat/lon. CONUS + PR/USVI, no API key.
 
-    **What it does:** Issues a point query to the NOAA Hydrometeorological Design
-    Studies Center (HDSC) Precipitation Frequency Data Server (PFDS) at
-    ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv``, parses the returned
-    duration × ARI matrix, and returns the requested depth in inches. Input
-    coordinates are snapped to Atlas 14's 1/120° (~30 arc-second) grid before
-    the cache key is computed (FR-DC-4 dedup). This is a point query, not a
-    raster — it returns a scalar dict, not a ``LayerURI``. Tier-1 free, no
-    API key, CONUS + Puerto Rico / US Virgin Islands only.
+    Use this when:
+    - You need a design-storm depth for a pluvial-flood scenario ("100-year,
+      24-hour rainfall for Miami") -- e.g. ``location=(25.77, -80.19)``,
+      ``return_period_years=100``, ``duration_hours=24.0``.
+    - You need IDF (intensity-duration-frequency) input for a rainfall-runoff
+      model (SCS CN, Green-Ampt), or to rank a historical storm by its ARI.
 
-    **When to use:**
+    Do NOT use this for:
+    - A precipitation RASTER / spatial map -- use ``fetch_mrms_qpe``
+      (gauge-corrected radar QPE), ``fetch_chirps_precipitation``, or
+      ``fetch_gridmet``.
+    - Observed precipitation totals (measurements) -- use ``fetch_mrms_qpe``.
+    - Future-climate design storms (Atlas 14 is historical) or points outside
+      CONUS / PR / USVI.
 
-    - Design-storm precipitation depth for an SFINCS pluvial-flood scenario
-      ("what is the 100-year, 24-hour rainfall for Miami?"). Example:
-      ``location=(25.77, -80.19)``, ``return_period_years=100``,
-      ``duration_hours=24.0``.
-    - Characterising a published historical storm by its return-period equivalence
-      ("Harvey's 48-hour total at Houston — what ARI?"). Run the tool for
-      multiple ARIs and compare.
-    - Providing IDF (intensity-duration-frequency) input for a rainfall-runoff
-      model (SCS CN, Green-Ampt).
+    Honesty: degrades Atlas 14 -> NOAA Atlas 2 (Western US) -> typed
+    ``PrecipForcingUnavailableError`` with remediation; never a fabricated depth.
+    This is a POINT query -- it returns a scalar ``dict`` (depth + provenance),
+    NOT a ``LayerURI``, so there is nothing to render or publish.
 
-    **When NOT to use:**
+    Access pattern: Tier 3 (direct HTTPS point query to the NOAA PFDS endpoint
+    ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv``). Coordinates snap to
+    Atlas 14's 1/120 degree (~30 arc-second) grid before the cache key.
 
-    - Observed precipitation totals — use ``fetch_mrms_qpe`` (gauge-corrected
-      radar accumulation) or NWIS / NEXRAD for measurements.
-    - Future-climate design storms — Atlas 14 is based on historical records
-      (Atlas 15, in development, will integrate non-stationarity).
-    - Locations outside CONUS / PR / USVI — Atlas 14 OCONUS coverage is partial;
-      Alaska, Hawaii, and Pacific Islands are not in the v0.1 substrate.
-    - Spatial rasters of return-period precipitation — Atlas 14 PFDS is a point
-      service; for a spatial map use a pre-computed gridded Atlas 14 dataset.
-
-    **Parameters:**
-
-    - ``location``: ``(lat, lon)`` decimal degrees EPSG:4326. Note: lat first,
-      lon second (opposite of the ``bbox`` convention). Example: ``(29.76, -95.37)``
-      for Houston.
+    Parameters:
+    - ``location``: ``(lat, lon)`` decimal degrees EPSG:4326 -- lat FIRST
+      (opposite the ``bbox`` convention). Example: ``(29.76, -95.37)`` for
+      Houston.
     - ``return_period_years``: ARI in years; Atlas 14 publishes
       ``{1, 2, 5, 10, 25, 50, 100, 200, 500, 1000}``; values outside this set
       raise ``BboxInvalidError``.
@@ -4402,29 +4391,20 @@ def lookup_precip_return_period(
       from 5 min (5/60 h) to 60 days (1440 h); unsupported durations raise
       ``BboxInvalidError``.
 
-    **Returns:**
+    Returns:
+    A ``dict`` with keys: ``precip_inches`` (float), ``units`` (``"inches"``),
+    ``location`` ([lat, lon] of the snapped Atlas 14 grid point),
+    ``return_period_years``, ``duration_hours``, ``vintage_volume`` (e.g. ``"NOAA
+    Atlas 14 Volume 9 Version 2"``), ``project_area`` (e.g. ``"Southeastern
+    States"``), ``source`` (``"noaa-atlas14-pfds"``).
 
-    A ``dict`` with keys: ``precip_inches`` (float, precipitation depth in
-    inches), ``units`` (``"inches"``), ``location`` ([lat, lon] of the snapped
-    Atlas 14 grid point), ``return_period_years`` (ARI echo), ``duration_hours``
-    (duration echo), ``vintage_volume`` (e.g. ``"NOAA Atlas 14 Volume 9 Version
-    2"``), ``project_area`` (e.g. ``"Southeastern States"``),
-    ``source`` (``"noaa-atlas14-pfds"``).
-
-    **Cross-tool dependencies:**
-
+    Cross-tool dependencies:
     - Consumed by: ``build_sfincs_model`` to construct a synthetic design-storm
-      hyetograph; ``run_pluvial_flood`` workflow (uses the returned depth to
-      drive the SFINCS rainfall input file).
+      hyetograph (drives the SFINCS rainfall input).
     - Compare with: ``fetch_mrms_qpe`` for observed accumulations vs Atlas 14
       design depths; the ratio gives the storm's return-period rank.
     - Pair with: ``fetch_gcn250_curve_numbers`` or NLCD-derived CNs when
-      converting depth → runoff volume via SCS CN method.
-
-    FR-CE-8: Routed through ``read_through`` with ``ttl_class="static-30d"``;
-    cache key = SHA-256 of ``(lat-quantized, lon-quantized, return_period_years,
-    duration_label)`` — snapping ensures callers within the same 30 arc-second
-    cell dedup (FR-DC-4).
+      converting depth -> runoff volume via the SCS CN method.
     """
     if not isinstance(location, (tuple, list)) or len(location) != 2:
         raise BboxInvalidError(

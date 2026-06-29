@@ -567,73 +567,57 @@ def _fetch_soilgrids_bytes(
 def fetch_soilgrids(
     bbox: tuple[float, float, float, float],
     soil_property: Literal["clay", "sand", "silt", "soc", "bdod", "phh2o"] = "clay",
-    depth: str = "0-5cm",
+    depth: Literal[
+        "0-5cm", "5-15cm", "15-30cm", "30-60cm", "60-100cm", "100-200cm"
+    ] = "0-5cm",
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """ISRIC SoilGrids 2.0 global soil-property raster (clay/sand/silt/soc/bdod/pH).
+    """ISRIC SoilGrids 2.0 GLOBAL soil-property raster (~250 m) -- clay/sand/silt/soc/bdod/pH. [raster]
 
-    **What it does:** Fetches the ISRIC SoilGrids 2.0 global ~250 m prediction of
-    a soil property at a standard depth for the requested bbox. Opens the global
-    SoilGrids VRT mosaic via GDAL ``/vsicurl/`` byte-range HTTP, window-reads only
-    the overlapping native (Interrupted Goode Homolosine) pixels, reprojects them
-    to EPSG:4326 at ~250 m, applies the property scaling to recover physical
-    units, and writes a single-band float32 COG to the 30-day cache.
+    Fetches one soil property at one standard depth for a bbox from the ISRIC
+    SoilGrids 2.0 global mosaic; returns a single-band float32 COG in physical
+    units (texture %, soc g/kg, bdod kg/dm3, pH).
 
-    This is GLOBAL -- the worldwide complement to the US-only STATSGO/SSURGO
-    chain (``fetch_statsgo_soils``). Use it for soil texture, organic carbon,
-    bulk density, or pH anywhere on Earth at a consistent 250 m schema.
+    Use this when:
+    - Soil texture / organic carbon / bulk density / pH anywhere on Earth,
+      especially OUTSIDE the US (Africa, Asia, South America, Europe).
+    - A consistent 250 m global soil substrate for hydrology / agriculture /
+      infiltration where US STATSGO/SSURGO does not reach.
 
-    **Properties (``soil_property``):**
-    - ``"clay"`` / ``"sand"`` / ``"silt"`` -- texture fraction, percent.
-    - ``"soc"`` -- soil organic carbon, g/kg.
-    - ``"bdod"`` -- bulk density of the fine earth fraction, kg/dm3.
-    - ``"phh2o"`` -- pH measured in water.
+    Do NOT use this for:
+    - US map-unit soil survey (K-factor / HSG / thickness) -- use
+      fetch_statsgo_soils.
+    - SCS curve numbers for runoff -- use fetch_gcn250_curve_numbers.
+    - Antarctica / far Arctic (not covered).
 
-    **Depths (``depth``):** GlobalSoilMap standard intervals
-    ``"0-5cm"``, ``"5-15cm"``, ``"15-30cm"``, ``"30-60cm"``, ``"60-100cm"``,
-    ``"100-200cm"`` (default ``"0-5cm"`` -- the surface layer that drives
-    infiltration and ag rooting).
+    Honesty: an all-nodata window (ocean / off the soil surface) raises
+    SoilGridsEmptyError; an unknown property/depth raises SoilGridsInputError --
+    never a fabricated layer.
+    The returned raster LayerURI auto-renders -- do not call publish_layer.
 
-    **When to use:**
-    - Soil texture / organic carbon / pH / bulk density for any NON-US (or
-      cross-border) area -- agriculture, hydrology, infiltration substrate.
-    - A consistent 250 m global soil layer where US STATSGO/SSURGO does not
-      reach (Africa, Asia, South America, Europe).
-    - Pair with ``fetch_gcn250_curve_numbers`` (infiltration CN) and
-      ``fetch_dem`` (terrain) for a global hydrologic forcing stack.
+    Parameters:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. REQUIRED
+            (supports_global_query=False; each global mosaic is ~5 GB).
+            AOI-scoped (<= 0.5 deg^2).
+        soil_property: one of ``"clay"`` / ``"sand"`` / ``"silt"`` (texture %),
+            ``"soc"`` (organic carbon g/kg), ``"bdod"`` (bulk density kg/dm3),
+            ``"phh2o"`` (pH in water). Synonyms like ``"ph"``,
+            ``"organic_carbon"``, ``"bulk_density"`` are accepted.
+        depth: GlobalSoilMap interval -- ``"0-5cm"`` (default, surface layer
+            driving infiltration / ag rooting), ``"5-15cm"``, ``"15-30cm"``,
+            ``"30-60cm"``, ``"60-100cm"``, ``"100-200cm"``.
 
-    **When NOT to use:**
-    - US work needing the NRCS map-unit soil survey (SSURGO ~30 m or STATSGO) --
-      use ``fetch_statsgo_soils``; SoilGrids is a 250 m machine-learned
-      prediction, not a surveyed map unit.
-    - SCS curve numbers for runoff -- use ``fetch_gcn250_curve_numbers``.
-    - Antarctica / far Arctic (SoilGrids excludes them).
+    Returns:
+        A raster ``LayerURI`` (``layer_type="raster"``, ``role="input"``,
+        per-property continuous ``style_preset`` e.g. ``"soil_clay_pct"``) for a
+        single-band float32 COG (physical units, nodata -9999, ~250 m,
+        EPSG:4326) in the static-30d cache.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required (``supports_global_query=False`` -- each global mosaic is ~5 GB).
-      AOI-scoped (<= 0.5 deg^2).
-    - ``soil_property`` (str, default ``"clay"``): one of clay/sand/silt/soc/
-      bdod/phh2o (synonyms like ``"ph"``, ``"organic_carbon"``,
-      ``"bulk_density"`` are accepted).
-    - ``depth`` (str, default ``"0-5cm"``): one of the six standard depths.
-
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="input"``)
-    pointing at a single-band float32 COG in the ``static-30d`` / ``soilgrids``
-    cache prefix. ``units`` is the physical unit (percent / g/kg / kg/dm3 / pH),
-    NoData ``-9999``, ~250 m, EPSG:4326. ``style_preset`` is a per-property
-    continuous token (e.g. ``"soil_clay_pct"``).
-
-    **Data source:** ISRIC SoilGrids 2.0 (CC-BY 4.0, no API key) --
-    ``https://files.isric.org/soilgrids/latest/data``.
-
-    Honesty: an all-NoData window (ocean / off the soil surface) raises a typed
-    ``SoilGridsEmptyError``; an unknown property/depth raises
-    ``SoilGridsInputError`` -- never a fabricated layer.
-
-    FR-CE-8: routed through ``read_through`` so identical
-    ``(bbox, property, depth)`` calls reuse the cached COG.
+    Cross-tool: pairs with fetch_gcn250_curve_numbers (infiltration CN) and
+    fetch_dem (terrain) for a global hydrologic stack. Data source: ISRIC
+    SoilGrids 2.0 (CC-BY 4.0, no API key) -- files.isric.org/soilgrids.
+    FR-CE-8: read_through caches identical (bbox, property, depth) calls.
     """
     _validate_bbox(bbox)
     assert bbox is not None

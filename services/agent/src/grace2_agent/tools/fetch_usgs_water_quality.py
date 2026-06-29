@@ -723,110 +723,64 @@ def fetch_usgs_water_quality(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch REAL, OBSERVED water-quality sample sites as a point FlatGeobuf.
+    """REAL, OBSERVED USGS/EPA Water Quality Portal sample SITES as points. [vector]
 
-    Retrieves USGS / EPA Water Quality Portal (WQP) monitoring locations and
-    their latest measured value for ONE characteristic — nitrate, lead,
-    arsenic, pH, dissolved oxygen, specific conductance, etc. — from the public
-    machine API behind ``waterqualitydata.us`` (the federation spanning NWIS,
-    STORET/WQX, and Biodata). Returns one Point feature per monitoring location
-    at the site's coordinates, carrying the most-recent numeric result. This is
-    the canonical **observed** contaminant-concentration source.
+    Fetches WQP monitoring locations + their latest measured value for ONE
+    characteristic (nitrate, lead, arsenic, pH, dissolved oxygen, ...) in a US
+    bbox; one Point per site carrying the most-recent numeric result.
 
-    When to use:
-        - The user asks for water-quality monitoring sites, sampled
-          contaminant concentrations, "nitrate levels", "lead in the water",
-          "arsenic samples", pH / dissolved oxygen / specific conductance at
-          monitoring stations (e.g. "show nitrate sample sites in this
-          watershed", "where has arsenic been measured near here").
-        - You need the OBSERVED, measured concentration at instrumented sample
-          sites — the real lab/field record, NOT a model estimate.
-        - GROUND-TRUTHING a MODELED contaminant plume: overlay these observed
-          point samples against the modeled plume from
-          ``model_groundwater_contamination_scenario`` /
-          ``model_contamination_affected_fields`` (the MODFLOW-GWT demos) to
-          compare modeled-vs-observed concentration.
+    Use this when:
+    - The user asks for water-quality monitoring sites or sampled contaminant
+      concentrations ("nitrate levels", "where was arsenic measured here").
+    - Ground-truthing a MODELED plume against real observed samples.
 
-    When NOT to use:
-        - MODELED groundwater contaminant transport / a plume raster — that is
-          ``model_groundwater_contamination_scenario`` (FloPy MODFLOW-GWT).
-          This tool is the OBSERVED point-sample companion.
-        - Stream DISCHARGE / gage height (flow, not chemistry) — use
-          ``fetch_usgs_nwis_gauges`` (observed) or ``fetch_noaa_nwm_streamflow``
-          (modeled).
-        - Drinking-water-system violations / regulated facilities — use
-          ``fetch_epa_frs_facilities`` (EPA Facility Registry).
-        - Global / non-US water quality — this tool is US + territories only
-          (``supports_global_query=False``).
+    Do NOT use this for:
+    - MODELED groundwater contaminant transport / a plume raster -- use
+      model_groundwater_contamination_scenario (MODFLOW-GWT).
+    - Groundwater WELL water levels -- use fetch_usgs_groundwater_levels.
+    - Stream discharge / gage height -- use fetch_usgs_nwis_gauges.
+    - Drinking-water-system / regulated facilities -- use fetch_epa_frs_facilities.
+    - Global / non-US -- US + territories only.
 
-    Args:
-        bbox: REQUIRED ``(west, south, east, north)`` in EPSG:4326 for the
-            area of interest (a watershed, county, or sub-basin). The bbox area
-            is capped at ~100 deg^2; above that ``WqpInputError`` is raised so
-            you narrow the scope (a contamination question is always local).
-        characteristic: the water-quality characteristic to fetch. Friendly
-            aliases are accepted and mapped to the canonical WQP name —
-            ``"nitrate"`` -> ``"Nitrate"``, ``"lead"`` -> ``"Lead"``,
-            ``"arsenic"`` -> ``"Arsenic"``, ``"ph"`` -> ``"pH"``,
-            ``"dissolved_oxygen"`` / ``"do"`` -> ``"Dissolved oxygen (DO)"``,
-            ``"specific_conductance"`` / ``"sc"`` -> ``"Specific conductance"``,
-            plus common metals/ions/nutrients. Any other string is passed
-            through verbatim, so the full WQP CharacteristicName vocabulary is
-            reachable. An unrecognized canonical name makes WQP return HTTP 400,
-            surfaced as ``WqpInputError``. Defaults to ``"Nitrate"`` (the
-            agricultural-contamination demo characteristic).
+    Honesty: zero sites raises WqpNoSitesError; a bad characteristic raises
+    WqpInputError -- never an empty success-shaped layer.
+    The returned vector LayerURI auto-renders -- do not call publish_layer.
+
+    Parameters:
+        bbox: REQUIRED ``(west, south, east, north)`` EPSG:4326 (a watershed /
+            county / sub-basin). Area capped at ~100 deg^2 (a contamination
+            question is always local); above that -> WqpInputError.
+        characteristic: the water-quality characteristic. Friendly aliases map
+            to the canonical WQP name (``"nitrate"`` -> ``"Nitrate"``,
+            ``"do"`` -> ``"Dissolved oxygen (DO)"``, ``"sc"`` -> ``"Specific
+            conductance"``, plus common metals / ions / nutrients). Any other
+            string passes through verbatim so the full WQP CharacteristicName
+            vocabulary stays reachable (an unrecognized name -> HTTP 400 ->
+            WqpInputError). Default ``"Nitrate"``.
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``s3://<cache-bucket>/cache/semi-static-7d/usgs_water_quality/<key>.fgb``
-        - ``layer_type="vector"``, ``role="primary"``,
-          ``style_preset="water_quality"``.
-        - Geometry: Point at each monitoring location, EPSG:4326.
-        - ``bbox`` is set to the sites' extent so the client camera auto-zooms
-          (the layer renders via the inline-GeoJSON vector path).
-        - Properties per site: ``site_id`` (MonitoringLocationIdentifier),
-          ``site_name``, ``site_type``, ``characteristic`` (canonical WQP name),
-          ``value`` (latest numeric result; null if no numeric sample),
-          ``unit`` (result units, e.g. ``"mg/l as N"``), ``result_date``
-          (ISO sample date of the latest result; "" if none), ``fraction``
-          (sample fraction, e.g. ``"Dissolved"``/``"Total"``).
+        A vector ``LayerURI`` (``layer_type="vector"``, ``role="primary"``,
+        ``style_preset="water_quality"``) for a Point FlatGeobuf in the
+        semi-static-7d cache; ``bbox`` set to the sites' extent so the camera
+        auto-zooms. Per-site properties: site_id, site_name, site_type,
+        characteristic, value (latest numeric; null if none), unit (e.g.
+        ``"mg/l as N"``), result_date, fraction.
 
-    Fallback behaviour (data-source fallback norm — primary -> fallback ->
-    honest typed error): the Station service (locations) is primary. If it
-    returns zero sites, ``WqpNoSitesError`` is raised (the area genuinely has no
-    WQP locations for that characteristic). If the Station service returns sites
-    but the Result service yields no numeric values, the sites still render with
-    null values (the monitoring network is real). Never an empty success layer.
+    Fallback (primary -> fallback -> honest typed error): the Station service
+    (locations) is primary. Zero sites -> WqpNoSitesError. Sites but no numeric
+    Result values -> sites still render with null values (the network is real).
 
-    Cache: ``ttl_class="semi-static-7d"``, ``source_class="usgs_water_quality"``.
-    Cache key is SHA-256 of the resolved characteristic + bbox-rounded-6dp, so
-    identical-scope calls within the day reuse the FGB.
+    Cross-tool: geocode_location / fetch_administrative_boundaries upstream;
+    cross-checks model_groundwater_contamination_scenario and
+    model_contamination_affected_fields (observed-vs-modeled) and
+    fetch_epa_frs_facilities (potential sources). Data source: USGS / EPA Water
+    Quality Portal (waterqualitydata.us /data/Station + /data/Result).
 
-    Cross-tool dependencies (FR-TA-3):
-        - Composes WITH: ``publish_layer`` (map overlay), ``geocode_location``
-          (derive a bbox from a place name BEFORE this call),
-          ``fetch_field_boundaries`` / ``fetch_administrative_boundaries``
-          (watershed/field framing).
-        - Cross-checks: ``model_groundwater_contamination_scenario`` and
-          ``model_contamination_affected_fields`` (MODFLOW-GWT modeled plume —
-          observed-vs-modeled concentration comparison),
-          ``fetch_epa_frs_facilities`` (potential contamination sources).
-        - Upstream data source: USGS / EPA Water Quality Portal
-          (waterqualitydata.us/data/Station + /data/Result).
-
-    Errors (FR-AS-11 typed-error surface):
-        - ``WqpInputError``: missing/bad bbox, bbox too large, bad/empty
-          characteristic, or a WQP HTTP 400 (unrecognized characteristicName)
-          (retryable=False).
-        - ``WqpUpstreamError``: WQP network failure / HTTP 5xx / bad body
-          (retryable=True).
-        - ``WqpNoSitesError``: no monitoring sites for the characteristic in
-          the bbox (retryable=False).
-
-    Source-tier: FR-HEP-2 Tier 1 (USGS/EPA federal monitoring federation).
-    Claims from WQP samples should be marked ``source_authority_tier=1``.
-
-    Tier-1 free. No API key. ``supports_global_query=False`` (US + territories).
+    Errors (FR-AS-11): WqpInputError (bad / missing / too-large bbox, bad
+    characteristic, WQP HTTP 400, not retryable); WqpUpstreamError (network /
+    5xx, retryable); WqpNoSitesError (no sites, not retryable). FR-HEP-2 Tier 1
+    (mark claims source_authority_tier=1). Tier-1 free, no API key,
+    supports_global_query=False.
     """
     # 1. Resolve + validate the spatial selector.
     if bbox is None:

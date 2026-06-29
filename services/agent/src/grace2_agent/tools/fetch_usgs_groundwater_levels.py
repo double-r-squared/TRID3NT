@@ -759,107 +759,64 @@ def fetch_usgs_groundwater_levels(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch REAL, OBSERVED USGS groundwater monitoring wells as a point FlatGeobuf.
+    """REAL, OBSERVED USGS groundwater monitoring WELLS + latest water level as points. [vector]
 
-    Retrieves active USGS groundwater monitoring wells and their LATEST
-    water-level reading — depth-to-water (pcode 72019, ft below land surface)
-    and/or groundwater elevation (62611/62610/72150, ft) — from the modernized
-    USGS Water Data OGC API (the machine API behind ``waterdata.usgs.gov``, which
-    replaced the decommissioned ``nwis/gwlevels`` service). Returns one Point
-    feature per well-level reading at the well's coordinates, carrying the latest
-    value, its parameter code, unit, vertical datum and reading timestamp. This
-    is the canonical OBSERVED groundwater-head source — the field/instrument
-    record of how deep the water table is, NOT a model estimate.
+    Fetches active USGS wells and their latest depth-to-water / groundwater
+    elevation from the USGS Water Data OGC API; one Point per well-level
+    reading at the well's coordinates.
 
-    When to use:
-        - The user asks for USGS groundwater wells / monitoring wells, "water
-          table", "depth to water", "groundwater levels", "observed heads", or
-          "well water-level readings" (e.g. "show me the groundwater monitoring
-          wells in the High Plains aquifer", "where are the wells near this farm
-          and how deep is the water table", "plot the observed groundwater
-          levels in central Kansas").
-        - You need the actual measured groundwater head at instrumented wells —
-          the real instrument record — to map, annotate, or ground-truth.
-        - Cross-checking / calibrating a MODELED groundwater head field (a
-          MODFLOW run) against the observed monitoring-well network ("observed
-          vs modeled heads").
+    Use this when:
+    - The user asks for groundwater wells, "depth to water", "water table", or
+      "observed heads" in a US area or state.
+    - Ground-truthing / calibrating a MODELED (MODFLOW) head field against the
+      observed monitoring-well network.
 
-    When NOT to use:
-        - MODELED groundwater heads / drawdown / a contaminant plume — those come
-          from a MODFLOW run (``run_solver`` with a MODFLOW deck), not this
-          observed-well tool. This tool supplies the OBSERVED comparison points.
-        - SURFACE-water stream gauges (discharge / gage height at river
-          stations) — use ``fetch_usgs_nwis_gauges`` (the observed stream-gauge
-          companion). This tool is the GROUNDWATER (subsurface well) network.
-        - Soil-moisture / shallow vadose-zone water content — that is a different
-          measurement; this is the saturated-zone water table.
-        - Global / non-US wells — this tool is US + territories only
-          (``supports_global_query=False``).
+    Do NOT use this for:
+    - MODELED heads / drawdown / a plume -- that is a MODFLOW run (run_solver),
+      not this observed-well tool.
+    - Observed water-quality / contaminant samples -- use fetch_usgs_water_quality.
+    - Surface-water stream gauges (discharge / gage height) -- use
+      fetch_usgs_nwis_gauges.
+    - Global / non-US -- US + territories only.
 
-    Spatial selector (pass EXACTLY ONE):
-        state_code: Optional 2-letter USPS state/territory code (e.g. ``"KS"``,
-            ``"CA"``, ``"FL"``). PREFER THIS for state-level asks. Mapped
-            internally to the FIPS code the OGC API's ``state_code`` filter
-            expects.
-        bbox: Optional ``(west, south, east, north)`` in EPSG:4326 for an
-            area-of-interest query (a farm, aquifer sub-region, or county). The
-            OGC API places NO area limit on bbox, so any sub-state extent is
-            accepted.
-        When both are given, ``state_code`` wins. When neither is given,
-        ``GwInputError`` is raised.
+    Pass EXACTLY ONE selector: state_code (2-letter USPS, preferred for state
+    asks) OR bbox; both -> state_code wins; neither -> GwInputError.
+    Honesty: zero readings raises GwNoWellsError -- never an empty success layer.
+    The returned vector LayerURI auto-renders -- do not call publish_layer.
+
+    Parameters:
+        state_code: optional 2-letter USPS code (``"KS"``, ``"CA"``, ``"FL"``);
+            preferred for state-level asks (mapped to the FIPS code the OGC API
+            expects).
+        bbox: optional ``(west, south, east, north)`` EPSG:4326 for an
+            area-of-interest query (a farm, aquifer sub-region, county); no area
+            cap.
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket.
-        - ``layer_type="vector"``, ``role="primary"``,
-          ``style_preset="usgs_groundwater"``, ``units="ft (water level)"``.
-        - Geometry: Point at each well's coordinates, EPSG:4326.
-        - ``bbox`` is set to the wells' extent so the client camera auto-zooms
-          (the layer renders via the inline-GeoJSON vector path).
-        - Properties per reading: ``site_no`` (NWIS site number),
-          ``site_name`` (human well name; "" when no metadata match),
-          ``parameter_code`` (72019 / 72150 / 62610 / 62611 / 61055),
-          ``parameter_label`` (human label for the measured quantity),
-          ``water_level`` (the latest value, ft; null if not parseable),
-          ``unit`` (e.g. "ft"), ``vertical_datum`` (e.g. "NAVD88", "NGVD29",
-          or "Local Assumed Datum" / "" for depth-below-surface readings),
-          ``datetime`` (ISO-8601 timestamp of the reading), ``approval_status``,
-          ``aquifer_code`` (national aquifer code; "" if unknown),
-          ``well_depth_ft`` (constructed well depth, ft; null if unknown).
+        A vector ``LayerURI`` (``layer_type="vector"``, ``role="primary"``,
+        ``style_preset="usgs_groundwater"``, ``units="ft (water level)"``) for a
+        Point FlatGeobuf in the dynamic-1h cache; ``bbox`` set to the wells'
+        extent. Per-reading properties: site_no, site_name, parameter_code
+        (72019 depth-to-water / 72150 / 62610 / 62611 / 61055), parameter_label,
+        water_level (ft; null if unparseable), unit, vertical_datum, datetime,
+        approval_status, aquifer_code, well_depth_ft.
 
-    Fallback behaviour (data-source fallback norm — primary -> honest typed
-    error): the latest-field-measurements collection is the primary (observed
-    readings). The monitoring-locations join (for well name / aquifer / depth) is
-    a best-effort ENRICHMENT — a failure there leaves names blank but never
-    aborts. If the primary returns zero readings in scope, ``GwNoWellsError`` is
-    raised — never an empty success-shaped layer.
+    Fallback (primary -> honest typed error): latest-field-measurements is the
+    primary; the monitoring-locations join (well name / aquifer / depth) is
+    best-effort enrichment that never aborts. Zero readings -> GwNoWellsError.
 
-    Cache: ``ttl_class="dynamic-1h"``, ``source_class="usgs_groundwater_levels"``.
-    Cache key is SHA-256 of the resolved selector (``state_code`` or
-    bbox-rounded-6dp), so identical-scope calls within the hour reuse the FGB.
+    Cross-tool: geocode_location / fetch_administrative_boundaries upstream;
+    compute_zonal_statistics (aggregate readings in a polygon); cross-checks a
+    MODFLOW modeled-head layer (observed-vs-modeled). Data source: USGS Water
+    Data OGC API (api.waterdata.usgs.gov/ogcapi/v0 -- latest-field-measurements
+    + monitoring-locations); the legacy nwis/gwlevels service was decommissioned
+    2025-11-01.
 
-    Cross-tool dependencies (FR-TA-3):
-        - Composes WITH: ``publish_layer`` (map overlay), ``geocode_location``
-          (derive a bbox or surface a state from a place name BEFORE this call),
-          ``fetch_administrative_boundaries`` (state/county framing),
-          ``compute_zonal_statistics`` (aggregate readings inside a polygon).
-        - Cross-checks: a MODFLOW modeled-head layer (observed-vs-modeled head
-          comparison — the MODFLOW groundwater demos).
-        - Upstream data source: USGS Water Data OGC API
-          (api.waterdata.usgs.gov/ogcapi/v0 — latest-field-measurements +
-          monitoring-locations).
-
-    Errors (FR-AS-11 typed-error surface):
-        - ``GwInputError``: no selector / bad bbox / bad state code
-          (retryable=False).
-        - ``GwUpstreamError``: USGS network failure / HTTP 5xx / bad body
-          (retryable=True).
-        - ``GwNoWellsError``: no groundwater wells with a reading in scope
-          (retryable=False).
-
-    Source-tier: FR-HEP-2 Tier 1 (USGS federal groundwater network). Claims from
-    these well readings should be marked ``source_authority_tier=1``.
-
-    Tier-1 free. No API key. ``supports_global_query=False`` (US + territories).
+    Errors (FR-AS-11): GwInputError (no selector / bad bbox / bad state code,
+    not retryable); GwUpstreamError (network / 5xx, retryable); GwNoWellsError
+    (no readings in scope, not retryable). FR-HEP-2 Tier 1 (mark claims
+    source_authority_tier=1). Tier-1 free, no API key,
+    supports_global_query=False.
     """
     # 1. Resolve the spatial selector. state_code wins when both are given.
     resolved_state_usps: str | None = None

@@ -425,44 +425,33 @@ def fetch_nhdplus_nldi_navigate(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Walk the NHDPlus stream network from a seed in the requested direction.
+    """Walk the NHDPlus stream NETWORK from a seed (NLDI traversal, vector) -- auto-renders.
 
-    What it does:
-        Snaps the seed (a point lon/lat OR a known NHDPlus COMID) to the
-        NHDPlus v2.1 channel network, then asks USGS NLDI to enumerate
-        the connected flowlines in one of four directions — upstream
-        main stem, upstream tributaries, downstream main stem, or
-        downstream with diversions — out to the requested distance.
-        Returns the connected flowlines as a FlatGeobuf of LineString
-        geometries tagged with ``nhdplus_comid``.
+    Snaps the seed (a lon/lat point OR a known NHDPlus COMID) to the NHDPlus
+    v2.1 channel network and asks USGS NLDI to enumerate the connected flowlines
+    in one direction (upstream main stem / upstream tributaries / downstream
+    main stem / downstream with diversions) out to a distance. Returns the
+    flowlines as a FlatGeobuf of LineStrings tagged with ``nhdplus_comid``.
 
-    When to use:
-        - User asks to "trace water downstream from here" / "find every
-          tributary above this gauge" / "show me the river network from
-          this confluence to the sea".
-        - Post-fire debris-flow / contaminant-plume / dam-break workflow
-          needs the downstream reach catalog from a seed point so it can
-          score each reach for impact.
-        - Watershed scoping: pair this tool's downstream-main-stem (DM)
-          output with ``fetch_administrative_boundaries`` /
-          ``fetch_noaa_nwm_streamflow`` to bound a reach-level routing
-          model.
-        - Visualization-only: emit the upstream tributary network (UT)
-          as a context layer for narrative answers about a watershed.
+    Use this when:
+    - The user wants to "trace water downstream from here" / "find every
+      tributary above this gauge" / "show the river network to the sea".
+    - A post-fire debris-flow / contaminant-plume / dam-break workflow needs the
+      downstream reach catalog from a seed to score each reach for impact, or
+      you want the upstream tributary network (UT) as a context layer.
 
-    When NOT to use:
-        - DO NOT use for raw, unfiltered NHDPlus reach geometry by
-          HUC4 — use ``fetch_river_geometry`` (the bulk NHDPlus HR
-          fetcher) instead; NLDI navigate is a *traversal* primitive,
-          not a bbox-scoped reach dump.
-        - DO NOT use for streamflow / discharge values — pair with
-          ``fetch_noaa_nwm_streamflow`` (NWM model output keyed on the
-          same COMID) or ``fetch_streamflow`` (NWIS gauge observations).
-        - DO NOT use for global / non-CONUS hydrography — NLDI / NHDPlus
-          v2.1 covers CONUS only. For OUS use a future
-          ``fetch_hydrosheds_rivers`` or similar.
-        - DO NOT use for catchment / basin polygons — that is the
-          NLDI ``/basin`` endpoint, surfaced separately when needed.
+    Do NOT use this for:
+    - Bbox-scoped raw NHDPlus reach geometry -- use ``fetch_river_geometry``
+      (bulk fetcher); this is a TRAVERSAL primitive, not a reach dump.
+    - Streamflow / discharge VALUES -- use ``fetch_noaa_nwm_streamflow``
+      (modeled, keyed on the same COMID) or ``fetch_usgs_nwis_gauges`` (observed
+      gauges).
+    - Global / non-CONUS hydrography -- NLDI / NHDPlus v2.1 is CONUS only.
+    - Catchment / basin polygons -- that is the NLDI ``/basin`` endpoint.
+
+    Honesty: degrades to typed errors (input / upstream / empty); a valid seed
+    with zero flowlines raises rather than returning an empty layer. The
+    returned vector LayerURI auto-renders inline -- do NOT call ``publish_layer``.
 
     Parameters:
         seed_point: optional ``(lon, lat)`` in EPSG:4326 to snap to the
@@ -476,35 +465,34 @@ def fetch_nhdplus_nldi_navigate(
             ``nhdplus_comid`` (``fetch_noaa_nwm_streamflow``, NWIS gauge
             resolution, etc.). Example: ``15334434``.
         direction: One of:
-            - ``"UM"`` — upstream main stem (trunk only, single branch)
-            - ``"UT"`` — upstream tributaries (full upstream subnetwork)
-            - ``"DM"`` (default) — downstream main stem (trunk only)
-            - ``"DD"`` — downstream including diversions (anastomosing
+            - ``"UM"`` -- upstream main stem (trunk only, single branch)
+            - ``"UT"`` -- upstream tributaries (full upstream subnetwork)
+            - ``"DM"`` (default) -- downstream main stem (trunk only)
+            - ``"DD"`` -- downstream including diversions (anastomosing
               splits, distributaries).
         distance_km: traversal cutoff in km along the network from the
             seed. Range ``[0, 1000]``; default ``50.0``. Larger values
             risk hitting the ``_MAX_FLOWLINES=5000`` cap on the response
-            (especially with UT) — the payload estimator gates this via
+            (especially with UT) -- the payload estimator gates this via
             the Wave-1.5 chat warning.
 
     Returns:
-        ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/nhdplus_nldi/<key>.fgb``.
+        ``LayerURI`` pointing at a FlatGeobuf in the internal cache bucket.
         ``layer_type="vector"``, ``role="context"``,
         ``style_preset="nhdplus_flowlines"``, ``units=None``. Geometry
         is LineString in EPSG:4326. Single property per feature:
-        ``nhdplus_comid`` (int) — the join key downstream tools (NWM,
+        ``nhdplus_comid`` (int) -- the join key downstream tools (NWM,
         NWIS, NHDPlus VAA tables) consume.
 
     Rendering: the returned flowlines are a VECTOR layer that renders
     INLINE on the map automatically (the agent surface streams the FlatGeobuf
-    as GeoJSON). Do NOT call ``publish_layer`` on this layer — ``publish_layer``
+    as GeoJSON). Do NOT call ``publish_layer`` on this layer -- ``publish_layer``
     is raster-only and publishing a vector trips the vector guard. Simply
     return / surface the ``LayerURI`` and it paints on its own.
 
     Cross-tool dependencies (FR-TA-3):
         - Composes WITH: ``fetch_noaa_nwm_streamflow`` (join NWM discharge
-          values to navigated reaches by COMID); ``fetch_streamflow``
+          values to navigated reaches by COMID); ``fetch_usgs_nwis_gauges``
           (point NWIS gauges along the traversal).
         - Composes ALONGSIDE: ``fetch_river_geometry`` (bulk NHDPlus
           HR fetch when bbox scope is wanted rather than network

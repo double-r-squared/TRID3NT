@@ -655,24 +655,40 @@ def fetch_nws_river_forecast(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NWS river-forecast gauges + flood categories as a Point FlatGeobuf.
+    """NWS AHPS/NWPS river-FORECAST gauge points + flood categories (vector) -- auto-renders.
 
-    Retrieves the NWS / National Water Prediction Service (AHPS/NWPS) river
-    forecast points inside ``bbox`` and returns one Point feature per gauge,
-    each carrying:
+    NWS / National Water Prediction Service (AHPS/NWPS) river forecast points in
+    ``bbox`` as one Point per gauge, each carrying observed AND forecast stage/
+    flow plus the NWS flood category (no_flood / action / minor / moderate /
+    major). This is the flood-WARNING surface.
 
-      - the OBSERVED river stage (``obs_stage_ft``) and flow (``obs_flow_kcfs``),
-      - the FORECAST river stage (``fcst_stage_ft``) and flow (``fcst_flow_kcfs``),
-      - the NWS **flood category** for both observed (``flood_category``) and
-        forecast (``fcst_flood_category``): one of ``no_flood`` / ``action`` /
-        ``minor`` / ``moderate`` / ``major`` (or an operational state such as
-        ``not_defined`` / ``out_of_service`` when the gauge has no category),
-      - the gauge identity (``lid``, ``usgs_id``, ``name``, ``rfc``, ``wfo``,
-        ``state``) and the observed/forecast valid times.
+    Use this when:
+    - The user wants river-stage FORECASTS, flood stage/category, or AHPS/NWPS
+      flood-warning status ("is the river forecast to flood?", "what flood stage
+      is the gauge at Wilmington?").
+    - You need observed-vs-forecast stage at official NWS forecast points to
+      drive or narrate a flood-warning answer.
 
-    This is the flood-warning surface: USGS NWIS (``fetch_usgs_nwis_gauges``) is
-    the raw instrument record and NWM (``fetch_noaa_nwm_streamflow``) is modeled
-    reach flow; this tool is the NWS forecast + flood-category source.
+    Do NOT use this for:
+    - Raw OBSERVED instrument discharge/stage at USGS gauges -- use
+      ``fetch_usgs_nwis_gauges`` (the instrument record).
+    - MODELED reach flow on the NHDPlus network -- use
+      ``fetch_noaa_nwm_streamflow``.
+    - River-reach geometry / network traversal -- use ``fetch_river_geometry``
+      or ``fetch_nhdplus_nldi_navigate``.
+
+    Honesty: degrades to typed errors (input / bbox-too-large / no-gauges /
+    upstream); zero forecast gauges in the bbox raises rather than returning an
+    empty layer. The returned vector LayerURI auto-renders inline -- do NOT call
+    ``publish_layer``.
+
+    Per-gauge properties: OBSERVED stage (``obs_stage_ft``) / flow
+    (``obs_flow_kcfs``); FORECAST stage (``fcst_stage_ft``) / flow
+    (``fcst_flow_kcfs``); NWS flood category for observed (``flood_category``)
+    and forecast (``fcst_flood_category``) -- one of ``no_flood`` / ``action`` /
+    ``minor`` / ``moderate`` / ``major`` (or ``not_defined`` / ``out_of_service``
+    when the gauge has no category); identity (``lid``, ``usgs_id``, ``name``,
+    ``rfc``, ``wfo``, ``state``) and observed/forecast valid times.
 
     Args:
         bbox: ``(west, south, east, north)`` in EPSG:4326. REQUIRED.
