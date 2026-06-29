@@ -4054,7 +4054,20 @@ async def model_flood_scenario(
             # SOLVER_DISPATCH_FAILED failed envelope unchanged. No-op when no
             # emitter is bound.
             async with substep(emitter, "run_solver"):
-                handle = run_solver(
+                # NO-SYNC-BLOCKING-ON-LOOP (NATE 2026-06-29): ``run_solver`` does a
+                # SYNCHRONOUS boto3 Batch ``submit_job`` (TLS + AWS API I/O, with
+                # botocore retry/backoff that can stall for many seconds under
+                # throttling / a slow control plane). It was the LAST un-offloaded
+                # sync call on the flood hot path -- every other heavy step (the
+                # fetcher chain, build_sfincs_model, postprocess_flood, publish_layer)
+                # already runs via ``asyncio.to_thread``. Offload the submit too so a
+                # slow/throttled Batch API call can never stall the 12 s WS
+                # heartbeat. ``run_solver`` is EMIT-FREE (it returns an
+                # ``ExecutionHandle``; this workflow does all the emitting), so a
+                # worker thread is safe -- it mirrors the awaited async
+                # ``run_sfincs_quadtree`` on the coastal (quadtree) path.
+                handle = await asyncio.to_thread(
+                    run_solver,
                     solver="sfincs",
                     # The regular-grid model_setup.setup_uri (the quadtree path no
                     # longer reaches here -- it solved inside the combined job).
