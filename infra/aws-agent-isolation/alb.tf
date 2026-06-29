@@ -31,6 +31,18 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # HTTP/WS: the live path is CloudFront (which terminates TLS at the edge) ->
+  # ALB over HTTP, the standard CloudFront->ALB origin pattern. No regional ACM
+  # cert exists, so HTTP is the dark-build + cutover origin; the canary drives
+  # ws:// over this listener with a non-browser client.
+  ingress {
+    description = "HTTP/WS from CloudFront origin + the canary client."
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     description = "To the broker tasks."
     from_port   = 0
@@ -86,8 +98,24 @@ resource "aws_lb_target_group" "broker" {
   tags = { Name = "grace2-agent-broker" }
 }
 
-# HTTPS/WSS listener. The ACM cert is a live-value TODO (variables.tf).
+# HTTP/WS listener -- always present. CloudFront terminates TLS at the edge and
+# forwards to this listener over HTTP (the standard CloudFront->ALB origin), so
+# no regional ACM cert is required for the live path or the canary.
+resource "aws_lb_listener" "broker_http" {
+  load_balancer_arn = aws_lb.broker.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.broker.arn
+  }
+}
+
+# HTTPS/WSS listener -- OPTIONAL, only created when a regional ACM cert is set in
+# terraform.tfvars (none today). Skipped entirely when acm_certificate_arn == "".
 resource "aws_lb_listener" "broker_https" {
+  count             = var.acm_certificate_arn == "" ? 0 : 1
   load_balancer_arn = aws_lb.broker.arn
   port              = 443
   protocol          = "HTTPS"

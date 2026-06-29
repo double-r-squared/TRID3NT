@@ -143,7 +143,9 @@ resource "aws_ecs_service" "broker" {
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
 
-  depends_on = [aws_lb_listener.broker_https]
+  # The always-present HTTP listener is the live origin (CloudFront terminates
+  # TLS at the edge); the HTTPS listener is optional/conditional on a cert.
+  depends_on = [aws_lb_listener.broker_http]
 
   tags = { Name = "grace2-agent-broker" }
 }
