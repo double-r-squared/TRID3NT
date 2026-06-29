@@ -2717,6 +2717,91 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
     expect(within(classes[2]!).getByText("Complete")).toBeInTheDocument();
   });
 
+  it("PRESENT-ONLY: a categorical NLCD legend hides achromatic-grey (absent) filler classes", () => {
+    // A paletted NLCD raster's color table materializes unused indices as a
+    // neutral-grey filler ramp; those rows are classes NOT present in the rendered
+    // raster and must be dropped so the legend lists only the colored (present)
+    // classes. Two chromatic NLCD classes + three grey fillers => only the two
+    // chromatic rows render, with their colors intact.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-landcover",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 11, color: "#486DA2", label: "11" }, // Open Water (chromatic)
+                { value: 41, color: "#38814E", label: "41" }, // Forest (chromatic)
+                { value: 96, color: "#606060", label: "96" }, // grey filler (absent)
+                { value: 97, color: "#616161", label: "97" }, // grey filler (absent)
+                { value: 98, color: "#ffffff", label: "98" }, // achromatic filler
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    const classes = screen.getAllByTestId("layer-legend-class");
+    expect(classes).toHaveLength(2);
+    const swatches = screen.getAllByTestId("layer-legend-swatch");
+    expect(swatches[0]!.style.background).toBe("#486DA2");
+    expect(swatches[1]!.style.background).toBe("#38814E");
+    // The greyed/absent rows are gone.
+    expect(screen.queryByText("96")).toBeNull();
+    expect(screen.queryByText("97")).toBeNull();
+    expect(screen.queryByText("98")).toBeNull();
+  });
+
+  it("PRESENT-ONLY: keeps a near-neutral REAL class (Barren Land, chroma ~16) and never blanks an all-grey legend", () => {
+    // Barren Land (#B3AFA3) is the least-saturated standard NLCD class; it must
+    // survive the grey filter. And if EVERY row reads grey, the key keeps them all
+    // (never hide the whole legend).
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-barren",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 31, color: "#B3AFA3", label: "31" }, // Barren (kept)
+                { value: 96, color: "#707070", label: "96" }, // grey (dropped)
+              ],
+            },
+          }),
+          makeLayer({
+            layer_id: "all-grey",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "All grey",
+              units: null,
+              classes: [
+                { value: 1, color: "#404040", label: "1" },
+                { value: 2, color: "#808080", label: "2" },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    // Barren survives, its grey sibling is dropped -> 1 row; the all-grey key keeps
+    // BOTH rows (never blanked) -> 2 rows. Total 3 class rows across the two keys.
+    expect(screen.getAllByTestId("layer-legend-class")).toHaveLength(3);
+    expect(screen.getByText("31")).toBeInTheDocument();
+    expect(screen.queryByText("96")).toBeNull();
+  });
+
   it("LEGACY (no legend): a raster layer renders EXACTLY as before via the preset path", () => {
     // The honesty-floor / backward-compat guard: an unchanged layer (no legend) keeps
     // the preset title + the preset 0..3.5 m bounds (NOT a data-driven override).

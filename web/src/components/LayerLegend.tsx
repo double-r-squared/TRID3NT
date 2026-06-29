@@ -437,6 +437,46 @@ interface ResolvedLegendData {
  *
  * `fallbackTitle` (the layer name) is used when the legend carries no `label`.
  */
+/**
+ * PRESENT-ONLY LAND-COVER LEGEND - a paletted raster (NLCD land cover) carries an
+ * embedded GDAL color table that GDAL materializes to all 256 indices. The producer
+ * (`_categorical_legend_from_colormap`) drops the transparent + opaque-black filler
+ * slots, but the remaining UNUSED indices come back as a NEUTRAL-GREY filler ramp
+ * (roughly `(i, i, i)`) it cannot tell apart from a real class -- so the emitted
+ * legend includes greyed-out rows for classes the rendered raster does NOT contain
+ * (e.g. NLCD 96/97), which makes the key very tall. Every REAL land-cover class
+ * carries a chromatic NLCD color (the least-saturated standard class, Barren Land,
+ * still has chroma ~16); a filler is achromatic (R==G==B, chroma 0). So "present"
+ * == "actually has color" == chromatic. We drop the achromatic greys here so the
+ * legend shows only present classes. The threshold sits between 0 (filler) and ~16
+ * (the most-neutral real class) so no colored class is ever hidden. Applies to ANY
+ * categorical legend, but ONLY achromatic-grey rows are dropped, so chromatic
+ * categorical legends (Pelicun damage states, drought D0-D4) are untouched.
+ */
+const LANDCOVER_GREY_CHROMA_MAX = 10;
+
+function legendClassHasColor(color: string): boolean {
+  const hex = color.trim().replace(/^#/, "");
+  let r: number;
+  let g: number;
+  let b: number;
+  if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+    const n = parseInt(hex, 16);
+    r = (n >> 16) & 0xff;
+    g = (n >> 8) & 0xff;
+    b = n & 0xff;
+  } else if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+    r = parseInt(hex[0]! + hex[0]!, 16);
+    g = parseInt(hex[1]! + hex[1]!, 16);
+    b = parseInt(hex[2]! + hex[2]!, 16);
+  } else {
+    // Unparseable color -> keep it (never hide a class we cannot classify).
+    return true;
+  }
+  const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+  return chroma > LANDCOVER_GREY_CHROMA_MAX;
+}
+
 function legendModelFor(
   legend: LegendKey | null | undefined,
   fallbackTitle: string,
@@ -447,7 +487,12 @@ function legendModelFor(
   if (legend.kind === "categorical" || (legend.classes && legend.classes.length > 0)) {
     const classes = legend.classes;
     if (!classes || classes.length === 0) return null;
-    return { kind: "categorical", title, unit, stops: null, min: null, max: null, classes };
+    // PRESENT-ONLY: drop achromatic-grey filler rows (absent NLCD classes). Never
+    // blank a legend -- if every row reads as grey (no chromatic class survives)
+    // keep the original list rather than hiding the whole key.
+    const present = classes.filter((c) => legendClassHasColor(c.color));
+    const shown = present.length > 0 ? present : classes;
+    return { kind: "categorical", title, unit, stops: null, min: null, max: null, classes: shown };
   }
   // Continuous: resolve the colormap (named OR explicit) to stops.
   const stops = resolveLegendColormapStops(legend.colormap);
@@ -1578,7 +1623,19 @@ export function LayerLegend({
       const estWidth =
         keyModels.length * DESKTOP_DOCK_KEY_WIDTH +
         Math.max(0, keyModels.length - 1) * DESKTOP_DOCK_GAP_PX;
-      const estHeight = 64;
+      // A CATEGORICAL key (NLCD land cover) renders one swatch ROW per class, so
+      // its card is MUCH taller than a continuous colorbar's ~64px. Estimate the
+      // strip height from the TALLEST key (base + per-class rows) so this bbox
+      // clamp keeps the whole strip -- and therefore its drag handle -- on screen
+      // and grabbable; without it a tall land-cover key anchors with its top at the
+      // bbox bottom and runs off the viewport, leaving nowhere to grab and drag it
+      // to a screen edge. A continuous-only strip keeps the prior 64px (unchanged).
+      const estHeight = keyModels.reduce((tallest, mdl) => {
+        const rows =
+          mdl.data?.kind === "categorical" ? (mdl.data.classes?.length ?? 0) : 0;
+        const h = rows > 0 ? 64 + rows * 18 : 64;
+        return Math.max(tallest, h);
+      }, 64);
       const half = estWidth / 2;
       const centerX = Math.max(
         m + half,
