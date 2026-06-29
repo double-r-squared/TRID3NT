@@ -707,37 +707,33 @@ def fetch_asos_metar(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch ASOS/METAR surface weather observations as a point FlatGeobuf.
+    """ASOS/METAR airport surface-weather observations as a point FlatGeobuf (obs/weather).
 
-    Retrieves hourly surface weather observations from all Automated Surface
-    Observing System (ASOS) stations within the requested bbox, sourced from
-    the Iowa State University Iowa Environmental Mesonet (IEM) CGI archive.
-    Observations include temperature, dewpoint, wind speed/direction/gust,
-    altimeter setting, MSLP, visibility, sky cover, and present-weather codes.
+    Retrieves hourly ASOS/METAR surface observations (temperature, dewpoint,
+    wind speed/direction/gust, altimeter, MSLP, visibility, sky cover,
+    present-weather codes) from every Automated Surface Observing System
+    station in the bbox via the Iowa State IEM CGI archive. US + territories
+    only; one Point per observation. Keyless, Tier-1.
 
-    When to use:
-      - User asks for current or historical surface weather at an airport or
-        weather station (e.g., "what was the wind at Fort Myers yesterday?",
-        "show me temperature readings near Naples, FL").
-      - Hazard-event context: surface met conditions before/during a flood,
-        hurricane, or wildfire event ("what were wind speeds when Ian made
-        landfall?").
-      - Multi-station spatial overlay of surface weather for a region.
-      - Providing boundary-layer meteorology input for hazard models that need
-        observed wind, humidity, or temperature fields.
+    Use this when:
+    - Current or historical surface weather AT an airport / weather station
+      ("what was the wind at Fort Myers yesterday?", "temperature near Naples").
+    - Hazard-event surface-met context (wind/pressure before or during a flood,
+      hurricane, or fire) or boundary-layer forcing for a hazard model.
 
-    When NOT to use:
-      - Forecasts or future weather — ASOS is an observational archive; use
-        ``fetch_nws_event`` or ``fetch_nws_alerts_conus`` for current NWS
-        products, or ``fetch_hrrr_forecast`` for model forecasts.
-      - Gridded analysis or reanalysis over large areas — use ``fetch_era5_reanalysis``
-        (global, hourly ERA5) or ``fetch_mrms_qpe`` (radar QPE for precipitation).
-      - Fire-weather station observations outside IEM ASOS coverage — use
-        ``fetch_raws_weather`` for RAWS (remote automated weather stations
-        used by fire agencies, often in non-airport locations).
-      - Tide gauge / coastal water-level observations — use
-        ``fetch_noaa_coops_tides`` for NOAA CO-OPS.
-      - Non-US regions — IEM ASOS archive covers US + territories only.
+    Do NOT use this for:
+    - Fire-weather stations (ridge/canyon RAWS) -- use fetch_raws_weather.
+    - Gridded analysis / reanalysis over an area -- use fetch_era5_reanalysis
+      (global hourly) or fetch_gridmet (CONUS daily); radar precip is
+      fetch_mrms_qpe.
+    - Forecasts / NWS alerts -- use fetch_hrrr_forecast / fetch_nws_alerts_conus
+      / fetch_nws_event. Tide-gauge water levels -- fetch_noaa_coops_tides.
+    - Non-US regions (IEM ASOS archive is US + territories only).
+
+    Honesty: keyless; raises a typed ASASMETAREmptyError when no ASOS station
+    falls in the bbox -- never a fabricated point.
+    Returns a vector LayerURI that auto-renders (inline GeoJSON) -- do NOT call
+    publish_layer.
 
     Parameters:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.
@@ -752,26 +748,26 @@ def fetch_asos_metar(
             many CONUS stations; typical recent data available with ~1-hour lag.
         end_time: End of observation window as ISO-8601 date or datetime
             (e.g. ``"2024-09-28"``). Defaults to current UTC time when omitted.
-            Wide windows (> 30 days × many stations) may produce large payloads
+            Wide windows (> 30 days x many stations) may produce large payloads
             (> 25 MB); the payload-warning system will surface a confirmation
             prompt before fetching.
 
     Returns:
         ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/asos_metar/<key>.fgb``
+        ``s3://<cache-bucket>/cache/dynamic-1h/asos_metar/<key>.fgb``
         - ``layer_type="vector"``, ``role="context"``, ``units="mixed"``
-          (temperature in °F, wind in knots, pressure in inHg/hPa,
-          visibility in miles — standard ASOS/METAR units).
+          (temperature in deg F, wind in knots, pressure in inHg/hPa,
+          visibility in miles -- standard ASOS/METAR units).
         - Geometry: Point at each ASOS station's coordinates, EPSG:4326.
         - Properties per observation: ``station`` (ICAO/FAA id),
           ``valid`` (UTC observation time ISO-8601), ``lon``, ``lat``,
-          ``elevation`` (ft), ``tmpf`` (°F), ``dwpf`` (°F), ``sknt``
-          (wind kt), ``drct`` (wind dir °), ``gust`` (gust kt), ``alti``
+          ``elevation`` (ft), ``tmpf`` (deg F), ``dwpf`` (deg F), ``sknt``
+          (wind kt), ``drct`` (wind dir deg), ``gust`` (gust kt), ``alti``
           (altimeter inHg), ``mslp`` (MSLP hPa), ``vsby`` (visibility mi),
           ``wxcodes`` (present weather), ``skyc1`` (sky cover), ``skyl1``
           (sky layer height ft). Missing values are ``null``.
 
-    Cache: ``dynamic-1h`` — identical ``(bbox-4dp, start_time, end_time)`` calls
+    Cache: ``dynamic-1h`` -- identical ``(bbox-4dp, start_time, end_time)`` calls
     within the same UTC hour reuse the cached FlatGeobuf.
 
     Cross-tool dependencies:
@@ -797,7 +793,7 @@ def fetch_asos_metar(
     ASOS is operated by FAA/NWS). Claims from ASOS observations should be
     marked ``source_authority_tier=1`` in ``ClaimSet`` aggregation.
 
-    supports_global_query=False — IEM ASOS archive covers US + territories only.
+    supports_global_query=False -- IEM ASOS archive covers US + territories only.
     """
     # 1. Validate and normalize inputs.
     if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:

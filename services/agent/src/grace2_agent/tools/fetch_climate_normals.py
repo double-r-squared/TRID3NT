@@ -540,35 +540,34 @@ def fetch_climate_normals(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NOAA NCEI 1991-2020 U.S. Climate Normals as a point FlatGeobuf.
+    """NOAA NCEI 1991-2020 U.S. Climate Normals as a point FlatGeobuf (climate/baseline).
 
-    Retrieves the official 30-year (1991-2020) Climate Normals from the NOAA
-    National Centers for Environmental Information (NCEI) for every Normals
-    station inside the requested bbox. The Climate Normals are the canonical
-    U.S. climate baseline: long-term average annual temperature (deg F) and
-    annual total precipitation (inches), computed from GHCN-Daily station
-    records. They answer "what is climatologically normal here?" and are the
-    reference against which an observed event is judged anomalous.
+    Retrieves the official 30-year (1991-2020) Climate Normals from NOAA NCEI
+    for every Normals station inside bbox: long-term average annual temperature
+    (deg F), daily min/max, and annual total precipitation (inches) from
+    GHCN-Daily records. The canonical "what is normal here?" baseline against
+    which an observed event is judged anomalous. One Point per station. US +
+    territories only. Keyless, Tier-1.
 
-    When to use:
-      - User asks for the climate baseline / normal / average conditions of a
-        place ("what's the average annual temperature in Tampa?", "normal
-        yearly rainfall around Phoenix", "climate normals for this county").
-      - Anomaly framing: establishing the long-term baseline so an observed
-        heat wave, cold snap, drought, or wet year can be compared against
-        "normal" (pair with fetch_asos_metar / fetch_era5_reanalysis for the
-        observed side).
-      - Multi-station spatial overlay of average temperature or precipitation
-        across a region.
+    Use this when:
+    - The climate baseline / normal / average conditions of a place ("average
+      annual temperature in Tampa?", "normal yearly rainfall around Phoenix").
+    - Anomaly framing: the long-term baseline to compare an observed heat wave /
+      drought / wet year against (pair the observed side with fetch_asos_metar
+      or fetch_era5_reanalysis).
 
-    When NOT to use:
-      - Current or historical *observed* weather — use fetch_asos_metar (ASOS
-        station observations) or fetch_era5_reanalysis (gridded reanalysis).
-      - Forecasts — use fetch_nws_alerts_conus / fetch_hrrr_forecast.
-      - Gridded precipitation climatology over large or non-US areas — use
-        fetch_chirps_precipitation (global CHIRPS).
-      - Non-US regions — the NCEI Normals footprint is the U.S. + territories
-        only (supports_global_query=False).
+    Do NOT use this for:
+    - Current / historical OBSERVED weather -- use fetch_asos_metar (station
+      obs) or fetch_era5_reanalysis (gridded reanalysis).
+    - Forecasts -- fetch_nws_alerts_conus / fetch_hrrr_forecast.
+    - Gridded precip climatology over large / non-US areas -- use
+      fetch_chirps_precipitation.
+    - Non-US regions (NCEI Normals footprint is US + territories only).
+
+    Honesty: keyless; raises a typed ClimateNormalsEmptyError when no Normals
+    station falls in the bbox -- never a fabricated point.
+    Returns a vector LayerURI that auto-renders (inline GeoJSON) -- do NOT call
+    publish_layer.
 
     Parameters:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. Required.
@@ -590,7 +589,7 @@ def fetch_climate_normals(
           that is precipitation-only (e.g. CoCoRaHS) reports
           ``normal_temp_f=None``; missing values are ``null``.
 
-    Cache: ``static-30d`` — the 1991-2020 Normals are a fixed published
+    Cache: ``static-30d`` -- the 1991-2020 Normals are a fixed published
     product; identical ``bbox`` (rounded to 4 dp) reuses the cached FlatGeobuf.
 
     Cross-tool dependencies:
@@ -613,7 +612,7 @@ def fetch_climate_normals(
     Source-tier: FR-HEP-2 Tier 1 (NOAA NCEI official 30-year Climate Normals).
     Claims should be marked ``source_authority_tier=1`` in ``ClaimSet``.
 
-    supports_global_query=False — NCEI Normals cover the U.S. + territories.
+    supports_global_query=False -- NCEI Normals cover the U.S. + territories.
     """
     # 1. Validate and normalize inputs.
     if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:

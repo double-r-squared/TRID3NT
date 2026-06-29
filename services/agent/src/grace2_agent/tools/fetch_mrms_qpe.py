@@ -710,95 +710,54 @@ def _fetch_mrms_qpe_bytes(
 )
 def fetch_mrms_qpe(
     bbox: tuple[float, float, float, float] | None = None,
-    accumulation: str = "24h",
+    accumulation: Literal["1h", "3h", "6h", "12h", "24h", "48h", "72h"] = "24h",
     valid_time: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NOAA MRMS accumulated QPE (gauge-corrected precipitation) as a COG.
+    """NOAA MRMS accumulated QPE -- gauge-corrected radar precipitation (mm) COG.
 
-    **What it does:** Downloads a NOAA MRMS MultiSensor QPE Pass2 grib2.gz from
-    the public ``noaa-mrms-pds`` S3 bucket (anonymous access), decompresses and
-    decodes it with rasterio, collapses MRMS sentinels (−3 no-precip, −1 missing)
-    to GeoTIFF nodata (−9999), optionally clips to bbox, reprojects to EPSG:4326,
-    and writes a deflate-compressed Cloud-Optimized GeoTIFF. Pass2 is
-    gauge-corrected (~2 h delayed) at CONUS 0.01° (~1 km) resolution. Tier-1
-    free, no API key required. Picks the most-recent available timestamp at call
-    time when ``valid_time`` is omitted; records the resolved timestamp in the
-    returned ``LayerURI`` metadata.
+    Downloads the NOAA MRMS MultiSensor QPE Pass2 product from the public
+    ``noaa-mrms-pds`` S3 bucket (anonymous), decodes + clips to bbox, reprojects
+    to EPSG:4326, and writes a deflate COG of accumulated precipitation in mm.
+    Pass2 is gauge-corrected (~2 h delayed) at CONUS 0.01deg (~1 km). Tier-1
+    free. Omit ``valid_time`` for the most-recent published file.
 
-    **When to use:**
+    Use this when:
+    - SFINCS pluvial-flood forcing precipitation for CONUS events (MRMS QPE is
+      the Harvey/Houston SFINCS reference forcing).
+    - Rainfall-runoff / storm totals ("how much rain fell in 24 h over the
+      watershed?").
+    - Feeding ``model_flood_scenario(forcing_raster_uri=...)`` as real-precip
+      forcing.
 
-    - SFINCS pluvial-flood forcing precipitation for CONUS events — MRMS QPE
-      Pass2 is the Harvey/Houston SFINCS reference forcing (GMD 2025). Typical
-      call for Case 3 (Idaho NWS flood warning):
-      ``fetch_mrms_qpe(bbox=warning_polygon_bbox, accumulation="24h")``.
-    - Rainfall-runoff analysis and storm characterization ("how much rain fell
-      in 24 hours over the watershed?").
-    - Near-real-time precipitation context: omit ``valid_time`` to fetch the
-      most recently published file (~2 h behind current).
-    - Feeding ``model_flood_scenario(forcing_raster_uri=mrms_uri)`` as the real-
-      precip forcing branch for Case 3 (sprint-13 job-0225/0229 composers).
+    Do NOT use this for:
+    - Live radar reflectivity -- use ``fetch_nexrad_reflectivity`` (dBZ, not mm).
+    - Design-storm return periods -- use ``lookup_precip_return_period`` (NOAA
+      Atlas 14).
+    - Precip OUTSIDE CONUS -- MRMS is CONUS-only; use
+      ``fetch_chirps_precipitation`` (quasi-global daily) or ``fetch_gridmet``
+      (CONUS daily met) or ``fetch_era5_reanalysis`` (global ERA5).
 
-    **When NOT to use:**
+    Returns a raster LayerURI (role="primary", units="mm") that auto-renders --
+    do not call publish_layer. Must intersect CONUS ``(-130, 20, -60, 55)`` or
+    ``MRMSQPEEmptyError`` is raised.
 
-    - Live radar reflectivity — use ``fetch_nexrad_reflectivity`` (Iowa Mesonet
-      WMS; dBZ products n0r/n0q/vil).
-    - Historical return-period precipitation (design storms) — use
-      ``lookup_precip_return_period`` (NOAA Atlas 14 PFDS).
-    - Global precipitation outside CONUS — MRMS is CONUS-only; for global
-      use ``fetch_era5_reanalysis`` (27 km, daily/hourly ERA5 precip).
-    - Sub-hourly accumulations — MRMS publishes ``1h`` (01H) as the finest window.
+    Parameters:
+    - ``bbox``: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326; None = full
+      CONUS grid (~3500x7000 px).
+    - ``accumulation``: window -- ``"1h"``, ``"6h"``, ``"24h"`` (default),
+      ``"72h"`` (also ``"3h"`` / ``"12h"`` / ``"48h"``; uppercase S3 tokens like
+      ``"24H"`` accepted too). ``"1h"`` is the finest window.
+    - ``valid_time``: ISO-8601 UTC (e.g. ``"2017-08-27T12:00:00Z"``); None =
+      most-recent. Resolves to the nearest-earlier published hour within a 24 h
+      walkback (Pass2 ~2 h delayed).
 
-    **Parameters:**
-
-    - ``bbox``: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required for
-      Case 3 usage; when ``None``, returns full CONUS grid (~3500×7000 px).
-      Must intersect CONUS ``(-130, 20, -60, 55)`` or ``MRMSQPEEmptyError``
-      is raised. ``supports_global_query=True`` is retained for the CONUS-wide
-      path (``bbox=None``).
-    - ``accumulation``: preferred values ``"1h"``, ``"6h"``, ``"24h"``
-      (default), ``"72h"`` — the standard sprint-13 Case 3 window. Also accepts
-      ``"3h"``, ``"12h"``, ``"48h"`` and the original uppercase S3 tokens
-      (``"01H"``, ``"06H"``, ``"24H"``, ``"72H"``, etc.) for backward
-      compatibility. Unknown values raise ``MRMSQPEInputError``.
-    - ``valid_time``: ISO-8601 UTC string, e.g. ``"2017-08-27T12:00:00Z"``.
-      When ``None``, fetches the most recent published file. When provided,
-      resolves to the nearest-earlier published hour within a 24 h walkback
-      (Pass2 is delayed ~2 h). Raises ``MRMSQPENotAvailableError`` if no
-      file exists in that window.
-
-    **Returns:**
-
-    ``LayerURI`` pointing at
-    ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/mrms_qpe/<key>.tif``.
-    GeoTIFF: float32, EPSG:4326, deflate-compressed, tiled 256×256,
-    nodata=−9999. Band 1 description ``"precipitation_mm"``; GeoTIFF tags
-    ``units="mm"``, ``valid_time``, ``source="NOAA MRMS MultiSensor QPE Pass2"``.
-    ``layer_type="raster"``, ``role="primary"``, ``units="mm"``.
-    The ``name`` field embeds ``valid_time=<ISO-timestamp>`` (sprint-13
-    provenance requirement) since LayerURI has no freeform metadata dict
-    (schema extra="forbid").
-
-    Raises: ``MRMSQPEInputError`` (bad params), ``MRMSQPEUpstreamError``
-    (S3 / grib2 failure, retryable), ``MRMSQPENotAvailableError`` (no published
-    file in walkback window), ``MRMSQPEEmptyError`` (bbox outside CONUS).
-
-    **Cross-tool dependencies:**
-
-    - Pair with: ``fetch_nexrad_reflectivity`` (live radar reflectivity overlay
-      for the same storm event) and ``fetch_nws_alerts_conus`` (NWS watches/
-      warnings) for a complete storm-situation display.
-    - Consumed by: ``model_flood_scenario(forcing_raster_uri=...)`` as pluvial
-      precipitation forcing (Case 3 composer); ``compute_zonal_statistics``
-      for per-watershed accumulation queries.
-    - Alternative for non-CONUS: ``fetch_era5_reanalysis`` (global, 27 km,
-      needs Copernicus CDS key).
-
-    Cache: ``ttl_class="dynamic-1h"``; key = SHA-256 of
-    ``(bbox-6dp, accumulation-canonical, valid_time-or-LATEST, pass)``.
-    Payload estimate: ``estimate_payload_mb(bbox, accumulation)`` (Wave 1.5).
+    Cached ``dynamic-1h``. GeoTIFF float32, EPSG:4326, nodata=-9999, band
+    "precipitation_mm"; the name embeds the resolved valid_time (provenance).
+    Raises MRMSQPEInputError / MRMSQPEUpstreamError / MRMSQPENotAvailableError /
+    MRMSQPEEmptyError.
     """
     # Normalize accumulation (accepts "24h", "24H", "01H", etc.) — sprint-13
     canonical_accumulation = _normalize_accumulation(accumulation)

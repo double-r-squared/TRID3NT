@@ -55,7 +55,7 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -416,8 +416,8 @@ def _blend_frame_cog_bytes(
 )
 def fetch_goes_animation(
     bbox: tuple[float, float, float, float],
-    band: str = "geocolor",
-    satellite: str = "goes-18",
+    band: Literal["geocolor", "fire_temperature"] = "geocolor",
+    satellite: Literal["goes-18", "goes-19"] = "goes-18",
     sector: str = "conus",
     start_utc: str | None = None,
     end_utc: str | None = None,
@@ -425,66 +425,47 @@ def fetch_goes_animation(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
-    """Build a GOES GeoColor / Fire Temperature animation (ordered per-frame RGB COGs) over a time window.
+    """GOES GeoColor / Fire Temperature animation -- ordered per-frame RGB COGs over a window (recent).
 
-    **What it does:** Pulls the ready-made CIRA/RAMMB SLIDER GeoColor or Fire
-    Temperature RGB imagery for a GOES geostationary satellite (default GOES-18 /
-    GOES-West, CONUS sector, 5-minute cadence) across a UTC time window, and
-    returns an ORDERED list of per-frame EPSG:4326 RGB COGs over the AOI -- one
-    frame per SLIDER scan time, each labelled with its real UTC valid-time. This
-    is how you RECREATE a CIRA-style intra-day fire animation (the imagery and
-    cadence are the exact product the CIRA loops are made from). Emit the frames
-    through publish_layer and the web scrubber animates them.
+    Pulls ready-made CIRA/RAMMB SLIDER GeoColor or Fire Temperature RGB imagery
+    for a GOES satellite (default GOES-18 / West, CONUS, 5-min cadence) across a
+    UTC window and returns an ORDERED ``list[LayerURI]`` -- one EPSG:4326 RGB COG
+    per scan time, each named ``"... step <N> <ISO> ..."`` so the web scrubber
+    animates them. The recreate-a-CIRA-fire-loop path (recent frames only).
 
-    **When to use:**
-    - "Recreate the GOES fire animation over this window", "animate the GOES-18
-      GeoColor + Fire Temperature loop for 2026-06-22", "show the fire evolving
-      on satellite over a 6-hour window at 5-minute cadence".
-    - Any intra-day (minutes-to-hours) geostationary timelapse over a CONUS AOI.
+    Use this when:
+    - "Animate / recreate the GOES GeoColor or Fire Temperature loop" over an
+      intra-day window at 5-min cadence.
+    - Any recent (SLIDER horizon) geostationary timelapse over a CONUS AOI.
 
-    **When NOT to use:**
-    - A single most-recent frame (use ``fetch_goes_satellite``).
-    - A MULTI-DAY polar timelapse / VIIRS Day Fire (use ``fetch_viirs_day_fire``;
-      JPSS polar passes, not a 5-minute geostationary cadence).
-    - Active-fire pixel detections (``fetch_firms_active_fire``) or perimeters
-      (``fetch_nifc_fire_perimeters``).
+    Do NOT use this for:
+    - A single most-recent frame -- use ``fetch_goes_satellite``.
+    - The BLENDED GeoColor+Fire composite as one scrubber -- use
+      ``fetch_goes_blend_animation``.
+    - HISTORICAL dates beyond the SLIDER recent horizon -- use
+      ``fetch_goes_archive_animation``.
+    - A multi-day polar timelapse -- use ``fetch_viirs_day_fire``.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required.
-    - ``band`` (str, default ``"geocolor"``): ``"geocolor"`` or
-      ``"fire_temperature"`` (the two CIRA fire-animation products).
-    - ``satellite`` (str, default ``"goes-18"``): ``"goes-18"`` (West) or
+    Returns an ordered list[LayerURI] (ascending UTC, role="context", shared
+    style_preset + bbox) -- the frames auto-render as a scrubber group; do not
+    call publish_layer. An AOI with no imagery raises a typed error (honesty
+    floor); georeferencing is the approximate SLIDER sector-extent mapping.
+
+    Parameters:
+    - ``bbox``: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.
+    - ``band`` (default ``"geocolor"``): ``"geocolor"`` or ``"fire_temperature"``.
+    - ``satellite`` (default ``"goes-18"``): ``"goes-18"`` (West) or
       ``"goes-19"`` (East).
-    - ``sector`` (str, default ``"conus"``): SLIDER sector slug (``"conus"`` /
+    - ``sector`` (default ``"conus"``): SLIDER sector slug (e.g. ``"conus"``,
       ``"full_disk"``).
-    - ``start_utc`` / ``end_utc`` (str): ISO-8601 UTC window bounds
-      (e.g. ``"2026-06-22T13:30:00Z"`` .. ``"2026-06-22T20:00:00Z"``). When
-      omitted, the most-recent ~6.5h is used.
-    - ``step_minutes`` (int, default 5): the requested cadence; the CONUS SLIDER
-      index is natively 5-minute, so this is informational (frames are taken at
-      the SLIDER timestamps inside the window, then even-subsampled to the cap).
+    - ``start_utc`` / ``end_utc``: ISO-8601 UTC bounds; omitted = most-recent
+      ~6.5 h.
+    - ``step_minutes`` (default 5): informational (native CONUS cadence is 5 min).
 
-    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
-    uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="goes_rgb_animation"``, same ``bbox``) whose ``name`` is
-    ``"GOES <ProductLabel> step <N> <ISO> (<SAT>)"`` -- the scrubber-group
-    contract: the ``step <N>`` token is the monotonic frame value the web parser
-    keys on, the product label keeps the per-product STEM distinct (so GeoColor
-    and Fire Temperature form TWO separate scrubber groups), and the ISO valid-
-    time is the per-frame display label. ``<N>`` is the position in the shared
-    windowed frame list, so the same step maps to the same SLIDER timestamp
-    across both GOES products -> the two scrubbers stay time-synchronized.
-
-    NOTE: georeferencing is the approximate SLIDER sector-extent mapping (SLIDER
-    ships no projection); the imagery + cadence are the real CIRA product. An AOI
-    with no imagery pixels raises a typed error (honesty floor).
-
-    **Cross-tool dependencies:**
-    - Upstream: ``fetch_wfigs_incident`` (the AOI bbox + the window floor).
-    - Pairs with: ``fetch_firms_active_fire`` (historical-date hot-pixel overlay)
-      + ``fetch_nifc_fire_perimeters`` (perimeter overlay).
-    - Driven by: ``run_model_satellite_fire_animation``.
+    Each frame name is ``"GOES <ProductLabel> step <N> <ISO> (<SAT>)"``: the
+    ``step <N>`` token is what the web ``detectSequentialGroups`` parser keys on,
+    the product label keeps GeoColor and Fire Temperature in TWO separate groups,
+    and the ISO is the per-frame display label. Cached ``dynamic-1h`` per frame.
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     product = _band_to_slider_product(band)
@@ -637,7 +618,7 @@ _BLEND_METADATA = _build_blend_metadata()
 )
 def fetch_goes_blend_animation(
     bbox: tuple[float, float, float, float],
-    satellite: str = "goes-18",
+    satellite: Literal["goes-18", "goes-19"] = "goes-18",
     sector: str = "conus",
     start_utc: str | None = None,
     end_utc: str | None = None,
@@ -645,49 +626,38 @@ def fetch_goes_blend_animation(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
-    """Build a BLENDED GeoColor + Fire Temperature animation (ONE composite scrubber group).
+    """BLENDED GOES GeoColor + Fire Temperature animation -- one composite scrubber group (recent).
 
-    **What it does:** For each SLIDER scan time in the window, pulls BOTH the
-    GeoColor (true-color base, shows smoke) and the Fire Temperature (SWIR active-
-    fire) RGB frames for that SAME valid-time and composites them into ONE RGB COG
-    -- GeoColor as the base with the active fire glow overlaid only where the Fire
-    Temperature SWIR signature is hot. This is the CIRA "GeoColor and Fire
-    Temperature" combined product. Returns an ORDERED list of per-frame blended
-    RGB COGs over the AOI -- ONE frame per scan time -> ONE scrubber group (NOT
-    two synchronized groups).
+    For each SLIDER scan time in the window, pulls BOTH the GeoColor (true-color
+    base) and Fire Temperature (SWIR active-fire) RGB frames and composites them
+    into ONE EPSG:4326 RGB COG -- fire glow baked over true color, the CIRA
+    "GeoColor and Fire Temperature" look. Returns an ORDERED ``list[LayerURI]``,
+    ONE frame per scan time -> ONE scrubber group (not two synchronized groups).
 
-    **When to use:**
-    - "Recreate the CIRA GeoColor + Fire Temperature fire animation" -- the single
-      composite loop where the active fire glows on top of the true-color scene.
-    - Default GOES fire-animation path (the composer dispatches this for a GOES
-      run so the user gets one blended scrubber, not two separate ones).
+    Use this when:
+    - "Recreate the CIRA GeoColor + Fire Temperature fire animation" -- the
+      single combined loop (the default GOES fire-animation path).
 
-    **When NOT to use:**
-    - A single (un-blended) GeoColor OR Fire Temperature loop (use
-      ``fetch_goes_animation`` with one band).
-    - A multi-day polar timelapse / VIIRS Day Fire (``fetch_viirs_day_fire``).
+    Do NOT use this for:
+    - A single un-blended GeoColor OR Fire Temperature loop -- use
+      ``fetch_goes_animation`` with one ``band``.
+    - A single most-recent frame -- use ``fetch_goes_satellite``.
+    - HISTORICAL dates beyond the SLIDER horizon -- use
+      ``fetch_goes_archive_animation``.
+    - A multi-day polar timelapse -- use ``fetch_viirs_day_fire``.
 
-    **Parameters:** same window/AOI/satellite/sector contract as
-    ``fetch_goes_animation`` (minus ``band`` -- both products are always pulled
-    and blended).
+    Returns an ordered list[LayerURI] (ascending UTC, role="context", shared
+    style_preset + layer_id stem + bbox) -- the frames auto-render as ONE
+    scrubber group; do not call publish_layer. An AOI/window with no blendable
+    frames raises a typed error (honesty floor); georeferencing is the
+    approximate SLIDER sector-extent mapping.
 
-    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). Each is a 3-band
-    uint8 RGB COG (``layer_type="raster"``, ``role="context"``,
-    ``style_preset="goes_rgb_animation"``, same ``bbox``) whose ``name`` is
-    ``"GOES Fire (GeoColor + Fire Temperature) step <N> <ISO> (<SAT>)"`` and whose
-    ``layer_id`` shares the single ``goes-fire-blend-...`` prefix -> ONE scrubber
-    group: the ``step <N>`` token is the monotonic frame value the web parser keys
-    on, the single product stem keeps every frame in ONE group, and the ISO valid-
-    time is the per-frame display label.
-
-    NOTE: georeferencing is the approximate SLIDER sector-extent mapping (the two
-    products share it, so they co-register exactly). An AOI / window with no
-    blendable frames raises a typed error (honesty floor).
-
-    **Cross-tool dependencies:**
-    - Upstream: ``fetch_wfigs_incident`` (the AOI bbox + the window floor).
-    - Composites the two ``fetch_goes_animation`` products per timestep.
-    - Driven by: ``run_model_satellite_fire_animation`` (the GOES default path).
+    Parameters: same window / AOI / satellite / sector contract as
+    ``fetch_goes_animation`` minus ``band`` (both products always pulled +
+    blended). ``satellite`` is ``"goes-18"`` (West) or ``"goes-19"`` (East).
+    Each frame name is ``"GOES Fire (GeoColor + Fire Temperature) step <N> <ISO>
+    (<SAT>)"`` -- the ``step <N>`` token + single product stem keep every frame
+    in ONE web scrubber group. Cached ``dynamic-1h`` per frame.
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     # Normalize-then-validate: accept GOES-18 / goes18 / G18 / "GOES West" / 18

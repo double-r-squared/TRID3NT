@@ -75,7 +75,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 import requests
 
@@ -580,41 +580,37 @@ def fetch_modis_lst(
     bbox: tuple[float, float, float, float],
     start_date: str | None = None,
     end_date: str | None = None,
-    product: str = _DEFAULT_PRODUCT,
-    daynight: str = _DEFAULT_DAYNIGHT,
+    product: Literal["11A2", "21A2"] = _DEFAULT_PRODUCT,
+    daynight: Literal["day", "night"] = _DEFAULT_DAYNIGHT,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a MODIS 8-day land-surface-temperature (LST) grid in degrees C.
+    """MODIS 8-day land-surface-temperature (LST) grid in deg C as a COG (obs/thermal).
 
-    **What it does:** Searches the Microsoft Planetary Computer for the
-    most-recent MODIS 8-day LST tile covering ``bbox`` in the time window, reads
-    the requested ``LST_Day``/``LST_Night`` 1 km band clipped to the bbox, scales
-    the uint16 DN to degrees Celsius (``T = DN*0.02 - 273.15``; fill DN==0 ->
-    NaN), and returns a SINGLE-BAND float32 COG that paints as a thermal heat map.
-    Because it emits the physical deg-C scalar (not a baked RGB) the layer can be
-    zonal-summarized, differenced (day vs night, year vs year), or thresholded
-    for a heat-risk mask.
+    Searches the Microsoft Planetary Computer for the most-recent MODIS 8-day
+    LST tile covering bbox in the window, scales the uint16 DN to deg C
+    (T = DN*0.02 - 273.15; fill DN==0 -> NaN), and returns a SINGLE-BAND
+    float32 COG (the physical scalar, not a baked RGB, so it can be
+    zonal-summarized, differenced, or thresholded). Global, 1 km, clear-sky
+    8-day composite back to 2000. Keyless, Tier-1.
 
-    MODIS LST is a GLOBAL 8-day clear-sky COMPOSITE at 1 km, so this is the
-    keyless path to a clean urban-heat / drought / surface-temperature surface
-    over a city-to-region AOI without hunting for a cloud-free overpass.
-
-    **When to use:**
+    Use this when:
     - Urban heat-island / extreme-heat surface over a metro or county
-      (``daynight="day"`` for peak surface heat; ``"night"`` for heat-retention
-      / overnight minimums, the public-health-relevant signal).
-    - Drought / thermal-stress context (high LST + low NDVI).
-    - A coarse-but-clean LST you can zonal-stat by neighborhood / land cover, or
-      difference between two windows (call twice).
+      (daynight="day" for peak heat; "night" for overnight heat-retention).
+    - Drought / thermal-stress context, or a coarse-but-clean LST to zonal-stat
+      by neighborhood / land cover (difference two windows by calling twice).
 
-    **When NOT to use:**
-    - Fine-grained single-scene thermal detail  --  use
-      ``fetch_landsat_imagery(band_combo="thermal")`` (30 m, baked RGB snapshot).
-    - AIR temperature (2 m)  --  use ``fetch_era5_reanalysis`` / ``fetch_hrrr_forecast``
-      / ``fetch_gridmet`` (LST is the SURFACE skin temperature, much hotter than
-      air on a sunny day).
-    - Sea-surface temperature  --  use ``fetch_noaa_sst``.
+    Do NOT use this for:
+    - Fine single-scene thermal detail -- use
+      fetch_landsat_imagery(band_combo="thermal") (30 m, baked RGB snapshot).
+    - AIR temperature (2 m) -- use fetch_era5_reanalysis / fetch_gridmet
+      (LST is SURFACE skin temp, much hotter than air on a sunny day).
+    - Sea-surface temperature -- use fetch_noaa_sst.
+
+    Honesty: keyless; raises a typed ModisLstNoDataError when no tile covers the
+    bbox/window (or it is all-fill) -- never a fabricated layer.
+    Returns a raster LayerURI the server auto-publishes and renders -- do NOT
+    call publish_layer.
 
     **Parameters:**
     - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.

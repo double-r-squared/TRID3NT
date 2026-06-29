@@ -956,38 +956,33 @@ def fetch_openaq_measurements(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """OpenAQ global air-quality latest measurements as a FlatGeobuf point layer.
+    """OpenAQ global air-quality latest measurements as a point FlatGeobuf (obs/air-quality, global).
 
-    What it does:
-        Fetches the most recent ground-station air-quality measurements
-        (PM2.5, PM10, NO2, O3, SO2, CO, and other pollutants) from the OpenAQ
-        v3 API for every monitoring station inside ``bbox``, returning one
-        FlatGeobuf POINT feature per (station, parameter) latest reading with
-        ``parameter`` / ``value`` / ``unit`` / ``datetime`` properties. OpenAQ
-        aggregates reference monitors and low-cost sensors from national
-        networks WORLDWIDE — this is the GLOBAL complement to the US-only
-        AirNow / EPA AQS surface.
+    Fetches the most recent ground-station air-quality measurements (PM2.5,
+    PM10, NO2, O3, SO2, CO, and more) from the OpenAQ v3 API for every station
+    in bbox -- one POINT per (station, parameter) with parameter / value / unit
+    / datetime. OpenAQ aggregates reference monitors and low-cost sensors from
+    national networks WORLDWIDE: the GLOBAL complement to the US-only AirNow.
 
-    When to use:
-        - User asks about air quality / pollution anywhere outside the US, or
-          wants a global-coverage source ("what's the PM2.5 in Delhi right
-          now?", "show NO2 monitoring stations around London").
-        - Overlaying current pollutant concentrations on a wildfire-smoke,
-          dust-storm, or industrial-hazard footprint.
-        - Pairing observed ground-station air quality with modeled smoke
-          (HRRR-Smoke) or satellite aerosol layers.
+    Use this when:
+    - Air quality / pollution anywhere OUTSIDE the US, or a global-coverage
+      source ("PM2.5 in Delhi right now?", "NO2 stations around London").
+    - Overlaying current pollutant concentrations on a wildfire-smoke,
+      dust-storm, or industrial-hazard footprint, or pairing observed ground
+      stations with modeled smoke / satellite aerosol layers.
 
-    When NOT to use:
-        - DO NOT use for US-only regulatory AQI when a US source is preferred —
-          AirNow / EPA AQS give the official US AQI; OpenAQ ingests US data too
-          but is not the US regulatory authority.
-        - DO NOT use for HISTORICAL time-series — this returns LATEST values
-          only; use the OpenAQ ``/sensors/{id}/measurements|hours|days``
-          aggregate endpoints (a future tool) for time-series.
-        - DO NOT use for modeled / forecast air quality — OpenAQ is
-          ground-truth observations; use HRRR-Smoke / CAMS for forecasts.
-        - DO NOT use for satellite column densities (NO2/aerosol from
-          TROPOMI/Sentinel-5P) — those are a different (raster) source.
+    Do NOT use this for:
+    - US regulatory AQI -- prefer fetch_airnow_air_quality (the official US AQI
+      authority; OpenAQ ingests US data but is not the regulator).
+    - HISTORICAL time-series -- this returns LATEST values only.
+    - Modeled / forecast air quality (use HRRR-Smoke / CAMS) or satellite
+      column densities (NO2/aerosol from TROPOMI/Sentinel-5P; a raster source).
+
+    Honesty: SECRET-GATED -- needs a free OpenAQ API key (kwarg -> secret_ref ->
+    GRACE2_OPENAQ_API_KEY); with none it raises OpenAQMissingKeyError (a
+    credential card), never a fabricated layer (OpenAQ has no public mirror).
+    Returns a vector LayerURI that auto-renders (inline GeoJSON) -- do NOT call
+    publish_layer.
 
     Parameters:
         bbox: REQUIRED ``(min_lon, min_lat, max_lon, max_lat)`` envelope in
@@ -996,7 +991,7 @@ def fetch_openaq_measurements(
             ``(76.8, 28.4, 77.4, 28.9)`` for the Delhi NCR returns the city's
             monitoring stations. Narrow the bbox to a city/metro: a
             country-sized sweep is capped at 2000 stations.
-        parameters: Optional pollutant filter — a single name or a list,
+        parameters: Optional pollutant filter -- a single name or a list,
             case-insensitive, each one of ``pm25`` / ``pm10`` / ``pm1`` /
             ``no2`` / ``no`` / ``nox`` / ``o3`` / ``so2`` / ``co`` / ``co2`` /
             ``bc`` / ``ch4`` / ``nh3``. Defaults to the six core pollutants
@@ -1020,11 +1015,11 @@ def fetch_openaq_measurements(
 
     Raises:
         ``OpenAQMissingKeyError`` (``OPENAQ_KEY_REQUIRED``): no API key resolved
-            from any of the three paths — raised BEFORE any network call. The
+            from any of the three paths -- raised BEFORE any network call. The
             agent surfaces a credential-request card (OpenAQ has no public
             mirror, so this honest typed error IS the degrade).
         ``OpenAQAuthError`` (``OPENAQ_AUTH_ERROR``): the API rejected the key
-            (401/403; revoked / invalid) — the agent surfaces a re-enter card.
+            (401/403; revoked / invalid) -- the agent surfaces a re-enter card.
         ``OpenAQInputError``: bad bbox or unknown parameter name.
         ``OpenAQUpstreamError``: OpenAQ 5xx / 422 / non-JSON / network failure
             (retryable).
@@ -1039,7 +1034,7 @@ def fetch_openaq_measurements(
     Cache: ``dynamic-1h`` (OpenAQ latest values refresh as new readings land;
     an hourly window balances freshness against the API rate budget). Cache
     key: SHA-256 of (bbox rounded-6dp, parameters) + the top-of-hour vintage.
-    The key intentionally omits the api_key — the underlying measurements do
+    The key intentionally omits the api_key -- the underlying measurements do
     not vary by caller.
     """
     # ---- Input validation ----

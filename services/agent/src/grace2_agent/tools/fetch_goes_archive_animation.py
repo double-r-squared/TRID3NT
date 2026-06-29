@@ -66,7 +66,7 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -1421,119 +1421,69 @@ def _round_bbox(bbox: tuple[float, float, float, float]) -> tuple[float, float, 
 )
 def fetch_goes_archive_animation(
     bbox: tuple[float, float, float, float],
-    satellite: str = "goes-18",
+    satellite: Literal["goes-16", "goes-18", "goes-19"] = "goes-18",
     start_utc: str | None = None,
     end_utc: str | None = None,
     step_minutes: int = 5,
-    band: str = "fire_temperature",
+    band: Literal[
+        "fire_temperature", "true_color", "fire_hotspots", "fire_baked"
+    ] = "fire_temperature",
     bt_c07_min_k: float = FIRE_BT_C07_MIN_K,
     bt_diff_min_k: float = FIRE_BT_DIFF_MIN_K,
     true_color_res_deg: float | None = None,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> list[LayerURI]:
-    """Build a HISTORICAL GOES Fire Temperature animation from the RAW noaa-goes18 S3 archive (any past date).
+    """HISTORICAL GOES fire animation from the RAW noaa-goes S3 archive -- any past date.
 
-    **What it does:** Reads the RAW ``ABI-L2-MCMIPC`` netCDFs from the public
-    ``noaa-goes18`` S3 bucket (a FULL historical archive, anonymous / no key)
-    across a UTC time window for ANY date -- including the distant past -- and
-    composites the NOAA-NESDIS / CIRA **Fire Temperature** RGB per frame (R = ABI
-    C07 3.9um brightness-temp 0-60 C, G = C06 2.2um reflectance 0-100 %, B = C05
-    1.6um reflectance 0-75 %, gamma 1). Returns an ORDERED list of per-frame
-    EPSG:4326 RGB COGs over the AOI -- one frame per CONUS 5-minute scan -- in the
-    SAME shape ``fetch_goes_animation`` returns, so the workflow composer and the
-    web scrubber animate them UNCHANGED.
+    Reads raw ``ABI-L2-MCMIPC`` netCDFs from the public NOAA GOES S3 archive
+    (anonymous, full history) across a UTC window for ANY date and composites a
+    per-frame RGB(A) product. Returns an ORDERED ``list[LayerURI]`` -- one
+    EPSG:4326 COG per 5-min scan, named ``"... step <N> <ISO> ..."`` so the web
+    scrubber animates it. The HISTORICAL companion to ``fetch_goes_animation``.
 
-    This is the HISTORICAL companion to ``fetch_goes_animation``: the SLIDER tiles
-    that tool uses only serve ~100 RECENT frames (no archive), and their pre-
-    rendered Fire Temperature had a zoom-coverage gap. This tool composites Fire
-    Temperature from the raw bands and reaches any archived date.
+    Use this when:
+    - "Animate the GOES Fire Temperature loop for a PAST date" / any historical
+      intra-day GOES fire timelapse.
+    - ``fetch_goes_animation`` returned no frames because the window predates the
+      SLIDER recent horizon.
 
-    **When to use:**
-    - "Animate the GOES Fire Temperature loop for a fire on a PAST date" (e.g.
-      "recreate the Iron Fire GOES animation for 2026-06-22"); any historical
-      intra-day GOES Fire Temperature timelapse.
-    - When ``fetch_goes_animation`` returns no frames because the requested window
-      is older than the SLIDER recent-frame horizon.
+    Do NOT use this for:
+    - A recent loop or GeoColor (proprietary) -- use ``fetch_goes_animation`` /
+      ``fetch_goes_blend_animation``.
+    - A single most-recent frame -- use ``fetch_goes_satellite``.
+    - Lightning -- use ``fetch_glm_lightning``.
+    - A multi-day polar VIIRS timelapse -- use ``fetch_viirs_day_fire``.
 
-    **When NOT to use:**
-    - A single most-recent frame (use ``fetch_goes_satellite``).
-    - A GeoColor loop or a near-real-time recent loop (use
-      ``fetch_goes_animation`` / ``fetch_goes_blend_animation`` -- GeoColor is a
-      proprietary CIRA product not reconstructable from raw bands here).
-    - A multi-day polar VIIRS timelapse (use ``fetch_viirs_day_fire``).
+    Returns an ordered list[LayerURI] (ascending UTC, role="context", shared
+    style_preset + bbox) -- frames auto-render as a scrubber group; do not call
+    publish_layer. A window with no archived frames raises a typed error
+    (honesty floor); georeferencing reprojects the real ABI fixed grid.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. Example (Utah fire cluster): ``(-114.05, 37.0, -109.04, 42.0)``.
-    - ``satellite`` (str, default ``"goes-18"``): ``"goes-18"`` (West / Utah-
-      Nevada fires), ``"goes-19"`` (East), or ``"goes-16"`` (historical East).
-    - ``start_utc`` / ``end_utc`` (str): ISO-8601 UTC window bounds (e.g.
-      ``"2026-06-22T13:30:00Z"`` .. ``"2026-06-22T20:00:00Z"``). When omitted, the
-      most-recent ~6.5h is used. Works for ANY past date in the archive.
-    - ``step_minutes`` (int, default 5): informational; the CONUS archive is
-      natively 5-minute. Frames are taken at the archived scan times in the
-      window, then even-subsampled to the frame cap.
-    - ``band`` (str, default ``"fire_temperature"``): which product to emit --
-      one of:
-        * ``"fire_temperature"`` -- the full Fire Temperature RGB (every warm
-          pixel reds; the original product, unchanged).
-        * ``"true_color"`` (aka ``"natural_color"`` / ``"geocolor_raw"``) -- the
-          daytime TRUE COLOR RGB composited from the visible bands (R=C02 red,
-          B=C01 blue, synthetic CIMSS green from C02/C03/C01) at the finer ~0.5 km
-          native visible resolution. A natural-looking daytime base; goes black at
-          night (no visible reflectance).
-        * ``"fire_hotspots"`` -- the ISOLATED active-fire layer: a TRANSPARENT
-          RGBA COG where ONLY pixels the active-fire discriminator flags are
-          colored on an orange->yellow->white hot ramp (by C07 intensity) and
-          every non-fire pixel is fully transparent (alpha 0). Overlays / "bakes"
-          cleanly onto ANY base. Genuine active fire, NOT warm daytime land.
-        * ``"fire_baked"`` -- the fire-only RGBA alpha-composited OVER the Fire
-          Temperature base into ONE opaque RGB COG ("fire baked onto the
-          satellite image").
-    - ``bt_c07_min_k`` (float, default 320.0): the active-fire ABSOLUTE 3.9um
-      (C07) brightness-temperature floor (K) used by the ``fire_hotspots`` /
-      ``fire_baked`` discriminator. Tunable; lower to catch cooler/smaller fires.
-    - ``bt_diff_min_k`` (float, default 10.0): the active-fire C07-minus-C13
-      (3.9um - 10.3um) brightness-temperature DIFFERENCE floor (K). The
-      shortwave-vs-longwave split that separates genuine fire from warm land.
-      Tunable up (15-20 K) to demand a stronger fire signal.
-    - ``true_color_res_deg`` (float | None, default None): output cell size in
-      degrees for the ``true_color`` band ONLY. None -> the native ~0.5 km
-      ``_TRUE_COLOR_RES_DEG`` (0.005 deg). Ignored for the thermal/fire bands,
-      which always stay at the 2 km ``_OUT_RES_DEG`` (0.02 deg). A finer value
-      gets its own cache namespace.
+    Parameters:
+    - ``bbox``: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.
+    - ``satellite`` (default ``"goes-18"``): ``"goes-18"`` (West), ``"goes-19"``
+      (East), or ``"goes-16"`` (historical East).
+    - ``start_utc`` / ``end_utc``: ISO-8601 UTC bounds; omitted = most-recent
+      ~6.5 h. Works for ANY archived past date.
+    - ``step_minutes`` (default 5): informational (native CONUS cadence 5 min).
+    - ``band`` (default ``"fire_temperature"``): product to emit --
+      ``"fire_temperature"`` (full Fire-Temp RGB; every warm pixel reds),
+      ``"true_color"`` (daytime visible RGB, ~0.5 km; black at night),
+      ``"fire_hotspots"`` (transparent RGBA, ONLY discriminator-flagged active
+      fire colored, baked-overlay ready), ``"fire_baked"`` (fire composited over
+      the Fire-Temp base into one opaque RGB).
+    - ``bt_c07_min_k`` (default 320.0) / ``bt_diff_min_k`` (default 10.0): the
+      active-fire discriminator thresholds for ``fire_hotspots`` / ``fire_baked``
+      (a pixel is fire only when C07 BT >= bt_c07_min_k AND C07-C13 >=
+      bt_diff_min_k -- the standard GOES/MODIS shortwave-vs-longwave split).
+    - ``true_color_res_deg``: output cell size (deg) for ``true_color`` only;
+      None -> native ~0.5 km.
 
-    **Active-fire detection (the ``fire_hotspots`` / ``fire_baked`` products):**
-    A pixel is flagged active fire only when BOTH (C07 BT >= ``bt_c07_min_k``) AND
-    (C07 - C13 BT >= ``bt_diff_min_k``). This is the standard GOES/MODIS-heritage
-    shortwave-vs-longwave discriminator: a sub-pixel flame is intensely hot in the
-    3.9um shortwave while the 10.3um longwave stays near ambient, so a large split
-    uniquely separates real fire from uniformly warm land/cloud. C07 and C13 are
-    both CMI bands in the SAME netCDF the Fire-Temp composite already downloads --
-    NO extra fetch. The detection is self-contained (FIRMS is a separate VECTOR
-    cross-reference, not needed for this raster product).
-
-    **Returns:** an ORDERED ``list[LayerURI]`` (ascending UTC). For
-    ``fire_temperature`` / ``fire_baked`` each is a 3-band uint8 RGB COG; for
-    ``fire_hotspots`` each is a 4-band uint8 RGBA COG (alpha 0 off-fire).
-    ``layer_type="raster"``, ``role="context"``, same ``bbox``; the RGB(A)
-    passthrough in publish_layer renders the baked colors (and alpha) directly --
-    no new style preset. The ``name`` is
-    ``"GOES <product label> step <N> <ISO> (<SAT>)"`` -- the SAME scrubber-group
-    contract ``fetch_goes_animation`` emits: the ``step <N>`` token is the
-    monotonic frame value the web ``detectSequentialGroups`` parser keys on, the
-    per-product label keeps each product in its own group, and the ISO valid-time
-    is the per-frame display label.
-
-    NOTE: an AOI / window with no archived frames raises a typed error (honesty
-    floor) -- it never emits a blank animation.
-
-    **Cross-tool dependencies:**
-    - Upstream: ``fetch_wfigs_incident`` (the AOI bbox + the window floor).
-    - Pairs with: ``fetch_firms_active_fire`` (historical-date hot-pixel overlay)
-      + ``fetch_nifc_fire_perimeters`` (perimeter overlay).
-    - Driven by: ``run_model_satellite_fire_animation`` (the historical GOES path).
+    Per-product name stem keeps each band in its OWN web scrubber group while
+    sharing the ``step <N> <ISO>`` token. ``fire_temperature`` / ``true_color`` /
+    ``fire_baked`` are 3-band RGB COGs; ``fire_hotspots`` is a 4-band RGBA COG
+    (alpha 0 off-fire). Cached ``dynamic-1h`` per frame.
     """
     q_bbox = _round_bbox(_validate_bbox(bbox))
     # Normalize any human/LLM spelling (GOES-18 / goes18 / G18 / "GOES West" / 18)

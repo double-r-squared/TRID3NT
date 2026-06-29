@@ -100,7 +100,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -748,119 +748,62 @@ def _fetch_hrrr_bytes(
 )
 def fetch_hrrr_forecast(
     bbox: tuple[float, float, float, float],
-    variable: str = "2m_temperature",
+    variable: Literal[
+        "2m_temperature",
+        "10m_wind_speed",
+        "10m_u_wind",
+        "10m_v_wind",
+        "surface_precip_1hr",
+    ] = "2m_temperature",
     forecast_hour: int = 1,
     cycle: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NOAA HRRR 3 km short-term weather forecast — Tier-1 CONUS fetcher.
+    """NOAA HRRR 3 km short-term weather forecast COG -- Tier-1 CONUS (temp/wind/precip).
 
-    What it does: returns a CRS-tagged GeoTIFF (EPSG:4326) of a single HRRR
-    forecast field at a single forecast lead time, reprojected from the
-    native Lambert Conformal Conic grid and clipped to the requested CONUS
-    bbox. Wraps the University of Utah CHPC HRRR-Zarr mirror on AWS S3
-    (anonymous, Tier-1 free, no API key). Resolves the most-recently
-    published HRRR cycle whose forecast at the requested lead time is on
-    S3, walking up to 6 h backward if the in-progress cycle has not yet
-    posted (the NOAA Big Data Program mirror lags the cycle hour by
-    ~1.0–1.5 h).
+    Returns a single HRRR forecast field at one lead time as an EPSG:4326 COG,
+    reprojected from the native Lambert Conformal grid and clipped to a CONUS
+    bbox. Wraps the University of Utah HRRR-Zarr mirror on AWS S3 (anonymous,
+    Tier-1 free). Resolves the most-recent published cycle (walks back up to 6 h
+    for mirror lag) unless ``cycle`` pins one.
 
-    When to use:
-    - User asks for "the forecast for the next few hours" anywhere in CONUS
-      ("what's the wind looking like in Tampa tomorrow morning?", "is rain
-      coming through Denver this afternoon?", "show me HRRR temperature
-      forecast for Chicago").
-    - A GENERIC wind request ("wind forecast", "how windy will it be",
-      "show me the wind", "wind speed over Houston") → use
-      ``variable="10m_wind_speed"``. This returns a SINGLE positive wind-speed
-      magnitude field (``sqrt(u^2 + v^2)``, m s-1) — the natural answer to "how
-      windy". Only reach for the lone signed ``10m_u_wind`` / ``10m_v_wind``
-      components when the user explicitly needs wind DIRECTION or a vector
-      component (e.g. onshore/offshore decomposition).
-    - Driving a hazard model with near-real-time meteorological forcing on
-      a US-side bbox: wind input to SFINCS or HEC-RAS storm surge, precip
-      input to SFINCS pluvial, temperature for snow/fire-weather context.
-    - "Observed vs forecast" comparisons against ASOS/METAR (or RAWS for
-      fire weather).
-    - Any short-term (≤ 18 h, or ≤ 48 h on 00/06/12/18z cycles) US weather
-      decision-support overlay.
+    Use this when:
+    - Short-term (<=18 h, or <=48 h on 00/06/12/18z cycles) CONUS weather
+      forecast: temperature, wind, or model precip.
+    - A GENERIC wind request ("how windy will it be", "wind over Houston") ->
+      ``variable="10m_wind_speed"`` (a single positive magnitude sqrt(u^2+v^2));
+      use the signed ``10m_u_wind`` / ``10m_v_wind`` only when DIRECTION matters.
+    - Near-real-time meteorological FORCING for a US hazard model (wind to
+      SFINCS/HEC-RAS surge, precip to SFINCS pluvial).
 
-    When NOT to use:
-    - Historical / reanalysis weather — use ``fetch_era5_reanalysis``
-      (global, 0.25°, 1940–present) instead. HRRR-Zarr archives ~2016+
-      cycles but the tool exposes only the current operational forecast.
-    - Outside CONUS (Mexico interior, Caribbean except direct CONUS spillover,
-      Alaska, Hawaii, the open Pacific or Atlantic) — HRRR is CONUS-only;
-      bbox outside the coverage envelope raises ``HRRRForecastInputError``.
-      Use ``fetch_era5_reanalysis`` for global, ECMWF AIFS/IFS for global
-      forecast.
-    - Observed precipitation accumulation — use ``fetch_mrms_qpe``
-      (1 km gauge-corrected). HRRR's APCP is model-predicted; MRMS is the
-      observation.
-    - Observed radar reflectivity — use ``fetch_nexrad_reflectivity``.
-    - Watches / warnings — use ``fetch_nws_alerts_conus`` or
-      ``fetch_nws_event`` instead. Those carry the official advisory text;
-      HRRR carries raw model output.
-    - Hourly forecast horizons beyond 18 h on non-extended cycles, or
-      beyond 48 h on extended cycles — those leads are not in HRRR.
+    Do NOT use this for:
+    - Smoke / aerosol -- use ``fetch_hrrr_smoke``.
+    - Observed precipitation -- use ``fetch_mrms_qpe`` (HRRR APCP is predicted).
+    - Observed radar -- use ``fetch_nexrad_reflectivity``.
+    - Watches / warnings -- use ``fetch_nws_alerts_conus`` / ``fetch_nws_event``.
+    - Reanalysis / historical or non-CONUS -- use ``fetch_era5_reanalysis``
+      (global). HRRR is CONUS-only; out-of-coverage bbox raises a typed error.
+
+    Returns a raster LayerURI (role="primary") that auto-renders -- do not call
+    publish_layer; units per variable (K, m s-1, kg m-2 = mm).
 
     Parameters:
-        bbox: ``(west, south, east, north)`` in EPSG:4326 (WGS84 decimal
-            degrees). Must intersect CONUS coverage (~lon -134..-60,
-            lat 21..53). Example: ``(-82.4, 26.3, -81.6, 26.9)`` for the
-            Fort Myers / Lee County area.
-        variable: one of ``"2m_temperature"`` (K), ``"10m_wind_speed"``
-            (m s-1, DERIVED wind-speed magnitude ``sqrt(u^2 + v^2)`` — the
-            answer to a generic "wind" request), ``"10m_u_wind"`` (m s-1,
-            east component), ``"10m_v_wind"`` (m s-1, north component),
-            ``"surface_precip_1hr"`` (kg m-2 = mm liquid-water equivalent,
-            1-h accumulation). Default ``"2m_temperature"``. For any
-            non-directional wind question pass ``"10m_wind_speed"``.
-        forecast_hour: integer forecast lead time in hours (1 = +1 h from
-            cycle start). Range 1–18 for standard cycles, 1–48 for the
-            extended 00/06/12/18z cycles. ``0`` is accepted and aliased to
-            the +1 h slice (HRRR analysis-time slices live in a separate
-            ``_anl.zarr`` not exposed here). Default ``1``.
-        cycle: optional ISO-8601 cycle timestamp like ``"2026-06-09T00:00:00Z"``
-            to pin a specific cycle. Default ``None`` → use the most recent
-            published cycle (walks backward up to 6 h from current UTC).
+    - ``bbox``: ``(west, south, east, north)`` EPSG:4326; must intersect CONUS
+      (~lon -134..-60, lat 21..53).
+    - ``variable`` (default ``"2m_temperature"``): ``"2m_temperature"`` (K),
+      ``"10m_wind_speed"`` (m s-1, derived magnitude -- the generic-wind answer),
+      ``"10m_u_wind"`` / ``"10m_v_wind"`` (m s-1 components),
+      ``"surface_precip_1hr"`` (kg m-2 = mm, 1-h accum).
+    - ``forecast_hour`` (default 1): lead time in hours; 1-18 standard, 1-48 on
+      00/06/12/18z; 0 aliases to the +1 h slice.
+    - ``cycle``: optional ISO-8601 cycle (``"2026-06-09T00:00:00Z"``); None =
+      most-recent published.
 
-    Returns:
-        A ``LayerURI`` pointing at a COG in the cache bucket
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/hrrr/<key>.tif``
-        carrying the requested variable's forecast slice, EPSG:4326,
-        float32, NaN nodata. ``layer_type="raster"``, ``role="primary"``,
-        ``units`` per the variable (``"K"``, ``"m s-1"``, ``"kg m-2"``).
-        Downstream consumers (``publish_layer``, ``compute_zonal_statistics``,
-        SFINCS forcing composers) read the COG and treat it as a single-band
-        scalar field.
-
-    Cross-tool dependencies:
-        - Consumes nothing (Tier-1 substrate fetcher; no upstream tool).
-        - Feeds: ``publish_layer`` (visualization on the web map),
-          ``compute_zonal_statistics`` (aggregate to admin boundaries),
-          ``model_flood_scenario`` and downstream SFINCS composers (precip
-          / wind forcing), ``clip_raster_to_polygon`` (further sub-clip),
-          ``aggregate_claims_across_sources`` (combine with MRMS, ERA5,
-          NWS alerts for compound claims).
-
-    Raises:
-        ``HRRRForecastInputError``: bad bbox / variable / forecast_hour
-            (retryable=False).
-        ``HRRRForecastEmptyError``: bbox falls outside HRRR coverage or
-            yields all-NaN after clip (retryable=False).
-        ``HRRRForecastNotAvailableError``: requested cycle is not yet on
-            S3 within the 6 h backstop (retryable=True).
-        ``HRRRForecastUpstreamError``: S3 / zarr / reprojection failure
-            (retryable=True).
-
-    FR-CE-8: routed through ``read_through`` with ``ttl_class="dynamic-1h"``
-    so identical ``(bbox, variable, cycle, forecast_hour)`` calls reuse
-    the cached COG within the hourly window. The cache key includes the
-    cycle identifier so distinct cycles predicting the same valid time
-    map to distinct cache entries.
+    Cached ``dynamic-1h`` keyed per (bbox, variable, cycle, forecast_hour).
+    Raises HRRRForecastInputError / HRRRForecastEmptyError /
+    HRRRForecastNotAvailableError / HRRRForecastUpstreamError.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

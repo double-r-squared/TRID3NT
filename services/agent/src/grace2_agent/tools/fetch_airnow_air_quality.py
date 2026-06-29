@@ -819,38 +819,32 @@ def fetch_airnow_air_quality(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """EPA AirNow current-hour air-quality monitor observations as points.
+    """EPA AirNow current-hour air-quality monitors as points (obs/air-quality, US).
 
-    What it does:
-        Fetches the U.S. EPA AirNow current-hour air-quality observations for
-        every reporting monitor within ``bbox`` as point features. Each point
-        carries the reporting parameter (PM2.5 / Ozone / PM10 / NO2 / SO2 /
-        CO), the AQI value + AQI category band, the raw concentration + unit,
-        and the monitor / reporting-agency identity. SECRET-GATED: AirNow
-        requires an API key (resolved kwarg -> per-Case ``secret_ref`` ->
-        ``GRACE2_AIRNOW_API_KEY`` env). With NO key it raises a credential-
-        shaped ``AirNowMissingKeyError`` so the agent surfaces a credential
-        card -- it NEVER fabricates a layer (AirNow has no public mirror).
+    Fetches the U.S. EPA AirNow current-hour observations for every reporting
+    monitor in bbox as point features -- parameter (PM2.5 / Ozone / PM10 / NO2 /
+    SO2 / CO), AQI value + category band, raw concentration + unit, and the
+    monitor / agency identity. One Point per monitor-parameter (latest reading).
+    North America (US authority).
 
-    When to use:
-        - User asks about current air quality / AQI / smoke exposure in a
-          region ("what's the air quality near the fire?", "show PM2.5
-          monitors around Los Angeles").
-        - A fire / smoke-plume workflow (GOES/JPSS fire, FIRMS) needs the
-          ground-truth AQI monitors the plume is degrading -- overlay AirNow
-          points on the fire footprint.
-        - Damage / public-health context needs current pollutant levels at
-          permanent EPA monitors.
+    Use this when:
+    - Current air quality / AQI / smoke exposure in a region ("air quality near
+      the fire?", "PM2.5 monitors around Los Angeles").
+    - A fire / smoke-plume workflow (GOES/JPSS fire, FIRMS) needs the
+      ground-truth AQI monitors the plume is degrading.
 
-    When NOT to use:
-        - DO NOT use for FORECAST air quality -- this is current OBSERVED only;
-          AirNow has a separate forecast feed.
-        - DO NOT use for HISTORICAL air-quality archives -- use EPA AQS
-          (aqs.epa.gov) for multi-year time series.
-        - DO NOT use for non-US/Canada/Mexico regions -- AirNow coverage is
-          North America.
-        - DO NOT use for a gridded/modeled smoke RASTER -- AirNow is point
-          monitors; use a satellite-derived smoke product for the plume.
+    Do NOT use this for:
+    - GLOBAL / non-US air quality -- use fetch_openaq_measurements (worldwide).
+    - FORECAST air quality (this is current OBSERVED only) or HISTORICAL
+      archives (use EPA AQS for multi-year time series).
+    - A gridded / modeled smoke RASTER -- AirNow is point monitors; use a
+      satellite-derived smoke product for the plume.
+
+    Honesty: SECRET-GATED -- needs an AirNow API key (kwarg -> secret_ref ->
+    GRACE2_AIRNOW_API_KEY); with none it raises AirNowMissingKeyError (a
+    credential card), never a fabricated layer (AirNow has no public mirror).
+    Returns a vector LayerURI that auto-renders (inline GeoJSON) -- do NOT call
+    publish_layer.
 
     Parameters:
         bbox: REQUIRED ``(min_lon, min_lat, max_lon, max_lat)`` envelope in

@@ -81,7 +81,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -636,43 +636,41 @@ def _fetch_gridmet_bytes(
 )
 def fetch_gridmet(
     bbox: tuple[float, float, float, float],
-    variable: str,
+    variable: Literal[
+        "fm100", "fm1000", "pet", "pdsi", "tmmn", "tmmx",
+        "vpd", "vs", "rmin", "rmax", "pr", "srad",
+    ],
     start_date: str,
     end_date: str,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """gridMET CONUS daily gridded meteorology (4 km, 1979 → present).
+    """gridMET CONUS daily gridded meteorology -- one variable as a COG (climate/fire-weather).
 
-    Fetches a daily gridded meteorological variable from the University of
-    Idaho gridMET dataset (Abatzoglou 2013) over the requested bbox + date
-    range, averages across the time window, and emits a CRS-tagged COG.
-    Access is via the NKN THREDDS OPeNDAP aggregate, which subsets by time +
-    bbox in a single wire call (<1 MB typical for a metro-scale request).
+    Fetches a daily gridMET variable (Abatzoglou 2013) over a bbox + date
+    range from the NKN THREDDS OPeNDAP aggregate, time-means the window, and
+    emits a CRS-tagged float32 COG. CONUS only, 4 km, 1979 to ~3 days ago.
+    Keyless, Tier-1.
 
     Use this when:
-      - User asks for fire-weather / fuel-moisture inside CONUS
-        ("fm100", "fm1000", "fuel moisture", "fire danger").
-      - User asks for daily-aggregated CONUS weather over a historical
-        window (drought, precip, ET, temperature, humidity, wind speed).
-      - The wildfire pipeline needs *dynamic* moisture state to pair with
-        LANDFIRE *static* fuel models.
-      - User asks for Palmer Drought Severity Index (pdsi) anywhere in
-        CONUS, 1979-01-01 → present (3-day lag).
-      - User asks for reference ET (pet) for water-balance computations.
+    - Fire-weather / fuel-moisture inside CONUS (fm100, fm1000, "fire danger").
+    - Daily-aggregated CONUS drought / precip / ET / temperature / humidity /
+      wind, including Palmer Drought Severity Index (pdsi) and reference ET
+      (pet); pair dynamic moisture with LANDFIRE static fuel models.
 
     Do NOT use this for:
-      - Non-CONUS bboxes — use ``fetch_era5_reanalysis`` (global 0.25°).
-      - Sub-daily timesteps — gridMET is daily; use ERA5, HRRR, NEXRAD,
-        or GOES for hourly / sub-hourly.
-      - Real-time / live forecast — gridMET lags ~3 days; use NWS Alerts
-        + HRRR for live CONUS forecast.
-      - Radar precipitation — use ``fetch_mrms_qpe`` (1 km gauge-corrected)
-        instead of gridMET ``pr`` (4 km PRISM-blended).
-      - Static fuel-model class / vegetation type — use
-        ``fetch_landfire_fuels`` instead.
-      - Vector data of any kind.
+    - Non-CONUS -- use fetch_era5_reanalysis (global 0.25 deg).
+    - Sub-daily / real-time / forecast -- gridMET is daily and lags ~3 days;
+      use ERA5, fetch_hrrr_forecast, NEXRAD, or GOES.
+    - Radar precipitation -- use fetch_mrms_qpe (1 km gauge-corrected) over
+      gridMET pr (4 km PRISM-blended).
+    - Static fuel-model class / vegetation -- use fetch_landfire_fuels. Vectors.
+
+    Honesty: keyless; raises GRIDMETInputError for an out-of-CONUS bbox and a
+    typed GRIDMETEmptyError on an all-NaN window -- never a fabricated raster.
+    Returns a raster LayerURI the server auto-publishes and renders -- do NOT
+    call publish_layer.
 
     Parameters:
       bbox: ``(west, south, east, north)`` in EPSG:4326 decimal degrees.
@@ -694,7 +692,7 @@ def fetch_gridmet(
 
     Returns:
       ``LayerURI`` pointing at a COG in the cache bucket
-      (``gs://grace-2-hazard-prod-cache/cache/static-30d/gridmet/<key>.tif``).
+      (``s3://<cache-bucket>/cache/static-30d/gridmet/<key>.tif``).
       Single-band float32 EPSG:4326 raster, time-mean across the date
       window, clipped to bbox. ``layer_type="raster"``, ``role="primary"``,
       ``units`` per variable.
@@ -705,8 +703,8 @@ def fetch_gridmet(
       outputs to ``compute_zonal_statistics``, ``clip_raster_to_polygon``,
       ``clip_raster_to_bbox``, ``publish_layer`` (UI render via QGIS Server),
       and fire-danger composers. Sibling fetchers: ``fetch_era5_reanalysis``
-      (global, hourly — non-CONUS choice), ``fetch_landfire_fuels`` (static
-      fuel-model class — pair with gridMET for full moisture state),
+      (global, hourly -- non-CONUS choice), ``fetch_landfire_fuels`` (static
+      fuel-model class -- pair with gridMET for full moisture state),
       ``fetch_mrms_qpe`` (1 km gauge-corrected radar precip).
 
     Raises:
@@ -716,7 +714,7 @@ def fetch_gridmet(
       ``GRIDMETUpstreamError``: THREDDS DAP failure (retryable).
 
     FR-CE-8: routed through ``read_through`` (``ttl_class="static-30d"``).
-    ``supports_global_query=False`` — gridMET is CONUS-only.
+    ``supports_global_query=False`` -- gridMET is CONUS-only.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

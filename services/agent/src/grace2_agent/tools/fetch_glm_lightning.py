@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -503,63 +503,55 @@ def _emit_ged_layer(
 )
 def fetch_glm_lightning(
     bbox: tuple[float, float, float, float],
-    satellite: str = "goes-19",
+    satellite: Literal["goes-16", "goes-17", "goes-18", "goes-19"] = "goes-19",
     start_utc: str | None = None,
     end_utc: str | None = None,
     accumulation_window_s: int | None = None,
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI | list[LayerURI]:
-    """Fetch GOES GLM optical-lightning GROUP-ENERGY-DENSITY as a transparent purple raster overlay.
+    """GOES GLM optical lightning group-energy-density as a transparent purple overlay.
 
-    **What it does:** Reads the GOES **GLM** (Geostationary Lightning Mapper)
-    ``GLM-L2-LCFA`` product from the public ``noaa-goesNN`` S3 archive (anonymous /
-    no key), bins the optical-lightning GROUP energy (Joules) onto a ~2 km EPSG:4326
-    grid -- the SAME grid the GOES ABI products use, so it co-registers pixel-for-
-    pixel with a GOES satellite / fire base -- and returns the group-energy-density
-    (GED) as a TRANSPARENT purple RGBA raster ``LayerURI``. Only cells with detected
-    lightning are opaque (deep-violet -> magenta -> white-pink with energy);
-    everything else is transparent so it overlays a basemap directly.
+    Reads the GOES GLM (Geostationary Lightning Mapper) ``GLM-L2-LCFA`` product
+    from the public NOAA GOES S3 archive (anonymous), bins optical-lightning
+    GROUP energy onto the ~2 km EPSG:4326 grid the GOES ABI products use (pixel-
+    aligned co-registration), and returns the group-energy-density (GED) as a
+    TRANSPARENT purple RGBA raster -- only lit cells are opaque, so it overlays a
+    basemap / GOES base directly. Reads like CIRA GLM density imagery.
 
-    **Why GED (not raw strike counts):** GLM reports discrete ``group`` detections,
-    each carrying a real ``group_energy``. Summing that energy per cell over a short
-    accumulation window is the stable, physically meaningful "how electrically active
-    is this cell" field shown in CIRA GLM density imagery -- bright over the
-    convective cores, faint at the edges.
-
-    **When to use:**
-    - "Show me the lightning / lightning activity over this storm right now."
+    Use this when:
+    - "Show the lightning / lightning activity over this storm right now."
     - "Where is the most electrically active part of this convective cluster?"
-    - As a lightning-intensity overlay on top of a GOES true-color / IR base.
+    - A lightning-intensity overlay on a GOES true-color / IR base.
 
-    **When NOT to use:**
-    - Ground-based cloud-to-ground strike points (use a CG-network tool, not GLM).
-    - A scrubbable ABI imagery loop (use ``fetch_goes_archive_animation``).
+    Do NOT use this for:
+    - Ground-based cloud-to-ground strike points (GLM is optical/space-based;
+      use a CG-network tool).
+    - A scrubbable ABI imagery loop -- use ``fetch_goes_archive_animation`` /
+      ``fetch_goes_animation``.
+    - A single ABI image -- use ``fetch_goes_satellite``.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.
-      Example (Florida convective cluster): ``(-83.5, 25.5, -79.5, 31.5)``.
-    - ``satellite`` (str, default ``"goes-19"``): ``"goes-19"`` (East, current),
-      ``"goes-18"`` (West, current), ``"goes-16"`` / ``"goes-17"`` (historical).
-    - ``start_utc`` / ``end_utc`` (str): ISO-8601 UTC window bounds. When omitted,
-      the most-recent ~5 min ending now is accumulated.
-    - ``accumulation_window_s`` (int, optional): when set (e.g. ``60``), the window is
-      split into per-bucket frames and an ORDERED ``list[LayerURI]`` animation is
-      returned (``step <N>`` names the web scrubber animates); when omitted (default),
-      the ENTIRE window is accumulated into a SINGLE ``LayerURI``.
+    Returns by default a SINGLE transparent-RGBA GED LayerURI (role="context")
+    that auto-renders -- do not call publish_layer; OR, when
+    ``accumulation_window_s`` is set, an ordered ``list[LayerURI]`` animation
+    (per-bucket frames, ``step <N>`` names the web scrubber animates). A window
+    with no granules OR no lightning in the AOI raises a typed error (honesty
+    floor) -- never a blank overlay.
 
-    **Returns:** a single 4-band transparent RGBA GED COG ``LayerURI``
-    (``layer_type="raster"``, ``role="context"``, ``style_preset="glm_lightning"``)
-    by default; or an ordered ``list[LayerURI]`` (ascending UTC, ``step <N>`` names,
-    identical preset + bbox) when ``accumulation_window_s`` is set. A window with no
-    granules OR no lightning groups inside the AOI raises a typed error (honesty
-    floor) -- it never emits a blank overlay.
+    Parameters:
+    - ``bbox``: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required.
+    - ``satellite`` (default ``"goes-19"``): ``"goes-19"`` (East) / ``"goes-18"``
+      (West) / ``"goes-16"`` / ``"goes-17"`` (historical). Forgiving spellings
+      normalized; unknown raises a typed error.
+    - ``start_utc`` / ``end_utc``: ISO-8601 UTC window; omitted = most-recent
+      ~5 min ending now.
+    - ``accumulation_window_s``: when set (e.g. 60), split the window into
+      per-bucket frames -> an ORDERED animation list; omitted = ONE accumulated
+      frame.
 
-    **Cross-tool dependencies:**
-    - Pairs with: ``fetch_goes_archive_animation`` band ``true_color`` / ``fire_temperature``
-      (the GOES base this lightning density overlays, on the identical grid).
-    - Sibling fetchers: ``fetch_goes_satellite`` (single ABI frame),
-      ``fetch_goes_active_fire`` (split-window hot pixels).
+    Why GED (not raw counts): summed per-cell group energy is a stable,
+    physically meaningful "how electrically active is this cell" field. Cached
+    ``dynamic-1h`` per frame.
     """
     q_bbox = _round_bbox(_validate_glm_bbox(bbox))
     # Normalize-then-validate: canonicalize GOES-18 / goes18 / G18 / "GOES West"

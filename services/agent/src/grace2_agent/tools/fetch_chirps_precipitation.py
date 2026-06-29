@@ -478,40 +478,36 @@ def fetch_chirps_precipitation(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch UCSB CHIRPS quasi-global rainfall as a single-band mm COG.
+    """CHIRPS quasi-global daily/monthly rainfall as a single-band mm COG (climate/precip).
 
-    **What it does:** Downloads a CHIRPS-2.0 monthly or daily precipitation
-    GeoTIFF from the keyless UC Santa Barbara Climate Hazards Center public
-    archive (``data.chc.ucsb.edu``), gunzips it, windows to ``bbox``, collapses
-    the CHIRPS ocean / no-data sentinel to GeoTIFF nodata, and writes a
-    deflate-compressed single-band float32 Cloud-Optimized GeoTIFF in mm.
-    CHIRPS is 0.05 deg (~5 km) and quasi-global (50 S - 50 N). Tier-1 free, no
-    API key, no login.
+    Downloads a CHIRPS-2.0 monthly or daily precipitation GeoTIFF from the
+    keyless UC Santa Barbara Climate Hazards Center archive (data.chc.ucsb.edu),
+    gunzips, windows to bbox, collapses the ocean/no-data sentinel, and writes a
+    deflate single-band float32 mm COG. Quasi-global (50 S - 50 N), 0.05 deg
+    (~5 km), 1981 to recent. Keyless, Tier-1.
 
-    **When to use:**
+    Use this when:
+    - Quasi-global rainfall baseline for drought / agriculture / pluvial-flood
+      OUTSIDE CONUS or outside radar coverage (Africa, South Asia, Latin
+      America, the tropics) -- the community standard for data-sparse regions.
+    - Monsoon / wet-season totals (period="monthly", mm/month) or event-scale
+      daily rainfall (period="daily", mm/day) for antecedent-rainfall context.
 
-    - Quasi-global rainfall baseline for drought, agriculture, and pluvial-flood
-      context OUTSIDE CONUS / outside radar coverage — Africa, South Asia, Latin
-      America, the tropics. CHIRPS is the community standard for data-sparse
-      regions.
-    - Monsoon / wet-season precipitation totals: ``period="monthly"`` returns
-      mm/month; e.g. peak-monsoon Western Ghats:
-      ``fetch_chirps_precipitation(bbox=(72,15,78,21), date="2023-07")``.
-    - Event-scale daily rainfall: ``period="daily"`` returns mm/day for a single
-      date, e.g. ``date="2022-08-25"``.
-    - Drought analysis (anomaly vs climatology), seasonal ag water-balance, and
-      flood antecedent-rainfall context where MRMS / gridMET do not reach.
+    Do NOT use this for:
+    - CONUS gauge-corrected radar precip (~1 km, sub-daily) -- use
+      fetch_mrms_qpe.
+    - CONUS gridded daily met (precip+temp+wind+humidity, ~4 km) -- use
+      fetch_gridmet.
+    - Hourly / forecast precip -- use fetch_hrrr_forecast (CONUS) or
+      fetch_era5_reanalysis (global hourly, needs a Copernicus CDS key).
+    - Areas poleward of 50 deg -- coverage stops at 50 S / 50 N
+      (raises CHIRPSEmptyError).
 
-    **When NOT to use:**
-
-    - CONUS gauge-corrected radar precipitation at ~1 km / sub-daily — use
-      ``fetch_mrms_qpe`` (NOAA MRMS QPE, CONUS only).
-    - CONUS gridded daily meteorology (precip + temp + wind + humidity) at
-      ~4 km — use ``fetch_gridmet``.
-    - Hourly / forecast precipitation — use ``fetch_hrrr_forecast`` (CONUS) or
-      ``fetch_era5_reanalysis`` (global hourly, needs a Copernicus CDS key).
-    - Areas poleward of 50 deg latitude — CHIRPS coverage stops at 50 S / 50 N;
-      a bbox entirely outside that band raises ``CHIRPSEmptyError``.
+    Honesty: keyless; raises CHIRPSNotAvailableError (no published raster for a
+    date) or CHIRPSEmptyError (bbox all-ocean / outside extent) -- never a
+    fabricated raster.
+    Returns a raster LayerURI the server auto-publishes and renders -- do NOT
+    call publish_layer.
 
     **Parameters:**
 

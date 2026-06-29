@@ -697,45 +697,34 @@ def fetch_raws_weather(
     end_time: str | None = None,
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch RAWS fire-weather station observations as a point FlatGeobuf.
+    """RAWS fire-weather station observations as a point FlatGeobuf (obs/fire-weather).
 
-    **What it does:** Retrieves sub-hourly observations from Remote Automated
-    Weather Stations (RAWS) — fire-weather monitoring stations operated by the
-    US Forest Service, BLM, NPS, BIA, and state forestry agencies — sourced
-    from the Iowa State University Iowa Environmental Mesonet (IEM) DCP network
-    archive. RAWS are sited specifically at fire-prone ridges, canyons, and
-    forest margins and report the fire-weather parameters most relevant to
-    fire behavior: temperature, relative humidity, wind speed/direction, solar
-    radiation, and precipitation. Returns a FlatGeobuf point layer with one
-    feature per observation per station. Tier-1 free, no API key.
+    Retrieves sub-hourly observations from Remote Automated Weather Stations
+    (RAWS) -- the fire-weather network operated by USFS / BLM / NPS / BIA /
+    state forestry, sited at fire-prone ridges, canyons, and forest margins --
+    via the Iowa State IEM DCP archive. Fields: temperature, relative humidity,
+    wind speed/direction, solar radiation, precipitation. One Point per
+    observation. Keyless, Tier-1. US fire belt (mostly western US).
 
-    **When to use:**
-      - User asks about fire-weather conditions at or near a wildfire, fire
-        perimeter, or fire-prone area (e.g., "what were the wind and RH
-        conditions near the Caldor Fire on Aug 18?", "show me fire-weather
-        stations in the Angeles National Forest").
-      - Providing fire-weather forcing (wind, RH, temp) for fire-behavior
-        model inputs (FARSITE, BEHAVE+, WindNinja wind fields).
-      - Wildfire risk context: overlaying current or historical RAWS
-        observations on active fire perimeters or MTBS burn severity maps.
-      - Computing fire-weather indices (FFMC, DMC, DC, ISI, FWI, BUI) from
-        observed temp, RH, wind, and rain inputs.
-      - User asks for fire-weather station data, RAWS observations, or
-        NFDRS/NWS fire-weather products at a specific location.
+    Use this when:
+    - Fire-weather conditions at / near a wildfire, perimeter, or fire-prone
+      area ("wind and RH near the Caldor Fire on Aug 18?").
+    - Fire-weather forcing (wind, RH, temp) for fire-behavior models (FARSITE,
+      WindNinja) or NFDRS/FWI index computation.
 
-    **When NOT to use:**
-      - Surface weather at airports — use ``fetch_asos_metar`` (ASOS/METAR
-        network, broader coverage, available for non-fire-weather use cases).
-      - Gridded weather analysis or reanalysis — use ``fetch_era5_reanalysis``
-        (global) or ``fetch_gridmet`` (CONUS daily 4 km; includes fire-weather
-        variables like ERC and BI derived from NFDRS).
-      - Active fire detections / fire radiative power — use
-        ``fetch_firms_active_fire`` (NASA VIIRS/MODIS thermal anomalies).
-      - Fire perimeter polygons — use ``fetch_nifc_fire_perimeters`` (NIFC
-        current perimeters) or ``fetch_mtbs_burn_severity`` (historical).
-      - Locations outside the western/southern US fire belt — RAWS coverage
-        is sparse east of the Mississippi and non-existent outside the US.
-        Use ``fetch_asos_metar`` or ``fetch_era5_reanalysis`` instead.
+    Do NOT use this for:
+    - Airport / general surface weather -- use fetch_asos_metar (ASOS/METAR).
+    - Gridded fire-weather (ERC, BI, fuel moisture) or reanalysis -- use
+      fetch_gridmet (CONUS daily 4 km) or fetch_era5_reanalysis (global).
+    - Active-fire detections / FRP -- fetch_firms_active_fire. Fire perimeters
+      -- fetch_nifc_fire_perimeters or fetch_mtbs_burn_severity.
+    - Areas east of the Mississippi or outside the US (sparse / no RAWS) -- use
+      fetch_asos_metar or fetch_era5_reanalysis.
+
+    Honesty: keyless; raises a typed RAWSWeatherEmptyError when no RAWS station
+    falls in the bbox/window -- never a fabricated point.
+    Returns a vector LayerURI that auto-renders (inline GeoJSON) -- do NOT call
+    publish_layer.
 
     **Parameters:**
 
@@ -746,7 +735,7 @@ def fetch_raws_weather(
             Example for the Caldor Fire area (Sierra Nevada, CA):
             ``(-121.0, 38.5, -119.5, 39.5)``.
         start_time: Start date as ISO-8601 string (``"YYYY-MM-DD"`` or
-            ``"YYYY-MM-DDTHH:MM:SSZ"`` — time component is ignored; the tool
+            ``"YYYY-MM-DDTHH:MM:SSZ"`` -- time component is ignored; the tool
             requests full calendar days). Defaults to 1 day before ``end_time``
             (or 1 day before today when both are omitted). RAWS data at IEM
             extends back to the early 2000s for most western US stations.
@@ -758,19 +747,19 @@ def fetch_raws_weather(
     **Returns:**
 
         ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/raws_weather/<key>.fgb``
+        ``s3://<cache-bucket>/cache/dynamic-1h/raws_weather/<key>.fgb``
         - ``layer_type="vector"``, ``role="context"``, ``units="mixed"``
-          (temperature in °F, wind in knots, RH in %, solar in W/m²,
-          precip in inches — standard RAWS/NFDRS units).
+          (temperature in deg F, wind in knots, RH in %, solar in W/m2,
+          precip in inches -- standard RAWS/NFDRS units).
         - Geometry: Point at each RAWS station's coordinates, EPSG:4326.
         - Properties per observation: ``station`` (NWSLI/IEM ID),
           ``station_name``, ``state``, ``utc_valid`` (ISO-8601),
-          ``lon``, ``lat``, ``elevation`` (m), ``tmpf`` (°F), ``dwpf`` (°F),
-          ``relh`` (RH %), ``sknt`` (wind speed kt), ``drct`` (wind dir °),
-          ``gust`` (wind resultant kt), ``solar_rad`` (W/m²),
+          ``lon``, ``lat``, ``elevation`` (m), ``tmpf`` (deg F), ``dwpf`` (deg F),
+          ``relh`` (RH %), ``sknt`` (wind speed kt), ``drct`` (wind dir deg),
+          ``gust`` (wind resultant kt), ``solar_rad`` (W/m2),
           ``precip_in`` (in). Missing values are ``null``.
 
-    Cache: ``dynamic-1h`` — identical ``(bbox-4dp, start_date, end_date)``
+    Cache: ``dynamic-1h`` -- identical ``(bbox-4dp, start_date, end_date)``
     calls within the same UTC hour reuse the cached FlatGeobuf.
 
     **Cross-tool dependencies:**
@@ -781,7 +770,7 @@ def fetch_raws_weather(
           (co-overlay thermal anomalies + RAWS obs).
         - Feeds INTO: ``aggregate_claims_across_sources`` (wind/RH claims for
           FR-HEP wildfire event consensus), fire-weather index computation
-          (NFDRS/FWI pipeline — future tool).
+          (NFDRS/FWI pipeline -- future tool).
         - Complements: ``fetch_asos_metar`` (airport weather, no fire-weather
           specialization), ``fetch_gridmet`` (gridded daily fire-weather),
           ``fetch_landfire_fuels`` (fuel moisture context).
@@ -798,7 +787,7 @@ def fetch_raws_weather(
     Source-tier: FR-HEP-2 Tier 1 (federal/state fire-agency stations archived
     by IEM; RAWS operated under FAMWEB/WIMS by USFS/BLM/NPS).
 
-    supports_global_query=False — IEM RAWS archive covers US + territories
+    supports_global_query=False -- IEM RAWS archive covers US + territories
     only; coverage is concentrated in the western US fire belt.
     """
     # 1. Validate and normalize inputs.
