@@ -45,10 +45,13 @@ honestly tell the user the area has no mapped active faults (then fall back to
 the synthetic area source if a hazard run is still wanted). The only hard error
 is a malformed bbox (caller bug) or a genuine upstream failure with no cache.
 
-**Output**: a plain ``dict`` (NOT a ``LayerURI``) -- this is a SOURCE-MODEL
-feeder for the OpenQuake deck builder, not a map layer. The agent passes the
-``faults`` list straight to ``render_fault_source_model_xml`` in the worker's
-``job_ini``. Shape::
+**Output**: on a NON-empty fetch a ``FaultSourcesResult`` -- a vector
+``LayerURI`` (task #207) that AUTO-RENDERS the fault traces on the map (red/
+orange lines) AND carries the SOURCE-MODEL records the OpenQuake deck builder
+consumes; the agent passes its ``faults`` list straight to
+``render_fault_source_model_xml`` in the worker's ``job_ini``. On an EMPTY fetch
+a plain ``dict`` with no layer (honesty gate). The records shape (the LayerURI's
+``faults`` field / the dict's ``faults`` key)::
 
     {
       "catalog": "gem",
@@ -86,6 +89,7 @@ from typing import Any
 
 import httpx
 
+from grace2_contracts.execution import LayerURI, LegendClass, LegendKey
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
@@ -93,13 +97,16 @@ from .cache import read_through
 
 __all__ = [
     "fetch_fault_sources",
+    "FaultSourcesResult",
     "estimate_payload_mb",
     "FaultSourcesError",
     "FaultSourcesInputError",
     "FaultSourcesUpstreamError",
     "GEM_GAF_URL",
+    "FAULT_LINE_STYLE_PRESET",
     "first_num",
     "trace_coords",
+    "faults_to_feature_collection",
     "_trace_hits_bbox",
     "_parse_fault_feature",
     "_filter_faults_to_bbox",
@@ -162,6 +169,55 @@ _HTTP_TIMEOUT = 120.0
 
 #: Supported source catalogs (only GEM today; kept open for future catalogs).
 _VALID_CATALOGS = ("gem",)
+
+#: Provenance label, mirrored on both the dict and LayerURI return shapes.
+_SOURCE_LABEL = "GEM Global Active Faults (harmonized)"
+
+#: Style-preset label for the surfaced fault-trace vector. Semantic name (kept
+#: in lockstep with ``model_seismic_hazard_scenario.FAULT_LINE_STYLE_PRESET``):
+#: the web renders an unknown LINE preset in its geometry-family colour so the
+#: traces draw as a distinct line. NATE: faults read as red/orange lines.
+FAULT_LINE_STYLE_PRESET = "fault_line"
+
+
+# ---------------------------------------------------------------------------
+# Result type -- a renderable fault-trace ``LayerURI`` that ALSO carries the
+# source-model records (task #207 auto-publish fix).
+#
+# Before this, ``fetch_fault_sources`` returned a bare ``dict``, so the
+# ``emit_tool_call`` ``add_loaded_layer`` gate -- which fires only on an
+# ``isinstance(result, LayerURI)`` return -- never surfaced the fetched fault
+# lines. The model then HALLUCINATED "the fault traces are now displayed" with
+# nothing on the map. ``FaultSourcesResult`` subclasses ``LayerURI`` (mirrors
+# ``fetch_topobathy.TopobathyResult``): the gate auto-renders the fault traces
+# as a vector line layer, while the OpenQuake deck builder + the in-process
+# ``resolve_fault_sources`` consumer still read the kinematic records off the
+# extra fields. The HONESTY GATE is preserved upstream: a zero-fault AOI returns
+# the plain empty dict (NOT this type), so no layer is ever fabricated.
+# ---------------------------------------------------------------------------
+
+
+class FaultSourcesResult(LayerURI):
+    """A fault-trace vector ``LayerURI`` carrying the GEM source-model records.
+
+    Extra fields beyond ``LayerURI``:
+
+    - ``catalog`` -- the source catalog ("gem").
+    - ``fault_count`` -- number of fault-source records (== ``len(faults)``).
+    - ``faults`` -- the kinematic source records (geometry trace + slip rate +
+      dip / rake / seismogenic-depth band) the OpenQuake deck builder turns into
+      ``simpleFaultSource`` sources. This is the SAME list the legacy dict shape
+      carried under ``faults``.
+    - ``source`` -- provenance string.
+    - ``note`` -- always ``None`` on this (non-empty, rendered) path; the empty
+      AOI degrade returns a plain dict with a populated ``note`` instead.
+    """
+
+    catalog: str = "gem"
+    fault_count: int = 0
+    faults: list[dict[str, Any]] = []
+    source: str = _SOURCE_LABEL
+    note: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +408,58 @@ def _filter_faults_to_bbox(
 
 
 # ---------------------------------------------------------------------------
+# Fault records -> renderable GeoJSON FeatureCollection (auto-publish path).
+# ---------------------------------------------------------------------------
+
+
+def faults_to_feature_collection(
+    faults: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Serialize fault-source records to a GeoJSON ``FeatureCollection``.
+
+    One ``LineString`` ``Feature`` per fault (``coordinates`` = the record's
+    ``[[lon, lat], ...]`` trace), carrying the click-inspect ``properties``
+    ``name`` / ``net_slip_rate_mm_yr`` / ``dip_deg`` / ``rake_deg`` /
+    ``upper_seis_depth_km`` / ``lower_seis_depth_km`` / ``slip_type`` (plus
+    ``catalog_name`` when present). Records whose trace has fewer than 2 vertices
+    are SKIPPED (a degenerate trace is not a drawable line) -- this mirrors the
+    fetcher's own >=2-distinct-vertex gate, so in practice every fetched record
+    yields a feature.
+
+    Pure dict work (no I/O, no reproject -- the traces are already EPSG:4326
+    lon/lat). Returns a valid (possibly empty) FeatureCollection.
+    """
+    features: list[dict[str, Any]] = []
+    for rec in faults or []:
+        coords = rec.get("geometry") or []
+        line: list[list[float]] = []
+        for p in coords:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                line.append([float(p[0]), float(p[1])])
+        if len(line) < 2:
+            continue
+        props: dict[str, Any] = {
+            "name": str(rec.get("name") or "fault"),
+            "net_slip_rate_mm_yr": rec.get("net_slip_rate_mm_yr"),
+            "dip_deg": rec.get("dip_deg"),
+            "rake_deg": rec.get("rake_deg"),
+            "upper_seis_depth_km": rec.get("upper_seis_depth_km"),
+            "lower_seis_depth_km": rec.get("lower_seis_depth_km"),
+            "slip_type": rec.get("slip_type"),
+        }
+        if rec.get("catalog_name"):
+            props["catalog_name"] = str(rec.get("catalog_name"))
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": line},
+                "properties": props,
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+# ---------------------------------------------------------------------------
 # Upstream fetch (miss-path fetcher passed to read_through).
 # ---------------------------------------------------------------------------
 
@@ -438,18 +546,25 @@ def fetch_fault_sources(
             supported today.
 
     Returns:
-        A ``dict`` (NOT a map ``LayerURI``) with a ``faults`` list of source
-        records ``{name, geometry (lon/lat trace), net_slip_rate_mm_yr, dip_deg,
-        rake_deg, upper_seis_depth_km, lower_seis_depth_km, slip_type,
-        catalog_name}``, plus ``catalog``, ``bbox``, ``fault_count``, ``source``,
-        and an optional ``note``. Pass ``faults`` straight to the worker's
+        On a NON-empty fetch: a ``FaultSourcesResult`` -- a renderable vector
+        ``LayerURI`` (the fault traces AUTO-RENDER on the map as red/orange lines;
+        do NOT call ``publish_layer`` on it) that ALSO carries the source-model
+        records on its ``faults`` field (each ``{name, geometry (lon/lat trace),
+        net_slip_rate_mm_yr, dip_deg, rake_deg, upper_seis_depth_km,
+        lower_seis_depth_km, slip_type, catalog_name}``), plus ``catalog``,
+        ``fault_count``, and ``source``. Pass ``.faults`` straight to the worker's
         ``render_fault_source_model_xml``.
+
+        On an EMPTY fetch: a plain ``dict`` with ``fault_count=0``, an empty
+        ``faults`` list, and a typed ``note`` -- and NO layer (see below).
 
     Honest degrade (data-source fallback norm):
         An AOI with NO mapped active faults returns an EMPTY ``faults`` list and
-        a typed ``note`` -- it is NOT an error and the tool NEVER fabricates a
-        fault. The caller can honestly report "no mapped active faults here"
-        (and fall back to the synthetic area source if a run is still wanted).
+        a typed ``note`` -- it is NOT an error, the tool NEVER fabricates a fault,
+        and (the honesty gate) NO map layer is produced, so a "fault lines
+        displayed" claim is never grounded when nothing was drawn. The caller can
+        honestly report "no mapped active faults here" (and fall back to the
+        synthetic area source if a run is still wanted).
 
     Raises:
         FaultSourcesInputError: malformed bbox or unknown catalog (caller bug).
@@ -487,7 +602,9 @@ def fetch_fault_sources(
 
     faults = _filter_faults_to_bbox(features, q_bbox)
 
-    note: str | None = None
+    # HONESTY GATE: a zero-fault AOI is NOT an error and is NEVER given a layer
+    # (the hallucination fix -- the model can only claim "displayed" when a real
+    # LayerURI grounds the narration). Return the plain empty dict + typed note.
     if not faults:
         note = (
             "No GEM active faults intersect this AOI. The area has no mapped "
@@ -497,23 +614,96 @@ def fetch_fault_sources(
         )
         logger.info(
             "fetch_fault_sources: no active faults in AOI bbox=%s (honest "
-            "empty degrade)",
+            "empty degrade -- no layer)",
             list(q_bbox),
         )
-    else:
-        logger.info(
-            "fetch_fault_sources: %d active fault(s) in AOI bbox=%s (cache "
-            "hit=%s)",
+        return {
+            "catalog": cat,
+            "bbox": list(q_bbox),
+            "fault_count": 0,
+            "faults": [],
+            "note": note,
+            "source": _SOURCE_LABEL,
+        }
+
+    # Non-empty: serialize the fault traces to a GeoJSON FeatureCollection,
+    # persist it through the SAME cache read-through the sibling geometry
+    # fetchers use (fetch_roads_osm / fetch_administrative_boundaries), and
+    # return a vector ``LayerURI`` so the ``emit_tool_call`` ``add_loaded_layer``
+    # gate AUTO-RENDERS the fault lines (no separate publish_layer step). The
+    # cache key is the AOI vector params (distinct from the global-file params
+    # above), so this is a second, AOI-scoped cache entry.
+    fc = faults_to_feature_collection(faults)
+    n_features = len(fc.get("features") or [])
+    if n_features <= 0:
+        # Defensive: every fetched record has >=2 distinct vertices, so this is
+        # unreachable in practice. If it ever fires, degrade honestly to data-
+        # only (no fabricated layer) rather than emit an empty vector.
+        logger.warning(
+            "fetch_fault_sources: %d fault(s) yielded no drawable trace for "
+            "bbox=%s; returning data-only (no layer)",
             len(faults),
             list(q_bbox),
-            result.hit,
         )
+        return {
+            "catalog": cat,
+            "bbox": list(q_bbox),
+            "fault_count": len(faults),
+            "faults": faults,
+            "note": None,
+            "source": _SOURCE_LABEL,
+        }
 
-    return {
-        "catalog": cat,
+    fc_bytes = json.dumps(fc).encode("utf-8")
+    vector_params = {
+        "vector": "fault_traces",
         "bbox": list(q_bbox),
-        "fault_count": len(faults),
-        "faults": faults,
-        "note": note,
-        "source": "GEM Global Active Faults (harmonized)",
+        "catalog": cat,
     }
+    vector = read_through(
+        metadata=_METADATA,
+        params=vector_params,
+        ext="geojson",
+        fetch_fn=lambda: fc_bytes,
+    )
+    assert vector.uri is not None, (
+        "fetch_fault_sources is cacheable; the vector uri must be set"
+    )
+
+    logger.info(
+        "fetch_fault_sources: %d active fault(s) -> %d trace feature(s) in AOI "
+        "bbox=%s (gaf cache hit=%s, vector uri=%s)",
+        len(faults),
+        n_features,
+        list(q_bbox),
+        result.hit,
+        vector.uri,
+    )
+
+    plural = "trace" if n_features == 1 else "traces"
+    return FaultSourcesResult(
+        layer_id=f"fault-sources-{q_bbox[0]:.4f}-{q_bbox[1]:.4f}",
+        name=f"Active fault {plural} ({n_features})",
+        layer_type="vector",
+        uri=vector.uri,
+        style_preset=FAULT_LINE_STYLE_PRESET,
+        role="context",
+        units=None,
+        bbox=q_bbox,
+        legend=LegendKey(
+            kind="categorical",
+            classes=[
+                LegendClass(
+                    value="fault",
+                    color="#FF6A00",
+                    label="Active fault trace",
+                )
+            ],
+            label="Active faults (GEM)",
+        ),
+        catalog=cat,
+        fault_count=len(faults),
+        faults=faults,
+        source=_SOURCE_LABEL,
+        note=None,
+    )

@@ -261,7 +261,15 @@ def resolve_fault_sources(
     # what the engine runs. (We do NOT import the worker's job_ini agent-side: it
     # is not in the agent bundle, and an ImportError would wrongly force the
     # synthetic fallback on the deployed agent.)
-    faults = list(result.get("faults") or [])
+    # task #207: ``fetch_fault_sources`` now returns a ``FaultSourcesResult``
+    # (a renderable ``LayerURI`` subclass) on a NON-empty fetch and a plain dict
+    # on the empty degrade -- read the records + note off EITHER shape.
+    if isinstance(result, dict):
+        faults = list(result.get("faults") or [])
+        fetch_note = result.get("note")
+    else:
+        faults = list(getattr(result, "faults", None) or [])
+        fetch_note = getattr(result, "note", None)
     if faults:
         names = ", ".join(
             str(f.get("name") or "fault") for f in faults[:4]
@@ -274,8 +282,8 @@ def resolve_fault_sources(
         )
         return faults, note
 
-    # Empty AOI -> honest synthetic fallback. Surface the fetcher's typed note.
-    fetch_note = result.get("note")
+    # Empty AOI -> honest synthetic fallback. Surface the fetcher's typed note
+    # (read off either shape above).
     note = (
         str(fetch_note)
         if fetch_note

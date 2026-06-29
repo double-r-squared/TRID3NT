@@ -14,11 +14,49 @@ import pytest
 
 from grace2_agent.tool_arg_normalizer import (
     LatLonCoercionError,
+    coerce_bbox_value,
     coerce_latlon,
     normalize_args,
     parse_forcing_string,
     snake_case,
 )
+
+
+# --------------------------------------------------------------------------- #
+# coerce_bbox_value — a bbox double-encoded as a JSON string arrives with
+# LITERAL surrounding quote chars (observed live: fetch_fault_sources' first
+# call failed with `"\"-122.5,37.5,-121.5,38.5\""` -> "bbox must be [min_lon...]").
+# The coercer must peel the wrapping quotes before parsing.
+# --------------------------------------------------------------------------- #
+
+
+def test_coerce_bbox_value_strips_wrapping_double_quotes() -> None:
+    assert coerce_bbox_value('"-122.5,37.5,-121.5,38.5"') == [
+        -122.5,
+        37.5,
+        -121.5,
+        38.5,
+    ]
+
+
+def test_coerce_bbox_value_strips_quotes_then_brackets() -> None:
+    assert coerce_bbox_value("'[-122.5, 37.5, -121.5, 38.5]'") == [
+        -122.5,
+        37.5,
+        -121.5,
+        38.5,
+    ]
+
+
+def test_coerce_bbox_value_plain_forms_unaffected() -> None:
+    assert coerce_bbox_value("-122.5,37.5,-121.5,38.5") == [
+        -122.5,
+        37.5,
+        -121.5,
+        38.5,
+    ]
+    assert coerce_bbox_value([1, 2, 3, 4]) == [1.0, 2.0, 3.0, 4.0]
+    assert coerce_bbox_value("garbage") is None
 
 
 # --------------------------------------------------------------------------- #

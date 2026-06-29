@@ -17,9 +17,14 @@ import json
 
 import pytest
 
+from grace2_contracts.execution import LayerURI
+
 from grace2_agent.tools import fetch_fault_sources as ffs
 from grace2_agent.tools.fetch_fault_sources import (
+    FAULT_LINE_STYLE_PRESET,
     FaultSourcesInputError,
+    FaultSourcesResult,
+    faults_to_feature_collection,
     fetch_fault_sources,
     first_num,
     trace_coords,
@@ -199,16 +204,20 @@ def test_trace_coords_handles_linestring_and_multilinestring():
 # ===========================================================================
 def test_fetch_fault_sources_parses_and_filters(_patch_upstream):
     out = fetch_fault_sources(_SF_BBOX)
-    assert out["catalog"] == "gem"
-    assert out["bbox"] == _SF_BBOX
+    # task #207: a non-empty fetch now returns a renderable LayerURI subclass
+    # (the emit_tool_call add_loaded_layer gate fires) that ALSO carries the
+    # kinematic source records on its .faults field.
+    assert isinstance(out, FaultSourcesResult)
+    assert isinstance(out, LayerURI)
+    assert out.catalog == "gem"
     # Only the 2 in-AOI, slip>0, >=2-point faults survive (San Andreas + Diablo);
     # zero-slip, one-point, and far-away are all dropped.
-    assert out["fault_count"] == 2
-    names = {f["name"] for f in out["faults"]}
+    assert out.fault_count == 2
+    names = {f["name"] for f in out.faults}
     assert names == {"San Andreas (Peninsula)", "Mount Diablo Thrust"}
-    assert out["note"] is None
+    assert out.note is None
 
-    sa = next(f for f in out["faults"] if f["name"].startswith("San Andreas"))
+    sa = next(f for f in out.faults if f["name"].startswith("San Andreas"))
     # Best-estimate '(best,min,max)' parse.
     assert sa["net_slip_rate_mm_yr"] == pytest.approx(17.0)
     assert sa["dip_deg"] == pytest.approx(90.0)
@@ -221,10 +230,51 @@ def test_fetch_fault_sources_parses_and_filters(_patch_upstream):
     assert sa["geometry"][0] == [-122.50, 37.50]
     assert len(sa["geometry"]) == 3
 
-    diablo = next(f for f in out["faults"] if f["name"] == "Mount Diablo Thrust")
+    diablo = next(f for f in out.faults if f["name"] == "Mount Diablo Thrust")
     # MultiLineString flattened to a single ordered trace.
     assert len(diablo["geometry"]) == 4
     assert diablo["dip_deg"] == pytest.approx(38.0)
+
+
+# ===========================================================================
+# task #207: the non-empty fetch AUTO-RENDERS the fault traces as a vector
+# layer -- the LayerURI return is what the emit_tool_call gate auto-loads, and
+# what grounds the narration (the hallucination fix).
+# ===========================================================================
+def test_fetch_fault_sources_returns_renderable_vector_layer(_patch_upstream):
+    out = fetch_fault_sources(_SF_BBOX)
+    # A LayerURI return is the ONLY thing the add_loaded_layer gate honours.
+    assert isinstance(out, LayerURI)
+    assert out.layer_type == "vector"
+    assert out.style_preset == FAULT_LINE_STYLE_PRESET
+    assert out.role == "context"
+    # A renderable, content-addressed uri (the in-memory injector mints s3://).
+    assert out.uri and out.uri.startswith("s3://")
+    assert out.uri.endswith(".geojson")
+    # bbox set so the map zooms to the fault traces.
+    assert out.bbox == tuple(_SF_BBOX)
+    # Categorical fault-line legend swatch.
+    assert out.legend is not None
+    assert out.legend.kind == "categorical"
+    assert out.name == "Active fault traces (2)"
+
+
+def test_faults_to_feature_collection_shape(_patch_upstream):
+    out = fetch_fault_sources(_SF_BBOX)
+    fc = faults_to_feature_collection(out.faults)
+    assert fc["type"] == "FeatureCollection"
+    # One LineString feature per fault, coordinates = the fault trace.
+    assert len(fc["features"]) == 2
+    for feat in fc["features"]:
+        assert feat["type"] == "Feature"
+        assert feat["geometry"]["type"] == "LineString"
+        assert len(feat["geometry"]["coordinates"]) >= 2
+        assert "name" in feat["properties"]
+        assert "net_slip_rate_mm_yr" in feat["properties"]
+    # A degenerate (<2-vertex) trace is skipped -- never a fabricated line.
+    assert faults_to_feature_collection(
+        [{"name": "stub", "geometry": [[-122.5, 37.5]]}]
+    )["features"] == []
 
 
 # ===========================================================================

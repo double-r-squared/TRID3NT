@@ -534,6 +534,15 @@ def coerce_bbox_value(value: Any) -> list[float] | None:
     if not isinstance(value, str):
         return None
     s = value.strip()
+    # Strip surrounding quote characters first: a bbox double-encoded as a JSON
+    # string arrives with LITERAL quote chars, e.g. ``'"-122.5,37.5,-121.5,38.5"'``
+    # (observed live -- the first call failed with "bbox must be [min_lon,...]").
+    # Peel up to two matching quote layers so '"\'...\'"' also normalizes.
+    for _ in range(2):
+        if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+            s = s[1:-1].strip()
+        else:
+            break
     # Strip one layer of surrounding brackets/parens, then split on commas
     # and/or whitespace. ``re.split`` on ``[,\s]+`` handles "a,b,c,d",
     # "a, b, c, d", and "a b c d" uniformly.
