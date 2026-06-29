@@ -140,12 +140,17 @@ resource "aws_ecs_task_definition" "agent" {
         { name = "GRACE2_AWS_REGION", value = var.region },
         { name = "AWS_REGION", value = var.region },
         { name = "GRACE2_PERSISTENCE_BACKEND", value = "dynamodb" },
-        { name = "GRACE2_DYNAMO_TABLE_PREFIX", value = "grace2_" },
+        { name = "GRACE2_DYNAMO_TABLE_PREFIX", value = "trid3nt_" },
         { name = "GRACE2_STORAGE_BACKEND", value = "s3" },
         { name = "GRACE2_CACHE_BUCKET", value = var.cache_bucket },
         { name = "GRACE2_RUNS_BUCKET", value = var.runs_bucket },
         { name = "GRACE2_COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
         { name = "GRACE2_COGNITO_CLIENT_ID", value = var.cognito_client_id },
+        # Match the live box: enforce auth + arm the sync-tool offload so the
+        # isolated agent never blocks its own loop. (QGIS-on-box gate defaults
+        # off, which is correct -- Fargate cannot docker-run QGIS anyway.)
+        { name = "AUTH_REQUIRED", value = "true" },
+        { name = "GRACE2_SYNC_TOOL_OFFLOAD", value = "on" },
       ]
 
       logConfiguration = {
