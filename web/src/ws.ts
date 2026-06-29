@@ -454,16 +454,27 @@ const ANONYMOUS_USER_ID_KEY = "grace2.anonymous_user_id";
  * so the broker's pre-upgrade routing key and the agent's post-upgrade session
  * binding agree.
  */
-function withSessionQueryParam(url: string, sessionId: string): string {
-  if (!sessionId) return url;
+function withSessionQueryParam(
+  url: string,
+  sessionId: string,
+  idToken?: string | null,
+): string {
+  if (!sessionId && !idToken) return url;
   // Preserve any pre-existing query string / fragment. URLs today never carry
   // one (ws://host:8765, wss://base/ws), but append robustly so a future URL
-  // shape can't silently drop the sid.
+  // shape can't silently drop the sid / st.
   const hashIdx = url.indexOf("#");
   const base = hashIdx === -1 ? url : url.slice(0, hashIdx);
   const frag = hashIdx === -1 ? "" : url.slice(hashIdx);
+  const parts: string[] = [];
+  if (sessionId) parts.push(`sid=${encodeURIComponent(sessionId)}`);
+  // `?st=<idToken>` — the pre-upgrade auth carrier (see openSocket). URL-encode
+  // it: a JWT is already URL-safe but encoding is defensive against any future
+  // token shape. The broker reads `qs["st"][0]` (parse_qs URL-decodes for us).
+  if (idToken) parts.push(`st=${encodeURIComponent(idToken)}`);
+  if (parts.length === 0) return `${base}${frag}`;
   const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}sid=${encodeURIComponent(sessionId)}${frag}`;
+  return `${base}${sep}${parts.join("&")}${frag}`;
 }
 
 /**
@@ -476,42 +487,30 @@ function withSessionQueryParam(url: string, sessionId: string): string {
  * itself, alongside the `?sid` routing key already appended by
  * {@link withSessionQueryParam}.
  *
- * Carrier = the WebSocket SUBPROTOCOL (`Sec-WebSocket-Protocol`), NOT a `?st=`
- * query param: a token in the URL query string is logged verbatim in ALB / proxy
- * access logs, whereas a subprotocol header is not. The broker
- * (`infra/aws-agent-isolation/broker/app.py` `_extract_identity`) reads the
- * token from a subprotocol of the form `base64UrlBearerAuthorization.<token>` —
- * it takes everything after the FIRST `.` as the token (`proto.split(".", 1)[1]`)
- * so the JWT's own dots are preserved — the same `base64UrlBearerAuthorization`
- * convention AppSync / API-Gateway use. We carry the RAW Cognito ID JWT after the
- * prefix: a JWT is base64url segments joined by `.`, every character of which is
- * a valid RFC-7230 subprotocol `token` char, so no extra encoding is needed (and
- * the broker does not decode).
+ * Carrier = the `?st=<idToken>` QUERY PARAM, NOT the WebSocket SUBPROTOCOL
+ * (`Sec-WebSocket-Protocol`). A ~1KB Cognito JWT in the subprotocol header is
+ * CHROME-INCOMPATIBLE: Chromium rejects/drops the oversize `Sec-WebSocket-Protocol`
+ * value, so the browser WS through the broker dies ~90ms after open and
+ * reconnect-storms (PROVEN live 2026-06-29; broker `app.py:23` + the Python
+ * canary, which worked ONLY because it used `?st`). The broker
+ * (`infra/aws-agent-isolation/broker/app.py` `_extract_identity`) reads the token
+ * from EITHER `?st=<token>` (query) or the `base64UrlBearerAuthorization.<token>`
+ * subprotocol; the query path is the one browsers honour, so that is what we dial.
  *
- * NON-BREAKING on the CURRENT single box: the agent's `serve(...)` configures NO
- * `subprotocols=`, so the `websockets` server selects none and returns NO
- * `Sec-WebSocket-Protocol` response header; per RFC 6455 the browser then opens
- * the connection normally with `ws.protocol === ""`. An unknown offered
- * subprotocol is simply ignored — purely additive. When there is no token
- * (anonymous / signed-out / Cognito disabled) we offer NO subprotocol at all, so
- * the `new WebSocket(url)` call is byte-identical to the pre-change construct.
+ * TRADE-OFF: `?st` lands the token in CloudFront / ALB access logs (the
+ * subprotocol header would not be). That is the ACCEPTED cost of browser
+ * compatibility — the token is short-lived and the connection is TLS-protected
+ * (wss), and the subprotocol carrier is Chrome-incompatible for a JWT-length
+ * value, so it is not a usable alternative for the browser.
+ *
+ * NON-BREAKING on the CURRENT single box: the agent's WebSocket handler never
+ * inspects the request query string, so an unknown `?st` (like the existing
+ * `?sid`) is simply ignored and the connection behaves identically; the box
+ * reads its token from the in-band `auth-token` message. No subprotocol is
+ * offered at all, so the `new WebSocket(url)` construct is byte-identical to the
+ * pre-change call. When there is no token (anonymous / signed-out / Cognito
+ * disabled) no `&st=` is appended, so only the pre-existing `?sid` rides.
  */
-const BEARER_SUBPROTOCOL_PREFIX = "base64UrlBearerAuthorization.";
-// RFC-7230 `tchar` set. The browser `WebSocket` constructor throws a SyntaxError
-// for a subprotocol value with any non-token char; a well-formed base64url JWT
-// (`[A-Za-z0-9_-]` segments joined by `.`) always passes.
-const SUBPROTOCOL_TCHAR_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
-
-function bearerSubprotocols(idToken: string | null): string[] {
-  if (!idToken) return [];
-  const proto = `${BEARER_SUBPROTOCOL_PREFIX}${idToken}`;
-  // Defensive: degrade a malformed token to "no carrier" rather than letting the
-  // constructor throw (the broker still falls back / the in-band handshake still
-  // authenticates). A real Cognito ID JWT always passes this guard.
-  if (!SUBPROTOCOL_TCHAR_RE.test(proto)) return [];
-  return [proto];
-}
-
 function loadOrCreateSessionId(): string {
   try {
     const cached = window.localStorage.getItem(SESSION_KEY);
@@ -1451,13 +1450,16 @@ export class GraceWs {
   private openSocket(initialStatus: ConnectionStatus): void {
     this.handlers.onStatus(initialStatus);
     // Per-user-agent-isolation — carry the Cognito ID token to the FUTURE broker
-    // on the WS subprotocol so it can verify auth PRE-UPGRADE (see
-    // bearerSubprotocols). Re-read FRESH on every (re)connect from the SAME token
-    // cache the in-band `auth-token` handshake uses — a SYNCHRONOUS read so the
-    // socket construction (and the reconnect/keepalive timers it owns) stay
-    // synchronous. No token (anonymous / signed-out / disabled) => no subprotocol
-    // => byte-identical construct. The async `auth-token` + `session-resume`
-    // handshake below is UNCHANGED.
+    // on the `?st=` QUERY PARAM so it can verify auth PRE-UPGRADE (see the
+    // withSessionQueryParam doc-block: the subprotocol carrier is Chrome-
+    // incompatible for a JWT-length value — Chromium drops the oversize
+    // `Sec-WebSocket-Protocol` header and the WS dies ~90ms after open). Re-read
+    // FRESH on every (re)connect from the SAME token cache the in-band
+    // `auth-token` handshake uses — a SYNCHRONOUS read so the socket construction
+    // (and the reconnect/keepalive timers it owns) stay synchronous, and so a
+    // refreshed token is carried on reconnect. No token (anonymous / signed-out /
+    // disabled) => no `&st=` => only `?sid` rides. The async `auth-token` +
+    // `session-resume` handshake below is UNCHANGED.
     let dialToken: string | null = null;
     try {
       const syncGetter = this.handlers.idTokenSyncGetter ?? getIdTokenSync;
@@ -1465,20 +1467,21 @@ export class GraceWs {
     } catch {
       dialToken = null;
     }
-    const subprotocols = bearerSubprotocols(dialToken);
     let ws: WebSocket;
     try {
       // Carry the stable per-session id as `?sid=` so the future broker can route
       // this connection to its own per-session Fargate task at upgrade time, and
-      // (additively) the id token as the `base64UrlBearerAuthorization.<token>`
-      // subprotocol so the broker can verify auth at the same pre-upgrade point.
-      // Purely additive: the current single box ignores BOTH the unknown query
-      // param and the unknown subprotocol.
-      const dialUrl = withSessionQueryParam(this.url, this.sessionId);
-      ws =
-        subprotocols.length > 0
-          ? new WebSocket(dialUrl, subprotocols)
-          : new WebSocket(dialUrl);
+      // (additively) the id token as `?st=` so the broker can verify auth at the
+      // same pre-upgrade point. NO subprotocol is offered — the oversize
+      // subprotocol header is exactly what Chromium drops. Purely additive: the
+      // current single box ignores BOTH unknown query params and reads its token
+      // from the in-band `auth-token` message.
+      const dialUrl = withSessionQueryParam(
+        this.url,
+        this.sessionId,
+        dialToken,
+      );
+      ws = new WebSocket(dialUrl);
     } catch {
       this.scheduleReconnect();
       return;
