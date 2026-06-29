@@ -1,8 +1,7 @@
 """``fetch_census_acs`` atomic tool -- US Census ACS 5-year demographics as a
 census-tract choropleth FlatGeobuf.
 
-Generalizes the population-only fetchers (``fetch_hrsl_population`` /
-``fetch_worldpop``) to **arbitrary American Community Survey (ACS) 5-year
+Generalizes the population-only fetchers (``fetch_hrsl_population``) to **arbitrary American Community Survey (ACS) 5-year
 demographics** -- median income, age, home value, poverty rate, renter share,
 no-vehicle share, ... -- joined to authoritative U.S. census-tract geometry and
 returned as a FlatGeobuf choropleth clipped to a bbox. This is the canonical
@@ -67,8 +66,7 @@ choropleth ``value``).
 **When NOT to use:**
 - For pre-composited social-vulnerability *percentile rankings* -> use
   ``fetch_cdc_svi`` (this tool returns raw estimates, not ranks).
-- For a gridded population *raster* -> use ``fetch_hrsl_population`` /
-  ``fetch_worldpop`` (this tool returns tract polygons, not a raster).
+- For a gridded population *raster* -> use ``fetch_hrsl_population`` (this tool returns tract polygons, not a raster).
 - For areas outside the United States -> ACS + tract geography is U.S.-only
   (50 states + DC + PR). An empty FGB is returned for non-U.S. bboxes.
 
@@ -818,7 +816,7 @@ def fetch_census_acs(
     Do NOT use this for: composited social-vulnerability PERCENTILE RANKS (use
     ``fetch_cdc_svi`` -- this returns raw estimates, not ranks); a gridded
     population RASTER (use ``fetch_hrsl_population`` / ``fetch_ghsl_population`` /
-    ``fetch_population`` / ``fetch_worldpop`` -- this returns tract POLYGONS +
+    ``fetch_population`` -- this returns tract POLYGONS +
     table fields, not a raster); areas outside the U.S. (ACS is US-only; an empty
     FGB is returned).
 

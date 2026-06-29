@@ -267,8 +267,8 @@ def qgis_process(
       ``describe_qgis_algorithm`` and no typed wrapper covers it.
 
     Do NOT use this for:
-    - a solver/model with a dedicated workflow (``run_sfincs_solver``,
-      ``run_pelicun_impact``, etc.) -- those go through their own dispatchers.
+    - a solver/model with a dedicated workflow (``run_model_flood_scenario``,
+      ``run_pelicun_damage_assessment``, etc.) -- those go through their own dispatchers.
     - render-only requests -- use publish_layer / the map-command path.
     - algorithm discovery -- use list_qgis_algorithms / describe_qgis_algorithm.
 
