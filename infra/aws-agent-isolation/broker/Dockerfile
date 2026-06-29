@@ -1,10 +1,9 @@
 # GRACE-2 session broker image -- the thin always-on connection broker.
 #
-# SCOPE: STEP-1 FOUNDATION SKELETON. The route-decision + cognito_verify reuse +
-# routing are concrete + unit-tested; the raw WS byte-proxy (proxy.py) is a
-# documented skeleton wired during the canary. So this Dockerfile is authored but
-# the runnable server entry (the websockets serve() loop + the /healthz HTTP) is
-# a TODO matched to proxy.py -- it is NOT a complete runtime image yet.
+# SCOPE: RUNNABLE. The route-decision + cognito_verify reuse + routing + the WS
+# byte-proxy (proxy.py) + the server entry (server.py: serve() loop + /healthz
+# HTTP) are all concrete + unit-tested. The image serves on :8080. What remains is
+# DEPLOY-stage only (the broker-builder CodeBuild project + the canary apply).
 #
 # ZERO-DRIFT COGNITO REUSE (load-bearing): the broker's cognito_verify.py imports
 # the agent's REAL ``grace2_agent.auth_handshake.cognito_verify`` when available,
@@ -44,11 +43,14 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --upgrade pip setuptools wheel
 
 # Install the agent package (zero-drift cognito source) + the broker's own runtime
-# deps (websockets for the WS proxy; boto3 comes via the agent package).
+# deps (websockets for the WS proxy; boto3 comes via the agent package). The
+# websockets pin MATCHES the agent (>=13,<16) -- the broker proxy + server use the
+# SAME ``websockets.asyncio`` API the agent serves on, so the frame surface is
+# identical and the agent-package install does not trigger a resolver conflict.
 COPY services/agent/pyproject.toml /build/services/agent/pyproject.toml
 COPY services/agent/README.md /build/services/agent/README.md
 COPY services/agent/src /build/services/agent/src
-RUN pip install --no-cache-dir /build/services/agent "websockets>=12,<13"
+RUN pip install --no-cache-dir /build/services/agent "websockets>=13,<16"
 
 RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
     && find /opt/venv -type f -name '*.pyc' -delete
@@ -79,12 +81,11 @@ RUN useradd --create-home --uid 10002 broker
 USER broker
 WORKDIR /home/broker
 
-# Broker port (ALB target). /healthz is the ALB target-group health check.
+# Broker port (ALB target). /healthz is the ALB target-group health check; every
+# other connection upgrades to WS and is proxied to the per-session agent task.
 EXPOSE 8080
 
-# ENTRYPOINT: TODO -- the server entry (websockets.serve(handle_connection, ...)
-# on :8080 + a /healthz HTTP) lands with the proxy.py plumbing during the canary.
-# Until then this image is buildable + the route-decision is importable/testable,
-# but it does not serve. Documented in broker/README.md.
-# ENTRYPOINT ["python", "-m", "broker.server"]
-CMD ["python", "-c", "print('grace2 session broker image -- server entry is a canary-stage TODO (see broker/proxy.py)')"]
+# The server entry: serve(handle_connection) on BROKER_PORT (default 8080) with a
+# GET /healthz HTTP short-circuit (broker/server.py). PYTHONPATH=/opt/grace2 makes
+# ``broker`` importable as a top-level package.
+ENTRYPOINT ["python", "-m", "broker.server"]

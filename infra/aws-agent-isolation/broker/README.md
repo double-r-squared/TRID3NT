@@ -24,17 +24,26 @@ CONCRETE + unit-tested (`tests/`):
   (the full identity -> ULID -> route gate), the per-(user,session) provisioning
   lock so a tab's two sockets converge on ONE task.
 
-SKELETON (documented TODO, wired during the canary -- the spike scopes the raw
-byte-proxy as a skeleton):
+CONCRETE + unit-tested (continued):
 
-- `proxy.py` -- `open_upstream` + `proxy_frames`. The contract (frame-faithful,
-  no broker idle timeout, ping/pong pass-through, close propagation,
-  backpressure) and an implementation sketch are in the module docstring; the
-  functions raise `NotImplementedError` so the wiring is real but the plumbing is
-  explicitly pending.
-- The server entry (`websockets.serve(handle_connection, ...)` on `:8080` +
-  `/healthz`) -- lands with the proxy plumbing. The `Dockerfile` ENTRYPOINT is a
-  commented TODO until then.
+- `proxy.py` -- `open_upstream` (the `websockets.asyncio` client dial to the task
+  with `ping_interval=None` / `max_size=None`) + `proxy_frames` (the duplex
+  byte-relay). Frame-faithful, no broker idle timeout, close-propagating (a
+  task-side drop surfaces to the client as a sendable close so ws.ts reconnects),
+  inherently backpressured (await-per-frame, no queue). Tested with duck-typed
+  fakes in `tests/test_proxy.py` (no live `websockets` needed).
+- `server.py` -- the runnable entry. `serve(handle_connection, "0.0.0.0",
+  BROKER_PORT)` with a `GET /healthz` HTTP short-circuit (ALB target-group +
+  container health check) and a `/api/health` busy-contract probe for the
+  provision readiness gate. `decide_route` (blocking boto3/sleep) is run OFF the
+  event loop via `asyncio.to_thread`. The `Dockerfile` ENTRYPOINT is
+  `python -m broker.server`.
+
+DEPLOY-STAGE ONLY (not testable here -- needs live ECS/ALB):
+
+- The broker-builder CodeBuild project (mirror `grace2-agent-builder`) + the
+  `broker_image` pin, the `tofu apply`, and the canary RunTask/health/route proof
+  (RUNBOOK steps 3-5).
 
 ## The flow (per new WSS connection)
 
@@ -45,7 +54,7 @@ client opens wss://.../ws  (token + session_id pre-upgrade: ?st=&sid= or subprot
   -> resolve_route(user_ulid, session_id)            (ConsistentRead routes)
        HIT  -> proxy to the existing task
        MISS -> provision_task -> wait :8766 health -> write route -> proxy
-  -> proxy_frames(client <-> task:8765)              (proxy.py, skeleton)
+  -> proxy_frames(client <-> task:8765)              (proxy.py)
 ```
 
 Both of a tab's dual sockets carry the SAME localStorage `session_id`, so the

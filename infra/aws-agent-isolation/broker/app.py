@@ -14,9 +14,8 @@ PER NEW WSS CONNECTION (the concrete flow -- routing.py does the heavy lifting):
      wait :8766 health + write route)             (routing.py)
   5. bidirectionally proxy the WSS frames task <-> client (proxy.py).
 
-The HTTP control flow + the route decision are CONCRETE here. The raw WS
-byte-proxy plumbing in proxy.py is a documented skeleton (the spike scopes it as
-"may be a documented skeleton/TODO").
+The HTTP control flow + the route decision are CONCRETE here, and the raw WS
+byte-proxy in proxy.py + the runnable server entry in server.py are complete.
 
 PRE-UPGRADE IDENTITY (the one net-new client-coupling -- spike section 9.2):
   Today the Cognito ID token + session_id ride IN-BAND as the post-connect
@@ -34,14 +33,15 @@ PRE-UPGRADE IDENTITY (the one net-new client-coupling -- spike section 9.2):
   SECOND, authoritative check inside the task -- the broker's verify is only for
   routing.
 
-This module sketches the server with the ``websockets`` library (the same library
-the agent uses) so the byte-proxy can reuse its frame APIs; the actual upgrade/
-serve wiring is a TODO in proxy.py. The route-decision functions here are fully
-unit-tested (tests/) with mocked AWS + a fake verifier.
+The server uses the ``websockets`` asyncio API (the same surface the agent serves
+on) so the byte-proxy reuses its frame APIs; the upgrade/serve wiring lives in
+server.py. The route-decision functions here are fully unit-tested (tests/) with
+mocked AWS + a fake verifier; the proxy is tested with duck-typed fakes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -187,22 +187,56 @@ def decide_route(
 
 
 # --------------------------------------------------------------------------- #
-# WS server entry (SKELETON -- the byte-proxy plumbing is documented in proxy.py).
+# Per-connection handler (the route decision is concrete; proxy.py is the
+# completed byte-proxy). The runnable server entry lives in server.py.
 # --------------------------------------------------------------------------- #
+def _connection_path(client_ws) -> str:
+    """Pull the connect request path from EITHER the test-mock surface (.path) or
+    the websockets asyncio ServerConnection surface (.request.path)."""
+    path = getattr(client_ws, "path", None)
+    if path:
+        return path
+    req = getattr(client_ws, "request", None)
+    return getattr(req, "path", "") if req is not None else ""
+
+
+def _connection_subprotocols(client_ws) -> list[str]:
+    """Requested subprotocols from EITHER an explicit attribute (test mock) or the
+    ``Sec-WebSocket-Protocol`` request header (the asyncio ServerConnection)."""
+    explicit = getattr(client_ws, "requested_subprotocols", None)
+    if explicit:
+        return list(explicit)
+    req = getattr(client_ws, "request", None)
+    headers = getattr(req, "headers", None) if req is not None else None
+    if headers is None:
+        return []
+    try:
+        raw = headers.get("Sec-WebSocket-Protocol", "") or ""
+    except Exception:  # noqa: BLE001 - non-dict header surface
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 async def handle_connection(client_ws, ddb_resource, ecs_client, cfg: RoutingConfig, health_probe):
     """Per-connection coroutine: decide the route, then proxy frames.
 
-    SKELETON: the route decision is concrete (decide_route); the bidirectional
-    byte-proxy is proxy.py.proxy_frames (TODO plumbing). client_ws is a
-    ``websockets`` server connection (it exposes .path / .request_uri /
-    .subprotocol and async iteration of frames).
+    ``client_ws`` is a ``websockets`` asyncio ServerConnection (it exposes
+    ``.request.path`` / ``.request.headers`` and async iteration of frames).
+
+    LOOP SAFETY: ``decide_route`` does sync boto3 (DynamoDB read, ecs:RunTask /
+    DescribeTasks) + a sync health probe + ``time.sleep`` polling on a MISS -- all
+    blocking. We run it via ``asyncio.to_thread`` so the always-on broker's event
+    loop is never stalled while a task is provisioned (the per-(user,session)
+    in-process lock in ``decide_route`` is a ``threading.Lock`` precisely because
+    it runs in the thread pool). The proxy itself is fully async.
     """
     from .proxy import open_upstream, proxy_frames  # local import: optional dep at test time
 
-    request_uri = getattr(client_ws, "path", "") or getattr(client_ws, "request_uri", "")
-    subprotocols = list(getattr(client_ws, "requested_subprotocols", []) or [])
+    request_uri = _connection_path(client_ws)
+    subprotocols = _connection_subprotocols(client_ws)
 
-    route = decide_route(
+    route = await asyncio.to_thread(
+        decide_route,
         ddb_resource,
         ecs_client,
         cfg,
@@ -211,16 +245,25 @@ async def handle_connection(client_ws, ddb_resource, ecs_client, cfg: RoutingCon
         health_probe=health_probe,
     )
     if route is None:
-        # 1011/4401-style reject. The skeleton just closes; the real codes are a
-        # TODO matched to the client's reconnect/backoff expectations (ws.ts).
+        # Reject the connect. 4401 (app-defined) signals "unauthorized/unroutable"
+        # so ws.ts can distinguish it from a transient drop; it still triggers the
+        # client's reconnect/backoff.
         await client_ws.close(code=4401, reason="unauthorized or unroutable")
         return
 
     # Connect to the per-session agent task and pump frames both ways until either
     # side closes. The 12s server-push heartbeat keeps the connection never-idle,
-    # so the proxy must NOT impose its own idle timeout (TODO: assert this in the
-    # proxy config).
-    upstream = await open_upstream(route.private_ip, route.port)
+    # so open_upstream sets ping_interval=None / no read deadline (no broker-side
+    # idle timeout). On a failed upstream dial, close the client so it retries.
+    try:
+        upstream = await open_upstream(route.private_ip, route.port)
+    except Exception as exc:  # noqa: BLE001 - task unreachable -> let the client retry
+        logger.warning(
+            "upstream connect to %s:%d failed (%s); closing client for retry",
+            route.private_ip, route.port, type(exc).__name__,
+        )
+        await client_ws.close(code=1013, reason="agent task not ready")
+        return
     await proxy_frames(client_ws, upstream)
 
 
