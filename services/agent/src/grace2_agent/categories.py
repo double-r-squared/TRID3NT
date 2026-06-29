@@ -289,6 +289,12 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_asr_scenario": "hazard_modeling",
     "run_model_wetland_hydroperiod_scenario": "hazard_modeling",
     "run_model_multi_species_scenario": "hazard_modeling",
+    # MODFLOW Waves 4-5: PRT capture-zone / wellhead-protection + BUY saltwater
+    # intrusion. Registered composers that were missing a PRIMARY_CATEGORY (fell
+    # into the catch-all); filed with the other MODFLOW engines.
+    "run_model_capture_zone_scenario": "hazard_modeling",
+    "run_model_wellhead_protection_scenario": "hazard_modeling",
+    "run_model_saltwater_intrusion_scenario": "hazard_modeling",
     # SWAN Phase 1: standalone spectral nearshore wave-field engine (the additive
     # comparison engine vs SFINCS+SnapWave). Filed as a hazard engine; also
     # cross-listed under coastal (SECONDARY_CATEGORIES) since it is a coastal/wave
