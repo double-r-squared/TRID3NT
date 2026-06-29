@@ -634,49 +634,36 @@ def fetch_administrative_boundaries(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch US Census TIGER/Line 2024 administrative-boundary polygons clipped to a bbox.
+    """Fetch US Census TIGER/Line 2024 administrative-boundary polygons clipped to a bbox [vector fetcher].
 
-    **What it does:** Downloads the TIGER/Line 2024 shapefile for the requested
-    administrative level from ``census.gov``, clips it to the requested bbox
-    via geopandas, and returns a FlatGeobuf vector layer. Cached ``static-30d``
-    (boundaries change at most once per census year). Four levels supported:
-    state, county, place (cities/CDPs), and ZIP Code Tabulation Areas (zcta).
+    Use this when:
+    - You need administrative outlines (state / county / city-place / ZIP-ZCTA)
+      for spatial context alongside a hazard layer, or to label / aggregate
+      results by jurisdiction.
+    - A workflow needs the actual POLYGON for clipping or zonal stats (not just a
+      bbox).
 
-    **When to use:**
-    - Agent needs administrative outlines for spatial context alongside a
-      hazard layer (e.g. county boundaries over a flood inundation surface).
-    - Workflow must aggregate or label results by jurisdiction — state, county,
-      city, or ZIP code.
-    - User asks for a geographic boundary before calling
-      ``clip_raster_to_polygon`` or ``compute_zonal_statistics``.
-    - ``geocode_location`` returned a bbox but the workflow needs the actual
-      polygon for precise clipping.
+    Do NOT use this for: simple place-name -> bbox resolution (use
+    ``geocode_location``); generic OSM POINTS / tagged features (use
+    ``fetch_overpass_pois``); parcel / cadastral, voting / congressional
+    districts, or NON-US boundaries (TIGER is US + territories only; not in scope).
 
-    **When NOT to use:**
-    - Parcel-level or cadastral boundaries (county assessor data; not in scope).
-    - Congressional or voting districts (different TIGER layers, not added).
-    - International administrative boundaries (TIGER is US + territories only).
-    - Simple place-name → bbox resolution (use ``geocode_location`` instead).
+    Action: returns a vector ``LayerURI`` that AUTO-RENDERS on the map -- do NOT
+    call ``publish_layer``. Pairs with ``geocode_location`` (name -> bbox first),
+    then feeds ``clip_raster_to_polygon`` / ``compute_zonal_statistics``. Cached
+    ``static-30d`` (boundaries change at most once per census year).
 
-    **Parameters:**
-    - ``level`` (str): one of ``"state"`` (50 + DC + territories), ``"county"``
-      (3000+ counties), ``"place"`` (cities/CDPs; per-state ZIPs; only states
-      intersecting bbox are fetched), or ``"zcta"`` (ZIP Code Tabulation Areas;
-      ~504 MB download — subsequent calls hit 30-day cache).
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-      Example: ``(-82.2, 26.3, -81.5, 26.8)`` for Lee County FL.
+    Params:
+        level: one of ``"state"`` (50 + DC + territories), ``"county"`` (3000+),
+            ``"place"`` (cities/CDPs; per-state ZIPs; only bbox-intersecting
+            states fetched), or ``"zcta"`` (ZIP Code Tabulation Areas; ~504 MB
+            first fetch, then 30-day cache).
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+            Example: ``(-82.2, 26.3, -81.5, 26.8)`` for Lee County FL.
 
-    **Returns:**
-    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
-    FlatGeobuf with TIGER standard fields (GEOID, NAME, STATEFP, etc.) clipped
-    to the requested bbox.
-
-    **Cross-tool dependencies:**
-    - Upstream of: ``clip_raster_to_polygon``, ``compute_zonal_statistics``,
-      overlay display.
-    - Pairs with: ``geocode_location`` (resolve name → bbox first), then
-      ``fetch_administrative_boundaries`` for the actual polygon.
-    - Feeds into: jurisdictional labeling in any flood/wildfire impact summary.
+    Returns:
+        ``LayerURI(layer_type="vector", role="context")`` -> a FlatGeobuf with
+        TIGER fields (GEOID, NAME, STATEFP, ...) clipped to the requested bbox.
     """
     if level not in _VALID_LEVELS:
         raise AdminBoundaryLevelError(

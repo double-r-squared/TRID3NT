@@ -639,28 +639,35 @@ def compute_zonal_statistics(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Compute zonal statistics — aggregate values from a raster within zones.
+    """Aggregate RASTER values within zones -> JSON stats table (NOT a map layer).
 
-    Common uses:
-        - Population in flood zone: value=population_raster, zone=flood_depth_raster, zone_threshold=0.5 (>=0.5m)
-        - Mean elevation in watershed: value=DEM, zone=watershed_polygon
-        - Building footprint area exposed: value=buildings_raster, zone=hazard_raster
-        - Max wind in damage assessment area: value=wind_raster, zone=admin_boundary
+    Use this when:
+        - The user asks "how much" / "how many" / "what's the average" of one
+          quantity within a zone defined by another (raster values per zone).
+        - Hazard exposure: value=hazard intensity, zone=admin/asset/exposure
+          layer. Impact: value=population/buildings/assets, zone=hazard threshold.
+        - Examples: population in flood zone (value=population, zone=flood_depth,
+          zone_threshold=0.5); mean elevation in watershed (value=DEM,
+          zone=watershed_polygon); max wind in a damage AOI.
 
-    Use this whenever the user asks "how much" / "how many" / "what's the average"
-    of one quantity within a zone defined by another. For hazard exposure:
-    value=hazard intensity, zone=admin/asset/exposure layer. For impact:
-    value=population/buildings/assets, zone=hazard threshold.
+    Do NOT use this for:
+        - A renderable map layer -- this returns a JSON dict, not a LayerURI;
+          to display, use ``publish_layer`` / ``compute_colored_relief`` on a
+          raster instead.
+        - Aggregating a VECTOR property within a zone -- use
+          ``aggregate_property_within_zone``.
+        - Counting vector features past a threshold -- use
+          ``count_features_above_threshold``.
+        - A whole-layer summary with no zones -- use ``summarize_layer_statistics``.
 
-    Do NOT use this for: rendering or visualization (use compute_colored_relief);
-    creating a slope/hillshade derivative (use compute_slope/compute_hillshade);
-    anything that needs spatial outputs rather than statistical summaries.
+    Returns a JSON dict (per-zone ``by_zone`` for vector zones + whole-area
+    ``aggregate``); feed the numbers to narration / ``AssessmentEnvelope``.
 
     Parameters:
-        value_raster_uri: gs:// URI or local path of a single-band raster
+        value_raster_uri: ``s3://`` URI or local path of a single-band raster
             whose values are aggregated (e.g. flood depth COG, population
             density raster, building value raster).
-        zone_input_uri: gs:// URI or local path of either:
+        zone_input_uri: ``s3://`` URI or local path of either:
             - a raster (non-zero = in zone, or apply zone_threshold);
             - a vector file (FlatGeobuf/GeoJSON/GPKG polygons; each feature = one zone).
             Auto-detected by file extension.
@@ -668,7 +675,7 @@ def compute_zonal_statistics(
             count, sum, mean, min, max, std, median,
             percentile_25, percentile_75, percentile_95.
             Defaults to [count, sum, mean, max].
-        zone_threshold: for raster zone inputs only — treat pixels where
+        zone_threshold: for raster zone inputs only -- treat pixels where
             zone_value >= zone_threshold as "in zone". Useful for flood-depth
             thresholds (e.g. 0.5m). If None, non-zero = in zone.
         nodata_value: explicit nodata value for the value raster. Overrides
@@ -699,17 +706,17 @@ def compute_zonal_statistics(
     Cross-tool dependencies:
         Upstream (consumes):
         - ``fetch_dem`` / ``compute_slope`` / ``compute_aspect`` / ``compute_hillshade`` /
-          ``compute_colored_relief`` / ``compute_impervious_surface`` — any of these
+          ``compute_colored_relief`` / ``compute_impervious_surface`` -- any of these
           produce a ``LayerURI`` suitable as ``value_raster_uri``.
-        - ``postprocess_flood`` (via ``run_model_flood_scenario``) — flood-depth
+        - ``postprocess_flood`` (via ``run_model_flood_scenario``) -- flood-depth
           COG ``LayerURI`` is a primary ``value_raster_uri`` for exposure analysis.
         - ``fetch_wdpa_protected_areas`` / ``fetch_gbif_occurrences`` /
-          ``fetch_administrative_boundaries`` — supply the ``zone_input_uri``
+          ``fetch_administrative_boundaries`` -- supply the ``zone_input_uri``
           polygon layer for per-protected-area or per-admin-unit aggregation.
-        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim inputs to a
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` -- trim inputs to a
           study area before passing to this tool.
         Downstream (feeds):
-        - ``run_model_flood_habitat_scenario`` — calls this to compute flood
+        - ``run_model_flood_habitat_scenario`` -- calls this to compute flood
           impact metrics within WDPA protected-area polygons.
         - Agent narration and ``AssessmentEnvelope`` ``impact_metrics`` fields
           consume the returned ``aggregate`` dict for headline numbers.

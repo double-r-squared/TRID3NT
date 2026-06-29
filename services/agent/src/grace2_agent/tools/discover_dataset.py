@@ -1002,56 +1002,43 @@ async def discover_dataset(
     top_k: int = 5,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Route a free-text user query to the top-k matching atomic tools.
+    """Route a free-text need to the top-k matching atomic tools [routing/discovery].
 
-    Use this when: the LLM has a free-text need ("show me flood zones", "national
-    parks polygons in Yosemite", "fetch hurricane wind probabilities") and wants
-    a narrow shortlist of atomic tools to call next, rather than scanning the
-    full 70+ tool surface. Hybrid retrieval ranks tools by BM25 over the
-    audited docstring + Wave 4.10 synthetic example-query corpus, fused with a
-    dense-embedding similarity (sentence-transformers all-MiniLM-L6-v2 or
-    Vertex text-embedding-005 when available, else hashed token vector as a
-    deterministic fallback) via reciprocal rank fusion (RRF, k=60).
+    Use this when:
+    - You have a free-text data/analysis need ("show me flood zones", "national
+      parks polygons", "hurricane wind probabilities") and want a short, ranked
+      shortlist of atomic tools to call next.
+    - You want to narrow the 70+ tool surface before committing to a tool.
 
-    Do NOT use this for: enumerating EVERY atomic tool the agent has (the ADK
-    tool catalog is the authoritative inventory); deciding whether to use
-    Mode 1 catalog substrate (use ``catalog_search`` for the curator-vetted
-    external-data catalog); planning multi-step workflows (use ``solver``).
+    Do NOT use this for: the curated EXTERNAL public-data catalog (use
+    ``catalog_search`` then ``catalog_fetch``); enumerating every registered
+    tool (the tool catalog is the authoritative inventory); planning multi-step
+    workflows (use ``solver``).
+
+    Honesty: this RANKS tools -- it is NOT a layer and fetches no data; the LLM
+    still calls the chosen tool itself. An empty/degenerate query returns
+    ``{"results": []}`` rather than raising.
+
+    Action: pick a ``tool_name`` from ``results`` and call it next.
 
     Params:
-        query: free-text user query (required, non-empty). Lowercased and
-            tokenized for BM25; embedded with the dense backend.
-        top_k: maximum number of tools to return (default 5). Clamped to
-            [1, 25].
+        query: free-text user query (required, non-empty).
+        top_k: maximum number of tools to return (default 5; clamped to [1, 25]).
 
     Returns:
-        A dict shaped::
+        ``{"results": [{"tool_name", "score", "description_snippet",
+        "matched_queries"}, ...]}``. ``score`` is the RRF fused score
+        (rank-aware; higher = more relevant); ``description_snippet`` is the
+        first ~240 chars of the tool docstring; ``matched_queries`` is up to 3
+        synthetic-corpus queries overlapping the user query (routing diagnostics).
 
-            {
-              "results": [
-                {
-                  "tool_name": "fetch_fema_nfhl_zones",
-                  "score": 0.0312,
-                  "description_snippet": "Fetches FEMA National Flood Hazard Layer...",
-                  "matched_queries": ["show flood zones", "...", ...]
-                },
-                ...
-              ]
-            }
-
-        ``score`` is the RRF fused score (rank-aware; higher = more relevant).
-        ``description_snippet`` is the first ~240 chars of the tool's
-        docstring. ``matched_queries`` is up to 3 synthetic-corpus queries
-        that lexically overlap the user query — useful diagnostics for the
-        LLM to confirm the routing made sense.
-
-    Empty-query handling: returns ``{"results": []}`` rather than raising,
-    so an LLM that fires the tool with a degenerate ``query=""`` doesn't
-    surface a hard error mid-conversation.
-
-    FR-CE-8: registered with ``ttl_class="live-no-cache"``, ``cacheable=False``
-    — the routing call is sub-millisecond CPU and the result depends on the
-    LLM-supplied query verbatim, so caching would be wasteful.
+    Retrieval (mechanics, below the routing cut): hybrid BM25 over each tool's
+    audited docstring + a synthetic example-query corpus, fused by reciprocal
+    rank fusion (RRF, k=60) with a dense-embedding similarity
+    (sentence-transformers all-MiniLM-L6-v2 when importable, else a
+    deterministic hashed token-vector fallback), plus name-substring and
+    telemetry co-occurrence channels. Registered ``ttl_class="live-no-cache"``,
+    ``cacheable=False`` (sub-millisecond CPU; result depends on the verbatim query).
     """
     if not isinstance(query, str):
         return {"results": []}

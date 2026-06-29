@@ -452,20 +452,28 @@ def compute_cross_section(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Sample raster value(s) along a line and chart the cross-section profile.
+    """Chart a raster value profile ALONG A LINE -- cross-section / transect CHART (NOT a map layer).
 
-    Use this when the user wants the "section view" / "long profile" / "transect"
-    of a surface ALONG a drawn or derived line -- "show me the elevation profile
-    across this valley", "plot the flood depth along the road", "draw a section
-    of the ground and water surface". This is the only chart keyed on DISTANCE
-    along a line (vs generate_time_series = over TIME, generate_histogram =
-    DISTRIBUTION of values).
+    Use this when:
+        - The user wants the "section view" / "transect" of a surface ALONG a
+          drawn or derived line -- "elevation profile across this valley", "flood
+          depth along the road", "section of the ground and water surface".
+        - Overlaying several surfaces on the SAME line and distance axis (ground
+          vs water = freeboard / inundation depth, DEM vs bathymetry, head vs land
+          surface for MODFLOW seepage, pre vs post event) -- pass
+          ``extra_layer_uris``, each a coloured line in one chart, cap 4.
 
-    DESIGN CALL B (multi-layer overlay): pass ``extra_layer_uris`` to overlay
-    several surfaces on the SAME line and the SAME distance axis -- ground vs
-    water surface (freeboard / inundation depth), DEM vs bathymetry, head vs land
-    surface (MODFLOW seepage), pre vs post event. Each layer is a coloured line
-    in one chart. Cap of 4 layers.
+    Do NOT use this for:
+        - A bare-ground TERRAIN/elevation profile -- use
+          ``compute_terrain_profile`` (the DEM-specific sibling).
+        - A value DISTRIBUTION -- use ``generate_histogram``.
+        - A value over TIME -- use ``generate_time_series``.
+        - A single number for the line -- use ``compute_zonal_statistics`` on a
+          buffered line.
+        - Drawing the line on the map -- use ``publish_layer``. This emits a
+          chart-emission envelope, NOT a renderable LayerURI.
+
+    This is the only chart keyed on DISTANCE along a line.
 
     The line input (any of):
         - A user-DRAWN line: call ``request_spatial_input(mode="vector_draw")``,

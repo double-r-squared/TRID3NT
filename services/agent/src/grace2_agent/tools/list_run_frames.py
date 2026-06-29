@@ -113,16 +113,25 @@ def _matches_layer(entry: Any, layer: str) -> bool:
 def list_run_frames(run_id: str, layer: str = "flood_depth") -> dict[str, Any]:
     """List the ordered animation-frame COG URIs for a completed run's layer.
 
-    Use this when: you want to run a PER-FRAME visualization over a time-stepped
-    solve in the Python sandbox (``code_exec_request``) — a temporal glow over a
-    GLM lightning sequence, a first/peak/last flood panel, a per-step max — and
-    you need the ordered list of frame COG URIs to pass as a multi-frame
-    ``layer_refs`` entry (``{"frames": [<uri>, ...]}``). The URIs come from the
-    run's ``publish_manifest.json`` (one ``cog_uri`` per ``frame_no``).
+    Returns DATA (a dict of ordered frame URIs), NOT a map layer -- the frames
+    already render on the map from the run manifest. Use it to FEED
+    ``code_exec_request`` (or a scrubber), not to display frames.
 
-    Do NOT use this for: a single (non-animated) layer — pass that layer's URI to
-    ``code_exec_request`` directly. Do NOT use it to fetch new data or to render a
-    standard scrubber (the web already groups sequential layers from the manifest).
+    Use this when:
+    - you want a PER-FRAME visualization over a time-stepped solve in the Python
+      sandbox (a temporal glow over a GLM lightning sequence, a first/peak/last
+      flood panel, a per-step max) and need the ordered frame COG URIs to pass as
+      a multi-frame ``layer_refs`` entry (``{"frames": [<uri>, ...]}``).
+
+    Do NOT use this for:
+    - a single (non-animated) layer -- pass that layer's URI to
+      ``code_exec_request`` directly.
+    - fetching new data, or rendering a scrubber -- the web already groups the
+      run's sequential frames from the manifest (this tool is data-only).
+
+    The URIs are READ from the run's ``publish_manifest.json`` (never invented);
+    a run with no manifest / no matching frames returns an HONEST empty result
+    with a ``reason``.
 
     Args:
         run_id: The completed run's id (the solve whose frames you want).
@@ -134,7 +143,7 @@ def list_run_frames(run_id: str, layer: str = "flood_depth") -> dict[str, Any]:
         ``{run_id, layer, frame_count, frame_uris: [<s3://...>, ...], frames:
         [{frame_no, cog_uri, name}, ...]}`` ordered by ``frame_no``. An HONEST
         empty result (``frame_count=0`` + a ``reason``) when the run has no
-        manifest or no matching frame layers — never a fabricated list. The
+        manifest or no matching frame layers -- never a fabricated list. The
         ``frame_uris`` list is exactly what ``code_exec_request`` accepts as a
         list-valued ``layer_refs`` entry.
     """

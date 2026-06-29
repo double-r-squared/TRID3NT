@@ -245,15 +245,25 @@ def code_exec_request(
 ) -> dict[str, Any]:
     """Run user-confirmed ad-hoc Python over on-map layers in a secure sandbox.
 
-    Use this when: the user asks a quantitative follow-up about a layer already on
-    the map that no existing analytical tool answers directly - a custom
-    aggregation, a percentile, a cross-tabulation, a derived field, or a custom
-    multi-panel figure - and you need to compute it from the layer's actual
-    pixels/features. Write a short Python snippet that assigns the answer to a
-    variable named ``result`` (a scalar, a dict, a pandas DataFrame, or a
-    matplotlib Figure); the user is shown the exact code and must approve it first.
+    Use this when:
+    - the user asks a quantitative follow-up about an on-map layer that no
+      existing analytical tool answers (a custom aggregation, a percentile, a
+      cross-tabulation, a derived field, a custom multi-panel figure). Assign the
+      answer to a variable named ``result``; the user must approve the exact code.
 
-    CRITICAL - HOW TO ACCESS DATA (the sandbox has NO network, and NO file paths):
+    Do NOT use this for:
+    - fetching new data -- use a ``fetch_*`` tool (the sandbox has NO network).
+    - running a hazard model -- use a ``run_model_*`` workflow.
+    - a standard chart -- use generate_histogram / generate_damage_distribution.
+
+    DATA ACCESS (no network, no file paths): list every layer/COG you need in
+    ``layer_refs={key: s3_uri}``; each key is injected AS A VARIABLE of that exact
+    name -- raster -> an OPEN rasterio dataset, vector -> a GeoDataFrame. Use the
+    handle directly (``peak.read(1)``); NEVER ``rasterio.open`` an s3:// URI.
+    Returns a JSON summary (status + ``result`` + stdout tail), NOT a map layer;
+    narrate failures (timeout/blocked/error) honestly -- never fake a result.
+
+    DETAIL - HOW TO ACCESS DATA (the sandbox has NO network, and NO file paths):
     The sandbox is network-isolated AND there is NO filesystem path you can open.
     You CANNOT download anything from inside it (``rasterio.open("s3://...")``,
     ``urllib`` / ``requests`` / ``boto3``, any DNS) AND you must NOT guess a path:
@@ -285,14 +295,9 @@ def code_exec_request(
         arr = peak.read(1)            # NOT rasterio.open(peak_uri)
 
     Pass every frame COG you need as its own ``layer_refs`` entry. Get the exact
-    COG URIs from the Case's layer list or from ``list_run_frames``.
-
-    Do NOT use this for: fetching new data (use a ``fetch_*`` tool), running a
-    hazard model (use a ``run_model_*`` workflow), producing a standard chart (use
-    ``generate_histogram`` / ``generate_damage_distribution`` etc.), or anything a
-    purpose-built atomic tool already does - the sandbox is the escape hatch for
-    genuinely ad-hoc computation, not a replacement for the tool catalog. It cannot
-    reach the network (declare every input in ``layer_refs``) or write data out.
+    COG URIs from the Case's layer list or from ``list_run_frames``. The sandbox is
+    the escape hatch for genuinely ad-hoc computation, not a replacement for the
+    tool catalog -- and it cannot reach the network or write data out.
 
     Args:
         python_code: The Python to run. Assign the answer to ``result``. Each
@@ -314,7 +319,7 @@ def code_exec_request(
         A compact result summary: ``{status, result, stdout_tail, truncated,
         duration_s, ...}`` where ``result`` is the sandbox's structured result
         descriptor (the numbers to narrate). On a non-``ok`` status the summary
-        carries the honest reason (``timeout`` / ``blocked`` / ``error``) — narrate
+        carries the honest reason (``timeout`` / ``blocked`` / ``error``) -- narrate
         the failure truthfully; never claim a result a blocked/timed-out run did
         not produce.
     """

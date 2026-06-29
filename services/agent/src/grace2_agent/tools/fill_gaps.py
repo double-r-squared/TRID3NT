@@ -352,7 +352,7 @@ def fill_gaps(
     ML-derived polygon coverages. Returns a FlatGeobuf ``LayerURI`` of the gap
     polygons, cached for 30 days.
 
-    When to use:
+    Use this when:
         - Find slivers between adjacent parcels / field boundaries / building
           footprints that should tile without gaps (e.g. FTW ag-field boundaries,
           OSM building footprints).
@@ -361,11 +361,11 @@ def fill_gaps(
         - "find the gaps between these polygons", "fill the slivers", "what
           areas are uncovered between the parcels".
 
-    When NOT to use:
+    Do NOT use this for:
         - Extracting donut HOLES of individual features (that is interior-ring
           extraction of single features -- a future ``fill_rings`` tool).
-        - Merging polygons together (use ``merge_features``).
-        - Removing an area (use ``cut_features_with_polygon``).
+        - Merging polygons together -- use ``merge_features``.
+        - Removing an area (erase/difference) -- use ``cut_features_with_polygon``.
 
     Note: only voids FULLY ENCLOSED by the inputs are detected -- a gap open to
     the outside boundary is not an interior ring and is not returned.

@@ -340,29 +340,33 @@ def summarize_layer_statistics(
     _bucket: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Summarize statistics for a raster or vector layer.
+    """Summarize WHOLE-LAYER statistics for one raster or vector layer -> JSON (NOT a map layer).
 
-    Use this when the user asks a quantitative question about an already-fetched
-    layer: "What's the range of flood depths?", "How many buildings are in the
-    dataset?", "What are the statistics for this layer?"
+    Use this when:
+        - The user asks a quantitative question about an already-fetched layer
+          with no zone: "What's the range of flood depths?", "How many buildings
+          are in the dataset?", "What are the statistics for this layer?"
+
+    Do NOT use this for:
+        - A renderable map layer -- this returns a JSON dict, not a LayerURI;
+          use ``compute_colored_relief`` / ``publish_layer`` to display.
+        - Aggregating values WITHIN a zone -- raster -> use
+          ``compute_zonal_statistics``; vector property -> use
+          ``aggregate_property_within_zone``.
+        - Counting features past a threshold -- use
+          ``count_features_above_threshold``.
 
     For raster layers returns: count (valid pixels), min, max, mean, sum,
     10-bin histogram (distribution), and units (if encoded in raster tags).
-
-    For vector layers returns: feature_count and attribute_summary — a dict
+    For vector layers returns: feature_count and attribute_summary -- a dict
     keyed by numeric attribute name, each entry having count/min/max/mean/sum.
-
-    Do NOT use this for: rendering (use compute_colored_relief / publish_layer);
-    aggregating within a zone (use compute_zonal_statistics or
-    aggregate_property_within_zone); counting features above a threshold (use
-    count_features_above_threshold).
 
     Parameters:
         layer_uri: the layer's ``layer_id`` HANDLE from a prior tool result
-            (PREFERRED — the server resolves handles to exact storage URIs;
-            never construct gs:// paths), or a gs:// URI copied verbatim.
-            Supports raster (GeoTIFF / COG) and vector (GeoJSON, FlatGeobuf,
-            GeoPackage).
+            (PREFERRED -- the server resolves handles to exact storage URIs;
+            never construct object-store paths), or an ``s3://`` URI copied
+            verbatim. Supports raster (GeoTIFF / COG) and vector (GeoJSON,
+            FlatGeobuf, GeoPackage).
 
     Returns:
         For raster:
@@ -448,19 +452,25 @@ def count_features_above_threshold(
     _bucket: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Count vector features where a numeric property meets or exceeds a threshold.
+    """Count VECTOR features whose numeric property meets/exceeds a threshold -> JSON count (NOT a map layer).
 
-    Use this for questions like "How many buildings have a damage ratio above 0.5?",
-    "How many structures have ground_elev_m below 2?", "Count features where
-    pop_density >= 1000".
+    Use this when:
+        - The user asks "how many features pass a cutoff": "How many buildings
+          have a damage ratio above 0.5?", "structures with ground_elev_m below
+          2?", "count features where pop_density >= 1000".
 
-    Works on vector layers (GeoJSON / FlatGeobuf / GeoPackage). For raster
-    pixel-counting use compute_zonal_statistics with a threshold-based zone.
+    Do NOT use this for:
+        - A renderable map layer -- this returns a JSON count, not a LayerURI.
+        - SUMMING/averaging a property (not counting) -- use
+          ``aggregate_property_within_zone``.
+        - Whole-layer stats with no threshold -- use ``summarize_layer_statistics``.
+        - RASTER pixel-counting past a threshold -- use
+          ``compute_zonal_statistics`` with a threshold-based zone.
 
     Parameters:
         layer_uri: the layer's ``layer_id`` HANDLE from a prior tool result
-            (PREFERRED; never construct gs:// paths), or a verbatim gs:// URI
-            of a vector layer.
+            (PREFERRED; never construct object-store paths), or a verbatim
+            ``s3://`` URI of a vector layer.
         property: name of the numeric attribute to threshold.
         threshold: minimum value (inclusive) to count. Features where
             property >= threshold are included.
@@ -478,7 +488,7 @@ def count_features_above_threshold(
     LLM guidance:
         - Useful after a Pelicun damage run to count critically damaged structures.
         - Combine with aggregate_property_within_zone for spatial refinement.
-        - Returns count=0 and total=N when no features meet the threshold — not
+        - Returns count=0 and total=N when no features meet the threshold -- not
           an error.
 
     Raises:
@@ -561,26 +571,35 @@ def aggregate_property_within_zone(
     _bucket: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Aggregate a vector property for features spatially within a zone polygon layer.
+    """Sum/mean/max a VECTOR property over features inside a zone polygon -> JSON value (NOT a map layer).
 
-    Use this for spatially filtered aggregation: "What is the total damage cost
-    within the flood zone?", "What's the mean building value inside the county?",
-    "Max structure replacement cost within the WDPA protected area?"
+    Use this when:
+        - The user wants a spatially filtered aggregate of a vector attribute:
+          "total damage cost within the flood zone?", "mean building value inside
+          the county?", "max structure replacement cost within the WDPA area?"
+
+    Do NOT use this for:
+        - A renderable map layer -- this returns a JSON value, not a LayerURI.
+        - COUNTING features past a threshold (not summing a value) -- use
+          ``count_features_above_threshold``.
+        - Whole-layer stats with no zone -- use ``summarize_layer_statistics``.
+        - Aggregating RASTER values within a zone -- use
+          ``compute_zonal_statistics``.
 
     Features whose centroid falls within any polygon in zone_layer_uri are
     included in the aggregation. Requires geopandas.
 
     Parameters:
         value_layer_uri: layer_id HANDLE from a prior tool result (PREFERRED;
-            never construct gs:// paths) or verbatim gs:// URI of the vector
-            layer whose ``property`` attribute is aggregated (e.g. USACE NSI
-            structure inventory, Pelicun damage output, GBIF occurrences).
-        zone_layer_uri: layer_id HANDLE (PREFERRED) or verbatim gs:// URI of
+            never construct object-store paths) or verbatim ``s3://`` URI of the
+            vector layer whose ``property`` attribute is aggregated (e.g. USACE
+            NSI structure inventory, Pelicun damage output, GBIF occurrences).
+        zone_layer_uri: layer_id HANDLE (PREFERRED) or verbatim ``s3://`` URI of
             a vector polygon layer defining the zone(s) to aggregate within
             (e.g. county boundary, WDPA protected area, FEMA flood zone
             polygon).
         property: name of the numeric attribute in value_layer_uri to aggregate.
-        agg: aggregation function — "sum" (default), "mean", or "max".
+        agg: aggregation function -- "sum" (default), "mean", or "max".
 
     Returns:
         {
@@ -598,7 +617,7 @@ def aggregate_property_within_zone(
         - Useful after run_model_flood_habitat_scenario to aggregate species
           count within WDPA polygons, or after run_pelicun_damage_assessment
           to aggregate damage within an admin boundary.
-        - n_features=0 means no value-layer features intersect the zone — not
+        - n_features=0 means no value-layer features intersect the zone -- not
           an error; the value will be 0 for sum, None for mean/max.
         - For raster-based aggregation use compute_zonal_statistics instead.
 

@@ -28,7 +28,7 @@ FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
@@ -65,41 +65,39 @@ _REQUEST_SPATIAL_INPUT_METADATA = AtomicToolMetadata(
     idempotent_hint=False,
 )
 async def request_spatial_input(
-    mode: str = "vector_draw",
+    mode: Literal["point", "bbox", "vector_draw"] = "vector_draw",
     title: str | None = None,
     description: str | None = None,
-    purpose: str = "barrier",
+    purpose: Literal["barrier", "line"] = "barrier",
     suggested_view: dict[str, Any] | None = None,
     default_timeout_seconds: int | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Ask the user to DRAW geometry on the map, then PAUSE until they finish.
+    """Pause the turn and ask the user to DRAW geometry on the map.
 
-    Use this when you need the user to physically draw on the map rather than
-    describe an area in words:
+    A sentinel INPUT-REQUEST (pause-and-ask), NOT an output: the turn blocks
+    until the user finishes drawing, then the drawn GeoJSON comes back as the
+    result. Produces no map layer itself.
 
-        - Urban flood (SWMM): the user wants to place flood WALLS / FLAP GATES,
-          or outline the exact block / neighborhood AOI. Call this with
-          ``mode="vector_draw"`` BEFORE ``run_swmm_urban_flood`` — the result's
-          ``barriers`` field is the FeatureCollection you pass straight to
-          ``run_swmm_urban_flood(barriers=...)``, and ``aoi_bbox`` is the
-          ``bbox`` to model.
-        - A NEUTRAL elevation/section LINE (``mode="vector_draw"`` +
-          ``purpose="line"``): the user draws a single plain LineString -- an
-          elevation profile / cross-section line -- with NO wall/flap-gate
-          tagging. Pass the result's ``line`` (``[[lon,lat],...]``) or
-          ``linestring`` (a GeoJSON LineString) straight to
-          ``compute_terrain_profile(line=...)`` / ``compute_cross_section``.
-        - A single map click (``mode="point"``) or a drag-rectangle
-          (``mode="bbox"``) for a precise location the user could not name.
+    Use this when:
+    - SWMM flood WALLS / FLAP GATES or a block/neighborhood AOI
+      (``mode="vector_draw"``, ``purpose="barrier"``) -> pass the result's
+      ``barriers`` to ``run_swmm_urban_flood(barriers=...)``, ``aoi_bbox`` as bbox.
+    - a NEUTRAL elevation/section LINE (``purpose="line"``) -> pass ``line`` /
+      ``linestring`` to ``compute_terrain_profile`` / ``compute_cross_section``.
+    - a single click (``mode="point"``) or drag-rectangle (``mode="bbox"``).
 
-    Do NOT use this when the user already gave a clear place name / address /
-    bbox in text (geocode it instead), or when no map is in front of the user.
+    Do NOT use this for:
+    - a place the user already named in text (geocode it instead), or when no map
+      is in front of the user.
+
+    NEVER invent an AOI / barriers when the result is an error or cancellation --
+    ask again or proceed without them.
 
     Params:
-        mode: ``"vector_draw"`` (DEFAULT — the terra-draw surface for AOIs +
+        mode: ``"vector_draw"`` (DEFAULT -- the terra-draw surface for AOIs +
             tagged walls/flap-gates), ``"point"`` (single click), or ``"bbox"``
             (drag-rectangle).
         title: short prompt heading shown over the draw surface.
@@ -114,7 +112,7 @@ async def request_spatial_input(
             before drawing.
         default_timeout_seconds: OPTIONAL wait window (seconds). Default 300.
 
-    Returns (after the user finishes — the turn is PAUSED until then):
+    Returns (after the user finishes -- the turn is PAUSED until then):
         On a ``vector_draw`` reply: ``{"status": "ok", "geometry_type":
         "vector_draw", "aoi_bbox": [minLon,minLat,maxLon,maxLat] | absent,
         "barriers": <FeatureCollection> | absent, "n_walls": int,
@@ -131,7 +129,7 @@ async def request_spatial_input(
         If the user cancels: ``{"status": "cancelled", ...}``. On timeout / no
         interactive client / malformed drawing: ``{"status": "error",
         "error_code": "SPATIAL_INPUT_...", "error_message": ...}``. NEVER invent
-        an AOI or barriers when the result is an error or cancellation — ask the
+        an AOI or barriers when the result is an error or cancellation -- ask the
         user or proceed without them.
 
     FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"``.

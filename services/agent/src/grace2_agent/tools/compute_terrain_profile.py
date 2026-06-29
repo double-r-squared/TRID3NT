@@ -416,18 +416,26 @@ def compute_terrain_profile(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Sample DEM elevation along a line and chart the terrain (long) profile.
+    """Chart DEM ELEVATION along a line -- terrain / long profile CHART (NOT a map layer).
 
-    Use this when the user wants the ELEVATION / TERRAIN PROFILE of the ground
-    along a drawn or derived line -- "show the elevation profile across this
-    ridge", "plot the terrain profile along the road", "what does the ground
-    look like along this transect", "long profile of the valley floor". The
-    x-axis is distance-along-the-line in metres (geodesic); the y-axis is
-    elevation in the DEM's native units.
+    Use this when:
+        - The user wants the ELEVATION / TERRAIN PROFILE of the ground along a
+          drawn or derived line -- "elevation profile across this ridge", "terrain
+          profile along the road", "long profile of the valley floor". x-axis =
+          geodesic distance (m); y-axis = elevation in the DEM's native units.
+        - Overlaying several elevation surfaces on the SAME line/distance axis
+          (bare-earth DEM vs topo-bathy, pre- vs post-event terrain) -- pass
+          ``extra_layer_uris`` (cap 4).
 
-    Multi-DEM overlay: pass ``extra_layer_uris`` to overlay several elevation
-    surfaces on the SAME line and distance axis (e.g. bare-earth DEM vs
-    topo-bathy, pre- vs post-event terrain). Cap of 4 DEMs.
+    Do NOT use this for:
+        - A non-terrain value section across a flood / head / depth raster -- use
+          ``compute_cross_section`` (the general distance-vs-value sibling).
+        - A value DISTRIBUTION -- use ``generate_histogram``.
+        - A value over TIME -- use ``generate_time_series``.
+        - A single number for the line -- use ``compute_zonal_statistics`` on a
+          buffered line.
+        - Drawing the line on the map -- use ``publish_layer``. This emits a
+          chart-emission envelope, NOT a renderable LayerURI.
 
     CRS correctness: the line is EPSG:4326 (lon/lat); each DEM may be in a
     projected CRS (UTM, etc.). The tool reprojects the sample stations into each
@@ -439,12 +447,6 @@ def compute_terrain_profile(
           pass the returned FeatureCollection (FIRST LineString used).
         - An agent-DERIVED line: construct endpoints and pass a GeoJSON
           LineString or a ``[[lon,lat], [lon,lat], ...]`` list.
-
-    Do NOT use this for: a non-terrain value section view across a flood/head
-    raster (use ``compute_cross_section``, the general distance-vs-value tool);
-    a value distribution (``generate_histogram``); a value over time
-    (``generate_time_series``); a single number for the line
-    (``compute_zonal_statistics`` over a buffered line).
 
     Parameters:
         layer_uri: ``s3://`` URI or local path of the PRIMARY DEM / elevation COG

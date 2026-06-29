@@ -985,38 +985,37 @@ def generate_histogram(
     _created_turn_id: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Generate a histogram chart of a layer's values.
+    """Histogram (value-distribution) of a layer as bars. [CHART payload, not a map layer]
 
-    Use this when the user asks to *see the distribution* of a layer: "show me
-    a histogram of flood depths", "what does the damage-ratio distribution look
-    like", "chart the population density".
+    Use this when:
+    - the user asks to SEE the distribution/spread of a layer ("histogram of
+      flood depths", "what does the damage-ratio distribution look like").
+    - raster: bins cell values (random-sampled ~500k cells, shape preserved);
+      vector: bins a numeric attribute (``property``, or the first numeric column).
 
-    Raster layers: histograms the cell values (random-sampled to ~500k cells
-    for large rasters; the distribution shape is preserved). Vector layers:
-    histograms a numeric attribute (``property``, or the first numeric column
-    if omitted).
+    Do NOT use this for:
+    - a numeric ANSWER ("how many / how much") -- use summarize_layer_statistics
+      or count_features_above_threshold.
+    - a damage-state breakdown -- use generate_damage_distribution.
+    - class-break legend counts -- use generate_choropleth_legend.
+    - a time trend -- use generate_time_series; map rendering -- use publish_layer.
 
-    Do NOT use this for: a numeric answer ("how many / how much" - use
-    summarize_layer_statistics or count_features_above_threshold); a
-    damage-state bar chart (use generate_damage_distribution); rendering the
-    layer on the map (use publish_layer).
+    Returns a ChartEmissionPayload dict (NOT a map layer); the agent emits a
+    chart-emission envelope and narrates from a compact summary.
 
     Parameters:
-        layer_uri: gs:// URI or local path of a raster (GeoTIFF/COG) or vector
+        layer_uri: s3:// URI or local path of a raster (GeoTIFF/COG) or vector
             (GeoJSON/FlatGeobuf/GeoPackage) layer.
-        property: for vector layers, the numeric attribute to histogram. Ignored
-            for rasters. When omitted on a vector layer, the first numeric
-            column is used.
+        property: vector only -- the numeric attribute to histogram (first
+            numeric column if omitted). Ignored for rasters.
 
     Returns:
-        A ChartEmissionPayload dict (envelope_type="chart-emission") carrying a
-        Vega-Lite v5 bar-chart spec with the binned counts inline, a title, and
-        a one-line caption. The agent loop emits this as a chart-emission
-        envelope and feeds a compact summary back for narration.
+        A ChartEmissionPayload dict (envelope_type="chart-emission") with a
+        Vega-Lite v5 bar-chart spec, binned counts inline, title + caption.
 
     Raises:
-        ChartToolError: typed error_code (LAYER_OPEN_FAILED, PROPERTY_NOT_FOUND,
-            NO_NUMERIC_PROPERTY, NO_DATA, DOWNLOAD_FAILED).
+        ChartToolError: LAYER_OPEN_FAILED, PROPERTY_NOT_FOUND, NO_NUMERIC_PROPERTY,
+            NO_DATA, DOWNLOAD_FAILED.
     """
     uri = _validate_uri(layer_uri, "layer_uri")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1088,30 +1087,31 @@ def generate_choropleth_legend(
     _created_turn_id: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Generate a class-break summary chart for a layer's choropleth style.
+    """Choropleth class-break counts as a bar chart. [CHART payload, not a map layer]
 
-    Use this when the user wants the *legend / class breakdown* behind a
-    choropleth-styled vector layer: "summarize the choropleth classes", "how
-    many features fall in each class", "show me the legend distribution".
+    Use this when:
+    - the user wants the LEGEND / class breakdown behind a choropleth-styled
+      layer ("summarize the choropleth classes", "how many features per class").
+    - computes 5 quantile class breaks over a numeric property and counts the
+      features per class (what a choropleth legend communicates).
 
-    Computes quantile class breaks (5 classes) over a numeric property and
-    counts the features in each class - the bar chart mirrors what a choropleth
-    legend communicates: which value-ranges hold how much of the data.
+    Do NOT use this for:
+    - a raw value histogram -- use generate_histogram.
+    - a damage-state breakdown -- use generate_damage_distribution.
+    - a time trend -- use generate_time_series.
+    - rendering the styled layer on the map -- use publish_layer.
 
-    Do NOT use this for: a raw value histogram (use generate_histogram); a
-    Pelicun damage-state chart (use generate_damage_distribution); rendering the
-    styled layer (use publish_layer).
+    Returns a ChartEmissionPayload dict (NOT a map layer); the agent emits a
+    chart-emission envelope and narrates from a compact summary.
 
     Parameters:
-        layer_uri: gs:// URI or local path of a vector layer (GeoJSON /
-            FlatGeobuf / GeoPackage).
-        property: numeric attribute the choropleth is keyed on. When omitted the
-            first numeric column is used.
+        layer_uri: s3:// URI or local path of a vector layer (GeoJSON /
+            FlatGeobuf / GeoPackage); a raster class-breaks its sampled cells.
+        property: numeric attribute keyed on (first numeric column if omitted).
 
     Returns:
         A ChartEmissionPayload dict with a Vega-Lite v5 bar chart of per-class
-        feature counts (5 quantile classes), a title, and a caption naming the
-        class breaks.
+        feature counts (5 quantile classes), title + caption.
 
     Raises:
         ChartToolError: LAYER_OPEN_FAILED, PROPERTY_NOT_FOUND,
@@ -1301,34 +1301,31 @@ def generate_time_series(
     _created_turn_id: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Generate a time-series line chart for a temporal layer.
+    """Time-series line chart (value vs time) of a temporal layer. [CHART, not a map layer]
 
-    Use this when the user wants to see how a layer's value changes over time:
-    "plot the discharge over time", "show the precipitation time series", "chart
-    the trend".
+    Use this when:
+    - the user wants to see how a layer's value changes over time ("plot
+      discharge over time", "show the precipitation time series", "chart the trend").
+    - works on temporal rasters (one band per timestep, with band descriptions or
+      a time tag) and temporal vectors (a time/date column + a numeric column).
 
-    Works on temporal rasters (one band per timestep, with band descriptions or
-    a time tag) and temporal vectors (a time/date column plus a numeric value
-    column). The raster series is the per-band spatial mean; the vector series
-    is the numeric column ordered by the time column.
+    Do NOT use this for:
+    - a static (single-timestep) layer -- it returns a NO_TIME_DIMENSION error
+      envelope so the agent narrates honestly that there is no time dimension.
+    - a value distribution -- use generate_histogram.
+    - class-break counts -- use generate_choropleth_legend.
+    - damage states -- use generate_damage_distribution.
 
-    Do NOT use this for: a static (single-timestep) layer - it returns a
-    NO_TIME_DIMENSION error envelope so the agent narrates honestly that the
-    layer has no time dimension. For a value distribution use
-    generate_histogram.
+    Returns a ChartEmissionPayload dict (NOT a map layer): a Vega-Lite v5 line
+    chart of value vs time; the agent emits a chart-emission envelope.
 
     Parameters:
-        layer_uri: gs:// URI or local path of a temporal raster or vector layer.
-
-    Returns:
-        A ChartEmissionPayload dict with a Vega-Lite v5 line chart of value vs.
-        time.
+        layer_uri: s3:// URI or local path of a temporal raster or vector layer.
 
     Raises:
-        ChartToolError: NO_TIME_DIMENSION when the layer carries no time
-            dimension (this is the clean, expected "wrong tool" envelope - the
-            agent loop feeds it back so Gemini picks a different chart);
-            LAYER_OPEN_FAILED / DOWNLOAD_FAILED on read failure.
+        ChartToolError: NO_TIME_DIMENSION when the layer has no time dimension
+            (the clean "wrong tool" envelope -- fed back so the model picks a
+            different chart); LAYER_OPEN_FAILED / DOWNLOAD_FAILED on read failure.
     """
     uri = _validate_uri(layer_uri, "layer_uri")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1409,33 +1406,34 @@ def generate_damage_distribution(
     _created_turn_id: str | None = None,
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Generate a Pelicun damage-state distribution bar chart.
+    """Pelicun damage-state counts (DS0-DS4) as bars. [CHART payload, not a map layer]
 
-    Use this after a Pelicun damage run (run_pelicun_damage_assessment), when
-    the user asks to *see the damage breakdown*: "show me the damage
-    distribution", "chart how many structures are in each damage state", "what's
-    the damage-state breakdown".
+    Use this when:
+    - after a Pelicun damage run (run_pelicun_damage_assessment) the user asks to
+      SEE the damage breakdown ("show the damage distribution", "how many
+      structures in each damage state", "the damage-state breakdown").
+    - bins each asset's ``ds_mean`` into DS0..DS4 and charts the per-state counts.
 
-    Reads the per-asset FlatGeobuf's ``ds_mean`` column (the same column
-    postprocess_pelicun aggregates), bins each structure into DS0..DS4 via
-    int(round(ds_mean)).clip(0,4), and charts the per-state structure counts.
+    Do NOT use this for:
+    - a generic numeric histogram -- use generate_histogram.
+    - class-break legend counts -- use generate_choropleth_legend.
+    - portfolio loss totals -- use postprocess_pelicun / compute_impact_envelope.
+    - counting structures above a threshold -- use count_features_above_threshold.
 
-    Do NOT use this for: a generic numeric histogram (use generate_histogram);
-    portfolio loss totals (use postprocess_pelicun / compute_impact_envelope);
-    counting structures above a damage threshold (use
-    count_features_above_threshold).
+    Returns a ChartEmissionPayload dict (NOT a map layer); the agent emits a
+    chart-emission envelope and narrates from a compact summary.
 
     Parameters:
-        damage_layer_uri: gs:// URI or local path to the FlatGeobuf returned by
+        damage_layer_uri: s3:// URI or local path to the FlatGeobuf from
             run_pelicun_damage_assessment (must carry a ``ds_mean`` column).
 
     Returns:
         A ChartEmissionPayload dict with a Vega-Lite v5 bar chart of DS0..DS4
-        structure counts, a title, and a caption with the total damaged count.
+        structure counts, title + caption (total damaged count).
 
     Raises:
-        ChartToolError: MISSING_DAMAGE_COLUMN if ``ds_mean`` is absent; NO_DATA
-            on zero features; LAYER_OPEN_FAILED / DOWNLOAD_FAILED on read failure.
+        ChartToolError: MISSING_DAMAGE_COLUMN if ``ds_mean`` absent; NO_DATA on
+            zero features; LAYER_OPEN_FAILED / DOWNLOAD_FAILED on read failure.
     """
     uri = _validate_uri(damage_layer_uri, "damage_layer_uri")
     with tempfile.TemporaryDirectory() as tmpdir:

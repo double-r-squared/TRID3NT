@@ -702,25 +702,26 @@ def list_qgis_algorithms(
 ) -> list[QGISAlgorithmSummary]:
     """Enumerate QGIS Processing algorithms available on the worker substrate.
 
-    Use this when: the agent's typed-wrapper tools (``run_storm_surge_flood``,
-    ``clip_to_basin``, etc.) don't cover the user's request and the agent
-    needs to discover a candidate Processing algorithm to chain through
-    ``qgis_process``. Implements FR-AS-9 Level 1a (capability discovery) when
-    paired with ``describe_qgis_algorithm`` and ``qgis_process``.
+    Returns algorithm METADATA (ids + labels), NOT map layers and NOT algorithm
+    output. The discovery loop is
+    list_qgis_algorithms -> describe_qgis_algorithm -> qgis_process.
 
-    Do NOT use this for: finding the right pre-wired typed wrapper (use the
-    agent's tool registry); discovering hazard layers (use
-    ``hazard_catalog_search``).
+    Use this when:
+    - the typed-wrapper tools don't cover the user's request and you need to
+      discover a candidate Processing algorithm to chain through ``qgis_process``
+      (FR-AS-9 Level 1a capability discovery).
 
-    Curated default:
-        The deployed worker exposes ~695 algorithms across native QGIS + GDAL +
-        GRASS + SAGA. By default this returns only a CURATED set of high-value
-        families (native QGIS Processing core, the GDAL raster/vector toolbox,
-        legacy ``qgis:*`` algorithms, the GRASS hydrology set
-        (``r.watershed`` / ``r.water.outlet`` / ``r.stream.extract`` /
-        ``r.fill.dir`` etc.) and key SAGA terrain/hydrology picks) so the
-        candidate list stays legible. Pass ``include_all=True`` to see the
-        full unfiltered catalog (or set ``GRACE2_QGIS_ALLOWLIST=all`` ops-side).
+    Do NOT use this for:
+    - learning a chosen algorithm's parameters/signature -- use
+      ``describe_qgis_algorithm``.
+    - running an algorithm -- use ``qgis_process``.
+    - discovering hazard DATA layers -- use ``hazard_catalog_search``.
+
+    By default returns a CURATED high-value set (native QGIS core, GDAL toolbox,
+    legacy ``qgis:*``, the GRASS hydrology set (``r.watershed`` /
+    ``r.water.outlet`` / ``r.stream.extract`` / ``r.fill.dir`` etc.) and key SAGA
+    picks); pass ``include_all=True`` for the full ~695-algorithm catalog (or set
+    ``GRACE2_QGIS_ALLOWLIST=all`` ops-side).
 
     Params:
         category_filter: optional substring matched case-insensitively
@@ -751,7 +752,7 @@ def list_qgis_algorithms(
 
     Substrate:
         Wraps ``qgis_process list`` via the worker submitter bound at agent
-        service startup. See module docstring for the Option B / Option B′
+        service startup. See module docstring for the Option B / Option B-prime
         discussion.
     """
     # Cache params — what the agent passes, deterministically canonicalized.
@@ -830,17 +831,20 @@ def _filter_and_rank_summaries(
     # description for same algorithm id on same server).
 )
 def describe_qgis_algorithm(algorithm_id: str, **_extra_ignored: Any) -> QGISAlgorithmDescription:
-    """Describe a single QGIS Processing algorithm's signature.
+    """Describe one QGIS Processing algorithm's signature (params, types, outputs).
 
-    Use this when: ``list_qgis_algorithms`` surfaced a candidate algorithm
-    id and the agent now needs to know its parameter names, types,
-    acceptable values, and outputs in order to construct a valid
-    ``qgis_process`` call. Implements the middle hop of FR-AS-9 Level 1a.
+    Returns algorithm METADATA TEXT, NOT a map layer and NOT algorithm output.
+    The middle hop of the discovery loop
+    list_qgis_algorithms -> describe_qgis_algorithm -> qgis_process.
 
-    Do NOT use this for: enumerating algorithms (use
-    ``list_qgis_algorithms``); invoking the algorithm (use
-    ``qgis_process``); inferring the canonical typed wrapper for a hazard
-    (engine-owned workflows are the right path when they cover the case).
+    Use this when:
+    - ``list_qgis_algorithms`` surfaced a candidate id and you now need its
+      parameter names, types, acceptable values, and outputs to construct a valid
+      ``qgis_process`` call (FR-AS-9 Level 1a, middle hop).
+
+    Do NOT use this for:
+    - ENUMERATING / searching algorithms -- use ``list_qgis_algorithms``.
+    - invoking the algorithm -- use ``qgis_process``.
 
     Params:
         algorithm_id: the fully qualified Processing algorithm id, e.g.
@@ -849,7 +853,7 @@ def describe_qgis_algorithm(algorithm_id: str, **_extra_ignored: Any) -> QGISAlg
     Returns:
         A ``QGISAlgorithmDescription`` dict (``algorithm_id``, ``name``,
         ``description``, ``parameters`` list, ``outputs`` list, and
-        ``raw_help`` carrying the full unparsed help text — a tolerance
+        ``raw_help`` carrying the full unparsed help text -- a tolerance
         hatch for future QGIS versions whose help format the parser doesn't
         recognize).
 

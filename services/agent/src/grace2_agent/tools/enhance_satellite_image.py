@@ -612,85 +612,51 @@ def enhance_satellite_image(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """OPTIONAL polish/enhance pass for a true-color satellite RGB image.
+    """OPTIONAL polish/enhance pass for a true-color satellite RGB image [raster transform].
 
-    Reads an RGB image COG and returns a NEW, polished RGB COG that reads closer
-    to NOAA/CIRA's de-hazed "GeoColor" look: de-hazed (atmospheric haze removed),
-    white-balanced, lightly sharpened, and optionally upscaled. This is a
-    composable, OPTIONAL cosmetic step - call it ONLY when the user asks to
-    "polish", "enhance", "clean up", "de-haze", "sharpen", or "make this satellite
-    image look better / clearer / more like GeoColor". It does NOT change the
-    data meaning; it improves the PRESENTATION of an existing true-color image.
+    Use this when:
+    - The user explicitly asks to "polish", "enhance", "clean up", "de-haze",
+      "sharpen", or "make this satellite image look better / clearer / more like
+      GeoColor".
+    - As a final COSMETIC step after composing a true-color RGB (e.g. a GOES
+      true-color frame) before publishing it for presentation.
 
-    It works on ANY 3(+)-band RGB raster - a GOES/ABI true-color composite, a
-    Sentinel/NAIP true-color COG, or any RGB image LayerURI. It is NOT fire- or
-    GOES-specific. A single-band data raster (DEM, NDVI, an index/mask, a
-    paletted COG with no RGB) is NOT a true-color image and returns a typed
-    NOT_AN_RGB_IMAGE error.
+    Do NOT use this for: data rasters (DEM, NDVI, slope, a hazard depth grid, a
+    paletted land-cover index) -- those are not true-color photos and return a
+    typed ``NOT_AN_RGB_IMAGE`` error; work needing UNMODIFIED radiometry for
+    analysis (this is cosmetic only -- keep the original); blending / draping two
+    rasters into one (use ``compute_blended_composite``).
 
-    What each pass does (all individually toggleable):
-        rayleigh_correct (default True): de-haze. Subtracts a per-channel
-            atmospheric path-radiance / haze floor (dark-object subtraction),
-            heavier on BLUE (Rayleigh scattering peaks in blue), then re-stretches
-            contrast. This is the single biggest gap vs CIRA's clean look - it
-            lifts the blue cast and saturates the land.
-        white_balance (default True): a mild gray-world per-channel gain so
-            vegetation/terrain read natural, with a small green trim so greens are
-            not neon.
-        sharpen (default True): a light unsharp mask (radius/amount tunable) so
-            edges, coastlines, and roads read crisp.
-        upscale_factor (default 1 = off): Lanczos upscale by an integer factor
-            for a higher-resolution presentation of a coarse image. The output
-            georeferencing is scaled to stay correctly placed.
+    Honesty: it changes PRESENTATION, not data meaning. A < 3-band input is not
+    RGB and raises ``NOT_AN_RGB_IMAGE``; every failure is a typed
+    ``EnhanceSatelliteImageError`` (IMAGE_DOWNLOAD_FAILED / NOT_AN_RGB_IMAGE /
+    INVALID_PARAM / ENHANCE_FAILED).
 
-    When to use:
-        - The user wants a raw satellite true-color image to look cleaner / less
-          hazy / more like CIRA GeoColor.
-        - As a final cosmetic step after composing a true-color RGB (e.g. a GOES
-          true-color frame) before publishing it for presentation.
+    Action: returns a NEW polished RGB(A) ``LayerURI`` (``layer_type="raster"``)
+    that ``publish_layer`` renders verbatim via the multiband passthrough (no new
+    style preset). Pass the returned handle to ``publish_layer`` to put it on the
+    map. Cached ``static-30d`` (output is a pure function of input + params).
 
-    When NOT to use:
-        - On a data raster (DEM, NDVI, slope, a hazard depth grid, a paletted
-          land-cover index) - those are not true-color photos; returns
-          NOT_AN_RGB_IMAGE.
-        - When the user needs the UNMODIFIED radiometry for analysis (this is a
-          cosmetic transform; keep the original for any quantitative use).
-        - To blend/drape two rasters into one - use compute_blended_composite.
+    Works on ANY 3(+)-band RGB raster (GOES/ABI true-color, Sentinel/NAIP
+    true-color, or any RGB LayerURI) -- it is NOT fire- or GOES-specific.
 
     Params:
         source_layer_uri: layer handle (layer_id) OR s3:// URI OR local path of
-            the RGB image to polish. The server resolves a handle to the real COG
-            URI (it is in RESOLVABLE_URI_PARAMS).
-        rayleigh_correct, white_balance, sharpen: per-pass on/off toggles.
-        upscale_factor: integer >= 1 (1 = no upscale).
-        haze_strength: 0..~1.5, global multiplier on the de-haze floor.
-        blue_extra: extra blue de-haze fraction on top of haze_strength.
+            the RGB image to polish (server resolves a handle to the COG URI).
+        rayleigh_correct (default True): de-haze via per-channel dark-object
+            (path-radiance) subtraction, heavier on BLUE, then re-stretch -- the
+            biggest gap vs CIRA's clean GeoColor look.
+        white_balance (default True): mild gray-world per-channel gain + a small
+            green trim so greens are not neon.
+        sharpen (default True): light unsharp mask (radius/amount tunable).
+        upscale_factor (default 1 = off): integer Lanczos upscale for a
+            higher-resolution PRESENTATION; georeferencing is scaled to match.
+        haze_strength / blue_extra: de-haze floor multiplier + extra blue pull.
         sharpen_radius / sharpen_amount: unsharp-mask radius (px) + strength.
-        wb_strength: 0..1 gray-world white-balance pull.
-        green_trim: small green-channel trim after balancing (0..~0.1).
+        wb_strength / green_trim: white-balance pull + green trim (0..~0.1).
 
-    Returns:
-        A ``LayerURI`` (layer_type="raster") pointing at the polished RGB(A) COG
-        in the cache bucket
-        (``.../cache/static-30d/enhanced/<key>.tif``). Rendered verbatim by
-        publish_layer's multiband RGB passthrough - no new style preset needed.
-        Pass the returned handle to ``publish_layer`` to put the polished image
-        on the map. layer_id/name derive as "Enhanced <source>".
-
-    FR-CE-8: routed through ``read_through`` so identical calls (same source +
-    same toggles/params) reuse the cached polished image. 30-day TTL (the output
-    is fully determined by its input + params).
-
-    Cross-tool dependencies:
-        Upstream (consumes): any RGB-image-producing tool - a GOES/ABI true-color
-            composite, fetch_naip (NAIP true-color), a Sentinel true-color COG.
-        Downstream (feeds): publish_layer - pass the returned handle as layer_uri
-            to put the polished image on the map.
-
-    Raises:
-        EnhanceSatelliteImageError: typed, with ``error_code`` for the pipeline
-            strip - IMAGE_DOWNLOAD_FAILED, NOT_AN_RGB_IMAGE, INVALID_PARAM, or
-            ENHANCE_FAILED.
+    Cross-tool: consumes any RGB-image producer (a GOES/ABI true-color composite,
+    ``fetch_naip``, a Sentinel true-color COG); feeds ``publish_layer``.
     """
     if int(upscale_factor) < 1:
         raise EnhanceSatelliteImageError(

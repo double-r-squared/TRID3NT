@@ -479,56 +479,41 @@ def fetch_sentinel2_truecolor(
     # job-0164: absorb LLM-invented kwargs.
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a recent Sentinel-2 true-color (natural-color) RGB image for a bbox.
+    """Fetch a recent Sentinel-2 true-color (natural-color) RGB image for a bbox [raster fetcher].
 
-    **What it does:** Searches the Microsoft Planetary Computer for the
-    least-cloudy Sentinel-2 L2A scene intersecting ``bbox`` inside the time
-    window, reads the visible bands (B04 Red / B03 Green / B02 Blue) plus the
-    SCL scene-classification band clipped to the bbox at 10 m, masks cloud /
-    shadow / nodata pixels via SCL, joint-percentile-stretches the uint16
-    reflectance to uint8, and returns a 3-band RGB COG that paints directly as a
-    recent satellite basemap (no rescale / colormap  --  the baked natural colors
-    render as-is via the multiband passthrough in ``publish_layer``).
+    Use this when:
+    - The user wants a recent true-color / natural-color satellite picture of an
+      area ("what does X look like from space", a current basemap, a post-event
+      before/after look).
+    - Anywhere on Earth (GLOBAL, ~5-day refresh) -- especially outside the US,
+      where NAIP is stale, or when a specific recent date matters.
 
-    Sentinel-2 is GLOBAL and refreshes every ~5 days, so this is the go-to
-    "what does this area look like right now from space" layer anywhere on
-    Earth  --  the worldwide complement to the US-only ``fetch_naip``.
+    Do NOT use this for: US sub-meter aerial detail (use ``fetch_naip``, ~1 m vs
+    10 m); vegetation vigor (use ``compute_ndvi``); land-cover CLASSES
+    (forest/crop/urban -- use ``fetch_landcover`` / ``extract_landcover_class``);
+    treating it as the analytical primary (this is a ``role="context"`` basemap).
 
-    **When to use:**
-    - User wants a recent true-color / natural-color satellite image of an area
-      ("show me what X looks like from space", a post-event before/after look,
-      a current basemap for context).
-    - Anywhere outside the US, or where NAIP is stale, or where a specific
-      recent date matters (call twice with different windows to compare).
+    Honesty: if NO scene covers the bbox in the window under the cloud cap (or
+    every pixel is clouded) a typed ``S2TrueColorNoImageryError`` is raised --
+    never a fabricated layer (raise the window or ``max_cloud_cover``).
 
-    **When NOT to use:**
-    - US sub-meter aerial detail  --  use ``fetch_naip`` (~1 m vs 10 m).
-    - Vegetation vigor index  --  use ``compute_ndvi`` (continuous greenness, not
-      a picture).
-    - Land-cover CLASSES (forest / crop / urban)  --  use ``fetch_landcover`` /
-      ``extract_landcover_class``.
-    - Areas with persistent cloud cover in the window (raise the window or the
-      ``max_cloud_cover`` ceiling); a no-imagery result is an honest typed error.
+    Action: returns a 3-band RGB ``LayerURI`` (``style_preset="s2_truecolor"``,
+    a multiband passthrough) that paints directly -- no rescale / colormap, no
+    ``publish_layer`` call needed. Cached ``static-30d``.
 
-    **Parameters:**
-    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326.
-      Required. AOI-scoped (<= 0.5 deg^2).
-    - ``start_date`` / ``end_date`` (str, optional): ``"YYYY-MM-DD"`` window
-      bounds. Default: a trailing ~90-day recent window ending today.
-    - ``max_cloud_cover`` (float, default 30.0): only scenes below this
-      ``eo:cloud_cover`` percent are considered; the least-cloudy is chosen.
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. Required,
+            AOI-scoped (<= 0.5 deg^2).
+        start_date / end_date: ``"YYYY-MM-DD"`` window bounds. Default: a trailing
+            ~90-day window ending today.
+        max_cloud_cover: float percent (default 30.0); only scenes below this
+            ``eo:cloud_cover`` are considered and the least-cloudy is chosen.
 
-    **Returns:** A ``LayerURI`` (``layer_type="raster"``, ``role="context"``  --
-    it is a basemap, not the analytical primary) pointing at a 3-band RGB COG in
-    the ``static-30d``/``s2_truecolor`` cache prefix.
-    ``style_preset="s2_truecolor"`` (a multiband-passthrough token  --  no
-    single-band rescale).
-
-    **Data source:** Sentinel-2 Level-2A via the Microsoft Planetary Computer
-    STAC (``sentinel-2-l2a`` collection; bands B04/B03/B02 + SCL).
-
-    FR-CE-8: routed through ``read_through`` so identical ``(bbox, window,
-    cloud)`` calls reuse the cached RGB COG.
+    Data source: Sentinel-2 Level-2A via the Microsoft Planetary Computer STAC
+    (``sentinel-2-l2a``; bands B04/B03/B02 + SCL cloud mask), jointly
+    percentile-stretched (2nd..98th over clear pixels) to baked uint8. Routed
+    through ``read_through`` so identical ``(bbox, window, cloud)`` calls reuse
+    the cached RGB COG.
     """
     _validate_bbox(bbox)
     q_bbox = _round_bbox(bbox)

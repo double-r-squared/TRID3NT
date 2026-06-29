@@ -318,14 +318,15 @@ def catalog_search(
 
     Use this when: the agent has a free-text need ("flood zones", "DEM",
     "river flow data", "building footprints") and wants the catalog's
-    curator-vetted endpoints + invocation hints (``how_to_use``) — the §F.1.2
-    Mode 1 substrate. The returned entries carry stable IDs the LLM passes
-    to ``catalog_fetch``.
+    curator-vetted endpoints + invocation hints (``how_to_use``) -- the SRS
+    F.1.2 Mode 1 substrate. The returned entries carry stable IDs the LLM
+    passes to ``catalog_fetch``.
 
-    Do NOT use this for: live geocoding (use ``geocode_location``); pulling
-    actual bytes (use ``catalog_fetch`` or one of the dedicated fetchers);
-    enumerating GCS-cached layers (those are not catalog entries — the
-    catalog describes external sources).
+    Do NOT use this for: discovering atomic TOOLS (use ``discover_dataset`` --
+    that ranks the tool registry; this ranks the external-DATA catalog); live
+    geocoding (use ``geocode_location``); pulling actual bytes (use
+    ``catalog_fetch`` or a dedicated fetcher); enumerating already-cached layers
+    (those are not catalog entries; the catalog describes external sources).
 
     Params:
         topic: free-text topic ("flood zones", "DEM", "land cover", etc.).
@@ -335,19 +336,19 @@ def catalog_search(
             drop entries that the bbox cannot plausibly hit (CONUS-only
             entries vs an international bbox). See OQ-47-CATALOG-COVERAGE-INDEX.
         source_filter: optional ``source_class`` filter ("dem", "landcover",
-            "flood_zone", …). When set, only entries matching this
+            "flood_zone", ...). When set, only entries matching this
             source_class are returned.
 
     Returns:
         A list of dicts (one per matching CatalogEntry), each carrying the
         catalog entry as a JSON-serializable dict + a ``relevance_score``
-        float for the ranking. The dict shape matches the §F.1.2 Mode 1
+        float for the ranking. The dict shape matches the SRS F.1.2 Mode 1
         binding contract (id, name, description, urls, access_tier,
         credential_tier, ttl_class, source_class, license, citation,
         vintage, last_verified, status, how_to_use, api_key_secret_ref).
 
-        Empty list when no entries match — the LLM should escalate to Mode 2
-        (offer-catalog-addition) per §F.1.2 prose.
+        Empty list when no entries match -- the LLM should escalate to Mode 2
+        (offer-catalog-addition) per SRS F.1.2 prose.
 
     FR-DC-2 / FR-CE-8: registered with ``ttl_class="semi-static-7d"``,
     ``source_class="catalog_search"``, ``cacheable=True``. The cache key
@@ -684,10 +685,10 @@ def _tier4_region_fetch(
     open_world_hint=True,
 )
 def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_ignored: Any) -> dict[str, Any]:
-    """Fetch bytes for a vetted catalog entry by its stable id (§F.1.2 Mode 1).
+    """Fetch bytes for a vetted catalog entry by its stable id (SRS F.1.2 Mode 1).
 
     Use this when: the LLM has chosen a `CatalogEntry` from `catalog_search`
-    and needs the actual layer bytes — generic dispatcher routes by the
+    and needs the actual layer bytes -- generic dispatcher routes by the
     entry's ``access_tier``: Tier 1 (STAC+COG), Tier 2 (OGC service), Tier 3
     (HTTPS+Range), Tier 4 (region+clip). The dispatched bytes are written
     through the FR-DC-3 cache and surfaced as a LayerURI.
@@ -696,6 +697,12 @@ def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_
     direct-bbox raster retrieval where a dedicated fetcher already exists
     (use ``fetch_dem`` / ``fetch_landcover`` etc.); user-supplied URLs not in
     the catalog (use ``web_fetch`` once it lands).
+
+    Honesty/render note: this returns a DICT (``{"layer": LayerURI, "entry_id",
+    "access_tier", "source_class", "citation", "last_verified", ...}``), NOT a
+    bare auto-rendering layer -- pass ``result["layer"]`` to ``publish_layer`` to
+    paint it. Tiers 1/4 raise NotImplementedError in v0.1 (use the dedicated
+    ``fetch_dem`` / ``fetch_river_geometry`` / ``fetch_population`` tools).
 
     Params:
         entry_id: stable catalog id (e.g. ``"fema-nfhl-flood-zones"``,
@@ -709,7 +716,7 @@ def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_
             - ``service_type`` (Tier 2): override URL sniffing
               (``"WCS"`` / ``"WMS"`` / ``"WFS"`` / ``"ARCGIS_REST"``).
             - ``width_px`` / ``height_px`` (Tier 2 raster): explicit pixel
-              dimensions. Optional — when omitted, the dispatch derives an
+              dimensions. Optional -- when omitted, the dispatch derives an
               extent-aware raster grid from ``bbox`` (resolution lever below).
             - ``target_resolution_m`` (Tier 2 raster): ground cell size in
               metres for the auto-computed grid (the fetch-side resolution
@@ -725,7 +732,7 @@ def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_
     Returns:
         A dict with:
         - ``layer``: a ``LayerURI`` pointing at the cached artifact
-          (``gs://grace-2-hazard-prod-cache/cache/static-30d/catalog_fetch/<key>.<ext>``).
+          (``.../cache/static-30d/catalog_fetch/<key>.<ext>`` in the layer cache).
         - ``entry_id``: the catalog id (echo).
         - ``access_tier``: the dispatched tier (1/2/3/4).
         - ``source_class``: the entry's source_class (for downstream routing).

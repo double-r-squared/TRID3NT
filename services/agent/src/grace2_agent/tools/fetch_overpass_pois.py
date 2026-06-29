@@ -664,92 +664,51 @@ def fetch_overpass_pois(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch OpenStreetMap POIs / tagged features as a point FlatGeobuf overlay.
+    """Fetch OpenStreetMap POIs / tagged features as a point FlatGeobuf overlay [vector fetcher].
 
-    **What it does:** Queries the OpenStreetMap Overpass API for any
-    ``key=value``-tagged feature (``node``, ``way``, or ``relation``) inside the
-    requested bbox, reduces every match to a single Point (way/relation matches
-    use their centroid), and serializes the points to FlatGeobuf cached for 30
-    days. Each feature carries ``osm_id``, ``osm_type``, ``name``, the matched
-    ``key`` / ``value``, and the full OSM tag dictionary as ``tags_json``. The
-    resulting vector renders inline on the map automatically — do NOT call
-    ``publish_layer`` on it. This is the FLEXIBLE, global exposure-layer
-    complement to the FIXED, US-only ``fetch_hifld_critical_infrastructure``
-    tool: same uniform point shape, but the full OSM tag vocabulary worldwide.
+    Use this when:
+    - The user asks to show / overlay a class of facilities or features by name:
+      "hospitals", "fire stations", "schools", "pharmacies", "gas stations",
+      "places of worship", "supermarkets".
+    - You need a global EXPOSURE layer for a hazard footprint (which
+      hospitals/schools/shelters fall inside an inundation or smoke plume?),
+      including outside the US.
+    - Any ad-hoc OSM ``key=value`` tag (``emergency=fire_hydrant``,
+      ``power=substation``, ``shop=supermarket``, ``tourism=hotel``).
 
-    **When to use:**
-    - User asks to show / overlay a class of facilities or features by name:
-      "show the hospitals", "where are the fire stations", "schools in this
-      area", "pharmacies near the flood zone", "gas stations", "places of
-      worship", "supermarkets".
-    - You need an EXPOSURE layer for a hazard footprint (which hospitals /
-      schools / shelters fall inside an inundation or smoke plume?) anywhere in
-      the world, including outside the US where HIFLD has no coverage.
-    - Any ad-hoc OSM tag the user names that is not a curated HIFLD category
-      (``emergency=fire_hydrant``, ``man_made=water_tower``, ``power=substation``,
-      ``shop=supermarket``, ``tourism=hotel``, ...).
+    Do NOT use this for: US critical-infrastructure where the authoritative
+    federal layer is preferable (use ``fetch_hifld_critical_infrastructure``);
+    road / street centrelines (use ``fetch_roads_osm`` -- LineStrings);
+    administrative / parcel boundaries (use ``fetch_administrative_boundaries``);
+    building FOOTPRINT polygons (this returns building CENTROIDS only).
 
-    **When NOT to use:**
-    - For US critical-infrastructure categories where an authoritative federal
-      dataset is preferable, ``fetch_hifld_critical_infrastructure`` is the
-      curated source (schools, hospitals, fire/police, power plants) — use that
-      when the user wants the official US layer; use THIS tool for global
-      coverage, niche tags, or when HIFLD lacks the category.
-    - For ROAD / street centrelines use ``fetch_roads_osm`` (LineStrings).
-    - For administrative / parcel boundaries use
-      ``fetch_administrative_boundaries``.
-    - For building FOOTPRINT polygons use the building-footprint fetcher (this
-      tool returns building CENTROIDS only when ``building=*`` is queried).
+    Honesty: every public Overpass mirror failing raises a retryable
+    ``OverpassUpstreamError``; a successful query matching ZERO features raises a
+    non-retryable ``OverpassNoFeaturesError`` -- never an empty success layer.
 
-    **Parameters:**
-    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
-      max_lon, max_lat)`` in EPSG:4326. Required. Example San Francisco core:
-      ``(-122.45, 37.74, -122.38, 37.80)``. A bbox is REQUIRED — there is no
-      global sweep (``supports_global_query=False``); a global POI query would
-      time out and return an unbounded payload.
-    - Tag selector (pass ONE; checked in this priority order):
-        - ``amenity`` (str): an ``amenity`` key value, e.g. ``"hospital"``,
-          ``"school"``, ``"fire_station"`` — the most common shortcut.
-        - ``tag`` (str): an explicit ``"key=value"`` OSM tag, e.g.
-          ``"emergency=fire_hydrant"``, ``"shop=supermarket"``,
-          ``"power=substation"``. A bare value (``"hospital"``) is also accepted
-          and its key inferred for common classes.
-        - ``category`` (str): alias for ``tag`` — a ``"key=value"`` or a known
-          bare value.
-        - ``value`` (str): a bare value resolved to its key for common classes.
+    Action: returns a point-vector ``LayerURI`` (``role="primary"``,
+    ``style_preset="overpass_pois"``) that AUTO-RENDERS inline -- do NOT call
+    ``publish_layer``. ``bbox`` is set to the features' extent for auto-zoom.
+    Cached ``static-30d``. Pair with ``geocode_location`` to get a bbox first.
 
-    **Returns:** A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
-    (``.../cache/static-30d/overpass_pois/<key>.fgb``).
-    ``layer_type="vector"``, ``role="primary"``,
-    ``style_preset="overpass_pois"``, ``units=None``. ``bbox`` is set to the
-    features' extent so the camera auto-zooms. Properties per feature:
-    ``osm_id`` (int), ``osm_type`` (str), ``name`` (str | None), ``key`` (str),
-    ``value`` (str), ``tags_json`` (str — full OSM tag dict).
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` EPSG:4326. REQUIRED -- no
+            global sweep (``supports_global_query=False``); a global POI query
+            would time out. Example SF core: ``(-122.45, 37.74, -122.38, 37.80)``.
+        Tag selector (pass ONE; checked in this priority order):
+            - ``amenity``: an ``amenity`` value, e.g. ``"hospital"``, ``"school"``,
+              ``"fire_station"`` -- the most common shortcut.
+            - ``tag``: an explicit ``"key=value"`` OSM tag (e.g.
+              ``"emergency=fire_hydrant"``, ``"power=substation"``); a bare value
+              (``"hospital"``) is also accepted and its key inferred.
+            - ``category``: alias for ``tag`` (``"key=value"`` or a known value).
+            - ``value``: a bare value resolved to its key for common classes.
 
-    **Fallback behaviour (data-source fallback norm — primary -> fallback ->
-    honest typed error):** the request is tried across several independent
-    public Overpass mirrors in turn; if every mirror fails a retryable
-    ``OverpassUpstreamError`` is raised. When the query succeeds but matches
-    ZERO features, a non-retryable ``OverpassNoFeaturesError`` is raised — never
-    an empty success-shaped layer.
-
-    **Cross-tool dependencies (FR-TA-3):**
-    - Composes WITH: ``geocode_location`` (derive a bbox from a place name
-      BEFORE this call), ``compute_zonal_statistics`` /
-      intersection tools (count POIs inside a hazard footprint),
-      ``fetch_hifld_critical_infrastructure`` (the US-curated companion).
-    - Upstream data source: OpenStreetMap via the Overpass API.
-
-    **Errors (FR-AS-11 typed-error surface):**
-    - ``OverpassInputError``: bad bbox / missing or garbled tag / Overpass
-      rejected the query (retryable=False).
-    - ``OverpassUpstreamError``: every Overpass mirror failed (retryable=True).
-    - ``OverpassNoFeaturesError``: zero features matched in scope
-      (retryable=False).
-
-    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key is
-    SHA-256 over ``(bbox-6dp, key, value)``. Tier-1 free, no API key. OSM is
-    global, but a bbox is required (``supports_global_query=False``).
+    Returns:
+        A ``LayerURI`` (``layer_type="vector"``) -> FlatGeobuf of Points, each
+        carrying ``osm_id``, ``osm_type``, ``name``, ``key``, ``value``, and the
+        full OSM tag dict as ``tags_json``. Cache key is SHA-256 over
+        ``(bbox-6dp, key, value)``. Tier-1 free, no API key; OSM is global.
     """
     # 1. Input validation + tag resolution.
     vbox = _validate_bbox(bbox)

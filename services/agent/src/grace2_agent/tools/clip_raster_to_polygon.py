@@ -473,38 +473,37 @@ def clip_raster_to_polygon(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Clip a raster to an arbitrary polygon (vs ``clip_raster_to_bbox`` which only does rectangles).
+    """Clip/mask a raster to an arbitrary POLYGON (raster -> raster; vs clip_raster_to_bbox = rectangles only).
 
-    Uses ``rasterio.mask.mask(crop=True)`` to mask a raster to one or more
-    polygon features, with optional attribute-based feature selection and
-    automatic CRS reprojection of the polygon to the raster CRS. Returns a
-    new ``LayerURI`` for the masked raster, cached for 30 days.
-
-    When to use:
-        - User asks for analysis "in [named place]" (state, county, watershed,
-          protected area, parcel) and the place is a non-rectangular polygon.
-        - Masking a flood, slope, or DEM raster to a WDPA protected-area boundary
+    Use this when:
+        - Analysis "in [named place]" (state, county, watershed, protected area,
+          parcel) where the place is a non-rectangular polygon.
+        - Masking a flood / slope / DEM raster to a WDPA protected-area boundary
           or TIGER county outline before aggregation.
         - Preparing a raster zone input for ``compute_zonal_statistics`` by
           restricting to an exact administrative or ecological boundary.
-        - Case 1 flood-habitat workflow: clip flood-depth COG to WDPA polygons.
 
-    When NOT to use:
-        - Rectangular bbox clips (use ``clip_raster_to_bbox`` — faster, no vector read).
-        - Vector-to-vector clips (use ``clip_vector_to_polygon``).
-        - Reprojection without spatial masking (use ``clip_raster_to_bbox`` with
-          ``target_crs``).
-        - Clipping based on complex attribute logic (pre-filter the vector first).
+    Do NOT use this for:
+        - A rectangular bbox -- use ``clip_raster_to_bbox`` (faster, no vector read).
+        - Clipping a VECTOR layer to a polygon -- use ``clip_vector_to_polygon``.
+        - Reprojection without spatial masking -- use ``clip_raster_to_bbox``
+          with ``target_crs``.
+
+    Output: a new raster ``LayerURI`` (masked GeoTIFF, output extent = polygon
+    bbox, source CRS, cached 30 days); pass downstream or to ``publish_layer``.
+
+    Uses ``rasterio.mask.mask(crop=True)`` with optional attribute-based feature
+    selection and automatic reprojection of the polygon to the raster CRS.
 
     Params:
-        raster_uri: source raster URI — ``gs://`` GCS path or absolute local
+        raster_uri: source raster URI -- ``s3://`` path or absolute local
             file path. Must be a GeoTIFF or any GDAL-readable raster format.
-        polygon_uri: source polygon URI — ``gs://`` GCS path or absolute local
+        polygon_uri: source polygon URI -- ``s3://`` path or absolute local
             file path. Must be a GDAL/OGR-readable vector format (FlatGeobuf,
             GeoJSON, GeoPackage, Shapefile, etc.) containing one or more
             polygon features with explicit CRS metadata.
         feature_filter: optional dict ``{"property": "<attribute_name>",
-            "value": <expected_value>}`` — if the vector has multiple polygons,
+            "value": <expected_value>}`` -- if the vector has multiple polygons,
             select only matching features BEFORE clip. Use to pick e.g. one
             state by name out of a TIGER state FlatGeobuf. If None, the union
             of ALL features in the vector is used as the mask.
@@ -513,10 +512,7 @@ def clip_raster_to_polygon(
             dtypes / NaN for float dtypes if no source nodata is defined).
 
     Returns:
-        A ``LayerURI`` pointing at a masked GeoTIFF in the cache bucket::
-
-            gs://grace-2-hazard-prod-cache/cache/static-30d/clip_raster_polygon/<key>.tif
-
+        A ``LayerURI`` pointing at a masked GeoTIFF in the FR-DC cache.
         Output CRS matches the source raster's CRS. Output extent is the
         polygon's bounding box (``crop=True`` in ``rasterio.mask.mask``).
 
@@ -524,7 +520,7 @@ def clip_raster_to_polygon(
         - The polygon is reprojected to the raster's CRS automatically; you do
           NOT need to pre-reproject. Just pass the LayerURI from any polygon
           fetcher.
-        - feature_filter works on attribute equality only — for complex
+        - feature_filter works on attribute equality only -- for complex
           attribute logic (regex, range), filter the vector first with
           ``qgis_process``.
         - Cache key includes (raster_uri, polygon_uri, feature_filter,
@@ -537,18 +533,18 @@ def clip_raster_to_polygon(
     Cross-tool dependencies:
         Upstream (consumes):
         - ``fetch_dem`` / ``fetch_landcover`` / ``compute_slope`` / ``compute_hillshade`` /
-          ``compute_colored_relief`` / ``compute_impervious_surface`` — supply the
+          ``compute_colored_relief`` / ``compute_impervious_surface`` -- supply the
           ``raster_uri`` input.
-        - ``fetch_administrative_boundaries`` / ``fetch_wdpa_protected_areas`` —
+        - ``fetch_administrative_boundaries`` / ``fetch_wdpa_protected_areas`` --
           supply the ``polygon_uri`` mask input.
         - Flood-depth COG from ``postprocess_flood`` (via ``run_model_flood_scenario``)
-          — primary raster input for Case 1 flood-habitat analysis.
+          -- primary raster input for Case 1 flood-habitat analysis.
         Downstream (feeds):
-        - ``compute_zonal_statistics`` — pass the clipped ``LayerURI`` as
+        - ``compute_zonal_statistics`` -- pass the clipped ``LayerURI`` as
           ``value_raster_uri`` to aggregate within the polygon boundary.
-        - ``run_model_flood_habitat_scenario`` — calls this internally to clip
+        - ``run_model_flood_habitat_scenario`` -- calls this internally to clip
           flood and species-layer rasters to WDPA polygon extents.
-        - ``publish_layer`` — publish the clipped raster to QGIS Server.
+        - ``publish_layer`` -- publish the clipped raster to QGIS Server.
 
     Raises:
         ClipRasterPolygonError: with one of the documented error codes if

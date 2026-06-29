@@ -323,27 +323,29 @@ async def compute_layer_bounds(
     # via tool_arg_normalizer, but kept here belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Get a layer's geographic extent AND fit/zoom/resize the map to it.
+    """Get a layer's geographic extent (bbox) AND fit/zoom/resize the map to it (returns JSON, not a layer).
 
-    USE THIS TO GET A LAYER'S GEOGRAPHIC EXTENT, or to FIT / ZOOM / RESIZE THE
-    MAP to a layer so all of its features are in view. NEVER use the code
-    sandbox (code_exec_request) for bounding-box / extent math — this tool is
-    the dedicated, fast, deterministic path and it ALSO drives the map view.
+    Use this when:
+        - The user wants to "resize the bounding box to encompass all the
+          <features>", "fit the map to the layer", "zoom to all the points",
+          "show me the whole extent" -- anything that means fit-the-view-to-a-layer.
+        - You need a layer's geographic extent (bbox) as numbers.
+        - You CAN drive the map view -- do NOT claim you cannot pan or zoom. This
+          emits a ``zoom-to`` map-command (the web's fitBounds handler) so the
+          viewport fits all features.
 
-    When the user asks to "resize the bounding box to encompass all the
-    <features>", "fit the map to the layer", "zoom to all the points", "show me
-    the whole extent", or anything that means fit-the-view-to-a-layer, call
-    THIS tool with the layer's handle/uri. You CAN drive the map view — do NOT
-    claim you cannot pan or zoom the map. The tool emits a ``zoom-to``
-    map-command (the same one the web's fitBounds handler consumes) so the
-    actual viewport fits all features.
+    Do NOT use this for:
+        - A drawable map layer -- this returns a JSON bbox + a camera move, not a
+          renderable LayerURI; use ``publish_layer`` to draw something.
+        - Bounding-box / extent math in the code sandbox (``code_exec_request``) --
+          this tool is the dedicated, fast, deterministic path.
 
     Parameters:
         layer_uri: the loaded vector or raster layer's handle / URI. PREFER the
             layer's ``layer_id`` handle from [Case state] / loaded_layers, NOT
             its display tile URL (the ``https://.../cog/tiles/...`` template) --
-            the handle resolves deterministically to the data COG. Also accepts a
-            gs:///s3:// object URI or a local path (the display tile URL is
+            the handle resolves deterministically to the data COG. Also accepts an
+            ``s3://`` object URI or a local path (the display tile URL is
             tolerated as a fallback, but the handle is the reliable form). Vector
             (.fgb/.geojson/.gpkg/.shp/.parquet) opens via geopandas; raster
             (.tif/.tiff/.vrt) opens via rasterio. The extent is reprojected to

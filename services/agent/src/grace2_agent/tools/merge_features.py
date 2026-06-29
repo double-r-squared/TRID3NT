@@ -371,7 +371,7 @@ def merge_features(
     merged geometry. The result keeps ONE feature's attributes -- the "keeper".
     Returns a FlatGeobuf ``LayerURI``, cached for 30 days.
 
-    When to use:
+    Use this when:
         - Dissolve several adjacent polygons into one (e.g. combine parcels into a
           single AOI, merge fragmented flood-zone polygons, fuse touching field
           boundaries into one field).
@@ -379,11 +379,11 @@ def merge_features(
         - "merge these into one", "dissolve the selected polygons", "combine these
           features".
 
-    When NOT to use:
-        - Differencing one polygon out of another (use ``cut_features_with_polygon``).
-        - Dissolving BY an attribute value into multiple groups (use ``qgis_process``
-          ``native:dissolve`` with a FIELD).
-        - Clipping a layer to a mask (use ``clip_vector_to_polygon``).
+    Do NOT use this for:
+        - Differencing one polygon out of another -- use ``cut_features_with_polygon``.
+        - Dissolving BY an attribute value into multiple groups -- use
+          ``qgis_process`` ``native:dissolve`` with a FIELD.
+        - Clipping a layer to a mask -- use ``clip_vector_to_polygon``.
 
     Params:
         layer_uri: source vector URI -- ``s3://`` path or absolute local file

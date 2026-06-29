@@ -2265,94 +2265,56 @@ def _fetch_nominatim_geocode_bytes(query: str) -> bytes:
     open_world_hint=True,
 )
 def geocode_location(query: str, **_extra_ignored: Any) -> dict[str, Any]:
-    """Translate a free-text place name into a bbox and canonical name via OpenStreetMap Nominatim.
+    """Resolve a free-text place name to a bbox + centroid via OpenStreetMap Nominatim [geocode/AOI helper].
 
-    **What it does:** Forward-geocodes a human-readable location string to a
-    WGS84 bounding box, centroid latitude/longitude, and canonical place name
-    using the OpenStreetMap Nominatim REST API. The result is cached for one
-    hour (``dynamic-1h``), so repeated references to the same place within a
-    session are free.
+    Use this when:
+    - A request starts from a place name ("model flooding in Fort Myers, FL",
+      "wildfires near Los Angeles") and you need a bbox/centroid BEFORE calling
+      bbox-based fetch tools.
+    - You must turn a textual event location (e.g. a Hazard Event
+      ``location_name``) into a usable bounding box.
 
-    **When to use:**
-    - User asks to "model flooding in Fort Myers, FL" or "show wildfires near
-      Los Angeles" — convert the place name to a bbox before calling spatial
-      fetch tools.
-    - The agent needs to translate a textual event location from the Hazard
-      Event Pipeline (``EventMetadata.location_name``) into a usable bbox.
-    - Any workflow step that starts from a city, county, neighborhood, or
-      named geographic feature rather than coordinates.
+    Do NOT use this for: fetching map data (this returns COORDINATES, not a layer
+    -- it renders nothing); US administrative POLYGONS (use
+    ``fetch_administrative_boundaries``); reverse geocoding (coords -> name),
+    routing, or parcel-level address precision (Nominatim's other endpoints /
+    providers, not wired here).
 
-    **When NOT to use:**
-    - Reverse geocoding (coordinates → place name) — Nominatim has a separate
-      ``/reverse`` endpoint; use ``web_fetch`` or a future dedicated tool.
-    - Routing or turn-by-turn distance queries — Nominatim does not support
-      them; use a routing API.
-    - High-precision parcel-level address resolution — Nominatim is
-      street-address level at best; use a dedicated geocoding provider for
-      sub-parcel accuracy.
-    - Queries where bbox coverage matters: the returned bbox reflects OSM's
-      administrative boundary for the named place, which can be very large for
-      counties or states; narrow it before passing to ``fetch_dem`` or similar
-      large-download tools.
+    Honesty: a vague/regional query ("south Florida") with a detected US state
+    snaps to that state's FULL bbox and sets an ADDITIVE ``fallback_reason`` the
+    agent must narrate truthfully; a precise in-state match ("Fort Myers, FL") is
+    returned UNCHANGED (never widened). Genuine failures with no detected state
+    still raise a typed error.
 
-    **Parameters:**
-    - ``query`` (str): Free-text place name or description.
-      Examples: ``"Fort Myers, FL"``, ``"Lee County Florida"``,
-      ``"Gulf of Mexico"``. Must be non-empty.
+    Action: the returned ``bbox`` feeds ``fetch_dem``, ``fetch_buildings``,
+    ``fetch_population``, ``fetch_landcover``, ``fetch_river_geometry``,
+    ``fetch_administrative_boundaries``, and most bbox fetchers. Beware large
+    admin extents (a county/state bbox can be huge) -- narrow before a heavy
+    download. Cached ``dynamic-1h``.
 
-    **Returns:**
-    A plain dict with keys:
-    - ``name`` (str): canonical OSM display name.
-    - ``bbox`` (list[float]): ``[min_lon, min_lat, max_lon, max_lat]`` in
-      EPSG:4326 — feeds directly into ``fetch_dem``, ``fetch_buildings``,
-      ``fetch_population``, ``fetch_landcover``, etc.
-    - ``latitude`` / ``longitude`` (float): centroid of the matched feature.
-    - ``source`` (str): ``"nominatim"`` on a precise match, or
-      ``"state-bbox-fallback"`` when the state-snap fired (see below).
-    - ``osm_type``, ``osm_id``, ``place_id`` (str / int): OSM provenance fields
-      (``None`` on a state-snap, where there is no single OSM feature).
-    - ``fallback_reason`` (str, ADDITIVE — present ONLY on a state-snap): an
-      honest human-readable explanation the agent narrates truthfully, e.g.
-      *"No precise match for 'south Florida'; snapped to the full state of
-      Florida. Refine the prompt for a smaller area."*
+    Params:
+        query: free-text place name or description (required, non-empty).
+            Examples: ``"Fort Myers, FL"``, ``"Lee County Florida"``,
+            ``"Gulf of Mexico"``.
 
-    **State-snap fallback (NATE directive):** vague/regional queries
-    ("south Florida", "protected areas in south Florida") used to geocode to an
-    arbitrary first-ranked OSM feature (observed: a random house, or KANSAS for
-    a Florida query). Now, if a US state is detected in the query, the primary
-    result's centroid is sanity-checked against that state's bounding box; a
-    wrong-state result (or a "no results" / upstream failure) snaps the bbox to
-    the full state (live OSM state admin boundary, with a vetted offline Census
-    extent as last resort) and records an honest ``fallback_reason``. A PRECISE
-    in-state query ("Fort Myers, FL", "Lee County Florida") passes the
-    sanity-check and is returned UNCHANGED — it is never widened. When NO state
-    is detected and the primary geocode fails, the typed error still raises
-    (genuine failures are never swallowed).
+    Returns:
+        A plain dict:
+        - ``name`` (str): canonical OSM display name.
+        - ``bbox`` (list[float]): ``[min_lon, min_lat, max_lon, max_lat]`` (EPSG:4326).
+        - ``latitude`` / ``longitude`` (float): centroid of the matched feature.
+        - ``source`` (str): ``"nominatim"`` on a precise match, or
+          ``"state-bbox-fallback"`` on a state-snap.
+        - ``osm_type`` / ``osm_id`` / ``place_id``: OSM provenance (``None`` on a
+          state-snap, where there is no single OSM feature).
+        - ``fallback_reason`` (str, present ONLY on a state-snap): honest note,
+          e.g. "No precise match for 'south Florida'; snapped to the full state
+          of Florida. Refine the prompt for a smaller area."
 
-    **Cross-tool dependencies:**
-    - Upstream of: ``fetch_dem``, ``fetch_buildings``, ``fetch_population``,
-      ``fetch_landcover``, ``fetch_river_geometry``,
-      ``fetch_administrative_boundaries``, ``fetch_nws_event``,
-      ``fetch_firms_active_fire``, and most other bbox-based fetchers.
-    - Called internally by ``model_flood_scenario`` workflow to resolve a
-      user-supplied location string before fetching DEM/landcover.
-
-    FR-CE-8: The fetch is routed through ``read_through`` so two identical
-    queries within the same hourly window reuse the cached response. The
-    cache class is ``"dynamic-1h"`` per FR-DC-2 active-state-ish (geocoding
-    answers DO change as Nominatim's OSM index updates, but on a slower
-    cadence than hourly).
-
-    Side effect: per FR-TA-2 §"Location-resolved emission" / FR-AS-7, the
-    agent surface emits a ``location-resolved`` WebSocket message when this
-    tool returns so the client auto-snaps the map. The emission seam is
-    in the agent's server.py M1 module — surfaced as
-    OQ-33-LOCATION-RESOLVED-EMISSION-SEAM for the agent job that owns
-    envelope emission this sprint (job-0035) to wire up.
-
-    Nominatim usage policy: User-Agent is sent on every request; the
-    ``dynamic-1h`` cache class naturally throttles repeat queries (one
-    fetch per hour-bucket per distinct query).
+    Side effect (FR-AS-7): the agent surface emits a ``location-resolved``
+    WebSocket message when this tool returns so the client auto-snaps the map.
+    Nominatim usage policy: a User-Agent is sent on every request; the
+    ``dynamic-1h`` cache throttles repeat queries (one fetch per hour-bucket per
+    distinct query).
     """
     if not isinstance(query, str) or not query.strip():
         raise BboxInvalidError("geocode_location requires a non-empty string query")

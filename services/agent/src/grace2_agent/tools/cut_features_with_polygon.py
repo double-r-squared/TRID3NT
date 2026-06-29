@@ -382,7 +382,7 @@ def cut_features_with_polygon(
     overlay difference, each surviving feature keeps its original columns on the
     cut-down geometry. Returns a FlatGeobuf ``LayerURI``, cached for 30 days.
 
-    When to use:
+    Use this when:
         - Punch a hole / remove an area from polygons (e.g. erase a water body
           from land parcels, remove a no-build buffer from developable area,
           subtract a protected zone from an analysis polygon).
@@ -390,10 +390,10 @@ def cut_features_with_polygon(
         - "cut this polygon out of those features", "erase the lake from the
           parcels", "remove the overlap region".
 
-    When NOT to use:
-        - Keeping the INSIDE of a mask instead of removing it (use
-          ``clip_vector_to_polygon``).
-        - Merging features together (use ``merge_features``).
+    Do NOT use this for:
+        - KEEPING the inside of a mask instead of removing it -- use
+          ``clip_vector_to_polygon``.
+        - Merging features together -- use ``merge_features``.
         - Splitting a single feature along a line (a future split tool /
           ``qgis_process`` ``native:splitwithlines``).
 

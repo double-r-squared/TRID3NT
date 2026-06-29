@@ -2165,98 +2165,59 @@ def publish_layer(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> str:
-    """Publish a COG raster layer to QGIS Server via the PyQGIS worker.
+    """Publish a raster COG to the map; returns a tile/WMS URL string (NOT a LayerURI).
 
-    Dispatches the ``grace-2-pyqgis-worker`` Cloud Run Job to add a COG raster
-    at a ``gs://`` URI as a named layer in the canonical ``.qgs`` project. Polls
-    until the job completes and returns a WMS URL string the MapLibre client can
-    render immediately. Not cacheable (side-effect tool; mutates GCS project state).
+    On the live AWS stack this returns a ready TiTiler XYZ tile TEMPLATE
+    (".../{z}/{x}/{y}...") reading the ``s3://`` COG directly, so the MapLibre
+    client renders it immediately. (QGIS-Server WMS is the dormant interim seam.)
 
-    When to use:
-        - After ``postprocess_flood``, ``compute_hillshade``, ``compute_slope``,
-          ``compute_colored_relief``, ``compute_aspect``, or any other tool that
-          returns a ``LayerURI`` with a ``gs://`` COG, when the user needs the
-          layer displayed on the map.
-        - As the final step in any workflow that produces a raster output -
-          the COG is not visible until this tool runs.
+    Use this when:
+    - you have a RASTER COG (an ``s3://`` .tif from postprocess_flood,
+      compute_hillshade / compute_colored_relief / compute_slope / compute_aspect,
+      a clip_raster_* output, etc.) that is not yet on the map and must display.
+    - as the FINAL step of a workflow that produces a raster output -- the COG is
+      not visible until this runs.
 
-    When NOT to use:
-        - Rendering ``gs://`` URIs directly in MapLibre (not supported; use this
-          tool to go through QGIS Server WMS first).
-        - Publishing vector layers (FlatGeobuf/GeoParquet; a follow-up tool
-          handles vector publication).
-        - Caching or re-fetching data (this is a side-effect tool; the cache
-          shim is not invoked).
+    Do NOT use this for:
+    - a VECTOR layer (FlatGeobuf / GeoJSON / GeoParquet) -- vectors auto-render
+      from their fetch tool; do not publish them here.
+    - a tool result that ALREADY returned a renderable LayerURI on the map -- it
+      is already displayed; re-publishing only duplicates it.
+    - caching or re-fetching data (side-effect tool; the cache shim is bypassed).
+
+    Pass ``layer_uri`` as the producing tool's layer_id HANDLE (preferred) or the
+    ``s3://`` COG copied VERBATIM from its result -- never hand-construct a path.
 
     Params:
-        layer_uri: the producing tool's ``layer_id`` HANDLE (PREFERRED -
-            job-0263 layer-handle indirection: the server resolves it to the
-            exact ``gs://`` COG it recorded), or the ``gs://`` URI copied
-            VERBATIM from the producing tool's result. NEVER construct or
-            re-type a gs:// path from memory. Must resolve to a COG TIFF
-            readable by GDAL via the ``/vsigs/`` virtual filesystem.
-        layer_id: QGIS layer name + WMS ``LAYERS=`` value for the published
-            layer. Must be stable and unique within the ``.qgs`` project
-            (e.g. ``"flood-depth-peak-<run_id>"``).
-        style_preset: filename stem of the QML preset to apply, or omit for
+        layer_uri: the producing tool's ``layer_id`` HANDLE (PREFERRED -- the
+            server resolves it to the exact COG it recorded), or the ``s3://``
+            COG URI copied VERBATIM from the producing tool's result. NEVER
+            construct or re-type a path from memory. Must be a GDAL-readable COG.
+        layer_id: stable, unique layer name within the Case (also the WMS
+            ``LAYERS=`` value on the dormant QGIS path), e.g.
+            ``"flood-depth-peak-<run_id>"``.
+        style_preset: filename stem of the style preset to apply, or omit for
             AUTO selection (recommended): flood/plume depth COGs get the
-            ``"continuous_flood_depth"`` Blues ramp; terrain products
-            (colored relief, hillshade, slope, aspect, raw DEM) get QGIS
-            default rendering, which is correct for RGBA/grayscale rasters
-            - the flood ramp painted them invisible.
-        project_qgs_uri: ``gs://`` URI of the ``.qgs`` project to mutate.
-            Defaults to ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs``
-            (the v0.1 canonical project). The FR-MP-6 Case UX will eventually
-            own per-Case project resolution.
-        case_id: optional Case identifier (FR-MP-6 / job-0121). When passed,
-            the server wrapper resolves the case-scoped ``.qgs`` URI via
-            ``case_lifecycle.ensure_case_qgs`` BEFORE invoking this tool;
-            this parameter is a transport-only carrier so the LLM-visible
-            tool surface is honest about Case context. The atomic tool body
-            itself does not perform Persistence I/O - the server-side
-            wrapper does the lazy-init and substitutes the resolved URI
-            into ``project_qgs_uri``. Defaults to ``None`` (single-tenant
-            demo path; OQ-62-QGS-MUTATION-CONFLICT preserved verbatim).
+            ``"continuous_flood_depth"`` Blues ramp; terrain products (colored
+            relief, hillshade, slope, aspect, raw DEM) get default rendering
+            (the flood ramp painted them invisible). Open/parametric -- stays str.
+        project_qgs_uri: dormant QGIS-path only -- the ``.qgs`` project to mutate;
+            ignored on the TiTiler/S3 path. Defaults to ``None``.
+        case_id: optional Case id (FR-MP-6). Transport-only carrier; the server
+            wrapper resolves the case-scoped target BEFORE invoking this tool.
 
     Returns:
-        WMS URL string:
-        ``<qgis-server-url>?MAP=/mnt/qgs/<qgs-key>&LAYERS=<layer_id>``
-        This URL is suitable for direct use as a ``LayerURI.uri`` value so
-        the MapLibre client can render it without further processing.
+        A tile/WMS URL string usable directly as a ``LayerURI.uri`` so the
+        MapLibre client can render it (TiTiler XYZ template on AWS; WMS URL on
+        the dormant QGIS path). Uncacheable-by-construction (side-effect tool).
 
     Raises:
-        PublishLayerError: on any failure (client unavailable, job dispatch
-            error, worker execution failure, timeout). The ``error_code``
-            attribute carries a SCREAMING_SNAKE_CASE code for the pipeline
-            strip.
+        PublishLayerError: on any failure (tile server unavailable, dispatch
+            error, worker failure, timeout). ``error_code`` carries a
+            SCREAMING_SNAKE_CASE code for the pipeline strip.
 
-    FR-DC-6: This tool is uncacheable-by-construction (a side-effect tool
-    that mutates the per-Case ``.qgs`` project state). The cache shim is NOT
-    invoked.
-
-    Invariant 4 (Rendering): this tool IS the publish bridge. The COG
-    (``s3://`` on the live AWS stack) becomes map-renderable only after this
-    call -- a TiTiler tile template on AWS, or QGIS-Server WMS on the
-    GCP-dormant interim seam.
-
-    Invariant 6 (Metadata-payload pattern): the published layer is surfaced
-    to the client via the layer-load envelope (``observe_published_layer``);
-    persistence is DynamoDB (MongoDB was torn down 2026-06-16).
-
-    Cross-tool dependencies:
-        Upstream (consumes):
-        - ``postprocess_flood`` (via ``run_model_flood_scenario``) - flood-depth
-          COG ``LayerURI`` is the most common ``layer_uri`` input.
-        - ``compute_hillshade`` / ``compute_colored_relief`` / ``compute_slope`` /
-          ``compute_aspect`` / ``compute_impervious_surface`` - any tool that
-          returns a raster ``LayerURI`` with a ``gs://`` URI.
-        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` - clipped rasters
-          passed to this tool for display-extent-scoped publication.
-        Downstream (feeds):
-        - Web client MapLibre layer panel - the returned WMS URL is used
-          directly as a ``LayerURI.uri`` value for WMS tile rendering.
-        - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` -
-          call this as the final step of the workflow chain.
+    Invariant 4 (Rendering): this tool IS the raster publish bridge -- the COG
+    becomes map-renderable only after this call.
     """
     # sprint-14-aws (job-0290): on the AWS deployment rasters publish through
     # TiTiler (a COG XYZ tile server reading s3:// directly) instead of the
