@@ -158,7 +158,7 @@ variable "cases_table" {
     role is granted dynamodb:Query + dynamodb:GetItem on this table ARN AND its
     /index/* ONLY; the view-signer role gains dynamodb:GetItem on the table ARN.
   EOT
-  default     = "grace2_cases"
+  default     = "trid3nt_cases"
 }
 
 variable "users_table" {
@@ -173,7 +173,7 @@ variable "users_table" {
     three case-Lambda roles are granted dynamodb:Query + dynamodb:GetItem on
     this table ARN AND its firebase_uid-index ARN ONLY.
   EOT
-  default     = "grace2_users"
+  default     = "trid3nt_users"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
