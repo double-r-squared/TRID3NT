@@ -74,6 +74,20 @@ RUN pip install --upgrade pip setuptools wheel
 # (the buildspec sets it) so the COPY paths are repo-root-relative, matching the
 # worker images.
 #
+# LOCAL contracts package FIRST. services/agent/pyproject.toml declares
+# ``grace2-contracts>=0.1,<0.2`` but that package is NOT on PyPI -- it lives in
+# this repo at packages/contracts/ and is consumed verbatim (the on-box deploy,
+# scripts/deploy_agent_bundle.sh, bundles + installs it the same way). Install it
+# here BEFORE the agent so that when ``pip install /build/services/agent`` resolves
+# its dependency set the grace2-contracts requirement is ALREADY satisfied by the
+# locally-built 0.1.0 wheel (pip never reaches PyPI for an already-satisfied pin).
+# Copy ONLY the install inputs (pyproject + README + src) -- NOT the package's
+# .venv / .pytest_cache / egg-info -- so the build context layer stays slim.
+COPY packages/contracts/pyproject.toml /build/packages/contracts/pyproject.toml
+COPY packages/contracts/README.md /build/packages/contracts/README.md
+COPY packages/contracts/src /build/packages/contracts/src
+RUN pip install --no-cache-dir /build/packages/contracts
+
 # Copy ONLY the install inputs first (pyproject + the package source) so the
 # expensive dependency layer caches across code-only edits.
 COPY services/agent/pyproject.toml /build/services/agent/pyproject.toml

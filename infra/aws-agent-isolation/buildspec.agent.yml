@@ -8,9 +8,12 @@
 # image -- builds on CodeBuild (isolated, scale-to-zero, LARGE compute).
 #
 # The image build context is the REPO ROOT so the Dockerfile COPY paths
-# (services/agent/...) resolve, matching the worker images. The context tarball
-# is the SAME engine-build flow the orchestrator already uses; here it just
-# needs services/agent/ inside it.
+# (services/agent/... AND packages/contracts/...) resolve, matching the worker
+# images. The context tarball is the SAME engine-build flow the orchestrator
+# already uses; here it needs BOTH services/agent/ AND packages/contracts/ inside
+# it -- the agent pyproject depends on the local grace2-contracts package
+# (packages/contracts/), which the Dockerfile installs before the agent so the
+# >=0.1,<0.2 pin resolves without PyPI (grace2-contracts is NOT published).
 #
 # This standalone file documents the exact build steps; the IaC
 # (infra/aws-agent-isolation/codebuild.tf) inlines the equivalent via
@@ -18,8 +21,9 @@
 # the identical commands.
 #
 # TRIGGER (manual, off-box):
-#   # 1. upload the build context (repo root subset incl. services/agent):
-#   tar czf agent_src.tgz services/agent
+#   # 1. upload the build context (repo root subset incl. services/agent +
+#   #    packages/contracts, the local grace2-contracts dep):
+#   tar czf agent_src.tgz services/agent packages/contracts
 #   aws s3 cp agent_src.tgz \
 #     s3://grace2-agent-bundle-226996537797/agent-build/agent_src.tgz --region us-west-2
 #   # 2. build + push :latest + :codebuild to the agent ECR repo:
@@ -48,6 +52,7 @@ phases:
       - aws s3 cp "$SRC_S3" /tmp/agent_src.tgz
       - tar xzf /tmp/agent_src.tgz -C ctx
       - ls ctx/services/agent
+      - ls ctx/packages/contracts
   build:
     commands:
       - cd ctx

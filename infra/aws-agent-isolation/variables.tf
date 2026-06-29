@@ -162,8 +162,8 @@ variable "alb_idle_timeout_seconds" {
 
 variable "broker_image" {
   type        = string
-  description = "TODO(live): the broker ECR image ref (built from infra/aws-agent-isolation/broker/). Empty in the scaffold; fill once the broker image is built. A separate tiny image from the agent image."
-  default     = ""
+  description = "The broker ECR image ref (built from infra/aws-agent-isolation/broker/ by the grace2-broker-builder CodeBuild project, codebuild.tf + buildspec.broker.yml). Defaults to the :latest tag in the grace2-broker repo so the broker task def resolves without a tfvars entry; pin to a digest for a real cutover. A separate image from the agent image."
+  default     = "226996537797.dkr.ecr.us-west-2.amazonaws.com/grace2-broker:latest"
 }
 
 variable "broker_cpu" {

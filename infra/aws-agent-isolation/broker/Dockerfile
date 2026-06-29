@@ -42,6 +42,16 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --upgrade pip setuptools wheel
 
+# LOCAL contracts package FIRST. The agent package (installed just below for the
+# zero-drift cognito source) depends on ``grace2-contracts>=0.1,<0.2``, which is
+# NOT on PyPI -- it lives in this repo at packages/contracts/. Install it here so
+# the agent-package install finds the requirement already satisfied (same pattern
+# as services/agent/Dockerfile). Copy ONLY pyproject + README + src.
+COPY packages/contracts/pyproject.toml /build/packages/contracts/pyproject.toml
+COPY packages/contracts/README.md /build/packages/contracts/README.md
+COPY packages/contracts/src /build/packages/contracts/src
+RUN pip install --no-cache-dir /build/packages/contracts
+
 # Install the agent package (zero-drift cognito source) + the broker's own runtime
 # deps (websockets for the WS proxy; boto3 comes via the agent package). The
 # websockets pin MATCHES the agent (>=13,<16) -- the broker proxy + server use the

@@ -40,6 +40,16 @@ output "agent_builder_project" {
   value       = aws_codebuild_project.agent_builder.name
 }
 
+output "broker_ecr_repository_url" {
+  description = "The broker image ECR repo URL (push target for the grace2-broker-builder CodeBuild project; var.broker_image defaults to its :latest tag)."
+  value       = aws_ecr_repository.broker.repository_url
+}
+
+output "broker_builder_project" {
+  description = "The off-box CodeBuild project that builds the broker image."
+  value       = aws_codebuild_project.broker_builder.name
+}
+
 output "task_reaper_function_name" {
   description = "The per-task idle reaper Lambda."
   value       = aws_lambda_function.reaper.function_name

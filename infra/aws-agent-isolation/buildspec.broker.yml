@@ -1,0 +1,75 @@
+# buildspec.broker.yml -- AWS CodeBuild buildspec for the GRACE-2 SESSION BROKER
+# image (infra/aws-agent-isolation/broker/Dockerfile), mirroring buildspec.agent.yml.
+#
+# WHY OFF-BOX (project_offbox_codebuild_worker_builder): the dev box has no docker
+# socket access and the agent box autostop is BLIND to docker builds. So the broker
+# image -- like the agent + worker images -- builds on CodeBuild (isolated,
+# scale-to-zero, LARGE compute).
+#
+# BUILD CONTEXT = the REPO ROOT subset. The broker Dockerfile INSTALLS THE AGENT
+# PACKAGE (the zero-drift cognito_verify reuse imports grace2_agent.auth_handshake)
+# AND the local grace2-contracts dep (the agent pyproject depends on it; it is NOT
+# on PyPI). So the context tarball must carry THREE subtrees:
+#   services/agent          (the agent package the broker installs)
+#   packages/contracts      (the local grace2-contracts dep, installed first)
+#   infra/aws-agent-isolation/broker  (the broker package, COPYd to /opt/grace2/broker)
+# The Dockerfile lives at infra/aws-agent-isolation/broker/Dockerfile and its COPY
+# paths are repo-root-relative, matching the agent + worker images.
+#
+# This standalone file documents the exact build steps; the IaC
+# (infra/aws-agent-isolation/codebuild.tf, aws_codebuild_project.broker_builder)
+# inlines the equivalent via yamlencode so a `tofu apply` provisions a
+# self-contained project. Either runs the identical commands.
+#
+# TRIGGER (manual, off-box):
+#   # 1. upload the build context (repo root subset: the three subtrees above):
+#   tar czf broker_src.tgz services/agent packages/contracts infra/aws-agent-isolation/broker
+#   aws s3 cp broker_src.tgz \
+#     s3://grace2-agent-bundle-226996537797/broker-build/broker_src.tgz --region us-west-2
+#   # 2. build + push :latest + :codebuild to the broker ECR repo:
+#   aws codebuild start-build --project-name grace2-broker-builder --region us-west-2
+#   # 3. poll:
+#   aws codebuild batch-get-builds --ids <build-id> --region us-west-2
+
+version: 0.2
+
+env:
+  variables:
+    # Overridable per build with --environment-variables-override. Defaults match
+    # the IaC + the deploy facts (account 226996537797, us-west-2).
+    AWS_REGION: "us-west-2"
+    REGISTRY: "226996537797.dkr.ecr.us-west-2.amazonaws.com"
+    ECR_REPO: "grace2-broker"
+    SRC_S3: "s3://grace2-agent-bundle-226996537797/broker-build/broker_src.tgz"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR $REGISTRY"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+      - echo "Fetching build context $SRC_S3"
+      - rm -rf ctx && mkdir -p ctx
+      - aws s3 cp "$SRC_S3" /tmp/broker_src.tgz
+      - tar xzf /tmp/broker_src.tgz -C ctx
+      - ls ctx/infra/aws-agent-isolation/broker
+      - ls ctx/services/agent
+      - ls ctx/packages/contracts
+  build:
+    commands:
+      - cd ctx
+      - echo "Building broker image -> $REGISTRY/$ECR_REPO"
+      # linux/amd64 (Fargate X86_64). The Dockerfile is multi-stage; the build
+      # context is the repo-root subset so the broker Dockerfile COPY paths
+      # (services/agent, packages/contracts, infra/aws-agent-isolation/broker)
+      # resolve. buildx/--platform is implicit on the amd64 CodeBuild image.
+      - docker build --file infra/aws-agent-isolation/broker/Dockerfile --tag "$REGISTRY/$ECR_REPO:latest" --tag "$REGISTRY/$ECR_REPO:codebuild" .
+      # Container-hygiene norm: emit size + layer breakdown to the build log.
+      - echo "=== IMAGE SIZE ==="
+      - docker images "$REGISTRY/$ECR_REPO:latest"
+      - echo "=== LAYER HISTORY ==="
+      - docker history --human --no-trunc "$REGISTRY/$ECR_REPO:latest" || true
+  post_build:
+    commands:
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:codebuild"
+      - echo "PUSH_OK $ECR_REPO"
