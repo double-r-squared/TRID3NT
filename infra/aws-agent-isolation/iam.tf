@@ -136,8 +136,12 @@ data "aws_iam_policy_document" "agent_task" {
       "dynamodb:BatchWriteItem",
     ]
     resources = [
+      # grace2_* retained for the backup tables + autostop-state; trid3nt_*
+      # are the live app tables post-rename (2026-06-29 DynamoDB migration).
       "arn:aws:dynamodb:${local.reg}:${local.acct}:table/grace2_*",
       "arn:aws:dynamodb:${local.reg}:${local.acct}:table/grace2_*/index/*",
+      "arn:aws:dynamodb:${local.reg}:${local.acct}:table/trid3nt_*",
+      "arn:aws:dynamodb:${local.reg}:${local.acct}:table/trid3nt_*/index/*",
     ]
   }
 }
