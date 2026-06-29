@@ -410,6 +410,42 @@ export function ResolutionPickerCard({
 
   const body = (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {/* ACTION-NEEDED banner (NATE 2026-06-29) - the run is PAUSED waiting on
+          this confirmation; the user reported it "just stopped at mesh
+          resolution" without realizing a sim was coming. Make the gate read
+          unmistakably as a PROMPT awaiting input, not a silent dead-stop. */}
+      <div
+        data-testid="resolution-picker-action-needed"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          alignSelf: "flex-start",
+          padding: "3px 9px",
+          borderRadius: 12,
+          background: "rgba(234,179,8,0.18)",
+          border: `1px solid ${ACCENT}66`,
+          color: ACCENT,
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: "50%",
+            background: ACCENT,
+            display: "inline-block",
+            flexShrink: 0,
+          }}
+        />
+        Action needed - confirm to start the run
+      </div>
+
       {/* Metadata row - authoritative suggested-rung descriptors. */}
       <div
         data-testid="resolution-picker-metadata"

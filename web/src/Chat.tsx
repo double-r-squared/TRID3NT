@@ -138,6 +138,7 @@ import {
 } from "./components/SpatialInputCard";
 import { PayloadWarningInline } from "./components/PayloadWarningInline";
 import { ResolutionPickerCard } from "./components/ResolutionPickerCard";
+import { TurnStatusBar, type TurnStatus } from "./components/TurnStatusBar";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
 // a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
@@ -1095,6 +1096,89 @@ export function shouldShowCancel(state: PipelineInlineState): boolean {
   // (b) session-state: current_pipeline non-null?
   const bSession = state.currentPipelineFromSession !== null;
   return aRunning || bSession;
+}
+
+// --- Persistent turn-status surface (NATE 2026-06-29) -------------------- //
+//
+// "Never leave the user in the dark." `deriveTurnStatus` is the pure decision
+// half of the TurnStatusBar (the render half lives in components/TurnStatusBar):
+// from the in-flight signal + the live pipeline steps + whether an input gate is
+// unanswered + the thinking flag, it picks the ONE status the bar shows. Pure +
+// exported so it is unit-testable without mounting Chat (which opens a WebSocket).
+//
+// Priority (most user-relevant first):
+//   1. awaiting  - an unanswered confirm gate exists: the turn PAUSED FOR the
+//      user. Wins over everything (the paused tool's step may still read
+//      "running" on the wire, but the user's action is what unblocks it).
+//   2. simulating - a RUNNING heavy off-box solver step (role=compute OR an
+//      isSolverStep name). Surfaces the live elapsed so the sim reads as alive.
+//   3. working - in flight, not thinking: a generic/labelled "working" so a long
+//      data fetch reads as progress. Suppressed while `thinkingActive` (the
+//      ephemeral ThinkingIndicator already covers the pure-reasoning phase, so
+//      we don't double up "Thinking..." + "Working...").
+//   4. hidden - idle.
+export interface TurnStatusInput {
+  inFlight: boolean;
+  thinkingActive: boolean;
+  awaitingInput: boolean;
+  /** The live pipeline's steps (pipeline.live?.steps ?? []). */
+  liveSteps: PipelineStepSummary[];
+}
+
+export function deriveTurnStatus(input: TurnStatusInput): TurnStatus {
+  const { inFlight, thinkingActive, awaitingInput, liveSteps } = input;
+  // 1. Paused for the user - highest priority.
+  if (awaitingInput) {
+    return { kind: "awaiting", label: "Action needed - confirm above to continue" };
+  }
+  // 2. A heavy off-box solver is running -> simulation-running readout.
+  const running = liveSteps.filter((s) => s.state === "running");
+  const solverStep = [...running]
+    .reverse()
+    .find((s) => s.role === "compute" || isSolverStep(s));
+  if (solverStep) {
+    return { kind: "simulating", label: "Simulation running on AWS Batch", solverStep };
+  }
+  // 3. Generic working state while a turn is in flight (data fetch / tool).
+  if (inFlight) {
+    if (thinkingActive) return { kind: "hidden" };
+    // Name the current running tool when one is up (so a long fetch reads as a
+    // concrete action, e.g. "Fetching elevation data..."); else a plain
+    // "Working..." so the turn never reads as frozen.
+    const tool = [...running].reverse().find((s) => !isThinkingStep(s));
+    const label = tool ? humanizeStepName(tool.name, "running") : "Working...";
+    return { kind: "working", label };
+  }
+  return { kind: "hidden" };
+}
+
+// Is ANY interactive confirm gate still UNANSWERED in the visible stream? Used
+// to drive the "awaiting" turn-status (the turn is paused for the user). Reads
+// the SAME request lists + resolved maps the inline cards render, so it stays in
+// lockstep with what the user actually sees: a mesh-resolution / payload-warning
+// gate, a spatial-input pick/draw, a credential request, or a region-choice. A
+// request is unanswered iff its id is absent from the matching resolved map.
+export function computeAwaitingInput(stream: {
+  payloadWarnings: PayloadWarningEnvelopePayload[];
+  payloadResolved: Map<string, PayloadConfirmationDecision>;
+  spatialInputs: SpatialInputRequestPayload[];
+  spatialResolved: Map<string, unknown>;
+  credentialRequests: CredentialRequestPayload[];
+  credentialResolved: Map<string, "saved" | "declined">;
+  regionChoices: RegionChoiceRequestPayload[];
+  regionResolved: Map<string, unknown>;
+}): boolean {
+  const anyUnresolved = <T,>(
+    items: T[],
+    idOf: (t: T) => string,
+    resolved: Map<string, unknown>,
+  ): boolean => items.some((it) => !resolved.has(idOf(it)));
+  return (
+    anyUnresolved(stream.payloadWarnings, (w) => w.warning_id, stream.payloadResolved) ||
+    anyUnresolved(stream.spatialInputs, (s) => s.request_id, stream.spatialResolved) ||
+    anyUnresolved(stream.credentialRequests, (c) => c.request_id, stream.credentialResolved) ||
+    anyUnresolved(stream.regionChoices, (r) => r.request_id, stream.regionResolved)
+  );
 }
 
 // --- Per-Case chat streams (job-0266) ------------------------------------ //
@@ -4240,6 +4324,35 @@ export function Chat({
   // cancelled pipeline-state per the existing pipelineReducer.
   const inputState: ChatInputState = showCancel ? "in-flight" : "idle";
 
+  // NATE 2026-06-29 ("never leave the user in the dark") - the ONE persistent
+  // turn-status the TurnStatusBar shows, derived purely from existing signals:
+  // the in-flight bit, whether a confirm gate is unanswered (paused FOR the
+  // user), the live pipeline's running steps (a heavy solver -> SIMULATION
+  // RUNNING), and the thinking flag (so we don't double up with the ephemeral
+  // ThinkingIndicator during pure reasoning). Renders nothing when idle.
+  const awaitingInput = computeAwaitingInput({
+    payloadWarnings: visible.payloadWarnings,
+    payloadResolved: visible.payloadResolved,
+    spatialInputs: visible.spatialInputs,
+    spatialResolved: visible.spatialResolved,
+    credentialRequests: visible.credentialRequests,
+    credentialResolved: visible.credentialResolved,
+    regionChoices: visible.regionChoices,
+    regionResolved: visible.regionResolved,
+  });
+  const turnStatus: TurnStatus = deriveTurnStatus({
+    inFlight: showCancel,
+    thinkingActive: isThinkingActive(
+      messages,
+      pipeline.history,
+      pipeline.live,
+      visible.messageOrder,
+      visible.stepOrder,
+    ),
+    awaitingInput,
+    liveSteps,
+  });
+
   // sleep/wake STAGE 2 (NATE 2026-06-18) — COMPOSER-ONLY state machine. ONE base
   // "Connecting..." -> branch to RESUME the chat composer (box reachable) OR the
   // WAKE UI (box asleep; tap to wake). This gates ONLY the text-entry composer;
@@ -4670,6 +4783,17 @@ export function Chat({
             visible.stepOrder,
           )}
         />
+
+        {/* NATE 2026-06-29 ("never leave the user in the dark") - a PERSISTENT
+            status surface that stays up for the WHOLE in-flight turn (unlike the
+            ephemeral ThinkingIndicator above, which vanishes once a tool lands),
+            naming the agent's current activity: WORKING (data fetch / tool),
+            SIMULATION RUNNING (live elapsed) on a Batch solve, or ACTION NEEDED
+            when a confirm gate is paused for the user. Derived purely from the
+            existing pipeline + unanswered-gate signals; renders nothing when
+            idle. Pinned at the bottom of the scroll so it is visible right after
+            a prompt (the stream auto-scrolls to bottom on send). */}
+        <TurnStatusBar status={turnStatus} />
 
         {/* sprint-13 job-0231 (NATE 2026-06-29): chart stacks now render INLINE
             in the InterleavedChatStream above, at the turn's first-arrival seq

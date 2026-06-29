@@ -596,6 +596,17 @@ const KEY_HEIGHT_VERTICAL = 220;
 // Horizontal keys keep the full AOI-sized width. Snapping is untouched - this is
 // purely the rendered card width per orientation.
 const VERTICAL_KEY_WIDTH = 76;
+// CATEGORICAL NARROW WIDTH (NATE 2026-06-29) - a categorical key (NLCD land
+// cover) renders swatch+label ROWS, NOT a gradient bar, so it must NOT inherit
+// the wide AOI-sized colorbar width (`defaultWidth`, up to KEY_MAX_WIDTH=520):
+// that produced a very WIDE card with a big empty gutter to the right of the
+// short "swatch + label" rows. The land-cover legend should read like the OTHER
+// side-docked legends: NARROW, snug to its content. A swatch (~12px) + gap + a
+// typical NLCD label ("Developed, Medium Intensity") fits comfortably in ~190px;
+// longer labels ellipsize (existing behavior). Applied to BOTH the snap-placement
+// math and the rendered card width so the snap never drifts (the LEFT-snap offset
+// depends on the rendered width matching the placement width).
+const CATEGORICAL_KEY_WIDTH = 190;
 // Horizontal gap between keys when falling back to the bottom-center stack.
 const FALLBACK_STACK_GAP = 10;
 // MOBILE ONE-ROW BAND DOCK (NATE 2026-06-28) - mobile-only. The BAND form's keys
@@ -1089,8 +1100,13 @@ export function LayerLegend({
         // NARROW bar (VERTICAL_KEY_WIDTH*scale), not the full horizontal card --
         // mirror the render's `cardWidth` here so placement matches what paints.
         const isCategorical = k.data?.kind === "categorical";
-        const width =
-          vertical && !isCategorical
+        // A categorical key (land cover) is a NARROW swatch+label list - never the
+        // wide AOI-sized colorbar width (NATE 2026-06-29). A non-categorical
+        // vertical key is the slim gradient bar. Everything else gets the AOI
+        // width. Keep this in lockstep with the render `cardWidth` below.
+        const width = isCategorical
+          ? Math.round(CATEGORICAL_KEY_WIDTH * scale)
+          : vertical
             ? Math.round(VERTICAL_KEY_WIDTH * scale)
             : widthFor(k.layerId);
         return { width, height };
@@ -1865,13 +1881,17 @@ export function LayerLegend({
             // row; with multiple keys each stays scrubber-width and the row scrolls
             // horizontally (overflowX:auto on the band-row container).
             bandWidthPx
-          : // CATEGORICAL keys render swatch+label ROWS, never a vertical gradient
-            // rail, so they always need the horizontal card width even when docked
-            // to a left/right AOI edge (orientation 'vertical') -- a narrow vertical
-            // width would clip the class labels.
-            orientation === "vertical" && !isCategorical
-            ? Math.round(VERTICAL_KEY_WIDTH * scale)
-            : width;
+          : // CATEGORICAL keys (NLCD land cover) render swatch+label ROWS, never a
+            // gradient rail. They get a NARROW fixed width (NATE 2026-06-29) snug to
+            // the swatch+label content - NOT the wide AOI-sized colorbar width that
+            // left a big empty gutter to the right. Longer labels ellipsize. This
+            // matches the placement `width` in `sizes` so the snap never drifts.
+            isCategorical
+            ? Math.round(CATEGORICAL_KEY_WIDTH * scale)
+            : // A non-categorical vertical (left/right) key is the slim gradient bar.
+              orientation === "vertical"
+              ? Math.round(VERTICAL_KEY_WIDTH * scale)
+              : width;
         // DATA-DRIVEN LEGEND: continuous data-driven stops win over the
         // URL-parsed colormap and the preset; categorical keys have no gradient
         // (they render swatches) so we keep the preset stops only as a harmless
@@ -2346,7 +2366,13 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
       data-legend-orientation="horizontal"
       data-legend-side="bottom"
       style={{
-        width: DESKTOP_DOCK_KEY_WIDTH,
+        // CATEGORICAL (NLCD land cover) shrinks to its swatch+label content so the
+        // card is NARROW with no empty gutter (NATE 2026-06-29); a typical label
+        // fits, longer ones ellipsize at the cap. A CONTINUOUS key keeps the fixed
+        // width so its [min] bar [max] colorbar row has room to flex.
+        ...(isCategorical
+          ? { width: "fit-content", maxWidth: DESKTOP_DOCK_KEY_WIDTH }
+          : { width: DESKTOP_DOCK_KEY_WIDTH }),
         flex: "0 0 auto",
         padding: "7px 10px 8px",
         background: "rgba(17,18,23,0.85)",
@@ -2403,6 +2429,11 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
+                  // minWidth:0 + flex lets the label ellipsize WITHIN the
+                  // fit-content/maxWidth-capped categorical card (NATE 2026-06-29)
+                  // instead of forcing the card past its cap.
+                  minWidth: 0,
+                  flex: "1 1 auto",
                 }}
               >
                 {cls.label}

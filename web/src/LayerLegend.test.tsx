@@ -2757,6 +2757,36 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
     expect(screen.queryByText("98")).toBeNull();
   });
 
+  it("NARROW WIDTH: a categorical land-cover key shrinks to content (no wide empty gutter)", () => {
+    // NATE 2026-06-29: the land-cover legend used to inherit the wide AOI-sized
+    // colorbar width, leaving a big empty gutter beside the short swatch+label
+    // rows. A categorical key must size to its content (fit-content) capped at the
+    // narrow dock width, NOT the full colorbar width.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-narrow",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 11, color: "#486DA2", label: "Open Water" },
+                { value: 41, color: "#38814E", label: "Deciduous Forest" },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    const card = screen.getByTestId("grace2-layer-legend-key");
+    expect(card.style.width).toBe("fit-content");
+    expect(card.style.maxWidth).toBe("200px");
+  });
+
   it("PRESENT-ONLY: keeps a near-neutral REAL class (Barren Land, chroma ~16) and never blanks an all-grey legend", () => {
     // Barren Land (#B3AFA3) is the least-saturated standard NLCD class; it must
     // survive the grey filter. And if EVERY row reads grey, the key keeps them all
