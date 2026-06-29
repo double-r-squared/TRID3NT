@@ -65,8 +65,11 @@ RUN apt-get update \
 
 # Isolated venv so the runtime stage copies ONE self-contained directory.
 RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip setuptools wheel
+ENV PATH="/opt/venv/bin:$PATH" VIRTUAL_ENV="/opt/venv"
+# uv (Astral) is the resolver: pip's backtracking resolver cannot solve the
+# agent's large dependency graph (resolution-too-deep after ~19 min). uv resolves
+# the same graph in seconds and installs into the active venv (VIRTUAL_ENV).
+RUN pip install --upgrade pip setuptools wheel uv
 
 # Install the agent package from its own pyproject so the dependency set stays
 # the SINGLE source of truth (services/agent/pyproject.toml) -- never re-listed
@@ -86,14 +89,14 @@ RUN pip install --upgrade pip setuptools wheel
 COPY packages/contracts/pyproject.toml /build/packages/contracts/pyproject.toml
 COPY packages/contracts/README.md /build/packages/contracts/README.md
 COPY packages/contracts/src /build/packages/contracts/src
-RUN pip install --no-cache-dir /build/packages/contracts
+RUN uv pip install --no-cache /build/packages/contracts
 
 # Copy ONLY the install inputs first (pyproject + the package source) so the
 # expensive dependency layer caches across code-only edits.
 COPY services/agent/pyproject.toml /build/services/agent/pyproject.toml
 COPY services/agent/README.md /build/services/agent/README.md
 COPY services/agent/src /build/services/agent/src
-RUN pip install --no-cache-dir /build/services/agent
+RUN uv pip install --no-cache /build/services/agent
 
 # Prune byte-compiled caches only (NOT package tests/ -- numpy/scipy import some
 # at runtime; same rationale as the sfincs worker). Hygiene saving on the heavy

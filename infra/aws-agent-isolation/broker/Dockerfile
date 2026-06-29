@@ -39,8 +39,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip setuptools wheel
+ENV PATH="/opt/venv/bin:$PATH" VIRTUAL_ENV="/opt/venv"
+# uv (Astral) resolver -- pip's backtracking resolver cannot solve the agent
+# dependency graph the broker installs (resolution-too-deep); uv solves it fast.
+RUN pip install --upgrade pip setuptools wheel uv
 
 # LOCAL contracts package FIRST. The agent package (installed just below for the
 # zero-drift cognito source) depends on ``grace2-contracts>=0.1,<0.2``, which is
@@ -50,7 +52,7 @@ RUN pip install --upgrade pip setuptools wheel
 COPY packages/contracts/pyproject.toml /build/packages/contracts/pyproject.toml
 COPY packages/contracts/README.md /build/packages/contracts/README.md
 COPY packages/contracts/src /build/packages/contracts/src
-RUN pip install --no-cache-dir /build/packages/contracts
+RUN uv pip install --no-cache /build/packages/contracts
 
 # Install the agent package (zero-drift cognito source) + the broker's own runtime
 # deps (websockets for the WS proxy; boto3 comes via the agent package). The
@@ -60,7 +62,7 @@ RUN pip install --no-cache-dir /build/packages/contracts
 COPY services/agent/pyproject.toml /build/services/agent/pyproject.toml
 COPY services/agent/README.md /build/services/agent/README.md
 COPY services/agent/src /build/services/agent/src
-RUN pip install --no-cache-dir /build/services/agent "websockets>=13,<16"
+RUN uv pip install --no-cache /build/services/agent "websockets>=13,<16"
 
 RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
     && find /opt/venv -type f -name '*.pyc' -delete
