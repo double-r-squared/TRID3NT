@@ -43,7 +43,7 @@
 # isolated venv. Carries the toolchain (gcc/g++/git) + GDAL/PROJ headers that a
 # handful of geo deps need at build time. NONE of this lands in the runtime.
 # --------------------------------------------------------------------------- #
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm AS builder
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -105,7 +105,7 @@ RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
 # Stage 2: runtime -- slim base + ONLY the venv (which contains the installed
 # grace2_agent package + all deps). No toolchain, no headers, no build context.
 # --------------------------------------------------------------------------- #
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm AS runtime
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="grace-2-agent" \
       org.opencontainers.image.source="https://github.com/double-r-squared/GRACE-2" \
@@ -171,7 +171,7 @@ CMD []
 # IMAGE SIZE / LAYER ESTIMATE (NO docker on the dev box -- this is an estimate to
 # validate on the first CodeBuild run via `docker history` + `docker images`):
 #
-#   runtime base (python:3.13-slim-bookworm, ECR Public)   ~150 MB
+#   runtime base (python:3.11-slim-bookworm, ECR Public)   ~150 MB
 #   ca-certificates layer                                  ~5 MB
 #   /opt/venv (the heavy part -- the agent dep closure):
 #     boto3/botocore + s3fs + requests                     ~120 MB

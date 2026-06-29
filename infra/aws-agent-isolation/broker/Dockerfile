@@ -27,7 +27,7 @@
 #
 # Base: ECR Public mirror (no Docker Hub 429), python 3.13 (matches the agent).
 
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm AS builder
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -66,7 +66,7 @@ RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
     && find /opt/venv -type f -name '*.pyc' -delete
 
 # --------------------------------------------------------------------------- #
-FROM public.ecr.aws/docker/library/python:3.13-slim-bookworm AS runtime
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="grace-2-session-broker" \
       org.opencontainers.image.source="https://github.com/double-r-squared/GRACE-2" \
