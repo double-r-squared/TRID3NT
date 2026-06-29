@@ -1035,18 +1035,16 @@ export function App(): JSX.Element {
     });
   }, []);
 
-  // PER-SESSION PAUSE (NATE 2026-06-29, isolation model) - the "Put agent to
-  // sleep" teardown wired into SettingsPopup. Under per-session isolation each
-  // session is its OWN agent, so pausing tears THIS session down entirely.
-  // PURELY local: no box stop. It (1) marks the session paused so the full-panel
-  // paused overlay shows and the visibility-resume reconnect is suppressed (the
-  // flag also flows to Chat, which closes ITS OWN socket so the isolated agent
-  // goes idle and spins down), (2) closes App's WS cleanly (closedByUser -> no
-  // auto-reconnect), and (3) clears our live layers / case-view state (App
-  // `layers` + an authoritative empty replace into the LayerPanel/Map bus) so
-  // nothing of ours lingers. activeCaseId + the chat scrollback are intentionally
-  // KEPT; tapping Reconnect (or a refresh) cold-starts a fresh agent and the
-  // server replays the Case's layers.
+  // SHARED-BOX SLEEP (NATE 2026-06-29) - the per-session "Put agent to sleep"
+  // teardown wired into SettingsPopup. PURELY local: it NEVER POSTs a box stop
+  // (the shared box auto-stops server-side only once ALL sessions are idle), so
+  // it cannot disrupt other connected users. It (1) marks the session paused so
+  // the composer shows the asleep/Wake card and the visibility-resume reconnect
+  // is suppressed, (2) closes our WS cleanly (closedByUser -> no auto-reconnect),
+  // and (3) clears our live layers / case-view state (App `layers` + an
+  // authoritative empty replace into the LayerPanel/Map bus) so nothing of ours
+  // lingers. activeCaseId + the chat scrollback are intentionally KEPT; tapping
+  // Wake (or a refresh) reconnects and the server replays the Case's layers.
   const handleSleepSession = useCallback(() => {
     sessionPausedRef.current = true;
     setSessionPaused(true);
@@ -2544,13 +2542,6 @@ export function App(): JSX.Element {
              only). Chat gates ONLY the composer; its scrollback stays live. */
           agentAsleep={composerWakeReady}
           onWakeTap={handleWakeTap}
-          /* PER-SESSION PAUSE (NATE 2026-06-29) - Settings "Put agent to sleep"
-             is a per-session pause under the isolation model. App closes its own
-             socket in handleSleepSession, but Chat owns a SEPARATE GraceWs, so we
-             thread the flag down: Chat closes ITS socket (the isolated agent
-             spins down) and renders the full-panel "workspace paused" overlay.
-             Without this the composer stayed live + nothing changed on sleep. */
-          sessionPaused={sessionPaused}
           /* job-0179  -  COLD chat-history render. App routes every case-open
              (live WS + cold serverless snapshot) onto the bus; Chat subscribes
              here to materialize the per-Case chat-history bubbles via
@@ -3045,13 +3036,12 @@ export function App(): JSX.Element {
           caseId={currentCaseId}
           onSecretAdd={handleSecretAdd}
           onSecretRevoke={handleSecretRevoke}
-          /* PER-SESSION PAUSE (NATE 2026-06-29, isolation model): "Put agent to
-             sleep" tears down THIS session - close App's WS + clear our layers,
-             and (via sessionPaused) Chat closes its OWN socket so the isolated
-             agent spins down and the full-panel paused overlay shows. There is
-             no shared agent; reconnecting cold-starts a fresh private agent. The
-             Settings popup stays open so the user reads the honest "workspace
-             paused" line; the chat shows the Reconnect overlay. */
+          /* SHARED-BOX SLEEP (NATE 2026-06-29): "Put agent to sleep" is now a
+             PER-SESSION pause - close THIS session's WS + clear our layers +
+             surface the asleep composer, never a box-wide stop (the shared box
+             keeps serving others and auto-stops server-side once ALL sessions
+             are idle). The Settings popup stays open so the user reads the
+             honest "workspace paused" line; the composer shows the Wake card. */
           onSleepSession={handleSleepSession}
         />
       )}

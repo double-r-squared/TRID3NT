@@ -121,11 +121,7 @@ import {
   loadPersistedModelId,
 } from "./lib/modelRegistry";
 import { IconChevronRight, IconSandbox } from "./components/icons";
-import {
-  WakeOverlay,
-  WakePhase,
-  SessionPausedOverlay,
-} from "./components/WakeOverlay";
+import { WakeOverlay, WakePhase } from "./components/WakeOverlay";
 import { wakeConfigured } from "./lib/wake";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
@@ -3058,21 +3054,6 @@ export interface ChatProps {
    */
   onWakeTap?: () => void;
   /**
-   * PER-SESSION PAUSE (NATE 2026-06-29, isolation model) -- App's `sessionPaused`
-   * flag, set when the user picks "Put agent to sleep" in Settings. Under the new
-   * per-session isolation (each session = its OWN Fargate agent via the broker),
-   * pausing must tear down THIS session entirely: App closes its socket, but Chat
-   * owns a SEPARATE GraceWs, so Chat must close its OWN socket too (otherwise the
-   * session never goes idle and the composer stays live -- the original bug where
-   * "sleep" did nothing visible). When true, Chat (1) closes its socket so the
-   * isolated agent spins down, and (2) renders a full-panel "workspace paused"
-   * overlay (SessionPausedOverlay) over the transcript + composer with a
-   * Reconnect affordance that calls `onWakeTap` (App lifts the pause + reconnects;
-   * reconnect cold-starts a fresh isolated agent). Default false. Optional so
-   * legacy fixtures render unchanged.
-   */
-  sessionPaused?: boolean;
-  /**
    * job-0179 — COLD chat-history render. App pushes EVERY case-open envelope
    * (live WS onCaseOpen AND the cold serverless /case-view snapshot) onto the
    * shared LayerPanel bus; Chat subscribes here to route it through
@@ -3150,7 +3131,6 @@ export function Chat({
   onWidthChange,
   agentAsleep = false,
   onWakeTap,
-  sessionPaused = false,
   subscribeCaseOpen,
   onSheetGeometryChange,
   onGalleryOpenChange,
@@ -4301,28 +4281,6 @@ export function Chat({
     setComposerWaking(true);
     onWakeTap();
   }, [onWakeTap]);
-
-  // PER-SESSION PAUSE (NATE 2026-06-29) -- Chat owns a SEPARATE GraceWs from App,
-  // so App's `handleSleepSession` (which closes only App's socket) left THIS
-  // socket connected -- `status` stayed "connected", deriveComposerPhase returned
-  // "chat", and the composer stayed live: the "sleep" control did nothing
-  // visible. Mirror the pause into Chat's OWN socket so the session genuinely
-  // goes idle (the isolated agent spins down) and `status` leaves "connected".
-  // Act ONLY on a transition (a ref-tracked prev) so the initial mount (paused
-  // false) never double-connects the socket the construction effect just opened.
-  // On un-pause (the Reconnect tap routes through App.handleWakeTap, which lifts
-  // `sessionPaused`) reopen our socket -- connect() re-sends auth + session-resume
-  // so the server replays the active Case (per-Case layer durability).
-  const prevSessionPausedRef = useRef<boolean>(sessionPaused);
-  useEffect(() => {
-    if (prevSessionPausedRef.current === sessionPaused) return;
-    prevSessionPausedRef.current = sessionPaused;
-    if (sessionPaused) {
-      wsRef.current?.close();
-    } else {
-      wsRef.current?.connect();
-    }
-  }, [sessionPaused]);
   // Derive the SINGLE WakeOverlay phase for the composer slot (NATE redesign
   // 2026-06-19): the one overlay now renders ALL THREE not-connected
   // treatments - connecting / wake (asleep) / waking - so the separate
@@ -4356,12 +4314,7 @@ export function Chat({
   // background through it, NOT the chat. Desktop is unaffected (its header /
   // scrollback stay; the overlay scopes to the composer slot there too).
   const notConnected = composerPhase !== "chat";
-  // PER-SESSION PAUSE (NATE 2026-06-29) -- while paused we render a FULL-PANEL
-  // "workspace paused" overlay over the whole chat (transcript + composer), so do
-  // NOT collapse the mobile sheet down to the bare floating-composer treatment:
-  // keep the panel mounted (and expanded, below) so the scrim has a panel to
-  // cover. The not-connected collapse is otherwise unchanged.
-  const hideMobileChrome = mobile && notConnected && !sessionPaused;
+  const hideMobileChrome = mobile && notConnected;
 
   // DOCK-TO-VISIBLE-BOTTOM (NATE 2026-06-27, mobile-only) - mirror `notConnected`
   // into the ref the (stable) publisher reads, and RE-MEASURE on the
@@ -4424,10 +4377,7 @@ export function Chat({
   // floating composer (no 70vh empty back panel behind the overlay).
   const containerStyle: React.CSSProperties = mobile
     ? mobileSheetContainerStyle(
-        // PER-SESSION PAUSE -- force the sheet EXPANDED so the full-panel paused
-        // overlay has the panel surface to cover (the scrim reads as a paused
-        // workspace, not a collapsed strip).
-        hideMobileChrome ? false : sessionPaused ? true : sheetExpanded,
+        hideMobileChrome ? false : sheetExpanded,
         sheetHeightVh,
         opacityTier,
         // NATE 2026-06-19: in the not-connected states the PANEL that contains
@@ -4962,22 +4912,6 @@ export function Chat({
           charts={galleryCharts}
           initialIndex={galleryInitialIndex}
           onClose={() => setGalleryOpen(false)}
-        />
-      )}
-
-      {/* PER-SESSION PAUSE (NATE 2026-06-29) -- full-panel "workspace paused"
-          scrim over the transcript + composer. Renders only when App's
-          `sessionPaused` is set (Settings "Put agent to sleep"). The grace2-chat
-          container is positioned (absolute on desktop + mobile sheet), so this
-          `position:absolute; inset:0` overlay fills the whole panel on BOTH
-          platforms. The Reconnect button routes through the existing wake path
-          (handleComposerWakeTap -> onWakeTap = App.handleWakeTap), which lifts
-          the pause + reopens the sockets (cold-starting a fresh isolated agent).
-          Scoped to the panel, so the MAP behind it stays visible + interactive. */}
-      {sessionPaused && (
-        <SessionPausedOverlay
-          onReconnect={handleComposerWakeTap}
-          accentColor={composerAccentColor}
         />
       )}
     </div>

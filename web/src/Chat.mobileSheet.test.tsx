@@ -1638,18 +1638,12 @@ describe("Chat.tsx wake-composer redesign (NATE 2026-06-19)", () => {
     // The hideMobileChrome gate (mobile AND not-connected) suppresses both the
     // MobileSheetHeaderRow (grabber/labels) and forces the collapsed container.
     expect(CHAT_SRC).toContain("const notConnected = composerPhase !== \"chat\";");
-    // PER-SESSION PAUSE: the bare-composer collapse is suppressed while paused
-    // (the full-panel paused overlay needs the panel to cover), so sessionPaused
-    // is excluded from hideMobileChrome.
-    expect(CHAT_SRC).toContain(
-      "const hideMobileChrome = mobile && notConnected && !sessionPaused;",
-    );
+    expect(CHAT_SRC).toContain("const hideMobileChrome = mobile && notConnected;");
     // The header row only renders when chrome is NOT hidden.
     expect(CHAT_SRC).toMatch(/\{mobile && !hideMobileChrome &&/);
-    // The container collapses (no 70vh back panel) when chrome is hidden; while
-    // paused it is forced EXPANDED so the paused overlay has the panel to cover.
+    // The container collapses (no 70vh back panel) when chrome is hidden.
     expect(CHAT_SRC).toMatch(
-      /mobileSheetContainerStyle\(\s*[\s\S]*?hideMobileChrome \? false : sessionPaused \? true : sheetExpanded/,
+      /mobileSheetContainerStyle\(\s*hideMobileChrome \? false : sheetExpanded/,
     );
   });
 
