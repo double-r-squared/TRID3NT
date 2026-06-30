@@ -304,6 +304,91 @@ def test_resolve_offshore_source_returns_none_on_dry_domain(tmp_path):
     assert resolve_offshore_source(f"file://{dem}", dom, _AOI, (-86.0, 29.7)) is None
 
 
+def _write_dem(tmp_path, name, bounds, arr):
+    """Write a synthetic EPSG:4326 DEM and return its file:// URI."""
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    height, width = arr.shape
+    transform = from_bounds(bounds[0], bounds[1], bounds[2], bounds[3], width, height)
+    dem = tmp_path / name
+    with rasterio.open(
+        dem, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform,
+    ) as ds:
+        ds.write(arr.astype("float32"), 1)
+    return f"file://{dem}"
+
+
+def test_finalize_geoclaw_domain_encloses_offshore_source(tmp_path):
+    # Issue #9: the fetched bathymetry reaches FURTHER offshore than the AOI-sized
+    # domain, so the resolved deep-water source lands WEST of (outside) it. The
+    # composer must re-size the domain to ENCLOSE the source. Reproduce: a DEM that
+    # spans well west of the initial domain, deep water only in that far-west strip.
+    from grace2_agent.workflows.run_geoclaw import (
+        finalize_geoclaw_domain,
+        plan_geoclaw_domain,
+        resolve_offshore_source,
+    )
+
+    init_domain = plan_geoclaw_domain(_AOI, "tsunami", None)
+    # DEM extends to -87.5 W (well past the initial domain west edge); ocean
+    # deepens westward for lon < -86.6, land to the east.
+    dem_bounds = (-87.5, 28.90, -84.60, 30.85)
+    width, height = 80, 40
+    lons = np.linspace(dem_bounds[0], dem_bounds[2], width)
+    arr = np.full((height, width), 40.0, dtype="float32")  # land default
+    for j, lon in enumerate(lons):
+        if lon < -86.6:
+            frac = (-86.6 - lon) / (-86.6 - dem_bounds[0])  # 0..1 westward
+            arr[:, j] = -100.0 - 3000.0 * frac
+    dem_uri = _write_dem(tmp_path, "wide_bathy.tif", dem_bounds, arr)
+
+    # The resolved source lands over deep water WEST of the initial domain.
+    src = resolve_offshore_source(dem_uri, init_domain, _AOI, None)
+    assert src is not None
+    slon, slat = src
+    assert slon < init_domain[0]  # OUTSIDE the AOI-sized domain (the #9 bug)
+
+    # finalize re-sizes the domain to ENCLOSE the source (clamped to DEM coverage).
+    final = finalize_geoclaw_domain(_AOI, "tsunami", src, dem_uri)
+    # Invariant: source strictly INSIDE the final domain ...
+    assert final[0] < slon < final[2]
+    assert final[1] < slat < final[3]
+    # ... domain still spans the AOI coast ...
+    assert final[0] <= _AOI[0] and final[2] >= _AOI[2]
+    assert final[1] <= _AOI[1] and final[3] >= _AOI[3]
+    # ... and stays within the fetched DEM coverage (GeoClaw topo covers domain).
+    assert final[0] >= dem_bounds[0] and final[2] <= dem_bounds[2]
+
+
+def test_finalize_geoclaw_domain_noop_for_dam_break_and_surge():
+    # Non-offshore scenarios (internal/uniform source) keep domain == AOI.
+    from grace2_agent.workflows.run_geoclaw import finalize_geoclaw_domain
+
+    assert finalize_geoclaw_domain(_AOI, "dam_break", None, "file:///none") == tuple(_AOI)
+    assert finalize_geoclaw_domain(_AOI, "surge", (-85.4, 29.8), "file:///none") == tuple(_AOI)
+
+
+def test_finalize_geoclaw_domain_raises_when_source_uncoverable(tmp_path):
+    # Guardrail (loud failure, like the flat-ocean gate): if the DEM coverage does
+    # NOT reach the source longitude, clamping pulls the domain off the source ->
+    # GEOCLAW_SOURCE_OUTSIDE_DOMAIN rather than a silent zero-inundation solve.
+    from grace2_agent.workflows.run_geoclaw import (
+        GeoClawWorkflowError,
+        finalize_geoclaw_domain,
+    )
+
+    # A small DEM whose EAST edge (-86.0) is west of the (contrived) source -85.0.
+    dem_bounds = (-86.5, 28.90, -86.0, 30.50)
+    arr = np.full((16, 16), -500.0, dtype="float32")
+    dem_uri = _write_dem(tmp_path, "narrow.tif", dem_bounds, arr)
+
+    with pytest.raises(GeoClawWorkflowError) as ei:
+        finalize_geoclaw_domain(_AOI, "tsunami", (-85.0, 29.7), dem_uri)
+    assert ei.value.error_code == "GEOCLAW_SOURCE_OUTSIDE_DOMAIN"
+
+
 # ===========================================================================
 # (2b) CRS alignment — reproject the topo/bathy DEM to EPSG:4326 (the GeoClaw
 # zero-inundation root cause). A projected-metres (UTM) topo extent has ZERO

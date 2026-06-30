@@ -62,6 +62,7 @@ from .run_geoclaw import (
     GEOCLAW_OFFSHORE_SCENARIOS,
     GEOCLAW_SOLVER_NAME,
     GeoClawWorkflowError,
+    finalize_geoclaw_domain,
     plan_geoclaw_domain,
     plan_geoclaw_grid,
     reproject_dem_to_4326,
@@ -308,6 +309,29 @@ async def model_dambreak_geoclaw_scenario(
                 "%s (requested=%s)",
                 source_override,
                 run_args.source_lonlat,
+            )
+            # --- Domain/source coordination (issue #9) ---------------------
+            # The initial domain was sized from the AOI alone (plan_geoclaw_domain
+            # above) but the bathymetry reaches FURTHER offshore, so the resolved
+            # deep-water source can land OUTSIDE that domain -> the Okada
+            # deformation falls outside the integrated box -> zero inundation.
+            # Re-size the domain to ENCLOSE the resolved source (clamped to the
+            # fetched-DEM coverage), asserting source-in-domain (loud failure on a
+            # future drift). Skipped when no source was resolved (keep the AOI
+            # domain + the honest no-inundation warning above).
+            domain_bbox = await asyncio.to_thread(
+                finalize_geoclaw_domain,
+                bbox,
+                run_args.scenario,
+                source_override,
+                resolved_dem_uri,
+            )
+            logger.info(
+                "model_dambreak_geoclaw_scenario: domain re-sized to enclose "
+                "source -> domain=%s source=%s aoi=%s",
+                domain_bbox,
+                source_override,
+                bbox,
             )
 
     # Cost-bounded grid + AMR plan (the SOLVER_TIMEOUT fix): a COARSE base grid

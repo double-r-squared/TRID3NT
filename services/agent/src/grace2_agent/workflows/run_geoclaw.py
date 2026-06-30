@@ -50,6 +50,7 @@ __all__ = [
     "plan_geoclaw_domain",
     "plan_geoclaw_grid",
     "resolve_offshore_source",
+    "finalize_geoclaw_domain",
     "reproject_dem_to_4326",
     "GEOCLAW_SOLVER_NAME",
     "GEOCLAW_OFFSHORE_SCENARIOS",
@@ -73,6 +74,13 @@ _SOURCE_WET_ELEV_M: float = 0.0
 #: back to any below-waterline cell only when the domain has no genuinely-deep
 #: water (never regressing to the onshore centroid).
 _SOURCE_DEEP_ELEV_M: float = -50.0
+
+#: Minimum inset (degrees, ~5.5 km) the resolved offshore source is held off the
+#: fetched-DEM edge (issue #9) so the final computational domain can be grown to
+#: ENCLOSE the source with a margin WITHOUT reaching past the topo coverage (GeoClaw
+#: aborts when the domain is not fully covered by topo). Also keeps the Okada source
+#: off the absorbing domain boundary.
+_SOURCE_DEM_EDGE_INSET_DEG: float = 0.05
 
 
 #: The registry key + handle ``solver`` tag for the GeoClaw engine.
@@ -522,6 +530,26 @@ def resolve_offshore_source(
         # Genuinely-deep water (P1.1): the preferred substrate for the source.
         deep = valid & (elev < _SOURCE_DEEP_ELEV_M)
 
+        # DEM-EDGE inset (issue #9): the resolved source must sit safely INSIDE the
+        # fetched DEM, not at its very rim -- the final computational domain is then
+        # grown to ENCLOSE the source with a margin (finalize_geoclaw_domain), and
+        # GeoClaw aborts if the domain reaches past the topo coverage. So the
+        # whole-DEM fallback masks below pick the deepest cell at least
+        # ``_SOURCE_DEM_EDGE_INSET_DEG`` in from the raster edge, leaving room for
+        # that margin (and keeping the source off the absorbing domain boundary).
+        dem_w = float(lon_grid.min())
+        dem_e = float(lon_grid.max())
+        dem_s = float(lat_grid.min())
+        dem_n = float(lat_grid.max())
+        mx = max(_SOURCE_DEM_EDGE_INSET_DEG, 0.05 * (dem_e - dem_w))
+        my = max(_SOURCE_DEM_EDGE_INSET_DEG, 0.05 * (dem_n - dem_s))
+        dem_inset = (
+            (lon_grid > dem_w + mx)
+            & (lon_grid < dem_e - mx)
+            & (lat_grid > dem_s + my)
+            & (lat_grid < dem_n - my)
+        )
+
         # (1) Honor a requested source ONLY when it sits over genuinely-deep water
         #     (a requested shallow-shelf source is relocated to deep water below).
         if requested_source is not None:
@@ -560,17 +588,19 @@ def resolve_offshore_source(
             return (float(lon_grid[idx]), float(lat_grid[idx]))
 
         # Prefer GENUINELY-DEEP water (< _SOURCE_DEEP_ELEV_M) seaward of the AOI +
-        # inset off the boundary, then any inset deep water, then any deep water;
-        # only if the domain has NO genuinely-deep water fall back to the deepest
-        # below-waterline cell (seaward+inset -> inset -> anywhere) -- never the
-        # onshore centroid (P1.1).
+        # inset off the boundary, then any inset deep water, then any DEM-inset deep
+        # water; only if the domain has NO genuinely-deep water fall back to the
+        # deepest below-waterline cell (seaward+inset -> inset -> DEM-inset) --
+        # never the onshore centroid (P1.1). The whole-DEM fallbacks are
+        # ``dem_inset``-bounded (issue #9) so the source stays inside the fetched
+        # topo coverage with room for the domain-enclosing margin.
         for mask in (
             deep & inset & outside_aoi,
             deep & inset,
-            deep,
+            deep & dem_inset,
             wet & inset & outside_aoi,
             wet & inset,
-            wet,
+            wet & dem_inset,
         ):
             pt = _deepest(mask)
             if pt is not None:
@@ -589,6 +619,169 @@ def resolve_offshore_source(
                 os.unlink(path)
             except OSError:
                 pass
+
+
+# --------------------------------------------------------------------------- #
+# Domain <-> source coordination (issue #9: source-outside-domain inundation
+# blocker).
+#
+# ``plan_geoclaw_domain`` sizes the domain from the AOI (+ any USER source), and
+# ``resolve_offshore_source`` then finds the deepest cell in the fetched bathymetry
+# -- which spans FURTHER offshore than that AOI-sized domain. So the resolved deep
+# source can land OUTSIDE the computational domain (live Crescent City: source
+# -124.527 vs domain west -124.34, ~15 km out). GeoClaw's Okada dtopo only deforms
+# cells INSIDE the domain, so a source outside it injects ~no water -> zero
+# inundation (Total mass byte-identical to a no-source run).
+#
+# ``finalize_geoclaw_domain`` closes the loop: AFTER the source is resolved over
+# deep in-DEM water, it RE-SIZES the domain to ENCLOSE that source (reusing
+# ``plan_geoclaw_domain``'s source-enclosing path), CLAMPS the domain to the fetched
+# DEM's coverage (so the topo still covers the whole domain), and then ASSERTS the
+# invariant -- source strictly inside the final domain AND the domain still spans
+# the AOI coast -- failing loudly (GEOCLAW_SOURCE_OUTSIDE_DOMAIN) if a future
+# domain/source drift breaks it. Same guardrail philosophy as the flat-ocean gate.
+# --------------------------------------------------------------------------- #
+def _dem_bounds_and_sample(
+    dem_uri: str, lon: float, lat: float
+) -> tuple[tuple[float, float, float, float] | None, float | None]:
+    """Read the DEM's (west, south, east, north) lon/lat bounds + the elevation at
+    ``(lon, lat)`` in a single rasterio open. Best-effort: any failure -> (None,
+    None) so the caller degrades (the run proceeds, failing loudly downstream)."""
+    path = None
+    is_temp = False
+    try:
+        import numpy as np  # noqa: WPS433 - agent venv
+        import rasterio  # noqa: WPS433
+
+        path, is_temp = _dem_uri_to_local(dem_uri)
+        with rasterio.open(path) as ds:
+            b = ds.bounds
+            bounds = (float(b.left), float(b.bottom), float(b.right), float(b.top))
+            elev: float | None = None
+            try:
+                row, col = ds.index(lon, lat)
+                if 0 <= row < ds.height and 0 <= col < ds.width:
+                    val = ds.read(
+                        1,
+                        window=((row, row + 1), (col, col + 1)),
+                        masked=True,
+                    )
+                    if not bool(np.ma.getmaskarray(val).all()):
+                        elev = float(val.filled(np.nan).ravel()[0])
+            except Exception:  # noqa: BLE001 - sampling is best-effort
+                elev = None
+        return bounds, elev
+    except Exception as exc:  # noqa: BLE001 - best-effort; degrade to no clamp
+        logger.warning(
+            "_dem_bounds_and_sample: could not read DEM bounds for %s (%s)",
+            dem_uri,
+            exc,
+        )
+        return None, None
+    finally:
+        if is_temp and path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def finalize_geoclaw_domain(
+    aoi_bbox: tuple[float, float, float, float],
+    scenario: str,
+    source_lonlat: tuple[float, float] | None,
+    dem_uri: str,
+) -> tuple[float, float, float, float]:
+    """Re-size the computational domain to ENCLOSE the resolved offshore source.
+
+    Issue #9 fix. Called AFTER ``resolve_offshore_source`` placed the Okada source
+    over deep in-DEM water. Returns the FINAL ``(min_lon, min_lat, max_lon,
+    max_lat)`` computational domain such that the invariant holds:
+
+      - ``source_lon`` in ``(domain_xlower, domain_xupper)`` and ``source_lat`` in
+        ``(domain_ylower, domain_yupper)`` -- the Okada deformation now happens
+        INSIDE the box the solver integrates; and
+      - the domain still spans the AOI coast (``domain`` covers ``aoi_bbox``); and
+      - the domain stays within the fetched DEM's coverage (GeoClaw aborts if the
+        topo does not cover the domain).
+
+    For ``dam_break`` / ``surge`` (domain == AOI, internal/uniform source) or when
+    no source was resolved, the AOI-sized ``plan_geoclaw_domain`` result is returned
+    unchanged (no regression).
+
+    Raises ``GeoClawWorkflowError('GEOCLAW_SOURCE_OUTSIDE_DOMAIN')`` if the
+    invariant cannot be satisfied (e.g. a drift that plants the source outside the
+    DEM coverage) -- a loud, named failure rather than a silent zero-inundation run.
+    """
+    if str(scenario) not in GEOCLAW_OFFSHORE_SCENARIOS or source_lonlat is None:
+        return plan_geoclaw_domain(aoi_bbox, scenario, source_lonlat)
+
+    slon, slat = float(source_lonlat[0]), float(source_lonlat[1])
+    # Grow the domain to enclose [AOI, source] with a margin (plan_geoclaw_domain's
+    # source-enclosing path: domain west <= source_lon - buf, etc.).
+    d0, d1, d2, d3 = plan_geoclaw_domain(aoi_bbox, scenario, source_lonlat)
+
+    # Clamp to the fetched DEM's coverage so the topo still covers the domain.
+    bounds, src_elev = _dem_bounds_and_sample(dem_uri, slon, slat)
+    if bounds is not None:
+        bw, bs, be, bn = bounds
+        d0 = max(d0, bw)
+        d1 = max(d1, bs)
+        d2 = min(d2, be)
+        d3 = min(d3, bn)
+
+    # --- Invariant assertion (the guardrail) -------------------------------
+    a0, a1, a2, a3 = (float(v) for v in aoi_bbox)
+    eps = 1.0e-9
+    in_domain = (d0 < slon < d2) and (d1 < slat < d3)
+    covers_aoi = (
+        d0 <= a0 + eps and d1 <= a1 + eps and d2 >= a2 - eps and d3 >= a3 - eps
+    )
+    if not (in_domain and covers_aoi):
+        raise GeoClawWorkflowError(
+            "GEOCLAW_SOURCE_OUTSIDE_DOMAIN",
+            message=(
+                "GeoClaw domain/source inconsistency: resolved Okada source "
+                f"({slon:.4f}, {slat:.4f}) not strictly inside the final domain "
+                f"({d0:.4f}, {d1:.4f}, {d2:.4f}, {d3:.4f}) covering AOI "
+                f"{tuple(round(v, 4) for v in aoi_bbox)} -- the seafloor "
+                "deformation would fall outside the integrated box (no wave)."
+            ),
+            details={
+                "source_lonlat": [slon, slat],
+                "domain_bbox": [d0, d1, d2, d3],
+                "aoi_bbox": list(aoi_bbox),
+                "source_in_domain": in_domain,
+                "domain_covers_aoi": covers_aoi,
+                "dem_bounds": list(bounds) if bounds else None,
+            },
+        )
+
+    # Depth sanity (warn, not fatal): the source SHOULD sit over genuinely-deep
+    # water; resolve_offshore_source already prefers it, but surface a drift.
+    if src_elev is not None and src_elev >= _SOURCE_DEEP_ELEV_M:
+        logger.warning(
+            "finalize_geoclaw_domain: source (%.4f, %.4f) sits over %.1f m "
+            "(shallower than the %.0f m deep-water floor); wave may be weak",
+            slon,
+            slat,
+            src_elev,
+            _SOURCE_DEEP_ELEV_M,
+        )
+
+    logger.info(
+        "finalize_geoclaw_domain: domain=(%.4f, %.4f, %.4f, %.4f) encloses source "
+        "(%.4f, %.4f) depth=%s + spans AOI %s",
+        d0,
+        d1,
+        d2,
+        d3,
+        slon,
+        slat,
+        (f"{src_elev:.1f} m" if src_elev is not None else "n/a"),
+        tuple(round(v, 4) for v in aoi_bbox),
+    )
+    return (d0, d1, d2, d3)
 
 
 # --------------------------------------------------------------------------- #
