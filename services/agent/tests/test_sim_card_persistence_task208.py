@@ -459,3 +459,42 @@ async def test_mint_persists_dispatch_and_running_sim(file_persistence) -> None:
     assert cards["sfincs:dispatch"].state == "complete"
     assert "sfincs:solve" in cards, "the SIM card must persist at mint (running)"
     assert cards["sfincs:solve"].state == "running"
+
+
+@pytest.mark.asyncio
+async def test_bare_resume_ships_dispatch_and_running_sim(file_persistence) -> None:
+    """A bare session-resume (NOT a case-open) ships BOTH the dispatch card and
+    the running sim card in the resume session-state's ``chat_history`` so the
+    reconnecting client can surface them with no manual refresh."""
+    from grace2_agent.pipeline_emitter import mint_dispatch_and_sim_cards
+
+    ws1 = FakeWS()
+    state1 = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws1, state1)
+    case_id = await _create_case(ws1, state1)
+    await mint_dispatch_and_sim_cards(
+        emitter=state1.emitter, solver="sfincs", handle=_FakeHandle("job-xyz")
+    )
+
+    # Fresh socket, same session: a bare reconnect mid-solve.
+    server._set_session_active_case(state1.session_id, case_id)
+    ws2 = FakeWS()
+    state2 = server.SessionState(session_id=state1.session_id)
+    server._ensure_emitter(ws2, state2)
+    await server._handle_session_resume(ws2, state2)
+
+    states = _session_states(ws2)
+    assert len(states) == 1
+    chat = states[0]["payload"]["chat_history"]
+    by_tool = {
+        m["tool_card"]["tool_name"]: m["tool_card"]
+        for m in chat
+        if m["role"] == "tool" and m.get("tool_card")
+    }
+    assert by_tool.get("sfincs:dispatch", {}).get("state") == "complete", (
+        "the bare resume must carry the dispatch card"
+    )
+    assert by_tool.get("sfincs:solve", {}).get("state") == "running", (
+        "the bare resume must carry the RUNNING sim card (mid-solve) so the "
+        "reconnecting client surfaces it with no refresh"
+    )

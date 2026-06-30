@@ -21,6 +21,7 @@ import {
   getStream,
   routeSessionState,
   routeCaseOpen,
+  routePipelineState,
   buildInterleavedStream,
   streamKeyFor,
 } from "./Chat";
@@ -230,6 +231,161 @@ describe("routeSessionState replays tool cards on reconnect/refresh (task #208)"
     expect(s.pipeline.currentPipelineFromSession!.pipeline_id).toBe(
       "01PIPE000000000000000000A",
     );
+  });
+});
+
+// --------------------------------------------------------------------------- //
+// Bare-reconnect CARD SURFACE (NATE: "I had to refresh to see the sim card").
+// A silent mid-solve reconnect keeps the in-memory transcript (the stream is
+// NON-placeholder), so the wholesale replay above is skipped. The additive
+// merge must surface a card the client is MISSING (the running SIM/dispatch
+// cards minted while the socket was down) with NO refresh, and never duplicate
+// a card the client already shows.
+// --------------------------------------------------------------------------- //
+
+const SIM_PIPE = "01PIPESIM00000000000000000";
+
+function withRunningSim(history: CaseChatMessage[]): CaseChatMessage[] {
+  return [
+    ...history,
+    {
+      message_id: "01MSGSIM00000000000000000Z",
+      case_id: CASE_ID,
+      role: "tool",
+      content: '{"tool_name":"sfincs:solve","state":"running"}',
+      pipeline_id: SIM_PIPE,
+      tool_card: {
+        tool_name: "sfincs:solve",
+        state: "running",
+        started_at: "2026-06-10T00:00:10Z",
+        label: "sfincs solve",
+      },
+      created_at: "2026-06-10T00:00:10Z",
+    },
+  ];
+}
+
+describe("bare reconnect surfaces a MISSING card without refresh", () => {
+  it("injects the running sim card the non-placeholder stream is missing", () => {
+    const cs = createChatStreams();
+    // The client already holds the user prompt + a prior complete card (a live
+    // mid-solve stream), but NOT the sim card (it was minted while the socket
+    // was down). current_pipeline carries the live SIM pipeline so the resume
+    // does NOT force-settle the injected running card.
+    routeCaseOpen(cs, caseOpenWith(fullStreamHistory()));
+    const before = getStream(cs, CASE_ID);
+    expect(before.pipeline.history).toHaveLength(1); // fetch card only
+
+    routeSessionState(
+      cs,
+      sessionStateWith(withRunningSim(fullStreamHistory()), {
+        pipeline_id: SIM_PIPE,
+        steps: [
+          {
+            step_id: "live-sim",
+            name: "sfincs solve",
+            tool_name: "sfincs:solve",
+            state: "running",
+          },
+        ],
+      }),
+      CASE_ID,
+    );
+
+    const s = getStream(cs, CASE_ID);
+    // The sim card was ADDITIVELY injected (history grew 1 -> 2); the prior
+    // fetch card + bubbles are untouched.
+    expect(s.pipeline.history).toHaveLength(2);
+    const sim = s.pipeline.history
+      .flatMap((h) => h.steps ?? [])
+      .find((st) => st.tool_name === "sfincs:solve");
+    expect(sim).toBeDefined();
+    expect(sim!.state).toBe("running");
+    expect(s.messages).toHaveLength(2); // bubbles unchanged
+  });
+
+  it("does NOT duplicate the sim card when the client already has it LIVE", () => {
+    const cs = createChatStreams();
+    routeCaseOpen(cs, caseOpenWith(fullStreamHistory()));
+    // The client received the live SIM card (wire step_id, NOT a replay id) for
+    // pipeline SIM_PIPE + tool sfincs:solve.
+    routePipelineState(
+      cs,
+      {
+        pipeline_id: SIM_PIPE,
+        steps: [
+          {
+            step_id: "01LIVESTEP000000000000000",
+            name: "sfincs solve",
+            tool_name: "sfincs:solve",
+            state: "running",
+          },
+        ],
+      },
+      CASE_ID,
+    );
+    const before = getStream(cs, CASE_ID);
+    const simCountBefore = [
+      ...before.pipeline.history,
+      ...(before.pipeline.live ? [before.pipeline.live] : []),
+    ]
+      .flatMap((h) => h.steps ?? [])
+      .filter((st) => st.tool_name === "sfincs:solve").length;
+    expect(simCountBefore).toBe(1);
+
+    // A reconnect resume carries the persisted twin of that SAME card (a
+    // different synthesized step_id but the SAME pipeline_id + tool_name).
+    routeSessionState(
+      cs,
+      sessionStateWith(withRunningSim(fullStreamHistory()), {
+        pipeline_id: SIM_PIPE,
+        steps: [
+          {
+            step_id: "01LIVESTEP000000000000000",
+            name: "sfincs solve",
+            tool_name: "sfincs:solve",
+            state: "running",
+          },
+        ],
+      }),
+      CASE_ID,
+    );
+
+    const after = getStream(cs, CASE_ID);
+    const simCountAfter = [
+      ...after.pipeline.history,
+      ...(after.pipeline.live ? [after.pipeline.live] : []),
+    ]
+      .flatMap((h) => h.steps ?? [])
+      .filter((st) => st.tool_name === "sfincs:solve").length;
+    expect(simCountAfter).toBe(1); // dedup by pipeline_id::tool_name — no twin
+  });
+
+  it("is idempotent — a second reconnect resume injects nothing new", () => {
+    const cs = createChatStreams();
+    routeCaseOpen(cs, caseOpenWith(fullStreamHistory()));
+    const resume = () =>
+      routeSessionState(
+        cs,
+        sessionStateWith(withRunningSim(fullStreamHistory()), {
+          pipeline_id: SIM_PIPE,
+          steps: [
+            {
+              step_id: "live-sim",
+              name: "sfincs solve",
+              tool_name: "sfincs:solve",
+              state: "running",
+            },
+          ],
+        }),
+        CASE_ID,
+      );
+    resume();
+    const after1 = getStream(cs, CASE_ID).pipeline.history.length;
+    resume();
+    resume();
+    const after3 = getStream(cs, CASE_ID).pipeline.history.length;
+    expect(after3).toBe(after1); // strict no-op after the first surface
   });
 });
 

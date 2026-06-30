@@ -1436,11 +1436,21 @@ export function routeSessionState(
     s.messages.length === 0 &&
     s.pipeline.live === null &&
     s.pipeline.history.length === 0;
+  const chat = (p.chat_history ?? []) as CaseChatMessageWire[];
   if (isPlaceholder) {
-    const chat = (p.chat_history ?? []) as CaseChatMessageWire[];
     if (chat.length > 0) {
       replayStreamFromChatHistory(s, chat);
     }
+  } else if (chat.length > 0) {
+    // Bare-reconnect card surface (NATE "I had to refresh to see the sim card"):
+    // the stream is NON-empty (a silent mid-solve reconnect keeps the in-memory
+    // transcript), so the wholesale replay above is skipped. ADDITIVELY inject
+    // only the cards/messages this connection is MISSING (the running SIM /
+    // dispatch cards minted while the socket was down) so they surface live with
+    // NO refresh. Idempotent + dedupes across the live/replay identity gap, so a
+    // card the client already shows is never duplicated and re-running on every
+    // session-state is a no-op.
+    mergeMissingCardsFromChatHistory(s, chat);
   }
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "session-state",
@@ -1847,6 +1857,61 @@ export function routeCaseOpen(
  * between the bubbles exactly where they happened. Unknown roles (and tool
  * rows without the typed card) are skipped — no surprise rendering.
  */
+/**
+ * Synthesize the single-card ``PipelineStatePayload`` + its tool-io entries for
+ * ONE persisted ``role="tool"`` row. Pure (does NOT touch the stream): both the
+ * wholesale ``replayStreamFromChatHistory`` (case-open / refresh) and the
+ * additive ``mergeMissingCardsFromChatHistory`` (bare-reconnect surface) build
+ * cards through this ONE path so a replayed card is byte-identical regardless of
+ * which entry point produced it. Returns ``null`` for a non-tool / card-less row.
+ */
+function toolCardRowToSnapshot(
+  m: CaseChatMessageWire,
+): { snap: PipelineStatePayload; io: Array<[string, ToolIoPayload]> } | null {
+  if (m.role !== "tool" || !m.tool_card) return null;
+  const card = m.tool_card;
+  const stepId = `replay-${m.message_id}`;
+  const io: Array<[string, ToolIoPayload]> = [];
+  // task-168 — rebuild the nested sub-step timeline READ-ONLY, re-parenting each
+  // child to the synthesized replay parent ``stepId`` (the wire-only ids are
+  // absent from the replayed snapshot, so parenting is rebuilt deterministically).
+  const childSteps: PipelineStepSummary[] = [];
+  const children = card.children ?? [];
+  children.forEach((child, idx) => {
+    const childStepId = `${stepId}-child-${idx}`;
+    childSteps.push({
+      step_id: childStepId,
+      parent_step_id: stepId,
+      name: child.name ?? child.tool_name,
+      tool_name: child.tool_name,
+      state: child.state,
+      duration_ms: child.duration_ms ?? null,
+      error_code: child.error_code ?? null,
+      error_message: child.error_message ?? null,
+    });
+    const childIo = toolIoFromSubStepRecord(childStepId, child);
+    if (childIo) io.push([childStepId, childIo]);
+  });
+  const snap: PipelineStatePayload = {
+    pipeline_id: m.pipeline_id ?? `replay-${m.message_id}`,
+    steps: [
+      {
+        step_id: stepId,
+        name: card.label ?? card.tool_name,
+        tool_name: card.tool_name,
+        state: card.state,
+        started_at: card.started_at ?? null,
+        duration_ms: card.duration_ms ?? null,
+      },
+      ...childSteps,
+    ],
+  };
+  // C1 — the parent card's IO drop-down, keyed by the synthesized replay step_id.
+  const parentIo = toolIoFromCardRecord(stepId, card);
+  if (parentIo) io.push([stepId, parentIo]);
+  return { snap, io };
+}
+
 export function replayStreamFromChatHistory(
   s: StreamState,
   chat: CaseChatMessageWire[],
@@ -1867,64 +1932,12 @@ export function replayStreamFromChatHistory(
         text: m.content ?? "",
         done: true,
       });
-    } else if (m.role === "tool" && m.tool_card) {
-      const card = m.tool_card;
-      const stepId = `replay-${m.message_id}`;
-      // task-168 - rebuild the nested sub-step timeline READ-ONLY. The card now
-      // persists its ordered ``children`` (each a PersistedSubStepRecord). We
-      // synthesize ONE PipelineStepSummary per child INTO the same snapshot,
-      // RE-PARENTING each to the synthesized replay parent ``stepId`` (the
-      // persisted wire-only ids are absent from the replayed snapshot, so we
-      // rebuild parenting deterministically). buildInterleavedStream then
-      // collects them under the parent + hands them to PipelineCard for the
-      // indented timeline - the EXACT path the live feature renders. A child
-      // NEVER becomes its own top-level card (it carries parent_step_id and the
-      // parent is present). No re-dispatch: these are terminal records.
-      const childSteps: PipelineStepSummary[] = [];
-      const children = card.children ?? [];
-      children.forEach((child, idx) => {
-        const childStepId = `${stepId}-child-${idx}`;
-        childSteps.push({
-          step_id: childStepId,
-          parent_step_id: stepId,
-          name: child.name ?? child.tool_name,
-          tool_name: child.tool_name,
-          state: child.state,
-          duration_ms: child.duration_ms ?? null,
-          error_code: child.error_code ?? null,
-          error_message: child.error_message ?? null,
-        });
-        // The child's own IO drop-down rehydrates the same way the parent's
-        // does - keyed by the synthesized child step_id. Absent IO -> null ->
-        // the child chevron stays absent (no fabrication).
-        const childIo = toolIoFromSubStepRecord(childStepId, child);
-        if (childIo) toolIo.set(childStepId, childIo);
-      });
-      const snap: PipelineStatePayload = {
-        pipeline_id: m.pipeline_id ?? `replay-${m.message_id}`,
-        steps: [
-          {
-            step_id: stepId,
-            name: card.label ?? card.tool_name,
-            tool_name: card.tool_name,
-            state: card.state,
-            started_at: card.started_at ?? null,
-            duration_ms: card.duration_ms ?? null,
-          },
-          ...childSteps,
-        ],
-      };
-      recordPipelineStepSeqsIn(s, snap);
-      replayed.push(snap);
-      // C1 — `card` IS the TYPED ToolCardRecord (`m.tool_card`), which FX1 now
-      // populates with the 7 IO fields under the SAME names the live `tool-io`
-      // envelope / ToolIoPayload uses. We read them off the typed record (NOT
-      // the content-JSON twin — the typed record is the integration path) and
-      // rebuild a ToolIoPayload so the chevron rehydrates on Case reopen. A
-      // pre-C1 card with no persisted IO yields null → the chevron stays absent
-      // (no fabrication).
-      const io = toolIoFromCardRecord(stepId, card);
-      if (io) toolIo.set(stepId, io);
+    } else {
+      const built = toolCardRowToSnapshot(m);
+      if (!built) continue;
+      recordPipelineStepSeqsIn(s, built.snap);
+      replayed.push(built.snap);
+      for (const [k, v] of built.io) toolIo.set(k, v);
     }
   }
   s.messages = messages;
@@ -1935,6 +1948,87 @@ export function replayStreamFromChatHistory(
     // Fresh Map (referential-equality bump) merged onto any pre-existing IO.
     s.toolIo = new Map([...s.toolIo, ...toolIo]);
   }
+}
+
+/**
+ * Bare-reconnect card surface (NATE: "I had to refresh to see the sim card").
+ *
+ * The server replays the active Case's persisted ``chat_history`` on a bare
+ * ``session-resume`` (server.py ``_replay_active_case_layers`` #147 seed), but
+ * ``routeSessionState`` only WHOLESALE-replays into a cold/placeholder stream —
+ * so a SILENT mid-solve reconnect (the stream is NON-empty: the user's prompt +
+ * earlier cards are still in memory) never surfaced a card the client is MISSING
+ * (the running SIM/dispatch cards minted while the socket was down), forcing a
+ * manual refresh (which triggers case-open's wholesale replay).
+ *
+ * This ADDITIVELY injects ONLY the cards/messages the stream does not already
+ * hold, so a reconnect surfaces them live with no refresh. It is IDEMPOTENT —
+ * session-state arrives on every layer/pipeline change, so re-running it must be
+ * a strict no-op once the cards are present (the original placeholder guard's
+ * intent, generalized from "only into an empty stream" to "only inject what's
+ * missing"). Dedupe spans the live/replay IDENTITY GAP: a live card is keyed by
+ * its wire ``step_id`` while a replayed card synthesizes ``replay-<message_id>``,
+ * so a tool row is treated as already-present when EITHER its synthesized
+ * step_id is in the stream OR a step with the SAME ``pipeline_id`` + ``tool_name``
+ * already renders (the persisted row's ``pipeline_id`` == the live turn's
+ * ``current_pipeline_id``, so the live SIM card and its persisted twin collapse
+ * to one). Preserves the live in-flight pipeline + every existing message.
+ */
+export function mergeMissingCardsFromChatHistory(
+  s: StreamState,
+  chat: CaseChatMessageWire[],
+): void {
+  // Identity sets from what the stream ALREADY renders (live + history).
+  const existingStepIds = new Set<string>();
+  const existingPipeTool = new Set<string>();
+  const snaps: PipelineStatePayload[] = [...s.pipeline.history];
+  if (s.pipeline.live) snaps.push(s.pipeline.live);
+  for (const snap of snaps) {
+    for (const st of snap.steps ?? []) {
+      existingStepIds.add(st.step_id);
+      existingPipeTool.add(`${snap.pipeline_id}::${st.tool_name}`);
+    }
+  }
+  const existingMsgIds = new Set(s.messages.map((mm) => mm.id));
+
+  const newMessages: ChatMessage[] = [];
+  const newReplayed: PipelineStatePayload[] = [];
+  const newIo: Array<[string, ToolIoPayload]> = [];
+  for (const m of chat) {
+    if (m.role === "user" || m.role === "agent") {
+      if (existingMsgIds.has(m.message_id)) continue;
+      recordMessageSeqIn(s, m.message_id);
+      newMessages.push({
+        id: m.message_id,
+        role: m.role,
+        text: m.content ?? "",
+        done: true,
+      });
+    } else if (m.role === "tool" && m.tool_card) {
+      const stepId = `replay-${m.message_id}`;
+      const pipeId = m.pipeline_id ?? stepId;
+      const pipeToolKey = `${pipeId}::${m.tool_card.tool_name}`;
+      if (existingStepIds.has(stepId) || existingPipeTool.has(pipeToolKey)) {
+        continue; // already present live OR already replayed — idempotent no-op
+      }
+      const built = toolCardRowToSnapshot(m);
+      if (!built) continue;
+      recordPipelineStepSeqsIn(s, built.snap);
+      newReplayed.push(built.snap);
+      for (const e of built.io) newIo.push(e);
+      // Guard against the SAME row appearing twice in one chat array.
+      existingStepIds.add(stepId);
+      existingPipeTool.add(pipeToolKey);
+    }
+  }
+  if (newMessages.length > 0) s.messages = [...s.messages, ...newMessages];
+  if (newReplayed.length > 0) {
+    s.pipeline = {
+      ...s.pipeline,
+      history: [...s.pipeline.history, ...newReplayed],
+    };
+  }
+  if (newIo.length > 0) s.toolIo = new Map([...s.toolIo, ...newIo]);
 }
 
 /**
