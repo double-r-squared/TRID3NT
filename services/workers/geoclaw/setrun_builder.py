@@ -393,6 +393,33 @@ def _refinement_ratios(amr_levels: int) -> list[int]:
     return ratios
 
 
+#: Levels above the coarse base the INTERMEDIATE offshore PROPAGATION tier sits at.
+#: 2 levels above the base grid == level 3 (the base is level 1). For the ~1.8 km
+#: base grid that is ~230 m -- the ~200-500 m mid-resolution propagation grid the
+#: canonical tsunami nesting (coarse deep ocean + intermediate shelf/propagation +
+#: fine shore) uses so the shoaling wave is resolved as it travels.
+_PROPAGATION_LEVELS_ABOVE_BASE = 2
+
+
+def _propagation_level(amr_levels: int) -> int:
+    """The INTERMEDIATE propagation/shelf refinement level for an OFFSHORE tsunami.
+
+    The offshore-extended computational domain (the source -> coast corridor + the
+    continental shelf) is FORCED to AT LEAST this level so the wave is resolved on
+    a genuine mid-resolution grid as it propagates + shoals -- not numerically
+    damped/dispersed on the coarse ~1.5 km base grid before it reaches the AOI
+    coast. Set to ``_PROPAGATION_LEVELS_ABOVE_BASE`` levels above the base (level
+    3), CAPPED at one-below-finest (``amr_levels - 1``) so it never collides with
+    the finest AOI tier, and floored at the base (1) so a shallow nest is a no-op.
+
+    Geometry-free (a pure function of ``amr_levels``) and MIRRORED EXACTLY by
+    ``run_geoclaw._geoclaw_propagation_level`` so the agent cost/cell estimate
+    matches the deck the worker authors (the agent <-> worker cross-check).
+    """
+    base_plus = 1 + _PROPAGATION_LEVELS_ABOVE_BASE
+    return min(base_plus, max(int(amr_levels) - 1, 1))
+
+
 # Synthetic (NON-SITE-SPECIFIC) Okada fault defaults - used ONLY when the
 # user did not supply the matching geometry field. Mirrored from the v0.1
 # render_maketopo_dtopo synthetic source so the banner / honesty story is
@@ -644,20 +671,29 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
         )
 
     # --- GAP3 regions: the canonical multi-scale tsunami setup ---------------
-    # COARSE OFFSHORE + FINE AOI. GeoClaw combines overlapping regions by taking
-    # the MAX of the covering regions' max_levels (amrclaw flagregions2.f90), so:
-    #   (1) a whole-DOMAIN region caps the open ocean at one level BELOW the finest
-    #       -- the deep-water wave is still resolved, but the costly finest mesh is
-    #       NOT created over the entire offshore-extended propagation domain;
+    # COARSE deep ocean + INTERMEDIATE shelf/propagation + FINE AOI. GeoClaw
+    # combines overlapping regions by taking the MAX of the covering regions'
+    # min/max levels (amrclaw flagregions2.f90), so:
+    #   (1) a whole-DOMAIN region FORCES the offshore-extended propagation domain
+    #       (the source -> coast corridor + the continental shelf) to an
+    #       INTERMEDIATE mid-resolution level (``_propagation_level``, ~230 m), and
+    #       caps it at one-below-finest -- the shoaling wave is well-resolved as it
+    #       TRAVELS (not damped on the coarse base grid), while the costly finest
+    #       mesh is still NOT created across the whole ocean;
     #   (2) an AOI region FORCES the finest level over the coastal AOI for the whole
     #       run -- where the run-up is computed + monitored.
-    # This is what keeps a WET coastal solve tractable: the finest cells exist only
-    # at the AOI, not across the (much larger) ocean domain. With amr_levels == 1
-    # both collapse to a uniform grid (harmless self-cap).
+    # OFFSHORE-ONLY: the intermediate propagation tier applies only to a tsunami
+    # whose domain extends offshore (domain_bbox present). dam_break/surge (domain
+    # == AOI, no propagation corridor) keep min level 1, so those decks are
+    # byte-identical. With amr_levels == 1 everything collapses to a uniform grid.
     offshore_max = max(amr_levels - 1, 1)
+    _offshore = spec.scenario == "tsunami" and spec.domain_bbox is not None
+    prop_min = _propagation_level(amr_levels) if _offshore else 1
     regions_block = (
-        "    # --- Regions: coarse offshore (cap whole domain one below finest) ---\n"
-        f"    rundata.regiondata.regions.append([1, {offshore_max!r}, "
+        "    # --- Regions: intermediate propagation tier over the offshore domain\n"
+        "    #     (force the source->coast corridor + shelf to mid-resolution so\n"
+        "    #     the wave is resolved as it shoals; cap at one-below-finest) ---\n"
+        f"    rundata.regiondata.regions.append([{prop_min!r}, {offshore_max!r}, "
         f"0., {tfinal!r}, {dom_min_lon!r}, {dom_max_lon!r}, {dom_min_lat!r}, {dom_max_lat!r}])\n"
         "    # --- Regions: pin the finest AMR level over the AOI for the run ---\n"
         f"    rundata.regiondata.regions.append([{amr_levels!r}, {amr_levels!r}, "

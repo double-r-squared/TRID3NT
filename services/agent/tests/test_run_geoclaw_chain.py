@@ -193,7 +193,9 @@ def test_plan_geoclaw_grid_coarse_base_and_bounded_amr():
     # A town-scale coastal AOI with an offshore-extended domain.
     aoi = (-124.22, 41.72, -124.16, 41.78)  # ~0.06 deg (~5 x 6.6 km)
     dom = plan_geoclaw_domain(aoi, "tsunami", (-125.6, 41.6))
-    base, levels, est = plan_geoclaw_grid(dom, aoi, requested_amr_levels=4)
+    base, levels, est, prop_level, est_prop = plan_geoclaw_grid(
+        dom, aoi, requested_amr_levels=4
+    )
 
     # COARSE base: clamped per axis, a few thousand cells total (NOT one per pixel).
     assert base[0] <= _GEOCLAW_BASE_CELLS_MAX and base[1] <= _GEOCLAW_BASE_CELLS_MAX
@@ -203,6 +205,11 @@ def test_plan_geoclaw_grid_coarse_base_and_bounded_amr():
     assert 0 < est <= _GEOCLAW_FINEST_CELL_BUDGET
     # A town AOI reaches the tens-of-metres run-up target at the level cap.
     assert levels == _GEOCLAW_MAX_AMR_LEVELS
+    # An INTERMEDIATE propagation tier (2 levels above base == level 3) is forced
+    # over the offshore domain, below the finest AOI tier, with a bounded cell
+    # estimate (the offshore propagation cost the tier adds).
+    assert prop_level == 3 and prop_level < levels
+    assert 0 < est_prop
 
 
 def test_plan_geoclaw_grid_large_aoi_is_budget_clamped():
@@ -216,14 +223,42 @@ def test_plan_geoclaw_grid_large_aoi_is_budget_clamped():
     )
 
     dom = plan_geoclaw_domain(_AOI, "tsunami", (-86.2, 29.9))
-    _, levels_big, est_big = plan_geoclaw_grid(dom, _AOI, requested_amr_levels=4)
+    _, levels_big, est_big, _prop_big, _ = plan_geoclaw_grid(
+        dom, _AOI, requested_amr_levels=4
+    )
     # request 4 but the big-AOI finest budget clamps it below the cap.
     assert levels_big < 4
     assert est_big <= _GEOCLAW_FINEST_CELL_BUDGET
 
     # A request for MORE levels than the budget allows is still clamped.
-    _, levels_clamped, _ = plan_geoclaw_grid(dom, _AOI, requested_amr_levels=6)
+    _, levels_clamped, _, _, _ = plan_geoclaw_grid(dom, _AOI, requested_amr_levels=6)
     assert levels_clamped == levels_big
+
+
+def test_geoclaw_propagation_level_mirrors_worker_formula():
+    """The agent ``_geoclaw_propagation_level`` MUST equal the worker
+    ``setrun_builder._propagation_level`` for every nest depth (the agent <->
+    worker cross-check: the agent estimates the offshore propagation tier the
+    worker emits). 2 levels above base (level 3), capped at one-below-finest,
+    floored at the base.
+    """
+    from grace2_agent.workflows.run_geoclaw import _geoclaw_propagation_level
+
+    # The worker formula, re-derived here independently (kept BYTE-mirrored):
+    def _worker_propagation_level(amr_levels: int) -> int:
+        return min(1 + 2, max(int(amr_levels) - 1, 1))
+
+    for amr_levels in range(1, 8):
+        assert _geoclaw_propagation_level(amr_levels) == _worker_propagation_level(
+            amr_levels
+        ), amr_levels
+    # Spot-check the load-bearing values: a 5-level nest -> tier level 3 (< finest
+    # 5); shallow nests collapse to no separate tier.
+    assert _geoclaw_propagation_level(5) == 3
+    assert _geoclaw_propagation_level(4) == 3
+    assert _geoclaw_propagation_level(3) == 2
+    assert _geoclaw_propagation_level(2) == 1
+    assert _geoclaw_propagation_level(1) == 1
 
 
 def test_resolve_offshore_source_picks_deepest_seaward_cell(tmp_path):

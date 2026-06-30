@@ -386,14 +386,35 @@ def _geoclaw_refinement_product(levels: int) -> int:
     return product
 
 
+#: Levels above the coarse base the INTERMEDIATE offshore PROPAGATION tier sits at
+#: (== ``setrun_builder._PROPAGATION_LEVELS_ABOVE_BASE``). 2 levels above base ==
+#: level 3 (~230 m for the ~1.8 km base): the ~200-500 m mid-resolution grid the
+#: canonical tsunami nesting forces over the source->coast corridor + shelf.
+_GEOCLAW_PROPAGATION_LEVELS_ABOVE_BASE: int = 2
+
+
+def _geoclaw_propagation_level(amr_levels: int) -> int:
+    """The INTERMEDIATE offshore propagation/shelf refinement level.
+
+    MIRRORS ``setrun_builder._propagation_level`` EXACTLY (a pure function of
+    ``amr_levels``: ``_PROPAGATION_LEVELS_ABOVE_BASE`` above the base, capped at
+    one-below-finest, floored at the base) so the agent's propagation-tier cell /
+    cost estimate matches the region the worker emits (the agent <-> worker
+    cross-check). ``amr_levels <= 2`` -> ``1`` (no separate propagation tier).
+    """
+    base_plus = 1 + _GEOCLAW_PROPAGATION_LEVELS_ABOVE_BASE
+    return min(base_plus, max(int(amr_levels) - 1, 1))
+
+
 def plan_geoclaw_grid(
     domain_bbox: tuple[float, float, float, float],
     aoi_bbox: tuple[float, float, float, float],
     requested_amr_levels: int,
-) -> tuple[tuple[int, int], int, int]:
+) -> tuple[tuple[int, int], int, int, int, int]:
     """Plan a tractable (base grid, AMR levels) for a GeoClaw run.
 
-    Returns ``((base_nx, base_ny), amr_levels, est_finest_aoi_cells)``:
+    Returns ``((base_nx, base_ny), amr_levels, est_finest_aoi_cells,
+    propagation_level, est_propagation_domain_cells)``:
 
       - ``base_num_cells``: a COARSE level-1 grid over ``domain_bbox`` sized to
         ~``_GEOCLAW_BASE_TARGET_DEG`` per cell, clamped to
@@ -408,6 +429,17 @@ def plan_geoclaw_grid(
       - ``est_finest_aoi_cells``: the estimated finest-level cell count over the
         AOI (used for compute-class sizing -- a far better work proxy than the
         base-grid cell count, since the finest mesh is pinned over the AOI).
+      - ``propagation_level``: the INTERMEDIATE offshore propagation/shelf tier
+        the worker FORCES over the whole offshore-extended domain (the source ->
+        coast corridor + continental shelf) so the wave is resolved as it shoals,
+        not damped on the base grid. ``_geoclaw_propagation_level(amr_levels)``
+        (mirrors the worker). 1 == no separate tier (a shallow nest / domain==AOI).
+      - ``est_propagation_domain_cells``: the estimated cell count of that
+        intermediate tier over the WHOLE domain (``base_cells * product^2``) --
+        the offshore cost the propagation tier adds. It is bounded well under the
+        finest-AOI per-step work (the propagation tier steps fewer substeps and
+        its per-step cells are comparable to the finest AOI), so the existing
+        ``_GEOCLAW_FINEST_CELL_BUDGET`` stays the binding runtime guard.
 
     Deterministic geometry only (no I/O); general for ANY coastal AOI. A large
     AOI is bounded to a coarser run-up resolution by the budget (still non-zero
@@ -461,7 +493,21 @@ def plan_geoclaw_grid(
             # Reached the run-up target AND satisfied the request -- stop.
             break
 
-    return (nx, ny), levels, int(round(est_finest_cells))
+    # (3) INTERMEDIATE propagation tier: the worker FORCES the whole offshore
+    #     domain to ``propagation_level`` so the shoaling wave is resolved over the
+    #     corridor + shelf, not damped on the base grid. Estimate its whole-domain
+    #     cell count (base_cells * product^2) for telemetry + the budget story.
+    propagation_level = _geoclaw_propagation_level(levels)
+    prop_product = _geoclaw_refinement_product(propagation_level)
+    est_prop_domain_cells = int(round((nx * prop_product) * (ny * prop_product)))
+
+    return (
+        (nx, ny),
+        levels,
+        int(round(est_finest_cells)),
+        propagation_level,
+        est_prop_domain_cells,
+    )
 
 
 def _dem_uri_to_local(dem_uri: str) -> tuple[str, bool]:

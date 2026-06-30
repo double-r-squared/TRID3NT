@@ -422,21 +422,51 @@ def test_render_setrun_appends_coastal_region_over_aoi():
     assert "-85.75, -85.25, 29.55, 30.2])" in text
 
 
-def test_render_setrun_caps_offshore_domain_one_below_finest():
-    # The multi-scale tsunami setup: a whole-DOMAIN region caps the open ocean at
-    # one level below the finest, so the costly finest mesh is created ONLY at the
-    # AOI (the second region), never across the offshore propagation domain.
+def test_render_setrun_forces_intermediate_propagation_tier_offshore():
+    # The multi-scale tsunami setup: a whole-DOMAIN region FORCES the offshore
+    # propagation domain (source->coast corridor + shelf) to an INTERMEDIATE
+    # mid-resolution level (so the shoaling wave is resolved as it travels, not
+    # damped on the base grid) and caps it at one-below-finest; the costly finest
+    # mesh is still created ONLY at the AOI (the second region).
     dom = [-125.65, 41.55, -124.06, 41.88]
     spec = parse_build_spec(
         _spec(scenario="tsunami", amr_levels=4, domain_bbox=dom)
     )
     text = render_setrun_py(spec)
     ast.parse(text)
-    # offshore cap region: [1, amr_levels-1, 0., tfinal, <domain extent>].
-    assert "rundata.regiondata.regions.append([1, 3, 0., 1800.0, " in text
+    # propagation tier region: [propagation_level, amr_levels-1, 0., tfinal,
+    # <domain extent>]. For amr_levels=4: propagation_level == 3 (2 above base,
+    # capped at one-below-finest == 3) -> forced + capped at level 3.
+    assert "rundata.regiondata.regions.append([3, 3, 0., 1800.0, " in text
     assert "-125.65, -124.06, 41.55, 41.88])" in text
     # finest pinned over the AOI: [amr_levels, amr_levels, ...].
     assert "rundata.regiondata.regions.append([4, 4, 0., 1800.0, " in text
+
+
+def test_render_setrun_propagation_tier_offshore_only_for_deep_nest():
+    # A deeper nest (amr_levels=5) keeps the propagation tier at level 3 (2 above
+    # base) and caps the offshore domain at one-below-finest (level 4): the tier is
+    # FORCED to 3 but the wave front may dynamically refine to 4 over the corridor.
+    dom = [-125.65, 41.55, -124.06, 41.88]
+    spec = parse_build_spec(
+        _spec(scenario="tsunami", amr_levels=5, domain_bbox=dom)
+    )
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    assert "rundata.regiondata.regions.append([3, 4, 0., 1800.0, " in text
+    # finest pinned over the AOI: [5, 5, ...].
+    assert "rundata.regiondata.regions.append([5, 5, 0., 1800.0, " in text
+
+
+def test_render_setrun_no_propagation_tier_when_domain_equals_aoi():
+    # dam_break / a tsunami with NO offshore extension (domain == AOI) keeps the
+    # whole-domain region min level 1 (no propagation corridor to resolve) -- those
+    # decks stay byte-identical to the pre-propagation-tier behavior.
+    spec = parse_build_spec(_spec(scenario="dam_break", amr_levels=4))
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # min level 1 (NOT forced to the propagation level) when domain == AOI.
+    assert "rundata.regiondata.regions.append([1, 3, 0., 1800.0, " in text
 
 
 def test_render_setrun_appends_gauge_fallback_seaward_edge():

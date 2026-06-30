@@ -403,16 +403,23 @@ async def model_dambreak_geoclaw_scenario(
     # bounded by a cell budget so a WET coastal solve finishes in minutes. The
     # planned amr_levels OVERRIDES run_args.amr_levels (a level-4 request over a
     # huge AOI is what TIMED OUT); est_finest_cells is the compute-class work proxy.
-    base_num_cells, planned_amr_levels, est_finest_cells = plan_geoclaw_grid(
-        bbox, domain_bbox, run_args.amr_levels
-    )
+    (
+        base_num_cells,
+        planned_amr_levels,
+        est_finest_cells,
+        propagation_level,
+        est_prop_domain_cells,
+    ) = plan_geoclaw_grid(bbox, domain_bbox, run_args.amr_levels)
     logger.info(
         "model_dambreak_geoclaw_scenario: grid plan base=%s amr_levels=%s "
-        "(requested=%s) est_finest_aoi_cells=%d domain=%s aoi=%s",
+        "(requested=%s) est_finest_aoi_cells=%d propagation_level=%s "
+        "est_propagation_domain_cells=%d domain=%s aoi=%s",
         base_num_cells,
         planned_amr_levels,
         run_args.amr_levels,
         est_finest_cells,
+        propagation_level,
+        est_prop_domain_cells,
         domain_bbox,
         bbox,
     )
