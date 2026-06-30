@@ -343,7 +343,7 @@ def test_merge_cudem_wins_on_coast_and_output_contract() -> None:
             nodata=-99999.0, nodata_mask=east_half,
         )
 
-        cog_bytes, bathy_present, count = _build_merged_topobathy(
+        cog_bytes, bathy_present, count, regional_count = _build_merged_topobathy(
             cudem_vsicurl_paths=[cudem_path],
             land_local_path=land_path,
             datum_offsets=[0.0],
@@ -414,7 +414,7 @@ def test_merge_masks_unflagged_9999_sentinel_and_sets_nodata() -> None:
         ) as dst:
             dst.write(arr_fill, 1)
 
-        cog_bytes, bathy_present, count = _build_merged_topobathy(
+        cog_bytes, bathy_present, count, regional_count = _build_merged_topobathy(
             cudem_vsicurl_paths=[cudem_path],
             land_local_path=None,
             datum_offsets=[0.0],
@@ -461,7 +461,7 @@ def test_merge_land_only_is_land_only(tmp_path: Any) -> None:
     _write_synth_raster(
         land_path, bbox=_SMOKE_BBOX, nx=30, ny=30, fill=12.0, nodata=-9999.0
     )
-    cog_bytes, bathy_present, count = _build_merged_topobathy(
+    cog_bytes, bathy_present, count, regional_count = _build_merged_topobathy(
         cudem_vsicurl_paths=[],
         land_local_path=land_path,
         datum_offsets=[],
@@ -516,7 +516,7 @@ def test_merge_etopo_global_fallback_supplies_bathy(tmp_path: Any) -> None:
     ) as dst:
         dst.write(land_arr, 1)
 
-    cog_bytes, bathy_present, count = _build_merged_topobathy(
+    cog_bytes, bathy_present, count, regional_count = _build_merged_topobathy(
         cudem_vsicurl_paths=[],
         land_local_path=land_path,
         datum_offsets=[],

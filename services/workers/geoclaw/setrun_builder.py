@@ -369,13 +369,28 @@ def _refinement_ratios(amr_levels: int) -> list[int]:
     GeoClaw's ``refinement_ratios_{x,y,t}`` lists carry one entry per level
     transition (``amr_levels - 1`` entries). A flat all-2s list under-refines the
     inundation front; the canonical examples step the ratio up (e.g. ``[4, 3]``).
-    We mirror that intent deterministically: the first transition is 2x, every
-    subsequent transition is 4x, so coarse levels stay cheap while the finest
-    levels resolve the wet/dry front. ``amr_levels=1`` -> ``[1]`` (GeoClaw wants a
-    non-empty list of length >= mxnest-1, and 1 is a harmless self-ratio).
+    We mirror that intent deterministically: the first transition is 2x, the
+    middle transitions are 4x (coarse levels stay cheap while the inland front is
+    resolved), and for a DEEP nest (>= 4 transitions, i.e. amr_levels >= 5) the
+    FINAL transition steps back down to 2x. That gentle last step gives a finer
+    coastal run-up resolution (a denser inundation sheet) WITHOUT the 4x
+    cell-count + timestep cliff a 4x final transition would add -- e.g. a 5-level
+    nest cumulates 2*4*4*2 = 64x (a town AOI run-up ~20 m) instead of 128x (~9 m,
+    which blows the per-AOI cost budget). The <= 4-level schedules are UNCHANGED
+    ([2], [2,4], [2,4,4]) so existing decks are byte-identical. ``amr_levels=1``
+    -> ``[1]`` (GeoClaw wants a non-empty list of length >= mxnest-1, and 1 is a
+    harmless self-ratio).
     """
     n = max(amr_levels - 1, 1)
-    return [2 if i == 0 else 4 for i in range(n)]
+    ratios: list[int] = []
+    for i in range(n):
+        if i == 0:
+            ratios.append(2)
+        elif i == n - 1 and n >= 4:
+            ratios.append(2)  # gentle final step for a deep (>= 5-level) nest
+        else:
+            ratios.append(4)
+    return ratios
 
 
 # Synthetic (NON-SITE-SPECIFIC) Okada fault defaults - used ONLY when the

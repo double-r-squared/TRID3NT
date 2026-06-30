@@ -82,6 +82,7 @@ __all__ = [
     "CUDEM_COLLECTION_ROOT",
     "CUDEM_URLLIST_URL",
     "ETOPO_GLOBAL_ROOT",
+    "NCEI_REGIONAL_COASTAL_DEMS",
     "TARGET_CRS",
 ]
 
@@ -190,6 +191,38 @@ ETOPO_GLOBAL_ROOT = (
 #: NW corner without probing a manifest.
 _ETOPO_TILE_DEG = 15.0
 
+#: NCEI REGIONAL high-resolution coastal-DEM collections (the FINE nested layer).
+#:
+#: CUDEM's hosted 1/9" "Topobathy 2014" collection (8483) omits the entire US
+#: Pacific / West coast, so a Crescent City (Cascadia) tsunami falls back to the
+#: GLOBAL ETOPO 2022 base (~450 m) -- far too coarse to resolve coastal run-up, so
+#: the inundation footprint collapses to a handful of cells. But NOAA NCEI hosts
+#: MANY region-specific integrated topo-bathymetric DEM collections in the SAME
+#: public ``noaa-nos-coastal-lidar-pds`` bucket that DO cover these coasts at 1 m,
+#: NAVD88. Each such collection ships a STAC ItemCollection (a GeoJSON
+#: FeatureCollection: one Feature per tile, with a WGS84 ``bbox`` + an asset
+#: ``href`` to the tile .tif), so we intersect the AOI against the per-tile bboxes
+#: with NO shapefile tile-index crack.
+#:
+#: This is the FINE nested SHORE layer in GeoClaw's coarse-ocean + fine-shore
+#: pattern -- it does NOT replace the ETOPO ocean base (GeoClaw needs both: the
+#: coarse base for deep-water propagation, the fine shore for run-up). Each entry
+#: is ``{name, label, bbox (w, s, e, n), stac_items_url}``. Seed list (extend as
+#: more coasts are demoed): CA_north_coned covers the whole Northern California
+#: Pacific shoreline (lat 37.78 .. 42.01, incl. Crescent City + Eureka) at 1 m
+#: NAVD88. VERIFIED live 2026-06-30 against the public bucket.
+NCEI_REGIONAL_COASTAL_DEMS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "CA_north_coned_DEM_2020_9181",
+        "label": "USGS CoNED Northern California 1 m topo-bathy DEM (2020, NAVD88)",
+        "bbox": (-124.5719, 37.7702, -122.4453, 42.0126),
+        "stac_items_url": (
+            "https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/"
+            "dem/CA_north_coned_DEM_2020_9181/stac/noaa_item_collection_m9181.json"
+        ),
+    },
+)
+
 #: Target output CRS — UTM 16N (covers the SFINCS North Star demo AOI, the
 #: Florida panhandle / Mexico Beach). NAVD88 vertical is preserved (the merge
 #: + reproject only touches the horizontal grid).
@@ -282,6 +315,11 @@ class TopobathyResult(LayerURI):
     bathymetry_present: bool = True
     fallback_warning: str | None = None
     cudem_tile_count: int = 0
+    #: number of NCEI REGIONAL fine (~1 m) coastal-DEM tiles merged (the P2 fine
+    #: nested-shore source, e.g. CoNED Northern California over Crescent City); 0
+    #: unless the caller passed ``include_regional_fine=True`` and a registered
+    #: regional collection covers the AOI.
+    regional_tile_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +544,69 @@ def _select_etopo_tiles(bbox: tuple[float, float, float, float]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# NCEI REGIONAL high-resolution coastal-DEM tile selection (the FINE shore layer).
+# ---------------------------------------------------------------------------
+
+
+def _select_regional_coastal_dem_tiles(
+    bbox: tuple[float, float, float, float],
+    timeout_s: float,
+) -> tuple[list[str], list[str]]:
+    """Return the FINE regional NCEI coastal-DEM tile URLs intersecting the AOI.
+
+    For each registered collection (``NCEI_REGIONAL_COASTAL_DEMS``) whose coarse
+    footprint intersects ``bbox``, download its STAC ItemCollection and intersect
+    each tile Feature's WGS84 ``bbox`` with the AOI, collecting the tile asset
+    ``href``. Returns ``(tile_urls, collection_names_hit)``.
+
+    Best-effort per collection: a manifest download / parse failure is logged and
+    skipped (the caller degrades to CUDEM / ETOPO -- data-source fallback norm); an
+    empty result == no registered fine collection covers the AOI.
+    """
+    import requests  # lazy — keep module import cheap
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    tiles: list[str] = []
+    collections_hit: list[str] = []
+    for coll in NCEI_REGIONAL_COASTAL_DEMS:
+        cw, cs, ce, cn = coll["bbox"]
+        # Coarse pre-screen against the collection footprint.
+        if max_lon < cw or min_lon > ce or max_lat < cs or min_lat > cn:
+            continue
+        try:
+            resp = requests.get(coll["stac_items_url"], timeout=timeout_s)
+            resp.raise_for_status()
+            fc = resp.json()
+        except Exception as exc:  # noqa: BLE001 — fine layer is best-effort
+            logger.warning(
+                "fetch_topobathy: could not load NCEI regional collection %s "
+                "STAC items (%s); skipping this fine source",
+                coll["name"], exc,
+            )
+            continue
+        n_before = len(tiles)
+        for feat in (fc.get("features") or []):
+            b = feat.get("bbox")
+            if not b or len(b) < 4:
+                continue
+            # AABB overlap of the tile footprint with the AOI.
+            if b[2] < min_lon or b[0] > max_lon or b[3] < min_lat or b[1] > max_lat:
+                continue
+            for asset in (feat.get("assets") or {}).values():
+                href = asset.get("href") if isinstance(asset, dict) else None
+                if href and href.lower().endswith((".tif", ".tiff")):
+                    tiles.append(str(href))
+                    break
+        if len(tiles) > n_before:
+            collections_hit.append(coll["name"])
+    logger.info(
+        "fetch_topobathy: %d NCEI regional fine-DEM tile(s) from %s intersect "
+        "bbox=%s", len(tiles), collections_hit or "[]", bbox,
+    )
+    return tiles, collections_hit
+
+
+# ---------------------------------------------------------------------------
 # Vertical-datum gate (Invariant 7).
 # ---------------------------------------------------------------------------
 
@@ -708,7 +809,9 @@ def _build_merged_topobathy(
     bbox: tuple[float, float, float, float],
     target_crs: str,
     etopo_paths: list[str] | None = None,
-) -> tuple[bytes, bool, int]:
+    regional_paths: list[str] | None = None,
+    min_pixel_m: float | None = None,
+) -> tuple[bytes, bool, int, int]:
     """Merge bathymetry + 3DEP land into one EPSG:32616 float32 COG.
 
     Precedence (LOW -> HIGH, last source WINS where it has valid data):
@@ -720,32 +823,41 @@ def _build_merged_topobathy(
          3DEP is nodata.
       2. ``land_local_path`` — USGS 3DEP land DEM (~10 m). Wins over ETOPO on
          land; CUDEM (when present) wins over it on the coast.
-      3. ``cudem_vsicurl_paths`` — NOAA NCEI CUDEM 1/9" (~3 m, TOP). Wins in
-         the nearshore / shoreline overlap.
+      3. ``cudem_vsicurl_paths`` — NOAA NCEI CUDEM 1/9" (~3 m). Wins in the
+         nearshore / shoreline overlap on the CUDEM-covered (Gulf/East) coast.
+      4. ``regional_paths`` — NCEI REGIONAL integrated topo-bathy DEM tiles
+         (~1 m, NAVD88; e.g. the CoNED Northern California collection that covers
+         Crescent City). The FINEST source -- wins over everything where it has
+         data. This is the fine SHORE layer for coasts CUDEM omits.
 
-    For a CUDEM-covered AOI ``etopo_paths`` is empty and the order is exactly
-    the historical ``[land, CUDEM]`` (CUDEM wins). The merge reprojects EACH
-    source individually from its own CRS onto a common bbox-clipped
-    ``target_crs`` grid, then composites LAST-wins (see ``_merge_sources``) —
-    robust to heterogeneous CRS (CUDEM-EPSG:4269 / 3DEP-EPSG:5070 /
-    ETOPO-EPSG:9518) and to opposite pixel orientation, with NO GDAL-CLI
-    dependency.
+    For a CUDEM-covered AOI with no regional collection ``etopo_paths`` /
+    ``regional_paths`` are empty and the order is exactly the historical
+    ``[land, CUDEM]`` (CUDEM wins). The merge reprojects EACH source individually
+    from its own CRS onto a common bbox-clipped ``target_crs`` grid, then
+    composites LAST-wins (see ``_merge_sources``) — robust to heterogeneous CRS
+    (CUDEM-EPSG:4269 / 3DEP-EPSG:5070 / ETOPO-EPSG:9518 / CoNED-EPSG:3717) and to
+    opposite pixel orientation, with NO GDAL-CLI dependency. ``min_pixel_m`` floors
+    the output grid resolution (so a fine 1 m source does not blow up the AOI grid
+    when only a ~10 m nested topo is wanted -- see ``_compute_target_grid``).
 
-    Returns ``(cog_bytes, bathymetry_present, cudem_tile_count)`` where
-    ``bathymetry_present`` is True when EITHER CUDEM or the ETOPO global
-    fallback contributed a real below-waterline bed, and ``cudem_tile_count``
-    is the CUDEM tile count specifically (0 on the ETOPO fallback path).
+    Returns ``(cog_bytes, bathymetry_present, cudem_tile_count,
+    regional_tile_count)`` where ``bathymetry_present`` is True when CUDEM, the
+    regional fine DEM, OR the ETOPO global fallback contributed a real
+    below-waterline bed.
     """
     import rasterio
 
     etopo_paths = list(etopo_paths or [])
+    regional_paths = list(regional_paths or [])
     have_cudem = len(cudem_vsicurl_paths) > 0
     have_etopo = len(etopo_paths) > 0
+    have_regional = len(regional_paths) > 0
     have_land = land_local_path is not None
-    if not have_cudem and not have_etopo and not have_land:
+    if not have_cudem and not have_etopo and not have_regional and not have_land:
         raise TopobathyEmptyError(
-            f"no CUDEM tiles, no ETOPO global fallback AND no 3DEP land DEM for "
-            f"bbox={bbox} — no elevation data available for this AOI"
+            f"no CUDEM tiles, no NCEI regional fine DEM, no ETOPO global fallback "
+            f"AND no 3DEP land DEM for bbox={bbox} — no elevation data available "
+            "for this AOI"
         )
 
     tmp_paths: list[str] = []
@@ -760,14 +872,19 @@ def _build_merged_topobathy(
                 adjusted_cudem.append(shifted)
             else:
                 adjusted_cudem.append(path)
-        # ETOPO (global fallback) is the BASE, then 3DEP land, then CUDEM on top.
+        # ETOPO (global base) -> 3DEP land -> CUDEM -> regional fine DEM (TOP):
+        # later sources win where they have data, so the ~1 m regional topo-bathy
+        # wins the nearshore over everything, CUDEM over land/ETOPO, etc.
         sources_in_precedence = (
             etopo_paths
             + ([land_local_path] if have_land else [])  # type: ignore[list-item]
             + adjusted_cudem
+            + regional_paths
         )
 
-        merged_path = _merge_sources(sources_in_precedence, target_crs, bbox)
+        merged_path = _merge_sources(
+            sources_in_precedence, target_crs, bbox, min_pixel_m=min_pixel_m
+        )
         tmp_paths.append(merged_path)
 
         # --- Re-emit as a single-band float32 COG (LZW, BIGTIFF) ---
@@ -810,17 +927,24 @@ def _build_merged_topobathy(
                 f"expected float32, got {ds.dtypes[0]}"
             )
         logger.info(
-            "fetch_topobathy: merged %d CUDEM + %d ETOPO-global + %s land -> "
-            "%d-byte COG (%s)",
+            "fetch_topobathy: merged %d CUDEM + %d regional-fine + %d ETOPO-global "
+            "+ %s land -> %d-byte COG (%s)",
             len(cudem_vsicurl_paths),
+            len(regional_paths),
             len(etopo_paths),
             "1" if have_land else "0",
             len(cog_bytes),
             target_crs,
         )
-        # Bathymetry is present when CUDEM OR the ETOPO global fallback supplied
-        # a real below-waterline bed (3DEP land alone is NOT bathymetry).
-        return cog_bytes, (have_cudem or have_etopo), len(cudem_vsicurl_paths)
+        # Bathymetry is present when CUDEM, the regional fine DEM, OR the ETOPO
+        # global fallback supplied a real below-waterline bed (3DEP land alone is
+        # NOT bathymetry).
+        return (
+            cog_bytes,
+            (have_cudem or have_regional or have_etopo),
+            len(cudem_vsicurl_paths),
+            len(regional_paths),
+        )
     finally:
         for p in tmp_paths:
             try:
@@ -855,6 +979,7 @@ def _merge_sources(
     sources_in_precedence: list[str],
     target_crs: str,
     bbox: tuple[float, float, float, float],
+    min_pixel_m: float | None = None,
 ) -> str:
     """Mosaic ``sources_in_precedence`` (LAST wins) onto a common
     ``target_crs`` grid, clipped to ``bbox`` (EPSG:4326).
@@ -883,13 +1008,16 @@ def _merge_sources(
         # Caller (_build_merged_topobathy) already guards the both-empty case;
         # this is defence-in-depth.
         raise TopobathyEmptyError("no sources to merge")
-    return _merge_sources_rasterio(sources_in_precedence, target_crs, bbox)
+    return _merge_sources_rasterio(
+        sources_in_precedence, target_crs, bbox, min_pixel_m=min_pixel_m
+    )
 
 
 def _compute_target_grid(
     sources_in_precedence: list[str],
     target_crs: str,
     bbox: tuple[float, float, float, float],
+    min_pixel_m: float | None = None,
 ):
     """Build the common bbox-aligned target grid (transform, width, height) in
     ``target_crs`` for the per-source warp.
@@ -956,6 +1084,14 @@ def _compute_target_grid(
         # No source readable for resolution — fall back to ~3 m (CUDEM native).
         finest_res = 3.0
 
+    # Output-resolution FLOOR: a coastal/GeoClaw nested-topo caller wants a fine
+    # (~10 m) AOI grid, NOT the native 1-3 m of the source -- a 1 m source over a
+    # ~0.1 deg AOI would otherwise build a ~11000 px grid (hundreds of MB) that the
+    # GeoClaw worker then decimates anyway. Flooring keeps the merged COG light
+    # while still being far finer than the finest AMR cell (tens of metres).
+    if min_pixel_m is not None and finest_res < float(min_pixel_m):
+        finest_res = float(min_pixel_m)
+
     width = max(1, int(_math.ceil((t_east - t_west) / finest_res)))
     height = max(1, int(_math.ceil((t_north - t_south) / finest_res)))
     # Guardrail: cap the grid so a pathological AOI/resolution combination can
@@ -983,6 +1119,7 @@ def _merge_sources_rasterio(
     sources_in_precedence: list[str],
     target_crs: str,
     bbox: tuple[float, float, float, float],
+    min_pixel_m: float | None = None,
 ) -> str:
     """Per-source warp + precedence composite — the robust, no-GDAL-CLI merge.
 
@@ -996,7 +1133,7 @@ def _merge_sources_rasterio(
     from rasterio.warp import Resampling, reproject
 
     dst_transform, width, height = _compute_target_grid(
-        sources_in_precedence, target_crs, bbox
+        sources_in_precedence, target_crs, bbox, min_pixel_m=min_pixel_m
     )
 
     # Accumulator: NaN everywhere, then each source paints its valid cells over
@@ -1092,10 +1229,20 @@ def _fetch_topobathy_bytes_and_flags(
     navd88_offset_m: float | None,
     timeout_s: float,
     force_bathy_base: bool = False,
-) -> tuple[bytes, bool, str | None, int]:
+    include_regional_fine: bool = False,
+    min_pixel_m: float | None = None,
+) -> tuple[bytes, bool, str | None, int, int]:
     """Produce the merged-topobathy COG bytes + the bathymetry-present flags.
 
-    Returns ``(cog_bytes, bathymetry_present, fallback_warning, cudem_count)``.
+    Returns ``(cog_bytes, bathymetry_present, fallback_warning, cudem_count,
+    regional_count)``.
+
+    ``include_regional_fine`` (the GeoClaw nested fine-SHORE caller): also pull the
+    AOI-appropriate NCEI REGIONAL integrated topo-bathy DEM (~1 m, e.g. the CoNED
+    Northern California collection covering Crescent City) and lay it down as the
+    FINEST source. Combined with ``min_pixel_m`` (output-resolution floor, ~10 m)
+    this yields a light FINE nested topo for coasts CUDEM omits -- the P2 dense
+    inundation fix. Default off keeps the SFINCS / coarse-base behaviour unchanged.
 
     ``force_bathy_base`` (the tsunami / coastal GeoClaw caller): lay the seamless
     GLOBAL ETOPO 2022 topo-bathy down as the ALWAYS-ON base over the FULL domain,
@@ -1169,36 +1316,63 @@ def _fetch_topobathy_bytes_and_flags(
             )
             etopo_vsicurl = []
 
+    # 2c) NCEI REGIONAL fine SHORE DEM (~1 m) -- the P2 fine nested-topo source for
+    #     coasts CUDEM omits (e.g. CoNED Northern California over Crescent City).
+    #     Only pulled for the GeoClaw nested caller (``include_regional_fine``);
+    #     it is the FINEST source and wins the nearshore in the merge.
+    regional_vsicurl: list[str] = []
+    regional_collections: list[str] = []
+    if include_regional_fine:
+        try:
+            regional_urls, regional_collections = _select_regional_coastal_dem_tiles(
+                bbox, timeout_s
+            )
+            regional_vsicurl = [f"/vsicurl/{u}" for u in regional_urls]
+        except Exception as exc:  # noqa: BLE001 — fine layer is best-effort
+            logger.warning(
+                "fetch_topobathy: NCEI regional fine-DEM selection failed (%s); "
+                "degrading to CUDEM / ETOPO", exc,
+            )
+            regional_vsicurl = []
+
     # 3) 3DEP land DEM (REUSE fetch_dem) — best-effort.
     land_local = _fetch_3dep_land_to_file(bbox, resolution_m)
 
     # 4) Merge / reproject / COG.
-    cog_bytes, bathy_present, cudem_count = _build_merged_topobathy(
+    cog_bytes, bathy_present, cudem_count, regional_count = _build_merged_topobathy(
         cudem_vsicurl_paths=cudem_vsicurl,
         land_local_path=land_local,
         datum_offsets=datum_offsets,
         bbox=bbox,
         target_crs=target_crs,
         etopo_paths=etopo_vsicurl,
+        regional_paths=regional_vsicurl,
+        min_pixel_m=min_pixel_m,
     )
 
-    # 5) Honest fallback warning (data-source norm). Three cases:
-    #    - CUDEM present              -> no warning (best, NAVD88 ~3 m).
-    #    - CUDEM absent, ETOPO used   -> GLOBAL-FALLBACK warning (real bed, but
-    #                                    coarser + MSL/geoid datum, NOT silent).
-    #    - no bathy source at all     -> BATHYMETRY ABSENT (land-only).
+    # 5) Honest fallback warning (data-source norm). Cases:
+    #    - CUDEM or regional fine present -> no warning (best, ~1-3 m NAVD88).
+    #    - only ETOPO global             -> GLOBAL-FALLBACK warning (real bed, but
+    #                                       coarser + MSL/geoid datum, NOT silent).
+    #    - no bathy source at all        -> BATHYMETRY ABSENT (land-only).
     fallback_warning: str | None = None
+    if regional_count > 0:
+        logger.info(
+            "fetch_topobathy: nearshore sourced from NCEI regional fine DEM(s) %s "
+            "(%d tile(s), ~1 m NAVD88) for bbox=%s",
+            regional_collections or "[]", regional_count, bbox,
+        )
     if not bathy_present:
         fallback_warning = (
-            "BATHYMETRY ABSENT: no NOAA NCEI CUDEM topo-bathy tiles AND no "
-            f"global ETOPO 2022 fallback were available for this AOI {bbox}; the "
+            "BATHYMETRY ABSENT: no NOAA NCEI CUDEM / regional topo-bathy tiles AND "
+            f"no global ETOPO 2022 fallback were available for this AOI {bbox}; the "
             "elevation surface is 3DEP LAND-ONLY (below-waterline cells are "
             "nodata). A coastal flood / surge / tsunami run on this DEM has NO "
             "nearshore bed and will under-represent inundation. Treat results "
             "as land-pluvial only until bathymetry is available."
         )
         logger.warning("fetch_topobathy: %s", fallback_warning)
-    elif cudem_count == 0 and etopo_vsicurl:
+    elif cudem_count == 0 and regional_count == 0 and etopo_vsicurl:
         # Bathymetry IS present, but it is the GLOBAL coarse fallback, not CUDEM.
         fallback_warning = (
             "GLOBAL-FALLBACK BATHYMETRY: no NOAA NCEI CUDEM topo-bathy tiles "
@@ -1219,7 +1393,7 @@ def _fetch_topobathy_bytes_and_flags(
         except OSError:
             pass
 
-    return cog_bytes, bathy_present, fallback_warning, cudem_count
+    return cog_bytes, bathy_present, fallback_warning, cudem_count, regional_count
 
 
 # ---------------------------------------------------------------------------
@@ -1241,6 +1415,8 @@ def fetch_topobathy(
     navd88_offset_m: float | None = None,
     timeout_s: float = 120.0,
     force_bathy_base: bool = False,
+    include_regional_fine: bool = False,
+    min_pixel_m: float | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -1297,6 +1473,18 @@ def fetch_topobathy(
             genuinely-negative bathymetry (not a land-DEM fill) — the GeoClaw
             flat-ocean root-cause fix. Default False keeps the original
             CUDEM-first / ETOPO-only-as-fallback behaviour for SFINCS.
+        include_regional_fine: when True (the GeoClaw nested fine-SHORE caller),
+            ALSO pull the AOI-appropriate NCEI REGIONAL integrated topo-bathy DEM
+            (~1 m NAVD88; e.g. the CoNED Northern California collection that covers
+            Crescent City, which CUDEM omits) and lay it down as the FINEST source.
+            Yields a genuinely-fine nearshore bed for coasts CUDEM does not reach.
+            Default False (SFINCS / coarse-base callers unaffected).
+        min_pixel_m: OPTIONAL output-resolution FLOOR (metres). When set, the
+            merged grid is no finer than this even if a source is finer -- so a
+            fine 1 m regional/CUDEM source over a small AOI produces a LIGHT ~10 m
+            nested-topo COG (still far finer than the tens-of-metres finest AMR
+            cell) instead of a hundreds-of-MB native-resolution grid. Default None
+            (native finest-source resolution, the historical behaviour).
 
     **Returns:**
         A ``TopobathyResult`` (a ``LayerURI`` subclass) pointing at the merged
@@ -1385,6 +1573,19 @@ def fetch_topobathy(
     if not math.isfinite(t_s) or t_s <= 0:
         raise TopobathyInputError(f"timeout_s must be > 0 and finite; got {t_s!r}")
 
+    mpx: float | None = None
+    if min_pixel_m is not None:
+        try:
+            mpx = float(min_pixel_m)
+        except (TypeError, ValueError) as exc:
+            raise TopobathyInputError(
+                f"min_pixel_m must be a finite number or None; got {min_pixel_m!r}"
+            ) from exc
+        if not math.isfinite(mpx) or mpx <= 0:
+            raise TopobathyInputError(
+                f"min_pixel_m must be > 0 and finite; got {min_pixel_m!r}"
+            )
+
     # The bathymetry-present flag + warning are produced by fetch_fn but the
     # cache shim only persists/returns bytes. We capture them in a closure cell
     # so the LayerURI we build below carries them whether the bytes came from a
@@ -1394,15 +1595,18 @@ def fetch_topobathy(
         "bathymetry_present": True,
         "fallback_warning": None,
         "cudem_tile_count": 0,
+        "regional_tile_count": 0,
     }
 
     def _fetch() -> bytes:
-        cog, bathy, warn, count = _fetch_topobathy_bytes_and_flags(
-            q_bbox, res_m, tcrs, navd88_offset_m, t_s, bool(force_bathy_base)
+        cog, bathy, warn, count, regional = _fetch_topobathy_bytes_and_flags(
+            q_bbox, res_m, tcrs, navd88_offset_m, t_s, bool(force_bathy_base),
+            bool(include_regional_fine), mpx,
         )
         _flags["bathymetry_present"] = bathy
         _flags["fallback_warning"] = warn
         _flags["cudem_tile_count"] = count
+        _flags["regional_tile_count"] = regional
         return cog
 
     result = read_through(
@@ -1417,6 +1621,11 @@ def fetch_topobathy(
             # force_bathy_base produces a DIFFERENT merged COG (ETOPO base always
             # present) so it must participate in the cache key.
             "force_bathy_base": bool(force_bathy_base),
+            # include_regional_fine + min_pixel_m also change the COG bytes, so
+            # they MUST participate in the cache key (a coarse-base fetch and a
+            # fine nested fetch over the same bbox are distinct artifacts).
+            "include_regional_fine": bool(include_regional_fine),
+            "min_pixel_m": mpx,
         },
         ext="tif",
         fetch_fn=_fetch,
@@ -1444,4 +1653,5 @@ def fetch_topobathy(
         bathymetry_present=bool(_flags["bathymetry_present"]),
         fallback_warning=_flags["fallback_warning"],
         cudem_tile_count=int(_flags["cudem_tile_count"]),
+        regional_tile_count=int(_flags["regional_tile_count"]),
     )

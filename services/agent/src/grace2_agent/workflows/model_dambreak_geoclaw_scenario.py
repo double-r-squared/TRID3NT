@@ -84,6 +84,13 @@ __all__ = [
 #: the live progress heartbeat (Invariant 1: a hint, never a narrated number).
 _GEOCLAW_SEC_PER_CELL: float = 0.05
 
+#: Output resolution (m) for the FINE nested coastal topo fetched over JUST the AOI
+#: (the P2 dense-inundation fix). Fine enough to be well under the ~20 m finest AMR
+#: cell so the run-up samples a REAL coast (not a ~450 m ETOPO step), but coarse
+#: enough that the nested COG stays light (the worker decimates a too-fine topo
+#: anyway). GeoClaw picks finest-in-overlap, so this fine AOI tile wins the coast.
+_GEOCLAW_FINE_NEARSHORE_PIXEL_M: float = 10.0
+
 
 class GeoClawComposerError(RuntimeError):
     """Raised on a fatal composer failure (carries an open-set ``error_code``)."""
@@ -153,6 +160,62 @@ def _fetch_topo_for_geoclaw(
             "GEOCLAW_DEM_FETCH_FAILED",
             f"both DEM sources failed for bbox {bbox}: topobathy + fetch_dem-10m: {exc}",
         ) from exc
+
+
+def _fetch_fine_nearshore_for_geoclaw(
+    aoi_bbox: tuple[float, float, float, float],
+) -> str | None:
+    """Fetch a FINE (~10 m) nearshore topo-bathy COG over JUST the AOI for use as a
+    GeoClaw nested SHORE topo; return its ``s3://`` URI, or ``None`` when no
+    genuinely-fine source covers the AOI.
+
+    The P2 dense-inundation fix. The PRIMARY topo (the coarse ETOPO base over the
+    full offshore-extended domain) under-resolves the nearshore (~450 m), so a
+    tsunami inundates only a handful of cells. This pulls the AOI-appropriate NCEI
+    REGIONAL integrated topo-bathy DEM (~1 m; e.g. the CoNED Northern California
+    collection that covers Crescent City, which CUDEM omits) OR CUDEM where it
+    exists, capped to a light ~10 m COG, to stage as a fine NESTED topo over the
+    AOI. GeoClaw layers it finest-last and picks finest-in-overlap, so the coast is
+    sampled at ~10 m and the run-up resolves into a DENSE inundation sheet.
+
+    Returns ``None`` (skip the nested layer) when neither a regional fine DEM nor
+    CUDEM covers the AOI -- nesting another coarse ETOPO-over-ETOPO layer would add
+    nothing. Best-effort: any fetch failure returns ``None`` (the run proceeds on
+    the primary topo, exactly as before this fix).
+    """
+    from ..tools.fetch_topobathy import fetch_topobathy
+
+    try:
+        layer = fetch_topobathy(
+            aoi_bbox,
+            include_regional_fine=True,
+            min_pixel_m=_GEOCLAW_FINE_NEARSHORE_PIXEL_M,
+        )
+    except Exception as exc:  # noqa: BLE001 - the nested fine layer is best-effort
+        logger.info(
+            "fine nearshore topo fetch failed for AOI %s (%s); skipping the nested "
+            "fine-topo layer (run proceeds on the coarse primary topo)",
+            aoi_bbox, exc,
+        )
+        return None
+    cudem_n = int(getattr(layer, "cudem_tile_count", 0) or 0)
+    regional_n = int(getattr(layer, "regional_tile_count", 0) or 0)
+    uri = getattr(layer, "uri", None) or (
+        layer.get("uri") if isinstance(layer, dict) else None
+    )
+    if (cudem_n or regional_n) and uri:
+        logger.info(
+            "fine nearshore nested topo for AOI %s: %s (cudem_tiles=%d "
+            "regional_tiles=%d, ~%g m)",
+            aoi_bbox, uri, cudem_n, regional_n, _GEOCLAW_FINE_NEARSHORE_PIXEL_M,
+        )
+        return str(uri)
+    logger.info(
+        "no genuinely-fine nearshore source (regional/CUDEM) covers AOI %s "
+        "(cudem_tiles=%d regional_tiles=%d); skipping the nested fine-topo layer",
+        aoi_bbox, cudem_n, regional_n,
+    )
+    return None
 
 
 def _record_geoclaw_batch_solve_telemetry(
@@ -254,9 +317,9 @@ async def model_dambreak_geoclaw_scenario(
     if dem_uri is None:
         async with substep(emitter, "fetch_topobathy"):
             resolved_dem_uri = await asyncio.to_thread(
-                lambda: _fetch_topo_for_geoclaw(
-                    fetch_bbox, force_bathy_base=_force_bathy_base
-                )
+                _fetch_topo_for_geoclaw,
+                fetch_bbox,
+                force_bathy_base=_force_bathy_base,
             )
     else:
         resolved_dem_uri = dem_uri
@@ -359,6 +422,30 @@ async def model_dambreak_geoclaw_scenario(
     surge_uri = run_args.surge_forcing_uri
     # Optional additional topo/bathy tiles (ordered coarse -> fine on the args).
     extra_dem_uris = list(run_args.extra_topo_uris or [])
+
+    # --- P2 dense-inundation: a FINE (~10 m) nested SHORE topo over the AOI ------
+    # The primary topo is the coarse ETOPO base over the full offshore-extended
+    # domain (~450 m nearshore) -- so a tsunami inundates only a handful of cells.
+    # Fetch the AOI-appropriate NCEI fine topo-bathy (regional ~1 m where CUDEM
+    # omits the coast, e.g. CoNED Northern California over Crescent City; CUDEM
+    # elsewhere) over JUST the AOI and append it as a fine NESTED topo (coarse ->
+    # fine). GeoClaw picks finest-in-overlap, so the coast samples at ~10 m and the
+    # finer AMR run-up mesh resolves a DENSE inundation sheet. Only for an OFFSHORE
+    # (tsunami) AUTO-fetch run; skipped when no genuinely-fine source covers the AOI
+    # (returns None -> run proceeds on the coarse primary, as before).
+    if dem_uri is None and run_args.scenario in GEOCLAW_OFFSHORE_SCENARIOS:
+        fine_uri = await asyncio.to_thread(_fetch_fine_nearshore_for_geoclaw, bbox)
+        if fine_uri:
+            # GeoClaw runs in lon/lat (coordinate_system=2): reproject the fine COG
+            # to EPSG:4326 too (same as the primary) so it overlaps the domain.
+            fine_uri = await asyncio.to_thread(
+                reproject_dem_to_4326, fine_uri, run_id=run_id
+            )
+            extra_dem_uris.append(fine_uri)
+            logger.info(
+                "model_dambreak_geoclaw_scenario: staged fine nested SHORE topo "
+                "for AOI %s -> %s", bbox, fine_uri,
+            )
 
     # --- Step 2: stage the build_spec manifest + DEM reference --------------
     # The USER-GATED fault_* + coastal_gauge_lonlat + fgmax_arrival_tol_m live on

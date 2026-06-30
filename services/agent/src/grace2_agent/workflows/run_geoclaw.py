@@ -340,16 +340,28 @@ _GEOCLAW_BASE_TARGET_DEG: float = 1.0 / 60.0
 _GEOCLAW_BASE_CELLS_MIN: int = 30
 _GEOCLAW_BASE_CELLS_MAX: int = 90
 #: Run-up resolution target (m): AMR grows until the AOI finest cell is at or below
-#: this (tens of metres) -- the "real coastal inundation" floor.
-_GEOCLAW_TARGET_FINEST_M: float = 40.0
+#: this -- the "dense coastal inundation" floor. Lowered 40 -> 20 m (P2) so a
+#: town-scale AOI refines to a ~20 m run-up mesh (a DENSE inundation sheet) instead
+#: of stopping at ~38 m -- the finer nearshore nested topo (P2) is wasted under a
+#: 38 m cell. The per-step cost is still bounded by ``_GEOCLAW_FINEST_CELL_BUDGET``
+#: (UNCHANGED) so the coarse-base + AOI-AMR perf design holds; only the timestep
+#: count grows with the finer dx.
+_GEOCLAW_TARGET_FINEST_M: float = 20.0
 #: Do NOT refine finer than this (m): a guard against an unbounded finest mesh.
-_GEOCLAW_MIN_FINEST_M: float = 25.0
+#: Lowered 25 -> 15 m so the level-5 nest (~20 m, gentle final 2x ratio) is allowed
+#: but a runaway sub-10 m mesh is not.
+_GEOCLAW_MIN_FINEST_M: float = 15.0
 #: Budget: max finest-level cells permitted over the AOI. Bounds the per-step AMR
 #: cost (the finest level is pinned over the AOI for the whole run) so the wet
-#: solve stays minutes, not hours.
+#: solve stays minutes, not hours. UNCHANGED at 400k (P2): the per-step ceiling is
+#: the proven perf guardrail -- a large AOI still budget-clamps to the SAME coarser
+#: run-up it did before; only small/town AOIs (cell headroom) spend the extra level.
 _GEOCLAW_FINEST_CELL_BUDGET: int = 400_000
 #: Hard cap on AMR levels regardless of the request (keeps ratios + cost bounded).
-_GEOCLAW_MAX_AMR_LEVELS: int = 4
+#: Raised 4 -> 5 (P2): the 5th level (gentle final 2x ratio, cumulative 64x) takes a
+#: town AOI run-up from ~38 m to ~20 m for a dense inundation footprint, while the
+#: cell budget keeps a large AOI from ever creating that finest level.
+_GEOCLAW_MAX_AMR_LEVELS: int = 5
 #: Approx metres per degree of latitude (spherical mean) for the cost estimate.
 _GEOCLAW_M_PER_DEG: float = 111_320.0
 
@@ -357,13 +369,20 @@ _GEOCLAW_M_PER_DEG: float = 111_320.0
 def _geoclaw_refinement_product(levels: int) -> int:
     """Cumulative AMR refinement (base -> finest) for ``levels`` levels.
 
-    MIRRORS ``setrun_builder._refinement_ratios`` (first transition 2x, every
-    later transition 4x) so the agent-side cost estimate matches the deck the
-    worker authors from it. ``levels <= 1`` -> ``1`` (a uniform base grid).
+    MIRRORS ``setrun_builder._refinement_ratios`` EXACTLY (first transition 2x,
+    middle transitions 4x, and -- for a deep >= 5-level nest -- the FINAL
+    transition steps back to 2x) so the agent-side cost estimate matches the deck
+    the worker authors from it. ``levels <= 1`` -> ``1`` (a uniform base grid).
     """
+    n = max(int(levels) - 1, 0)
     product = 1
-    for i in range(max(int(levels) - 1, 0)):
-        product *= 2 if i == 0 else 4
+    for i in range(n):
+        if i == 0:
+            product *= 2
+        elif i == n - 1 and n >= 4:
+            product *= 2  # gentle final step for a deep (>= 5-level) nest
+        else:
+            product *= 4
     return product
 
 
