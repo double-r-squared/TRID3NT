@@ -38,6 +38,7 @@ from rasterio.transform import from_origin
 from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools import fetch_topobathy as ftb
 from grace2_agent.tools.fetch_topobathy import (
+    ETOPO_GLOBAL_ROOT,
     TARGET_CRS,
     TopobathyDatumError,
     TopobathyEmptyError,
@@ -47,10 +48,12 @@ from grace2_agent.tools.fetch_topobathy import (
     TopobathyUpstreamError,
     _build_merged_topobathy,
     _classify_vertical_datum,
+    _etopo_url_for_corner,
     _fetch_topobathy_bytes_and_flags,
     _merge_sources,
     _parse_tile_nw_corner,
     _select_cudem_tiles,
+    _select_etopo_tiles,
     _tile_intersects_bbox,
     estimate_payload_mb,
     fetch_topobathy,
@@ -62,6 +65,10 @@ _LIVE = os.environ.get("GRACE2_TEST_LIVE_TOPOBATHY") == "1"
 # SFINCS North Star demo + CI smoke bboxes.
 _DEMO_BBOX = (-85.75, 29.55, -85.25, 30.20)
 _SMOKE_BBOX = (-85.45, 29.92, -85.38, 29.98)
+# Crescent City, CA — the live GeoClaw tsunami AOI that found 0/930 CUDEM tiles
+# (US Pacific coast; CUDEM's hosted 1/9" collection omits it). Drives the global
+# ETOPO 2022 fallback.
+_CRESCENT_CITY_BBOX = (-124.22, 41.73, -124.14, 41.86)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +249,45 @@ def test_select_cudem_tiles_intersect_only(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(ftb, "_fetch_cudem_urllist", lambda *_a, **_k: fake_manifest)
     sel = _select_cudem_tiles(_SMOKE_BBOX, 30.0)
     assert sel == ["https://x/AL_nwFL/ncei19_n30X00_w085X50_2019v1.tif"]
+
+
+# ---------------------------------------------------------------------------
+# GLOBAL ETOPO 2022 fallback tile selection (the 0/930-CUDEM fix).
+# ---------------------------------------------------------------------------
+
+
+def test_etopo_url_for_corner_naming() -> None:
+    """The 15-degree ETOPO tile URL encodes its NW corner: N/S lat, W/E lon."""
+    url = _etopo_url_for_corner(45.0, -135.0)
+    assert url.startswith(ETOPO_GLOBAL_ROOT)
+    assert url.endswith("ETOPO_2022_v1_15s_N45W135_surface.tif")
+    # Gulf-coast NW corner (Mexico Beach tile).
+    assert _etopo_url_for_corner(30.0, -90.0).endswith("N30W090_surface.tif")
+    # Southern / eastern hemispheres encode S / E.
+    assert _etopo_url_for_corner(-15.0, 15.0).endswith("S15E015_surface.tif")
+
+
+def test_select_etopo_tiles_crescent_city() -> None:
+    """The Crescent City tsunami AOI (US Pacific) — where CUDEM finds 0 tiles —
+    selects the single global ETOPO tile N45W135 (lat [30,45], lon [-135,-120]),
+    which DOES contain it. This is the fix for the 0/930 land-only zero-inundation
+    bug: a Pacific coastal AOI now gets a real global bathymetry source."""
+    sel = _select_etopo_tiles(_CRESCENT_CITY_BBOX)
+    assert len(sel) == 1
+    assert sel[0].endswith("ETOPO_2022_v1_15s_N45W135_surface.tif")
+
+
+def test_select_etopo_tiles_straddling_bbox() -> None:
+    """A bbox straddling a 15-degree tile seam selects BOTH tiles (AABB overlap),
+    so no nearshore strip is dropped at a tile boundary."""
+    # Straddle the lon=-120 seam (N45W135 spans [-135,-120], N45W120 spans
+    # [-120,-105]) and stay within lat [30,45].
+    sel = _select_etopo_tiles((-120.5, 40.0, -119.5, 41.0))
+    names = sorted(u.rsplit("/", 1)[-1] for u in sel)
+    assert names == [
+        "ETOPO_2022_v1_15s_N45W120_surface.tif",
+        "ETOPO_2022_v1_15s_N45W135_surface.tif",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +483,65 @@ def test_merge_land_only_is_land_only(tmp_path: Any) -> None:
     assert (finite > 0).all()
 
 
+def test_merge_etopo_global_fallback_supplies_bathy(tmp_path: Any) -> None:
+    """CUDEM absent but the GLOBAL ETOPO fallback present: the merge reports
+    bathymetry_present=True (real below-waterline bed) with cudem_tile_count=0,
+    3DEP land (higher res) wins on land, ETOPO fills the offshore where 3DEP is
+    nodata. This is the core of the Crescent City 0/930 fix."""
+    etopo_path = str(tmp_path / "etopo.tif")
+    land_path = str(tmp_path / "land.tif")
+    # ETOPO base: WEST half is sea floor (-15 m, NEGATIVE/positive-up), EAST half
+    # is coastal land (+30 m). It spans the whole AOI (global coverage).
+    col = np.arange(40)[None, :].repeat(40, axis=0)
+    west_half = col < 20
+    arr = np.full((40, 40), 30.0, dtype="float32")
+    arr[west_half] = -15.0
+    west, south, east, north = _SMOKE_BBOX
+    res_x = (east - west) / 40
+    res_y = (north - south) / 40
+    with rasterio.open(
+        etopo_path, "w", driver="GTiff", height=40, width=40, count=1,
+        dtype="float32", crs="EPSG:4326",
+        transform=from_origin(west, north, res_x, res_y), nodata=-99999.0,
+    ) as dst:
+        dst.write(arr, 1)
+    # 3DEP land: high +50 m plateau over the EAST (land) half only; WEST half
+    # (offshore) is nodata so ETOPO bathy must fill it.
+    land_arr = np.full((40, 40), 50.0, dtype="float32")
+    land_arr[west_half] = -9999.0
+    with rasterio.open(
+        land_path, "w", driver="GTiff", height=40, width=40, count=1,
+        dtype="float32", crs="EPSG:4326",
+        transform=from_origin(west, north, res_x, res_y), nodata=-9999.0,
+    ) as dst:
+        dst.write(land_arr, 1)
+
+    cog_bytes, bathy_present, count = _build_merged_topobathy(
+        cudem_vsicurl_paths=[],
+        land_local_path=land_path,
+        datum_offsets=[],
+        bbox=_SMOKE_BBOX,
+        target_crs=TARGET_CRS,
+        etopo_paths=[etopo_path],
+    )
+    assert bathy_present is True, "ETOPO global fallback must count as bathymetry"
+    assert count == 0, "cudem_tile_count is CUDEM-specific (0 on the ETOPO path)"
+
+    out = str(tmp_path / "out.tif")
+    with open(out, "wb") as fh:
+        fh.write(cog_bytes)
+    with rasterio.open(out) as ds:
+        assert ds.count == 1 and str(ds.dtypes[0]) == "float32"
+        assert ds.crs.to_epsg() == 32616
+        finite = ds.read(1, masked=True).compressed()
+    assert finite.size > 0
+    # Real below-waterline bed from ETOPO (NEGATIVE, positive-up; no sign flip).
+    assert (finite < 0).any(), "ETOPO must supply a real below-waterline bed"
+    assert finite.min() == pytest.approx(-15.0, abs=2.0)
+    # 3DEP land (higher res) wins on land.
+    assert (finite > 40).any(), "3DEP land must win on land over coarse ETOPO"
+
+
 def test_merge_mixed_crs_and_orientation_no_mergeerror() -> None:
     """REGRESSION (live Mexico-Beach crash): merging HETEROGENEOUS-CRS sources
     — a 3DEP land DEM in EPSG:5070 (Albers) + a CUDEM tile in EPSG:4269 (NAD83)
@@ -544,11 +649,17 @@ def _patch_pipeline(
     cudem_tiles: list[str],
     land_path: str | None,
     datum_offsets: list[float] | None = None,
+    etopo_tiles: list[str] | None = None,
 ) -> None:
     """Patch the network/GCS edges of fetch_topobathy so the orchestration runs
     against local synthetic rasters and never writes to a cache bucket."""
     # CUDEM tile selection -> provided local paths (already /vsicurl-free).
     monkeypatch.setattr(ftb, "_select_cudem_tiles", lambda *_a, **_k: cudem_tiles)
+    # GLOBAL ETOPO fallback selection -> provided local paths (default NONE so a
+    # no-CUDEM test degrades to land-only unless the test supplies ETOPO tiles).
+    monkeypatch.setattr(
+        ftb, "_select_etopo_tiles", lambda *_a, **_k: list(etopo_tiles or [])
+    )
     # Datum gate -> return the supplied offsets (default 0.0 == NAVD88).
     offs = datum_offsets if datum_offsets is not None else [0.0] * len(cudem_tiles)
     seq = iter(offs)
@@ -562,12 +673,18 @@ def _patch_pipeline(
     # strip that prefix back to the local synthetic path.
     real_merge = ftb._build_merged_topobathy
 
-    def _merge_local(cudem_vsicurl_paths, **kw):  # type: ignore[no-untyped-def]
-        stripped = [
+    def _strip(paths):  # type: ignore[no-untyped-def]
+        return [
             p[len("/vsicurl/"):] if p.startswith("/vsicurl/") else p
-            for p in cudem_vsicurl_paths
+            for p in (paths or [])
         ]
-        return real_merge(cudem_vsicurl_paths=stripped, **kw)
+
+    def _merge_local(cudem_vsicurl_paths, **kw):  # type: ignore[no-untyped-def]
+        # The orchestrator /vsicurl-prefixes BOTH CUDEM and the ETOPO fallback
+        # paths; strip both back to the local synthetic files for the merge.
+        if "etopo_paths" in kw:
+            kw["etopo_paths"] = _strip(kw["etopo_paths"])
+        return real_merge(cudem_vsicurl_paths=_strip(cudem_vsicurl_paths), **kw)
 
     monkeypatch.setattr(ftb, "_build_merged_topobathy", _merge_local)
     # read_through -> write bytes to a temp file + return a local file:// URI so
@@ -637,6 +754,45 @@ def test_fetch_topobathy_fallback_to_land_only(
     assert res.uri and res.style_preset == "continuous_dem"
 
 
+def test_fetch_topobathy_etopo_global_fallback_when_no_cudem(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """CUDEM absent but the GLOBAL ETOPO fallback present (the Crescent City
+    case): the tool returns bathymetry_present=True with a REAL below-waterline
+    bed and an honest GLOBAL-FALLBACK warning naming the ETOPO source + datum —
+    NOT the land-only BATHYMETRY-ABSENT dead-end that produced zero inundation."""
+    etopo_path = str(tmp_path / "etopo.tif")
+    land_path = str(tmp_path / "land.tif")
+    # ETOPO base spanning the AOI: west half sea floor (-12 m), east half land.
+    col = np.arange(30)[None, :].repeat(30, axis=0)
+    arr = np.full((30, 30), 25.0, dtype="float32")
+    arr[col < 15] = -12.0
+    west, south, east, north = _SMOKE_BBOX
+    with rasterio.open(
+        etopo_path, "w", driver="GTiff", height=30, width=30, count=1,
+        dtype="float32", crs="EPSG:4326",
+        transform=from_origin(west, north, (east - west) / 30, (north - south) / 30),
+        nodata=-99999.0,
+    ) as dst:
+        dst.write(arr, 1)
+    _write_synth_raster(
+        land_path, bbox=_SMOKE_BBOX, nx=30, ny=30, fill=20.0, nodata=-9999.0
+    )
+    # No CUDEM; ETOPO fallback supplies the synthetic global tile.
+    _patch_pipeline(
+        monkeypatch, cudem_tiles=[], land_path=land_path, etopo_tiles=[etopo_path]
+    )
+
+    res = fetch_topobathy(bbox=_SMOKE_BBOX)
+    assert res.bathymetry_present is True, "ETOPO fallback must yield bathymetry"
+    assert res.cudem_tile_count == 0
+    assert res.fallback_warning is not None
+    assert "GLOBAL-FALLBACK BATHYMETRY" in res.fallback_warning
+    assert "ETOPO 2022" in res.fallback_warning
+    assert "BATHYMETRY ABSENT" not in res.fallback_warning
+    assert res.uri and res.style_preset == "continuous_dem"
+
+
 def test_fetch_topobathy_manifest_unreachable_degrades(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
@@ -652,6 +808,9 @@ def test_fetch_topobathy_manifest_unreachable_degrades(
 
     # Patch _select_cudem_tiles to raise upstream (manifest unreachable).
     monkeypatch.setattr(ftb, "_select_cudem_tiles", _boom)
+    # Also force the GLOBAL ETOPO fallback unavailable so this exercises the
+    # BOTH-bathy-sources-down -> land-only honest degrade (BATHYMETRY ABSENT).
+    monkeypatch.setattr(ftb, "_select_etopo_tiles", lambda *_a, **_k: [])
     monkeypatch.setattr(ftb, "_assert_navd88", lambda *_a, **_k: 0.0)
     monkeypatch.setattr(ftb, "_fetch_3dep_land_to_file", lambda *_a, **_k: land_path)
     from grace2_agent.tools.cache import ReadThroughResult
@@ -702,6 +861,33 @@ def test_fetch_topobathy_datum_mismatch_propagates(
 # ---------------------------------------------------------------------------
 # Live smoke (gated; the build does NOT block on it).
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _LIVE, reason="set GRACE2_TEST_LIVE_TOPOBATHY=1 to run")
+def test_live_etopo_fallback_crescent_city_has_real_bathy() -> None:
+    """LIVE: the Crescent City tsunami AOI finds 0 CUDEM tiles (Pacific coast)
+    but the GLOBAL ETOPO 2022 fallback returns a tile with REAL below-waterline
+    depths over the exact bbox — proving the fix turns a zero-inundation
+    land-only run into one with a real submarine bed."""
+    import numpy as _np
+    import rasterio as _rio
+    from rasterio.windows import from_bounds as _from_bounds
+
+    # CUDEM has no coverage here.
+    assert _select_cudem_tiles(_CRESCENT_CITY_BBOX, timeout_s=60.0) == []
+    # ETOPO fallback selects exactly the covering tile.
+    etopo = _select_etopo_tiles(_CRESCENT_CITY_BBOX)
+    assert len(etopo) == 1 and etopo[0].endswith("N45W135_surface.tif")
+
+    with _rio.Env(**ftb._VSICURL_ENV_KW):
+        with _rio.open("/vsicurl/" + etopo[0]) as ds:
+            win = _from_bounds(*_CRESCENT_CITY_BBOX, ds.transform)
+            arr = ds.read(1, window=win, masked=True).filled(_np.nan)
+    finite = arr[~_np.isnan(arr)]
+    assert finite.size > 0, "ETOPO window over Crescent City is empty"
+    assert float(_np.nanmin(finite)) < 0.0, (
+        "expected real nearshore bathymetry (negative depths) over Crescent City"
+    )
 
 
 @pytest.mark.skipif(not _LIVE, reason="set GRACE2_TEST_LIVE_TOPOBATHY=1 to run")

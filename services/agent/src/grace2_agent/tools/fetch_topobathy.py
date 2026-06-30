@@ -81,6 +81,7 @@ __all__ = [
     "estimate_payload_mb",
     "CUDEM_COLLECTION_ROOT",
     "CUDEM_URLLIST_URL",
+    "ETOPO_GLOBAL_ROOT",
     "TARGET_CRS",
 ]
 
@@ -162,6 +163,32 @@ CUDEM_URLLIST_URL = CUDEM_COLLECTION_ROOT + "urllist8483.txt"
 
 #: Each CUDEM tile is a 0.25-degree square; the filename encodes its NW corner.
 _CUDEM_TILE_DEG = 0.25
+
+#: GLOBAL topo-bathy FALLBACK — NOAA NCEI ETOPO 2022 15 arc-second (~450 m)
+#: "surface" relief COGs. CUDEM is pinned to a single US East/Gulf regional
+#: collection (8483) and therefore returns 0 intersecting tiles for the entire
+#: US PACIFIC / West-coast shoreline (Crescent City, the Cascadia tsunami sites,
+#: etc.) and many other covered-but-different-collection coasts. ETOPO 2022 is a
+#: SEAMLESS GLOBAL topo-bathymetry model (land positive, sea floor NEGATIVE,
+#: positive-up), so when CUDEM has no coverage the tool degrades to ETOPO for a
+#: REAL nearshore bed rather than to a land-only DEM (which makes a tsunami /
+#: surge run produce zero inundation). The COGs are range-request friendly
+#: (HTTP 206) and tiled in 15-degree blocks named by their NW corner, e.g.
+#: ``ETOPO_2022_v1_15s_N45W135_surface.tif`` spans lat [30,45], lon [-135,-120].
+#: VERTICAL DATUM: ETOPO 2022 is referenced to EGM2008 (mean-sea-level geoid),
+#: NOT NAVD88 — a sub-metre offset. We do NOT silently relabel it NAVD88; the
+#: fallback path emits an honest ``fallback_warning`` flagging the source +
+#: datum (data-source fallback norm). For a tsunami/GeoClaw run (sea_level=0)
+#: an MSL-referenced bed is the natural reference, so no offset is applied.
+ETOPO_GLOBAL_ROOT = (
+    "https://www.ngdc.noaa.gov/mgg/global/relief/ETOPO2022/data/15s/"
+    "15s_surface_elev_gtif/"
+)
+
+#: ETOPO 2022 COG tiles are 15-degree squares on a complete global grid (12 lat
+#: bands x 24 lon bands = 288 tiles, ALL present), so we construct tile names by
+#: NW corner without probing a manifest.
+_ETOPO_TILE_DEG = 15.0
 
 #: Target output CRS — UTM 16N (covers the SFINCS North Star demo AOI, the
 #: Florida panhandle / Mexico Beach). NAVD88 vertical is preserved (the merge
@@ -418,6 +445,67 @@ def _select_cudem_tiles(
 
 
 # ---------------------------------------------------------------------------
+# GLOBAL topo-bathy fallback tile-index intersect (NOAA ETOPO 2022 15").
+# ---------------------------------------------------------------------------
+
+
+def _etopo_url_for_corner(nw_lat: float, nw_lon: float) -> str:
+    """Build the ETOPO 2022 15" COG URL for the 15-degree tile whose NW corner
+    is ``(nw_lat, nw_lon)``.
+
+    Names: ``ETOPO_2022_v1_15s_{N|S}{lat:02d}{W|E}{lon:03d}_surface.tif``. The
+    NW corner latitude carries the hemisphere ('N' for >=0, 'S' for <0) and the
+    NW corner longitude carries 'W' (<0) / 'E' (>=0). e.g. NW (45, -135) ->
+    ``...N45W135_surface.tif`` (spans lat [30,45], lon [-135,-120]).
+    """
+    ns = "N" if nw_lat >= 0 else "S"
+    ew = "W" if nw_lon < 0 else "E"
+    return (
+        f"{ETOPO_GLOBAL_ROOT}ETOPO_2022_v1_15s_"
+        f"{ns}{abs(int(round(nw_lat))):02d}{ew}{abs(int(round(nw_lon))):03d}"
+        "_surface.tif"
+    )
+
+
+def _select_etopo_tiles(bbox: tuple[float, float, float, float]) -> list[str]:
+    """Return the ETOPO 2022 15" COG URLs whose 15-degree footprint intersects
+    the AOI — the GLOBAL topo-bathy fallback when CUDEM has no coverage.
+
+    The grid is complete (every 15-degree block has a tile), so we enumerate the
+    NW corners spanning the bbox and AABB-test each tile (lat [nw_lat-15,nw_lat],
+    lon [nw_lon, nw_lon+15]) against the AOI. No manifest download needed.
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox
+    # South edge of the southern-most tile row, west edge of the western-most
+    # column, both snapped down to the 15-degree grid.
+    lat_south = math.floor(min_lat / _ETOPO_TILE_DEG) * _ETOPO_TILE_DEG
+    lon_west = math.floor(min_lon / _ETOPO_TILE_DEG) * _ETOPO_TILE_DEG
+    urls: list[str] = []
+    s = lat_south
+    while s < max_lat:
+        nw_lat = s + _ETOPO_TILE_DEG  # NW corner latitude (top edge of the tile)
+        w = lon_west
+        while w < max_lon:
+            tile_west, tile_east = w, w + _ETOPO_TILE_DEG
+            tile_south, tile_north = s, nw_lat
+            if not (
+                tile_east < min_lon
+                or tile_west > max_lon
+                or tile_north < min_lat
+                or tile_south > max_lat
+            ):
+                urls.append(_etopo_url_for_corner(nw_lat, w))
+            w += _ETOPO_TILE_DEG
+        s += _ETOPO_TILE_DEG
+    logger.info(
+        "fetch_topobathy: selected %d global ETOPO 2022 15\" fallback tile(s) "
+        "for bbox=%s",
+        len(urls), bbox,
+    )
+    return urls
+
+
+# ---------------------------------------------------------------------------
 # Vertical-datum gate (Invariant 7).
 # ---------------------------------------------------------------------------
 
@@ -619,35 +707,46 @@ def _build_merged_topobathy(
     datum_offsets: list[float],
     bbox: tuple[float, float, float, float],
     target_crs: str,
+    etopo_paths: list[str] | None = None,
 ) -> tuple[bytes, bool, int]:
-    """Merge CUDEM (coast) + 3DEP land into one EPSG:32616 NAVD88 float32 COG.
+    """Merge bathymetry + 3DEP land into one EPSG:32616 float32 COG.
 
-    Precedence: CUDEM is listed LAST so it WINS in the overlap (nearshore /
-    shoreline); 3DEP fills the land where CUDEM has nodata. Mutual nodata fill.
-    The merge reprojects EACH source individually from its own CRS onto a
-    common bbox-clipped ``target_crs`` grid, then composites LAST-wins (see
-    ``_merge_sources``) — robust to the CUDEM-EPSG:4269 / 3DEP-EPSG:5070 mix
-    and to opposite pixel orientation, with NO GDAL-CLI dependency.
+    Precedence (LOW -> HIGH, last source WINS where it has valid data):
 
-    Returns ``(cog_bytes, bathymetry_present, cudem_tile_count)``.
+      1. ``etopo_paths`` — GLOBAL ETOPO 2022 15" topo-bathy fallback (BASE,
+         ~450 m). Only supplied when CUDEM has NO coverage; it lays down a real
+         nearshore bed so a coastal/tsunami run is not left land-only. 3DEP land
+         (higher res) paints over it on land; ETOPO survives offshore where
+         3DEP is nodata.
+      2. ``land_local_path`` — USGS 3DEP land DEM (~10 m). Wins over ETOPO on
+         land; CUDEM (when present) wins over it on the coast.
+      3. ``cudem_vsicurl_paths`` — NOAA NCEI CUDEM 1/9" (~3 m, TOP). Wins in
+         the nearshore / shoreline overlap.
+
+    For a CUDEM-covered AOI ``etopo_paths`` is empty and the order is exactly
+    the historical ``[land, CUDEM]`` (CUDEM wins). The merge reprojects EACH
+    source individually from its own CRS onto a common bbox-clipped
+    ``target_crs`` grid, then composites LAST-wins (see ``_merge_sources``) —
+    robust to heterogeneous CRS (CUDEM-EPSG:4269 / 3DEP-EPSG:5070 /
+    ETOPO-EPSG:9518) and to opposite pixel orientation, with NO GDAL-CLI
+    dependency.
+
+    Returns ``(cog_bytes, bathymetry_present, cudem_tile_count)`` where
+    ``bathymetry_present`` is True when EITHER CUDEM or the ETOPO global
+    fallback contributed a real below-waterline bed, and ``cudem_tile_count``
+    is the CUDEM tile count specifically (0 on the ETOPO fallback path).
     """
     import rasterio
 
+    etopo_paths = list(etopo_paths or [])
     have_cudem = len(cudem_vsicurl_paths) > 0
+    have_etopo = len(etopo_paths) > 0
     have_land = land_local_path is not None
-    if not have_cudem and not have_land:
+    if not have_cudem and not have_etopo and not have_land:
         raise TopobathyEmptyError(
-            f"no CUDEM tiles AND no 3DEP land DEM for bbox={bbox} — no elevation "
-            "data available for this AOI"
+            f"no CUDEM tiles, no ETOPO global fallback AND no 3DEP land DEM for "
+            f"bbox={bbox} — no elevation data available for this AOI"
         )
-
-    # Build the source list with 3DEP land FIRST and CUDEM LAST so the
-    # last-listed CUDEM wins on the coast (gdalbuildvrt: later sources paint
-    # over earlier ones in the VRT; rasterio.merge: we order accordingly).
-    sources_in_precedence: list[str] = []
-    if have_land:
-        sources_in_precedence.append(land_local_path)  # type: ignore[arg-type]
-    sources_in_precedence.extend(cudem_vsicurl_paths)  # CUDEM last = wins
 
     tmp_paths: list[str] = []
     try:
@@ -661,8 +760,11 @@ def _build_merged_topobathy(
                 adjusted_cudem.append(shifted)
             else:
                 adjusted_cudem.append(path)
+        # ETOPO (global fallback) is the BASE, then 3DEP land, then CUDEM on top.
         sources_in_precedence = (
-            ([land_local_path] if have_land else []) + adjusted_cudem  # type: ignore[list-item]
+            etopo_paths
+            + ([land_local_path] if have_land else [])  # type: ignore[list-item]
+            + adjusted_cudem
         )
 
         merged_path = _merge_sources(sources_in_precedence, target_crs, bbox)
@@ -708,13 +810,17 @@ def _build_merged_topobathy(
                 f"expected float32, got {ds.dtypes[0]}"
             )
         logger.info(
-            "fetch_topobathy: merged %d CUDEM + %s land -> %d-byte COG (%s)",
+            "fetch_topobathy: merged %d CUDEM + %d ETOPO-global + %s land -> "
+            "%d-byte COG (%s)",
             len(cudem_vsicurl_paths),
+            len(etopo_paths),
             "1" if have_land else "0",
             len(cog_bytes),
             target_crs,
         )
-        return cog_bytes, have_cudem, len(cudem_vsicurl_paths)
+        # Bathymetry is present when CUDEM OR the ETOPO global fallback supplied
+        # a real below-waterline bed (3DEP land alone is NOT bathymetry).
+        return cog_bytes, (have_cudem or have_etopo), len(cudem_vsicurl_paths)
     finally:
         for p in tmp_paths:
             try:
@@ -1024,6 +1130,26 @@ def _fetch_topobathy_bytes_and_flags(
         datum_offsets.append(offset)
     cudem_vsicurl = gated_paths
 
+    # 2b) GLOBAL topo-bathy fallback (NOAA ETOPO 2022 15") when CUDEM has NO
+    #     coverage for this AOI. CUDEM is pinned to a single US East/Gulf
+    #     regional collection, so the entire US Pacific / West coast (and other
+    #     covered-but-different-collection coasts) finds 0 CUDEM tiles. Rather
+    #     than degrade straight to a land-only DEM (which gives a tsunami/surge
+    #     run NO submarine bed -> zero inundation), pull the seamless GLOBAL
+    #     ETOPO 2022 topo-bathy so the AOI still gets a REAL nearshore bed
+    #     (data-source fallback norm: CUDEM -> ETOPO-global -> land-only).
+    etopo_vsicurl: list[str] = []
+    if not cudem_vsicurl:
+        try:
+            etopo_urls = _select_etopo_tiles(bbox)
+            etopo_vsicurl = [f"/vsicurl/{u}" for u in etopo_urls]
+        except Exception as exc:  # noqa: BLE001 — fallback is best-effort
+            logger.warning(
+                "fetch_topobathy: ETOPO global-fallback tile selection failed "
+                "(%s); will degrade to 3DEP-land-only", exc,
+            )
+            etopo_vsicurl = []
+
     # 3) 3DEP land DEM (REUSE fetch_dem) — best-effort.
     land_local = _fetch_3dep_land_to_file(bbox, resolution_m)
 
@@ -1034,17 +1160,36 @@ def _fetch_topobathy_bytes_and_flags(
         datum_offsets=datum_offsets,
         bbox=bbox,
         target_crs=target_crs,
+        etopo_paths=etopo_vsicurl,
     )
 
-    # 5) Honest fallback warning when CUDEM is absent (data-source norm).
+    # 5) Honest fallback warning (data-source norm). Three cases:
+    #    - CUDEM present              -> no warning (best, NAVD88 ~3 m).
+    #    - CUDEM absent, ETOPO used   -> GLOBAL-FALLBACK warning (real bed, but
+    #                                    coarser + MSL/geoid datum, NOT silent).
+    #    - no bathy source at all     -> BATHYMETRY ABSENT (land-only).
     fallback_warning: str | None = None
     if not bathy_present:
         fallback_warning = (
-            "BATHYMETRY ABSENT: no NOAA NCEI CUDEM topo-bathy tiles were found "
-            f"for this AOI {bbox}; the elevation surface is 3DEP LAND-ONLY "
-            "(below-waterline cells are nodata). A coastal flood / surge run on "
-            "this DEM has NO nearshore bed and will under-represent inundation. "
-            "Treat results as land-pluvial only until bathymetry is available."
+            "BATHYMETRY ABSENT: no NOAA NCEI CUDEM topo-bathy tiles AND no "
+            f"global ETOPO 2022 fallback were available for this AOI {bbox}; the "
+            "elevation surface is 3DEP LAND-ONLY (below-waterline cells are "
+            "nodata). A coastal flood / surge / tsunami run on this DEM has NO "
+            "nearshore bed and will under-represent inundation. Treat results "
+            "as land-pluvial only until bathymetry is available."
+        )
+        logger.warning("fetch_topobathy: %s", fallback_warning)
+    elif cudem_count == 0 and etopo_vsicurl:
+        # Bathymetry IS present, but it is the GLOBAL coarse fallback, not CUDEM.
+        fallback_warning = (
+            "GLOBAL-FALLBACK BATHYMETRY: no NOAA NCEI CUDEM topo-bathy tiles "
+            f"cover this AOI {bbox} (CUDEM's hosted 1/9\" collection omits this "
+            "coast); nearshore bathymetry was sourced from the GLOBAL NOAA "
+            "ETOPO 2022 15 arc-second relief model (~450 m, EGM2008/MSL-"
+            "referenced rather than NAVD88, a sub-metre vertical offset). This "
+            "provides a REAL below-waterline bed (so a tsunami/surge run "
+            "produces actual inundation) but is COARSER than CUDEM; treat "
+            "nearshore detail as approximate."
         )
         logger.warning("fetch_topobathy: %s", fallback_warning)
 
@@ -1135,12 +1280,19 @@ def fetch_topobathy(
         fields: ``bathymetry_present`` (False on the land-only fallback),
         ``fallback_warning`` (set when bathy is absent), ``cudem_tile_count``.
 
-    **Fallback (data-source norm):**
-        If CUDEM tiles are missing / unreachable for the AOI, the tool DEGRADES
-        to a 3DEP-LAND-ONLY DEM and returns a result with
-        ``bathymetry_present=False`` + an honest ``fallback_warning`` — never a
-        silent dead-end or a fabricated bathymetry. Only if BOTH CUDEM and 3DEP
-        are unavailable does it raise ``TopobathyEmptyError``.
+    **Fallback (data-source norm — CUDEM -> ETOPO-global -> land-only):**
+        CUDEM's hosted 1/9" collection only covers part of the US coast (it
+        omits, e.g., the entire US Pacific / West coast). When NO CUDEM tile
+        intersects the AOI the tool degrades to the GLOBAL NOAA ETOPO 2022 15
+        arc-second topo-bathy model so the AOI still gets a REAL nearshore bed
+        (so a coastal / tsunami run produces actual inundation). That ETOPO bed
+        is coarser (~450 m) and EGM2008/MSL-referenced (not NAVD88): the result
+        still reports ``bathymetry_present=True`` but carries an honest
+        ``fallback_warning`` naming the source + datum — never a silent relabel.
+        Only if CUDEM, ETOPO and 3DEP are ALL unavailable does the result
+        degrade to land-only (``bathymetry_present=False``, ``BATHYMETRY
+        ABSENT`` warning); only if there is no elevation at all does it raise
+        ``TopobathyEmptyError``.
 
     **Errors (FR-AS-11 typed-error surface):**
         - ``TopobathyInputError``: bad bbox / outside US coast (retryable=False).
