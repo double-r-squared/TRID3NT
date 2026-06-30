@@ -2787,6 +2787,75 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
     expect(card.style.maxWidth).toBe("200px");
   });
 
+  it("DESKTOP categorical lays its swatch chips out HORIZONTALLY (sibling of the bottom-docked colorbar)", () => {
+    // PARITY (NATE 2026-06-29): the desktop strip docks BELOW the bbox (a horizontal
+    // edge), so the categorical chips flow as a horizontal wrapping ROW - mirroring
+    // the colorbar's horizontal [min] bar [max] - NOT a tall vertical column.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-horiz",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 11, color: "#486DA2", label: "Open Water" },
+                { value: 41, color: "#38814E", label: "Deciduous Forest" },
+                { value: 81, color: "#DCD93D", label: "Pasture/Hay" },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // The desktop categorical card reads as a HORIZONTAL key, like the colorbar.
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    const valueRow = within(key).getByTestId("layer-legend-value-row");
+    // Chips flow in a wrapping ROW (horizontal), not a column.
+    expect(valueRow.style.flexDirection).toBe("row");
+    expect(valueRow.style.flexWrap).toBe("wrap");
+    expect(screen.getAllByTestId("layer-legend-class")).toHaveLength(3);
+    // Still narrow (fit-content, capped) - the prior pass's narrow sizing is kept.
+    expect(key.style.width).toBe("fit-content");
+  });
+
+  it("DESKTOP categorical NEVER docks OVER the bbox - it sits just below the bbox bottom edge", () => {
+    // OUTSIDE-THE-BBOX (NATE 2026-06-29): the strip top must be >= the bbox bottom
+    // edge + gap, even for a tall many-class legend (the old height clamp used to
+    // pull a tall strip UP over the bbox). A continuous colorbar already does this;
+    // the categorical must too.
+    const aoiRect = { left: 200, top: 100, right: 600, bottom: 400 };
+    const manyClasses = Array.from({ length: 16 }, (_, i) => ({
+      value: i,
+      color: `#${(0x2266aa + i * 0x050505).toString(16).padStart(6, "0")}`,
+      label: `Class ${i}`,
+    }));
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-tall",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: { kind: "categorical", label: "Land cover", units: null, classes: manyClasses },
+          }),
+        ]}
+        aoiRect={aoiRect}
+      />,
+    );
+    const root = screen.getByTestId("grace2-layer-legend");
+    // The strip top is BELOW the bbox bottom edge (outside the bbox), never above it.
+    expect(parseFloat(root.style.top)).toBeGreaterThanOrEqual(
+      aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX,
+    );
+    expect(root.style.bottom).toBe("");
+  });
+
   it("PRESENT-ONLY: keeps a near-neutral REAL class (Barren Land, chroma ~16) and never blanks an all-grey legend", () => {
     // Barren Land (#B3AFA3) is the least-saturated standard NLCD class; it must
     // survive the grey filter. And if EVERY row reads grey, the key keeps them all
@@ -2855,5 +2924,95 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
       />,
     );
     expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+});
+
+// CATEGORICAL PARITY WITH THE COLORBAR (NATE 2026-06-29) - the categorical
+// (land-cover) key must use the EXACT SAME snap-to-bbox-edge + edge-aware
+// orientation path as the continuous colorbar key, sitting OUTSIDE the bbox on the
+// snapped edge (horizontal on top/bottom, vertical on left/right). The ONLY
+// difference between the two is the CONTENT (swatch+label chips vs a gradient bar).
+// The global beforeEach stubs mobile=true (the snap pipeline is mobile-only).
+describe("LayerLegend  -  categorical key has PARITY with the colorbar key", () => {
+  const aoiRect = { left: 100, top: 100, right: 500, bottom: 300 };
+  function categoricalLayer(id = "nlcd-m"): ProjectLayerSummary {
+    return makeLayer({
+      layer_id: id,
+      layer_type: "raster",
+      style_preset: "categorical_landcover",
+      legend: {
+        kind: "categorical",
+        label: "Land cover",
+        units: null,
+        classes: [
+          { value: 11, color: "#486DA2", label: "Open Water" },
+          { value: 41, color: "#38814E", label: "Deciduous Forest" },
+        ],
+      },
+    });
+  }
+  function activateScrubber(): void {
+    const c = getAnimationController();
+    c.setGroups([
+      { key: "seq-cat", label: "x", layerIds: ["f01", "f03"], frameLabels: ["F+01h", "F+03h"] },
+    ]);
+    c.setActiveGroup("seq-cat");
+  }
+
+  it("BOTTOM edge: categorical AND continuous both snap bottom + render HORIZONTAL (only content differs)", () => {
+    const { rerender } = render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    let key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+
+    rerender(<LayerLegend layers={[categoricalLayer()]} aoiRect={aoiRect} />);
+    key = screen.getByTestId("grace2-layer-legend-key");
+    // SAME side + orientation as the colorbar - the parity requirement.
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+    // Categorical content flows HORIZONTALLY on a horizontal edge (row, wraps).
+    const list = within(key).getByTestId("layer-legend-class-list");
+    expect(list.style.flexDirection).toBe("row");
+    expect(list.style.flexWrap).toBe("wrap");
+    // Swatch chips (not a gradient bar) - the only difference from the colorbar.
+    expect(within(key).queryByTestId("layer-legend-bar")).toBeNull();
+    expect(within(key).getAllByTestId("layer-legend-class")).toHaveLength(2);
+  });
+
+  it("RIGHT edge (scrubber active): categorical AND continuous both snap right + render VERTICAL", () => {
+    activateScrubber();
+    const { rerender } = render(
+      <LayerLegend layers={[makeLayer({ layer_id: "cont", name: "Surge" })]} aoiRect={aoiRect} />,
+    );
+    let key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+
+    rerender(<LayerLegend layers={[categoricalLayer("cat-r")]} aoiRect={aoiRect} />);
+    key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
+    // Categorical content flows VERTICALLY on a vertical edge (a column).
+    const list = within(key).getByTestId("layer-legend-class-list");
+    expect(list.style.flexDirection).toBe("column");
+  });
+
+  it("the categorical legend rect NEVER intersects the bbox (sits OUTSIDE the snapped edge)", () => {
+    // BOTTOM edge: the card top is at/below the bbox bottom edge, so the whole card
+    // is BELOW the bbox - zero overlap with the bbox rectangle.
+    const { rerender } = render(
+      <LayerLegend layers={[categoricalLayer("cat-b")]} aoiRect={aoiRect} />,
+    );
+    let key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(parseFloat(key.style.top)).toBeGreaterThanOrEqual(aoiRect.bottom);
+
+    // RIGHT edge (scrubber active): the card left is at/right of the bbox right edge,
+    // so the whole card is to the RIGHT of the bbox - outside it.
+    activateScrubber();
+    rerender(<LayerLegend layers={[categoricalLayer("cat-r2")]} aoiRect={aoiRect} />);
+    key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    expect(parseFloat(key.style.left)).toBeGreaterThanOrEqual(aoiRect.right);
   });
 });

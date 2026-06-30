@@ -1091,7 +1091,22 @@ export function LayerLegend({
       keyModels.map((k, idx) => {
         const side = resolvedSides[idx] ?? sideForIndex(idx + sideStartOffset);
         const vertical = orientationForSide(side) === "vertical";
-        const height = vertical ? KEY_HEIGHT_VERTICAL : KEY_HEIGHT_FLAT;
+        const isCategorical = k.data?.kind === "categorical";
+        // OUTSIDE-THE-BBOX (NATE 2026-06-29): legend_snap places a TOP-side key at
+        // `aoi.top - gap - size.height` and a LEFT-side key at `aoi.left - gap -
+        // size.width`, so size MUST be >= the ACTUAL rendered card or the card's
+        // far edge creeps back INTO the bbox. A categorical card is taller than the
+        // flat colorbar (a title + one swatch row per class), so we feed a
+        // CONSERVATIVE height (base + per-class rows, scaled) that is >= the card in
+        // EITHER orientation (a horizontal categorical wraps to FEWER rows than this
+        // column estimate). Overestimating only pushes the card further OUTSIDE the
+        // bbox - never inside it. Continuous keys keep the flat/vertical constants.
+        const nClasses = isCategorical ? k.data?.classes?.length ?? 0 : 0;
+        const height = isCategorical
+          ? Math.round(20 + (28 + nClasses * 20) * scale)
+          : vertical
+            ? KEY_HEIGHT_VERTICAL
+            : KEY_HEIGHT_FLAT;
         // LEFT-SNAP OFFSET FIX (NATE 2026-06-28): legend_snap places a LEFT-side
         // key at `aoi.left - gap - size.width`, so size.width MUST equal the key's
         // ACTUAL rendered width or the key lands too far left (the right side uses
@@ -1099,7 +1114,6 @@ export function LayerLegend({
         // drifted). A vertical (left/right) NON-categorical key renders as a
         // NARROW bar (VERTICAL_KEY_WIDTH*scale), not the full horizontal card --
         // mirror the render's `cardWidth` here so placement matches what paints.
-        const isCategorical = k.data?.kind === "categorical";
         // A categorical key (land cover) is a NARROW swatch+label list - never the
         // wide AOI-sized colorbar width (NATE 2026-06-29). A non-categorical
         // vertical key is the slim gradient bar. Everything else gets the AOI
@@ -1639,19 +1653,16 @@ export function LayerLegend({
       const estWidth =
         keyModels.length * DESKTOP_DOCK_KEY_WIDTH +
         Math.max(0, keyModels.length - 1) * DESKTOP_DOCK_GAP_PX;
-      // A CATEGORICAL key (NLCD land cover) renders one swatch ROW per class, so
-      // its card is MUCH taller than a continuous colorbar's ~64px. Estimate the
-      // strip height from the TALLEST key (base + per-class rows) so this bbox
-      // clamp keeps the whole strip -- and therefore its drag handle -- on screen
-      // and grabbable; without it a tall land-cover key anchors with its top at the
-      // bbox bottom and runs off the viewport, leaving nowhere to grab and drag it
-      // to a screen edge. A continuous-only strip keeps the prior 64px (unchanged).
-      const estHeight = keyModels.reduce((tallest, mdl) => {
-        const rows =
-          mdl.data?.kind === "categorical" ? (mdl.data.classes?.length ?? 0) : 0;
-        const h = rows > 0 ? 64 + rows * 18 : 64;
-        return Math.max(tallest, h);
-      }, 64);
+      // OUTSIDE-THE-BBOX PARITY (NATE 2026-06-29): the desktop strip is the SAME for
+      // the colorbar and the categorical key, so the categorical must clamp exactly
+      // like the colorbar. A categorical card now lays its chips out HORIZONTALLY
+      // (a short, wrapping row - see DesktopLegendKey), NOT a tall column, so we no
+      // longer reserve a TALL per-class height here (the old `64 + rows*18` estimate
+      // pulled a tall land-cover strip UP and OVER the bbox - the reported bug). A
+      // small flat reserve keeps the dock JUST BELOW the bbox bottom edge (outside
+      // it) in the normal case, only clamping up when the bbox bottom is itself near
+      // / past the viewport bottom (the same on-screen guard the colorbar uses).
+      const estHeight = 64;
       const half = estWidth / 2;
       const centerX = Math.max(
         m + half,
@@ -2052,37 +2063,59 @@ export function LayerLegend({
                   </span>
                   <LegendControls idx={idx} onHide={() => setHidden(true)} />
                 </div>
-                {(data?.classes ?? []).map((cls, ci) => (
-                  <div
-                    key={`${layerId}-class-${ci}`}
-                    data-testid="layer-legend-class"
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
-                  >
-                    <span
-                      data-testid="layer-legend-swatch"
+                {/* EDGE-AWARE LAYOUT (NATE 2026-06-29): the class swatch+label chips
+                    flow the SAME way the colorbar bar flows - a horizontal ROW (that
+                    wraps) when the key is docked HORIZONTAL (top/bottom), a vertical
+                    COLUMN when docked VERTICAL (left/right). So a categorical key and a
+                    continuous key on the SAME edge are siblings (same anchor +
+                    orientation), differing only in content. */}
+                <div
+                  data-testid="layer-legend-class-list"
+                  style={{
+                    display: "flex",
+                    flexDirection: orientation === "vertical" ? "column" : "row",
+                    flexWrap: orientation === "vertical" ? "nowrap" : "wrap",
+                    alignItems: orientation === "vertical" ? "stretch" : "center",
+                    gap: orientation === "vertical" ? 3 : 8,
+                  }}
+                >
+                  {(data?.classes ?? []).map((cls, ci) => (
+                    <div
+                      key={`${layerId}-class-${ci}`}
+                      data-testid="layer-legend-class"
                       style={{
-                        width: barThickness,
-                        height: barThickness,
-                        borderRadius: 3,
-                        background: cls.color,
-                        border: "1px solid rgba(255,255,255,0.20)",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: labelFont,
-                        color: "#cfd4db",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        minWidth: 0,
                       }}
                     >
-                      {cls.label}
-                      {unitLabel ? ` ${unitLabel}` : ""}
-                    </span>
-                  </div>
-                ))}
+                      <span
+                        data-testid="layer-legend-swatch"
+                        style={{
+                          width: barThickness,
+                          height: barThickness,
+                          borderRadius: 3,
+                          background: cls.color,
+                          border: "1px solid rgba(255,255,255,0.20)",
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: labelFont,
+                          color: "#cfd4db",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {cls.label}
+                        {unitLabel ? ` ${unitLabel}` : ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : orientation === "vertical" ? (
               <div
@@ -2403,13 +2436,24 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
       {isCategorical ? (
         <div
           data-testid="layer-legend-value-row"
-          style={{ display: "flex", flexDirection: "column", gap: 3 }}
+          style={{
+            // EDGE-AWARE LAYOUT (NATE 2026-06-29): the desktop strip docks BELOW the
+            // bbox (a horizontal edge), so the categorical chips flow as a horizontal
+            // ROW that WRAPS - mirroring how the colorbar lays out horizontally on the
+            // bottom edge - instead of a tall vertical column. Kept narrow
+            // (fit-content/maxWidth on the card), so chips wrap within the cap.
+            display: "flex",
+            flexDirection: "row",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: 8,
+          }}
         >
           {(data?.classes ?? []).map((cls, ci) => (
             <div
               key={`desktop-class-${ci}`}
               data-testid="layer-legend-class"
-              style={{ display: "flex", alignItems: "center", gap: 6 }}
+              style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}
             >
               <span
                 data-testid="layer-legend-swatch"
@@ -2426,14 +2470,7 @@ function DesktopLegendKey({ model }: { model: LegendKeyModel }): JSX.Element {
                 style={{
                   fontSize: DESKTOP_DOCK_LABEL_FONT,
                   color: "#cfd4db",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
-                  // minWidth:0 + flex lets the label ellipsize WITHIN the
-                  // fit-content/maxWidth-capped categorical card (NATE 2026-06-29)
-                  // instead of forcing the card past its cap.
-                  minWidth: 0,
-                  flex: "1 1 auto",
                 }}
               >
                 {cls.label}
