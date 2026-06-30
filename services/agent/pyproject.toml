@@ -218,3 +218,16 @@ grace2-agent = "grace2_agent.main:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ship runtime data files in the wheel. setuptools drops all non-.py files by
+# default, so a non-editable `pip install` (the Docker/agent image build) was
+# silently omitting these -- e.g. manning_mapping.csv, causing every SFINCS
+# flood to die with MANNING_MAPPING_LOAD_FAILED on the isolation image while the
+# box (editable/source install) worked. Keep this in sync with any new data file
+# loaded via Path(__file__).parent (2026-06-30).
+[tool.setuptools.package-data]
+grace2_agent = [
+    "workflows/manning_mapping.csv",
+    "data/tool_query_corpus.yaml",
+    "tools/README.md",
+]
