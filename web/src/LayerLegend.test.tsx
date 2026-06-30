@@ -2787,6 +2787,66 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
     expect(card.style.maxWidth).toBe("200px");
   });
 
+  it("SIDE-DOCK: a categorical land-cover legend docks to the AOI SIDE, not centered in the middle", () => {
+    // NATE 2026-06-29: the land-cover legend used to center on the bbox (translateX
+    // -50%) just below it; for a tall swatch column the height clamp then pulled its
+    // top up toward mid-screen, so it floated CENTERED in the middle of the map.
+    // It must instead DOCK to the AOI side (rail the bbox RIGHT edge, top-aligned),
+    // like the AOI colorbar key, narrow and laid out as a column.
+    const aoiRect = { left: 200, top: 100, right: 600, bottom: 400 };
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-side",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 11, color: "#486DA2", label: "Open Water" },
+                { value: 41, color: "#38814E", label: "Deciduous Forest" },
+                { value: 81, color: "#DCD93D", label: "Pasture/Hay" },
+              ],
+            },
+          }),
+        ]}
+        aoiRect={aoiRect}
+      />,
+    );
+    const root = screen.getByTestId("grace2-layer-legend");
+    // Side-docked (flagged), still in bbox-anchored mode.
+    expect(root).toHaveAttribute("data-legend-side-dock", "1");
+    expect(root).toHaveAttribute("data-legend-dock-mode", "bbox");
+    // NOT centered: the centering translateX(-50%) is gone (transform cleared).
+    expect(root.style.transform).toBe("none");
+    expect(root.style.transform).not.toContain("translateX(-50%)");
+    // Laid out as a narrow COLUMN down the AOI edge (not the horizontal strip).
+    expect(root.style.flexDirection).toBe("column");
+    // Railed to the bbox RIGHT edge (left >= aoiRect.right), TOP-aligned near the
+    // bbox top - i.e. anchored to the side, not floating in the screen center.
+    expect(parseFloat(root.style.left)).toBeGreaterThanOrEqual(aoiRect.right);
+    expect(root.style.bottom).toBe("");
+    expect(parseFloat(root.style.top)).toBeLessThanOrEqual(
+      aoiRect.top + DESKTOP_DOCK_BBOX_GAP_PX,
+    );
+    // The class swatches still render (content contract preserved).
+    expect(screen.getAllByTestId("layer-legend-class")).toHaveLength(3);
+  });
+
+  it("CONTINUOUS-only legend stays centered below the bbox (no side dock regression)", () => {
+    // Regression guard: a continuous-only strip keeps the prior centered-below
+    // bbox dock byte-for-byte (translateX(-50%), horizontal row, no side dock).
+    const aoiRect = { left: 200, top: 100, right: 600, bottom: 400 };
+    render(<LayerLegend layers={[makeLayer()]} aoiRect={aoiRect} />);
+    const root = screen.getByTestId("grace2-layer-legend");
+    expect(root).toHaveAttribute("data-legend-side-dock", "0");
+    expect(root.style.transform).toContain("translateX(-50%)");
+    expect(root.style.flexDirection).toBe("row");
+  });
+
   it("PRESENT-ONLY: keeps a near-neutral REAL class (Barren Land, chroma ~16) and never blanks an all-grey legend", () => {
     // Barren Land (#B3AFA3) is the least-saturated standard NLCD class; it must
     // survive the grey filter. And if EVERY row reads grey, the key keeps them all
@@ -2855,5 +2915,46 @@ describe("LayerLegend  -  data-driven legend (LegendKey)", () => {
       />,
     );
     expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+});
+
+// CATEGORICAL SIDE-DOCK on MOBILE (NATE 2026-06-29) - the mobile per-key snap
+// pipeline must dock a CATEGORICAL (land-cover) key to a vertical AOI SIDE, not
+// the centered BOTTOM, so it reads like the AOI colorbar key rather than floating
+// centered below the bbox. The global beforeEach stubs mobile=true.
+describe("LayerLegend  -  categorical key side-docks on mobile (not centered)", () => {
+  it("a categorical land-cover key snaps to the RIGHT side of the AOI, not the centered bottom", () => {
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            layer_id: "nlcd-mobile",
+            layer_type: "raster",
+            style_preset: "categorical_landcover",
+            legend: {
+              kind: "categorical",
+              label: "Land cover",
+              units: null,
+              classes: [
+                { value: 11, color: "#486DA2", label: "Open Water" },
+                { value: 41, color: "#38814E", label: "Deciduous Forest" },
+              ],
+            },
+          }),
+        ]}
+        aoiRect={{ left: 100, top: 100, right: 500, bottom: 300 }}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // Docked to a vertical SIDE (right), NOT the centered bottom side.
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    // Absolute side rail, not the bottom-center band's left:50%.
+    expect(key.style.left).not.toBe("50%");
+    expect(key.style.bottom).toBe("");
+    // Railed to the RIGHT of the bbox right edge (500): left >= 500.
+    expect(parseFloat(key.style.left)).toBeGreaterThanOrEqual(500);
+    // The swatch rows still render (categorical content, not a gradient bar).
+    expect(screen.getAllByTestId("layer-legend-class")).toHaveLength(2);
+    expect(screen.queryByTestId("layer-legend-bar")).toBeNull();
   });
 });
