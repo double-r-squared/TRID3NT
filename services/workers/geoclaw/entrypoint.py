@@ -202,6 +202,118 @@ def _author_deck(build_spec: dict, cwd: Path) -> Any:
     return build_geoclaw_deck(build_spec, cwd)
 
 
+#: Scenarios whose driver is an OFFSHORE seafloor (Okada) source. For these the
+#: computational domain extends into the ocean, so a topo cell with NO data (the
+#: UTM->4326 warp-corner NaNs) must initialize WET (deep ocean) rather than as dry
+#: land -- otherwise the source has no water column to displace. Mirrors the
+#: composer's GEOCLAW_OFFSHORE_SCENARIOS.
+_OFFSHORE_SCENARIOS: frozenset[str] = frozenset({"tsunami"})
+
+
+def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
+    """Rewrite ONE staged topo DEM in place as a genuine GeoClaw topotype-3 ASCII.
+
+    The agent stages the topo/bathy DEM as a GeoTIFF/COG (the reprojected
+    EPSG:4326 raster), but ``setrun.py`` references it as ``[3, "topo.asc"]`` --
+    GeoClaw topotype 3 = ESRI/GeoClaw-header ASCII. GeoClaw's Fortran reader CANNOT
+    parse GeoTIFF bytes, so a GeoTIFF staged as ``topo.asc`` loads NO bathymetry;
+    the still-water IC ``h = max(0, sea_level - B)`` then finds no cell below sea
+    level and ``Total mass at initial time`` is 0 -- the domain runs DRY and no
+    tsunami is generated. We read the raster with rasterio and re-emit a real
+    topotype-3 ASCII (negative = below sea level preserved; NO sign flip).
+
+    nodata handling: the reprojected raster has large NaN regions in the warp
+    corners. We fill them so the ocean initializes wet -- for an OFFSHORE source
+    (tsunami) missing cells become the file's DEEPEST value (ocean); otherwise
+    they become the highest value (dry land) so an inland dam_break is not
+    spuriously flooded. A file that is ALREADY a GeoClaw topotype-3 ASCII is not
+    a valid GDAL raster header (value-first layout), so ``rasterio.open`` raises
+    and the caller leaves it untouched (idempotent).
+    """
+    import numpy as np  # noqa: WPS433 - worker image deps
+    import rasterio  # noqa: WPS433
+    from clawpack.geoclaw import topotools  # noqa: WPS433
+
+    with rasterio.open(str(path)) as ds:
+        band = ds.read(1).astype("float64")
+        nod = ds.nodata
+        tr = ds.transform
+        nx, ny = int(ds.width), int(ds.height)
+        # An axis-aligned ESRI grid needs no rotation/shear and square cells.
+        if abs(tr.b) > 1e-12 or abs(tr.d) > 1e-12:
+            raise ValueError("topo transform is rotated; cannot emit topotype-3")
+        dx, dy = float(tr.a), float(tr.e)
+        if abs(abs(dx) - abs(dy)) > 1e-6 * max(abs(dx), abs(dy)):
+            raise ValueError(
+                f"topo cells not square (dx={dx}, dy={dy}); topotype-3 needs one cellsize"
+            )
+        # cell-CENTER coordinates; raster rows run north -> south (dy < 0).
+        xs = tr.c + (np.arange(nx) + 0.5) * dx
+        ys = tr.f + (np.arange(ny) + 0.5) * dy
+
+    # Mask numeric nodata -> NaN (NaN nodata is already NaN).
+    if nod is not None and not np.isnan(np.float64(nod)):
+        band = np.where(band == np.float64(nod), np.nan, band)
+    finite = np.isfinite(band)
+    if not finite.any():
+        raise ValueError("topo has no finite cells")
+    if not finite.all():
+        fill = float(np.nanmin(band)) if offshore else float(np.nanmax(band))
+        band = np.where(finite, band, fill)
+
+    # topotools.Topography expects ASCENDING x and y (south-up Z). The write
+    # re-orders to GeoClaw's north-up topotype-3 layout with a correct header.
+    xorder = np.argsort(xs)
+    yorder = np.argsort(ys)
+    xs_asc = xs[xorder]
+    ys_asc = ys[yorder]
+    Z = band[np.ix_(yorder, xorder)]
+
+    topo = topotools.Topography()
+    topo.set_xyZ(xs_asc, ys_asc, Z)
+    tmp = path.with_name(path.name + ".tt3.tmp")
+    topo.write(str(tmp), topo_type=3)
+    os.replace(str(tmp), str(path))
+    LOG.info(
+        "topo normalize: %s -> topotype-3 ASCII (%dx%d, min=%.2f max=%.2f, offshore=%s)",
+        path.name,
+        nx,
+        ny,
+        float(np.nanmin(band)),
+        float(np.nanmax(band)),
+        offshore,
+    )
+
+
+def _normalize_topo_files(scratch: Path, build_spec: dict) -> None:
+    """Convert every staged topo DEM (primary + extra) to topotype-3 ASCII.
+
+    Called AFTER staging + BEFORE the deck authors ``setrun.py`` (which keeps
+    referencing the same filenames). Best-effort per file: a conversion failure is
+    logged and the original is left in place so the run proceeds and fails loudly
+    downstream rather than here.
+    """
+    if not isinstance(build_spec, dict):
+        return
+    scenario = str(build_spec.get("scenario") or "").strip().lower()
+    offshore = scenario in _OFFSHORE_SCENARIOS
+    names = [str(build_spec.get("topo_file") or "topo.asc")]
+    names.extend(str(f) for f in (build_spec.get("extra_topo_files") or []))
+    for name in names:
+        path = scratch / name
+        if not path.exists():
+            continue
+        try:
+            _convert_one_topo_to_topotype3(path, offshore=offshore)
+        except Exception as exc:  # noqa: BLE001 - best-effort; keep the original
+            LOG.warning(
+                "topo normalize: could not convert %s to topotype-3 (%s); "
+                "leaving it as staged",
+                path,
+                exc,
+            )
+
+
 def _run_geoclaw(cwd: Path) -> tuple[int, Path, Path]:
     """Author-then-solve GeoClaw headless in ``cwd``; capture stdout/stderr.
 
@@ -402,6 +514,12 @@ def main(argv: list[str] | None = None) -> int:
             input_uri = item["gs_uri"]
             dest = scratch / item["dest"]
             _download(input_uri, dest)
+
+        # Convert the staged topo DEM(s) from GeoTIFF/COG to genuine topotype-3
+        # ESRI ASCII -- setrun.py references them as [3, "topo.asc"] and GeoClaw's
+        # Fortran reader cannot parse GeoTIFF bytes, so without this the bathymetry
+        # never loads and the run starts DRY (Total mass = 0 -> no tsunami).
+        _normalize_topo_files(scratch, build_spec if isinstance(build_spec, dict) else {})
 
         # Author the deck (setrun.py + scenario source) into the scratch dir.
         deck_manifest = _author_deck(build_spec, scratch)
