@@ -257,6 +257,91 @@ def test_resolve_offshore_source_returns_none_on_dry_domain(tmp_path):
 
 
 # ===========================================================================
+# (2b) CRS alignment — reproject the topo/bathy DEM to EPSG:4326 (the GeoClaw
+# zero-inundation root cause). A projected-metres (UTM) topo extent has ZERO
+# overlap with GeoClaw's lon/lat computational domain -> "topo arrays do not
+# cover domain (area of overlap = 0.0)" -> zero fort.q frames.
+# ===========================================================================
+def _bounds_overlap_area(a, b):
+    """Overlap area of two (min_x, min_y, max_x, max_y) boxes (0 if disjoint)."""
+    ox = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    oy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ox * oy
+
+
+def test_reproject_dem_to_4326_makes_utm_topo_overlap_lonlat_domain(tmp_path):
+    # A UTM (projected-METRES) topo -- exactly what fetch_topobathy stages -- must
+    # reproject to EPSG:4326 so its lon/lat bounds OVERLAP the GeoClaw lon/lat
+    # domain. Pre-fix the metres extent had ZERO overlap and GeoClaw aborted.
+    import rasterio
+    from rasterio.transform import from_bounds
+    from rasterio.warp import transform_bounds
+
+    from grace2_agent.workflows.run_geoclaw import reproject_dem_to_4326
+
+    # A Crescent City-like lon/lat GeoClaw domain (the failing live AOI's shape).
+    dom = (-124.45, 41.5, -123.9, 42.1)
+    utm = "EPSG:32616"  # the WRONG-zone UTM the merge fixed on (zone 10N is right)
+    # Project the lon/lat domain into UTM metres -> the source raster's bounds.
+    u_min_x, u_min_y, u_max_x, u_max_y = transform_bounds("EPSG:4326", utm, *dom)
+    utm_bounds = (u_min_x, u_min_y, u_max_x, u_max_y)
+
+    # Pre-fix invariant: the raw UTM-metres extent has ZERO overlap with the domain.
+    assert _bounds_overlap_area(utm_bounds, dom) == 0.0
+
+    width, height = 48, 52
+    transform = from_bounds(u_min_x, u_min_y, u_max_x, u_max_y, width, height)
+    arr = np.full((height, width), -50.0, dtype="float32")  # all ocean
+    src = tmp_path / "topo_utm.tif"
+    with rasterio.open(
+        src, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs=utm, transform=transform,
+    ) as ds:
+        ds.write(arr, 1)
+
+    new_uri = reproject_dem_to_4326(
+        f"file://{src}", run_id="01TESTGEOCLAWREPROJECT0000000"
+    )
+    assert new_uri.startswith("file://")
+    assert new_uri != f"file://{src}"
+
+    with rasterio.open(new_uri[len("file://"):]) as ds:
+        assert ds.crs.to_epsg() == 4326
+        b = ds.bounds
+    reproj_bounds = (b.left, b.bottom, b.right, b.top)
+    # Post-fix: the reprojected lon/lat topo OVERLAPS the lon/lat domain (> 0).
+    assert _bounds_overlap_area(reproj_bounds, dom) > 0.0
+
+
+def test_reproject_dem_to_4326_passthrough_when_already_lonlat(tmp_path):
+    # A DEM already in EPSG:4326 is returned UNCHANGED (idempotent, no rewrite).
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    from grace2_agent.workflows.run_geoclaw import reproject_dem_to_4326
+
+    dom = (-124.45, 41.5, -123.9, 42.1)
+    transform = from_bounds(*dom, 16, 16)
+    dem = tmp_path / "topo_ll.tif"
+    with rasterio.open(
+        dem, "w", driver="GTiff", height=16, width=16, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform,
+    ) as ds:
+        ds.write(np.full((16, 16), -10.0, dtype="float32"), 1)
+
+    assert reproject_dem_to_4326(f"file://{dem}") == f"file://{dem}"
+
+
+def test_reproject_dem_to_4326_degrades_on_unreachable_uri():
+    # Best-effort: an unreadable URI returns the original unchanged (the run then
+    # fails loudly downstream with the honest overlap message, never silently here).
+    from grace2_agent.workflows.run_geoclaw import reproject_dem_to_4326
+
+    bad = "file:///nonexistent/grace2/topo.tif"
+    assert reproject_dem_to_4326(bad) == bad
+
+
+# ===========================================================================
 # (3) Solver registration + bridge tool registered.
 # ===========================================================================
 def test_geoclaw_registered_in_solver_workflow_registry():

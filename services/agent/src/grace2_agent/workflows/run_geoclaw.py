@@ -49,6 +49,7 @@ __all__ = [
     "register_geoclaw_solver",
     "plan_geoclaw_domain",
     "resolve_offshore_source",
+    "reproject_dem_to_4326",
     "GEOCLAW_SOLVER_NAME",
     "GEOCLAW_OFFSHORE_SCENARIOS",
 ]
@@ -424,6 +425,155 @@ def resolve_offshore_source(
         if is_temp and path:
             try:
                 os.unlink(path)
+            except OSError:
+                pass
+
+
+# --------------------------------------------------------------------------- #
+# CRS alignment — reproject the topo/bathy DEM to EPSG:4326 (lon/lat) for GeoClaw.
+#
+# GeoClaw's tsunami solve runs in SPHERICAL lat/lon (``geo_data.coordinate_system
+# = 2``); the computational domain (clawdata lower/upper) is authored in lon/lat
+# DEGREES. But the coastal topo/bathy merge (``fetch_topobathy``) emits a
+# PROJECTED-METRES COG (a fixed UTM zone, e.g. EPSG:32616 with bounds in millions
+# of metres) -- and that zone can even be the WRONG one for the AOI's longitude.
+# A projected-metres topo extent has ZERO overlap with a lon/lat domain, so GeoClaw
+# aborts before any timestep with "topo arrays do not cover domain (area of overlap
+# = 0.0)" -> zero fort.q frames -> GEOCLAW_BATCH_OUTPUT_MISSING -> zero inundation.
+#
+# We reproject the staged DEM from WHATEVER source CRS to EPSG:4326 here (so even
+# the wrong-UTM-zone artifact cannot reintroduce a mismatch -- the reprojection is
+# driven by the COG's own georeferencing, which round-trips back to correct lon/lat
+# regardless of which zone was chosen). This ALSO fixes ``resolve_offshore_source``,
+# which samples the DEM treating its affine as lon/lat -- garbage on a UTM grid.
+#
+# GeoClaw-SPECIFIC: the SFINCS / SWAN paths keep their projected CRS; only this
+# lane reprojects.
+# --------------------------------------------------------------------------- #
+def reproject_dem_to_4326(dem_uri: str, *, run_id: str | None = None) -> str:
+    """Reproject a topo/bathy DEM to EPSG:4326 and re-stage it; return the new URI.
+
+    Reads the DEM (``file://`` / local / ``s3://``) with rasterio:
+
+      - If it has no CRS, or is ALREADY EPSG:4326, returns ``dem_uri`` unchanged
+        (nothing to do -- the topo is lon/lat already).
+      - Else reprojects every band to EPSG:4326 (bilinear; nodata preserved) into
+        a fresh GeoTIFF and re-stages it: an ``s3://`` source is re-uploaded to the
+        cache bucket (returning the new ``s3://`` URI); a local/``file://`` source
+        (tests) is written next to a temp file and returned as ``file://``.
+
+    Best-effort: ANY failure (unreachable URI, synthetic test URI, rasterio error)
+    returns ``dem_uri`` unchanged + logs, so the run still proceeds (it will then
+    fail loudly downstream with the honest GeoClaw overlap message rather than here).
+    """
+    src_local: str | None = None
+    src_is_temp = False
+    out_path: str | None = None
+    try:
+        import tempfile as _tf
+
+        import rasterio  # noqa: WPS433 - agent venv
+        from rasterio.warp import (  # noqa: WPS433
+            Resampling,
+            calculate_default_transform,
+            reproject,
+        )
+
+        src_local, src_is_temp = _dem_uri_to_local(dem_uri)
+        with rasterio.open(src_local) as src:
+            src_crs = src.crs
+            if src_crs is None:
+                logger.warning(
+                    "reproject_dem_to_4326: DEM %s has no CRS; assuming lon/lat, "
+                    "leaving it unchanged",
+                    dem_uri,
+                )
+                return dem_uri
+            if src_crs.to_epsg() == 4326:
+                return dem_uri
+
+            dst_crs = "EPSG:4326"
+            transform, width, height = calculate_default_transform(
+                src_crs, dst_crs, src.width, src.height, *src.bounds
+            )
+            kwargs = src.meta.copy()
+            kwargs.update(
+                driver="GTiff",
+                crs=dst_crs,
+                transform=transform,
+                width=width,
+                height=height,
+            )
+            fd, out_path = _tf.mkstemp(
+                suffix=".tif", prefix="grace2_geoclaw_topo4326_"
+            )
+            os.close(fd)
+            with rasterio.open(out_path, "w", **kwargs) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src_crs,
+                        dst_transform=transform,
+                        dst_crs=dst_crs,
+                        resampling=Resampling.bilinear,
+                    )
+            new_bounds = (transform.c, transform.f + transform.e * height,
+                          transform.c + transform.a * width, transform.f)
+
+        # Re-stage the reprojected raster by the SAME scheme as the source.
+        if dem_uri.startswith("s3://"):
+            from ..tools.cache import storage_scheme
+            from ..tools.solver import _get_s3_client
+
+            scheme = storage_scheme()
+            cache_bucket = os.environ.get(
+                "GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache"
+            )
+            rid = run_id or new_ulid()
+            key = f"cache/static-30d/geoclaw_setup/{rid}/topo_4326.tif"
+            new_uri = f"{scheme}://{cache_bucket}/{key}"
+            s3 = _get_s3_client()
+            with open(out_path, "rb") as fh:
+                s3.put_object(Bucket=cache_bucket, Key=key, Body=fh)
+            logger.info(
+                "reproject_dem_to_4326: %s (%s) -> %s bounds=%s",
+                dem_uri,
+                src_crs,
+                new_uri,
+                tuple(round(v, 4) for v in new_bounds),
+            )
+            return new_uri
+
+        # Local / file:// source (tests): keep the reprojected file, return it.
+        logger.info(
+            "reproject_dem_to_4326: %s (%s) -> file://%s bounds=%s",
+            dem_uri,
+            src_crs,
+            out_path,
+            tuple(round(v, 4) for v in new_bounds),
+        )
+        kept = out_path
+        out_path = None  # do not unlink in finally; the caller reads it
+        return f"file://{kept}"
+    except Exception as exc:  # noqa: BLE001 - best-effort; keep the original DEM
+        logger.warning(
+            "reproject_dem_to_4326: could not reproject %s to EPSG:4326 (%s); "
+            "keeping the original DEM",
+            dem_uri,
+            exc,
+        )
+        return dem_uri
+    finally:
+        if src_is_temp and src_local:
+            try:
+                os.unlink(src_local)
+            except OSError:
+                pass
+        if out_path:
+            try:
+                os.unlink(out_path)
             except OSError:
                 pass
 

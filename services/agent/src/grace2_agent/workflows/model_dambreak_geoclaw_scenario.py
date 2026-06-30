@@ -63,6 +63,7 @@ from .run_geoclaw import (
     GEOCLAW_SOLVER_NAME,
     GeoClawWorkflowError,
     plan_geoclaw_domain,
+    reproject_dem_to_4326,
     resolve_offshore_source,
     stage_geoclaw_manifest,
 )
@@ -278,6 +279,18 @@ async def model_dambreak_geoclaw_scenario(
             )
     else:
         resolved_dem_uri = dem_uri
+
+    # --- CRS alignment: reproject the topo/bathy DEM to EPSG:4326 (lon/lat) ----
+    # GeoClaw's tsunami solve runs in spherical lat/lon (coordinate_system=2) with
+    # a lon/lat computational domain, but fetch_topobathy emits a PROJECTED-METRES
+    # (UTM) COG -- a metres extent has ZERO overlap with the lon/lat domain, so
+    # GeoClaw aborts ("topo arrays do not cover domain"). Reproject to 4326 BEFORE
+    # source-placement (resolve_offshore_source samples the DEM as lon/lat) and
+    # staging. Best-effort + idempotent (a 4326 DEM is returned unchanged).
+    resolved_dem_uri = await asyncio.to_thread(
+        reproject_dem_to_4326, resolved_dem_uri, run_id=run_id
+    )
+
     logger.info(
         "model_dambreak_geoclaw_scenario: DEM=%s domain=%s aoi=%s",
         resolved_dem_uri,
