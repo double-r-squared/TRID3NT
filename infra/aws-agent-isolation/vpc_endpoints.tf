@@ -39,6 +39,7 @@ resource "aws_security_group" "vpce" {
       aws_security_group.broker.id,     # broker -> ECS RunTask (provision agents)
       aws_security_group.agent_task.id, # per-session agents -> Batch submit_job
       "sg-0d15f32310c874a6e",           # EC2 rollback box agent -> Batch submit_job
+      "sg-0c7dc540171538e99",           # grace2-batch-sg: Batch compute EC2 -> ECS register (else jobs stick RUNNABLE)
     ]
   }
 
