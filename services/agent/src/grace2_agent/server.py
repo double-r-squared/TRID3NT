@@ -540,6 +540,57 @@ def _dispatch_made_progress(result: Any) -> bool:
     return False
 
 
+#: How many CONSECUTIVE no-progress model rounds we tolerate AFTER a terminal
+#: composer has delivered its artifact before concluding the turn cleanly (NATE
+#: 2026-06-29). Symptom: a SFINCS flood publishes its depth layer
+#: (``run_model_flood_scenario`` -> ``layers=1``) and the model, having nothing
+#: left to do, keeps emitting unproductive function calls until it trips the
+#: ``MAX_TURN_ITERATIONS`` cap and emits a (harmless but sloppy)
+#: ``loop_exhausted`` frame. Once the deliverable is in hand we (a) stamp the
+#: composer's function_response with a one-time wrap-up directive so a
+#: well-behaved model just summarizes and stops, and (b) keep this small
+#: SAFETY budget: if the model spins ``_POST_DELIVERABLE_WRAPUP_ROUNDS`` rounds
+#: in a row WITHOUT producing anything new, we conclude the turn cleanly (the
+#: accumulated narration finalizes as a normal final turn) instead of letting
+#: it run to the cap. A round that produces genuine follow-up work (a new
+#: layer/handle/feature -> ``_dispatch_made_progress``) RESETS the streak, so
+#: legitimate multi-deliverable flows (flood -> impact envelope -> buildings)
+#: are never cut off. This is NOT the runaway guard: a turn that NEVER produced
+#: a terminal deliverable still runs to the cap / watchdog exactly as before.
+_POST_DELIVERABLE_WRAPUP_ROUNDS: int = 2
+
+#: The one-time wrap-up directive stamped onto a terminal composer's
+#: function_response the moment it delivers (see ``_is_terminal_composer``).
+_DELIVERABLE_COMPLETE_DIRECTIVE: str = (
+    "DELIVERABLE COMPLETE: this run produced its primary result and any "
+    "layers are already published to the user's map. Unless the user "
+    "explicitly asked for ADDITIONAL analysis beyond this, do NOT call more "
+    "tools -- give a brief (1-3 sentence) final summary of what was produced "
+    "and stop. Calling further tools now will not improve the answer."
+)
+
+
+def _is_terminal_composer(tool_name: str) -> bool:
+    """True iff ``tool_name`` is a top-level run-a-model composer (NATE 2026-06-29).
+
+    A terminal composer is a ``run_*`` workflow-dispatch tool (the
+    ``run_model_*`` / ``run_*_job`` / ``run_swmm_urban_flood`` /
+    ``run_seismic_hazard_psha`` family) -- the deliverable-producing entry
+    points whose successful return IS the answer the user asked for. Helper
+    workflow-dispatch tools that merely compute an intermediate
+    (``compute_cross_section``, ``request_spatial_input``, ...) are
+    deliberately EXCLUDED by the ``run_`` prefix: drawing geometry or computing
+    a profile is mid-pipeline, not a turn-ending deliverable.
+    """
+    entry = TOOL_REGISTRY.get(tool_name)
+    if entry is None:
+        return False
+    return (
+        tool_name.startswith("run_")
+        and getattr(entry.metadata, "source_class", None) == "workflow_dispatch"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Session-scoped confirmation registry (job-0243)
 # --------------------------------------------------------------------------- #
@@ -2608,6 +2659,18 @@ async def _stream_gemini_reply(
     _watchdog = LoopWatchdog()
     _agent_abort: tuple[str, str] | None = None
 
+    # CRISP-END-AFTER-DELIVERABLE (NATE 2026-06-29). Once a terminal composer
+    # (``run_model_*`` & friends) has produced its artifact, the model should
+    # narrate a short summary and STOP -- not keep emitting unproductive tool
+    # calls until it trips the ``loop_exhausted`` cap. ``_deliverable_done``
+    # latches on the first such delivery; ``_post_deliverable_idle`` counts the
+    # CONSECUTIVE no-progress rounds since, and a genuine producing round resets
+    # it (so multi-deliverable flows are never cut off). See
+    # ``_POST_DELIVERABLE_WRAPUP_ROUNDS``.
+    _deliverable_done = False
+    _post_deliverable_idle = 0
+    _crisp_concluded = False
+
     iterations = 0
     try:
         while iterations < _step_cap:
@@ -2768,6 +2831,9 @@ async def _stream_gemini_reply(
                 # nothing" (FR-AS-11).
                 dispatch_error: BaseException | None = None
                 result: Any = None
+                # CRISP-END (NATE 2026-06-29): set True iff THIS call is a
+                # top-level run-a-model composer that produced its deliverable.
+                _call_is_terminal_deliverable = False
                 _tool_start = asyncio.get_running_loop().time()
                 try:
                     # job-B8 (Wave 4.10 Stage 3): per-session circuit breaker.
@@ -2933,8 +2999,21 @@ async def _stream_gemini_reply(
                     # return ({"ok": True}, None, primitive) does NOT -- that is
                     # the no-op-repeat wedge shape the watchdog exists to catch.
                     _round_had_success = True
-                    if _dispatch_made_progress(result):
+                    _call_made_progress = _dispatch_made_progress(result)
+                    if _call_made_progress:
                         _round_made_progress = True
+                    # CRISP-END (NATE 2026-06-29): a top-level run-a-model
+                    # composer that just produced its artifact IS the answer.
+                    # Latch the deliverable + reset the post-deliverable idle
+                    # streak (this round produced something), and stamp a
+                    # one-time wrap-up directive below so the model summarizes
+                    # and stops instead of spinning to the loop_exhausted cap.
+                    _call_is_terminal_deliverable = (
+                        _call_made_progress and _is_terminal_composer(call.name)
+                    )
+                    if _call_is_terminal_deliverable:
+                        _deliverable_done = True
+                        _post_deliverable_idle = 0
                     # On a successful dispatch, mark the tool sticky so the
                     # LLM can re-issue the same tool on a later turn with
                     # refined args without re-opening its category.
@@ -3006,6 +3085,14 @@ async def _stream_gemini_reply(
                         "the server resolves them to exact storage URIs. Do "
                         "NOT construct or echo gs:// paths."
                     )
+                # CRISP-END (NATE 2026-06-29): a top-level run-a-model composer
+                # just delivered its artifact -- stamp a one-time wrap-up
+                # directive on its function_response so the model summarizes and
+                # STOPS rather than emitting more tool calls until the
+                # loop_exhausted cap. Only when the dict summary can carry it
+                # (it always can for a successful composer return).
+                if _call_is_terminal_deliverable and isinstance(summary, dict):
+                    summary["completion_directive"] = _DELIVERABLE_COMPLETE_DIRECTIVE
                 logger.info(
                     "function-response queued session=%s iter=%d tool=%s summary_keys=%s",
                     state.session_id,
@@ -3169,6 +3256,35 @@ async def _stream_gemini_reply(
                 _agent_abort = (_wd_trip, abort_message(_wd_trip))
                 break
 
+            # CRISP-END-AFTER-DELIVERABLE (NATE 2026-06-29). Once a terminal
+            # composer has delivered, a round that produces NOTHING NEW is the
+            # model spinning past a finished answer. The directive stamped on
+            # the composer's function_response asks it to summarize and stop; if
+            # it keeps calling tools anyway, this SAFETY budget concludes the
+            # turn CLEANLY after a couple of idle rounds -- a normal (no-tool)
+            # break, NOT the loop_exhausted cap. A producing round resets the
+            # streak so genuine follow-up work (a second layer, an impact
+            # envelope) is never cut off. ``_agent_abort`` stays None: this is a
+            # clean conclusion, not a runaway abort -- the post-loop finalize /
+            # narration-recovery path closes the turn exactly like a natural
+            # text-terminal exit.
+            if _deliverable_done:
+                if _round_made_progress:
+                    _post_deliverable_idle = 0
+                else:
+                    _post_deliverable_idle += 1
+                    if _post_deliverable_idle >= _POST_DELIVERABLE_WRAPUP_ROUNDS:
+                        logger.info(
+                            "crisp-end: deliverable done + %d idle round(s) "
+                            "session=%s iter=%d -- concluding turn cleanly "
+                            "(no loop_exhausted)",
+                            _post_deliverable_idle,
+                            state.session_id,
+                            iterations,
+                        )
+                        _crisp_concluded = True
+                        break
+
             # Loop: re-stream with the appended call + response so Gemini can
             # decide its next move (another tool call OR a narrative wrap-up).
         else:
@@ -3326,6 +3442,25 @@ async def _stream_gemini_reply(
                     recovered_id,
                     [_closing],
                     is_terminal=True,
+                )
+            elif _crisp_concluded and _seg_done == 0:
+                # CRISP-END edge case (NATE 2026-06-29): the turn delivered a
+                # composer artifact and concluded via the post-deliverable idle
+                # safety, but emitted ZERO narration anywhere (no segment, no
+                # accumulated text) -- so neither the segment-finalize nor the
+                # recovery branch above sent a stream-closing frame. The client
+                # waits for a done=True to stop spinning, so emit a standalone
+                # terminator with a fresh id (mirrors the loop_exhausted / abort
+                # paths). Honesty floor: no synthesized summary, just the
+                # close-frame.
+                await websocket.send(
+                    _new_envelope(
+                        "agent-message-chunk",
+                        state.session_id,
+                        AgentMessageChunkPayload(
+                            message_id=new_ulid(), delta="", done=True
+                        ),
+                    )
                 )
 
         # Complete the outer pipeline snapshot (LLM generation phase).
