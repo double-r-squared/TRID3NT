@@ -794,6 +794,60 @@ def set_ec2_client(client: Any) -> None:
     _EC2_CLIENT = client
 
 
+#: FAIL-FAST bound on the Batch CONTROL-PLANE client (NATE 2026-06-29). The
+#: prior to_thread offload of the submit (commit 6f5b4ee) still HUNG the turn for
+#: 3+ minutes producing no jobId: under Batch API THROTTLING (many test
+#: ``submit_job`` calls back-to-back) botocore's DEFAULT retry policy (legacy
+#: mode, ~60 s read-timeout, several retries with exponential + adaptive backoff)
+#: keeps re-trying for MINUTES before surfacing -- so the work moved off the loop
+#: but the SUBMIT itself never returned and the run appeared dead. Cap it: a few
+#: short-deadline attempts so a throttled / slow control plane FAILS FAST with an
+#: honest ``SOLVER_DISPATCH`` error (the existing ``submit_job`` try/except wraps
+#: any ``ConnectTimeout`` / ``ReadTimeout`` / throttling ``ClientError`` into a
+#: ``SolverDispatchError``) instead of hanging. Worst-case wall time is bounded
+#: by ~``max_attempts * read_timeout`` plus brief backoff. All knobs env-tunable
+#: for ops. NB: this governs the SUBMIT/DESCRIBE control plane only -- the SOLVE
+#: itself runs on Batch and is polled by ``wait_for_completion`` on its own
+#: timeout budget, unaffected by this client config.
+_BATCH_CONNECT_TIMEOUT_S: float = float(
+    os.environ.get("GRACE2_BATCH_CONNECT_TIMEOUT_S", "5")
+)
+_BATCH_READ_TIMEOUT_S: float = float(
+    os.environ.get("GRACE2_BATCH_READ_TIMEOUT_S", "15")
+)
+_BATCH_MAX_ATTEMPTS: int = int(
+    os.environ.get("GRACE2_BATCH_MAX_ATTEMPTS", "3")
+)
+
+
+def _batch_client_config() -> Any:
+    """Build the fail-fast ``botocore`` ``Config`` for the Batch client.
+
+    Caps connect/read timeouts + total retry attempts so a throttled or slow
+    Batch control-plane ``submit_job`` / ``describe_jobs`` surfaces a fast error
+    rather than hanging the turn (see ``_BATCH_CONNECT_TIMEOUT_S`` rationale).
+    Returns ``None`` when botocore is unavailable so the caller still constructs
+    a default client (degrade, never crash on a missing optional dep).
+    """
+    try:
+        from botocore.config import Config  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001 — optional; degrade to default client
+        logger.debug(
+            "botocore.config.Config unavailable (%s); Batch client uses boto3 "
+            "defaults (no fail-fast bound).",
+            exc,
+        )
+        return None
+    return Config(
+        connect_timeout=_BATCH_CONNECT_TIMEOUT_S,
+        read_timeout=_BATCH_READ_TIMEOUT_S,
+        # "standard" mode honors max_attempts as a HARD cap (legacy mode can
+        # exceed it); a low cap keeps a throttled submit from retrying for
+        # minutes.
+        retries={"max_attempts": _BATCH_MAX_ATTEMPTS, "mode": "standard"},
+    )
+
+
 def _get_batch_client() -> Any:
     """Return the bound Batch client or lazily construct the boto3 default.
 
@@ -801,6 +855,10 @@ def _get_batch_client() -> Any:
     ``SolverDispatchError`` (the aws-batch backend stays inert rather than
     crashing the agent) — see ``_run_solver_aws_batch`` for the full
     env-presence gate.
+
+    The default client is built with a FAIL-FAST ``botocore`` ``Config``
+    (``_batch_client_config``) so a throttled / slow control-plane call cannot
+    hang the turn — it surfaces a typed ``SolverDispatchError`` instead.
     """
     if _BATCH_CLIENT is not None:
         return _BATCH_CLIENT
@@ -812,6 +870,9 @@ def _get_batch_client() -> Any:
             "requires boto3 for batch.submit_job / describe_jobs / "
             "terminate_job (sprint-16)."
         ) from exc
+    config = _batch_client_config()
+    if config is not None:
+        return boto3.client("batch", region_name=_aws_region(), config=config)
     return boto3.client("batch", region_name=_aws_region())
 
 
