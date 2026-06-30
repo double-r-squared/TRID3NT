@@ -47,8 +47,22 @@ __all__ = [
     "build_geoclaw_build_spec",
     "stage_geoclaw_manifest",
     "register_geoclaw_solver",
+    "plan_geoclaw_domain",
+    "resolve_offshore_source",
     "GEOCLAW_SOLVER_NAME",
+    "GEOCLAW_OFFSHORE_SCENARIOS",
 ]
+
+#: Scenarios whose driver source is OFFSHORE (a seafloor Okada deformation) and so
+#: REQUIRE the computational domain to extend off the AOI coast into deep water.
+#: ``dam_break`` (an onshore impoundment release) + ``surge`` (a uniform sea-level
+#: offset, no point source) keep ``domain == AOI``.
+GEOCLAW_OFFSHORE_SCENARIOS: frozenset[str] = frozenset({"tsunami"})
+
+#: Elevation (m, positive-up) at/above which a DEM cell is treated as LAND when
+#: validating / relocating the Okada source. A source must sit strictly below this
+#: (i.e. under water) so the seafloor deformation displaces a real water column.
+_SOURCE_WET_ELEV_M: float = 0.0
 
 
 #: The registry key + handle ``solver`` tag for the GeoClaw engine.
@@ -123,6 +137,9 @@ class GeoClawStaging:
     n_active_cells: int = 0
     resolution_m: float = 0.0
     staged_inputs: list[dict[str, str]] = field(default_factory=list)
+    # The COMPUTATIONAL DOMAIN actually authored into the deck (offshore-extended
+    # for a tsunami; == ``bbox`` otherwise). Echoed for provenance / narration.
+    domain_bbox: tuple[float, float, float, float] | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +153,8 @@ def build_geoclaw_build_spec(
     surge_dest: str | None = None,
     extra_topo_files: list[str] | None = None,
     base_num_cells: tuple[int, int] = (40, 40),
+    domain_bbox: tuple[float, float, float, float] | None = None,
+    source_lonlat_override: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Assemble the setrun_builder ``build_spec`` dict from the validated run args.
 
@@ -169,11 +188,16 @@ def build_geoclaw_build_spec(
         "dam_break_depth_m": float(run_args.dam_break_depth_m),
         "fgmax_arrival_tol_m": float(run_args.fgmax_arrival_tol_m),
     }
-    if run_args.source_lonlat is not None:
-        spec["source_lonlat"] = [
-            float(run_args.source_lonlat[0]),
-            float(run_args.source_lonlat[1]),
-        ]
+    # Source point: a composer-RESOLVED offshore override (tsunami, placed over
+    # deep water + spanned by domain_bbox) wins over the user's raw source_lonlat;
+    # else the raw source_lonlat; else the worker falls back to the AOI centroid.
+    _src = source_lonlat_override or run_args.source_lonlat
+    if _src is not None:
+        spec["source_lonlat"] = [float(_src[0]), float(_src[1])]
+    # The offshore-extended COMPUTATIONAL DOMAIN (clawdata bounds). Only threaded
+    # when it differs from the AOI (the worker defaults domain -> AOI otherwise).
+    if domain_bbox is not None and tuple(domain_bbox) != tuple(run_args.bbox):
+        spec["domain_bbox"] = [float(v) for v in domain_bbox]
     if extra_topo_files:
         spec["extra_topo_files"] = list(extra_topo_files)
     if run_args.coastal_gauge_lonlat is not None:
@@ -198,6 +222,213 @@ def build_geoclaw_build_spec(
 
 
 # --------------------------------------------------------------------------- #
+# Offshore-domain planning + bathymetry-aware Okada source placement.
+#
+# The two physics-setup fixes that turn a zero-inundation coastal tsunami run into
+# a real run-up (sprint-17 follow-up):
+#
+#   1. DOMAIN EXTENT. ``plan_geoclaw_domain`` extends the computational domain
+#      offshore so it SPANS the Okada source -> the AOI coast. A source-at-center,
+#      land-only micro-AOI can never inundate regardless of bathymetry -- the
+#      domain MUST reach offshore into the deep-water column the source displaces.
+#
+#   2. SOURCE PLACEMENT. ``resolve_offshore_source`` honors a user/composer
+#      offshore source when it sits over below-waterline bathymetry, else projects
+#      the source onto the DEEPEST deep-water cell seaward of the AOI (reading the
+#      fetched DEM with rasterio) -- never the onshore AOI centroid.
+#
+# General (no Crescent-City hard-coding): the domain is sized from the AOI span +
+# the requested source, and the source is chosen from the bathymetry of whatever
+# coastal AOI was asked for.
+# --------------------------------------------------------------------------- #
+def plan_geoclaw_domain(
+    bbox: tuple[float, float, float, float],
+    scenario: str,
+    source_lonlat: tuple[float, float] | None,
+) -> tuple[float, float, float, float]:
+    """Compute the COMPUTATIONAL DOMAIN bbox for a GeoClaw run.
+
+    For an OFFSHORE-source scenario (tsunami) the domain extends off the AOI on
+    all sides by at least one AOI span (floored so a small AOI still reaches the
+    shelf), and is grown further to enclose an explicit ``source_lonlat`` with a
+    buffer so the Okada deformation + a deep-water column sit INSIDE the domain.
+    For dam_break / surge the domain is the AOI unchanged.
+
+    Direction-agnostic (pads all sides equally) so it works for any coastal AOI
+    regardless of which side the ocean is on; the seaward side is resolved later
+    from the bathymetry by ``resolve_offshore_source``. Returns a lon/lat-clamped
+    ``(min_lon, min_lat, max_lon, max_lat)``.
+    """
+    min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox)
+    if str(scenario) not in GEOCLAW_OFFSHORE_SCENARIOS:
+        return (min_lon, min_lat, max_lon, max_lat)
+
+    span_x = max_lon - min_lon
+    span_y = max_lat - min_lat
+    # Offshore pad: at least one AOI span on each side, floored to ~0.1 deg
+    # (~11 km, comfortably past the surf zone onto the shelf for ETOPO bathy).
+    pad = max(span_x, span_y, 0.1)
+    d_min_lon = min_lon - pad
+    d_min_lat = min_lat - pad
+    d_max_lon = max_lon + pad
+    d_max_lat = max_lat + pad
+
+    if source_lonlat is not None:
+        slon, slat = float(source_lonlat[0]), float(source_lonlat[1])
+        buf = max(0.05, 0.25 * pad)
+        d_min_lon = min(d_min_lon, slon - buf)
+        d_min_lat = min(d_min_lat, slat - buf)
+        d_max_lon = max(d_max_lon, slon + buf)
+        d_max_lat = max(d_max_lat, slat + buf)
+
+    # Clamp to valid lon/lat (a coastal AOI near the antimeridian/poles still
+    # yields a well-formed, in-range domain).
+    d_min_lon = max(d_min_lon, -180.0)
+    d_max_lon = min(d_max_lon, 180.0)
+    d_min_lat = max(d_min_lat, -90.0)
+    d_max_lat = min(d_max_lat, 90.0)
+    return (d_min_lon, d_min_lat, d_max_lon, d_max_lat)
+
+
+def _dem_uri_to_local(dem_uri: str) -> tuple[str, bool]:
+    """Resolve a DEM URI to a local readable path for rasterio sampling.
+
+    ``file://`` / bare local paths are returned as-is; ``s3://`` is downloaded to
+    a temp file via the SAME boto3 client the solver dispatch uses (no new
+    client). Returns ``(path, is_temp)`` so the caller can clean up a temp copy.
+    Raises on an unreachable / unsupported URI (the caller degrades to a geometric
+    fallback).
+    """
+    import tempfile as _tf
+
+    if dem_uri.startswith("file://"):
+        return dem_uri[len("file://"):], False
+    if "://" not in dem_uri:
+        return dem_uri, False
+    if dem_uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client, _split_object_uri
+
+        _scheme, bucket, key = _split_object_uri(dem_uri)
+        s3 = _get_s3_client()
+        fd, path = _tf.mkstemp(suffix=".tif", prefix="grace2_geoclaw_bathy_")
+        os.close(fd)
+        resp = s3.get_object(Bucket=bucket, Key=key)
+        import shutil as _shutil
+
+        with open(path, "wb") as fh:
+            _shutil.copyfileobj(resp["Body"], fh)
+        return path, True
+    raise GeoClawWorkflowError(
+        "GEOCLAW_STAGING_FAILED",
+        message=f"cannot sample bathymetry from unsupported DEM URI scheme: {dem_uri!r}",
+    )
+
+
+def resolve_offshore_source(
+    dem_uri: str,
+    domain_bbox: tuple[float, float, float, float],
+    aoi_bbox: tuple[float, float, float, float],
+    requested_source: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    """Resolve the Okada source to an OFFSHORE, over-deep-water point.
+
+    Reads the fetched topo/bathy DEM (rasterio) over ``domain_bbox`` and:
+
+      1. Honors ``requested_source`` when it falls inside the domain AND over
+         below-waterline bathymetry (elevation < ``_SOURCE_WET_ELEV_M``).
+      2. Else projects the source onto the DEEPEST deep-water cell, preferring
+         cells SEAWARD of the AOI (outside the AOI bbox) and inset off the domain
+         boundary (so the source is not on the absorbing edge).
+
+    Returns the resolved ``(lon, lat)``, or ``None`` when the DEM has no
+    below-waterline cell in the domain (a fully-dry/inland domain -- the caller
+    then keeps the requested source / honest fallback and logs it). Best-effort:
+    any read error returns ``None`` rather than raising (the run still proceeds
+    with the requested source).
+    """
+    path = None
+    is_temp = False
+    try:
+        import numpy as np  # noqa: WPS433 - agent venv
+        import rasterio  # noqa: WPS433
+
+        path, is_temp = _dem_uri_to_local(dem_uri)
+        with rasterio.open(path) as ds:
+            band = ds.read(1, masked=True).astype("float64")
+            transform = ds.transform
+        height, width = band.shape
+        if height < 2 or width < 2:
+            return None
+
+        cols = np.arange(width)
+        rows = np.arange(height)
+        lons = transform.c + transform.a * (cols + 0.5)
+        lats = transform.f + transform.e * (rows + 0.5)  # transform.e < 0
+        lon_grid, lat_grid = np.meshgrid(lons, lats)
+
+        valid = ~np.ma.getmaskarray(band)
+        elev = band.filled(1.0e9)
+        wet = valid & (elev < _SOURCE_WET_ELEV_M)
+
+        # (1) Honor a requested source that sits over water.
+        if requested_source is not None:
+            rlon, rlat = float(requested_source[0]), float(requested_source[1])
+            col = int((rlon - transform.c) / transform.a)
+            row = int((rlat - transform.f) / transform.e)
+            if 0 <= row < height and 0 <= col < width and wet[row, col]:
+                return (rlon, rlat)
+
+        if not wet.any():
+            return None
+
+        # (2) Inset off the domain boundary (avoid the absorbing edge).
+        d_min_lon, d_min_lat, d_max_lon, d_max_lat = (float(v) for v in domain_bbox)
+        ix = 0.08 * (d_max_lon - d_min_lon)
+        iy = 0.08 * (d_max_lat - d_min_lat)
+        inset = (
+            (lon_grid > d_min_lon + ix)
+            & (lon_grid < d_max_lon - ix)
+            & (lat_grid > d_min_lat + iy)
+            & (lat_grid < d_max_lat - iy)
+        )
+        a_min_lon, a_min_lat, a_max_lon, a_max_lat = (float(v) for v in aoi_bbox)
+        outside_aoi = ~(
+            (lon_grid >= a_min_lon)
+            & (lon_grid <= a_max_lon)
+            & (lat_grid >= a_min_lat)
+            & (lat_grid <= a_max_lat)
+        )
+
+        def _deepest(mask: "np.ndarray") -> tuple[float, float] | None:
+            if not mask.any():
+                return None
+            masked_elev = np.where(mask, elev, 1.0e9)
+            idx = np.unravel_index(int(np.argmin(masked_elev)), masked_elev.shape)
+            return (float(lon_grid[idx]), float(lat_grid[idx]))
+
+        # Prefer deep water SEAWARD of the AOI, inset off the boundary; then any
+        # inset deep water; then any deep water at all.
+        for mask in (wet & inset & outside_aoi, wet & inset, wet):
+            pt = _deepest(mask)
+            if pt is not None:
+                return pt
+        return None
+    except Exception as exc:  # noqa: BLE001 - best-effort; degrade to fallback
+        logger.warning(
+            "resolve_offshore_source: bathymetry sampling failed (%s); keeping "
+            "the requested source",
+            exc,
+        )
+        return None
+    finally:
+        if is_temp and path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+# --------------------------------------------------------------------------- #
 # Staging — upload the build_spec manifest + the topo DEM to S3.
 # --------------------------------------------------------------------------- #
 def stage_geoclaw_manifest(
@@ -209,6 +440,8 @@ def stage_geoclaw_manifest(
     surge_uri: str | None = None,
     extra_dem_uris: list[str] | None = None,
     base_num_cells: tuple[int, int] = (40, 40),
+    domain_bbox: tuple[float, float, float, float] | None = None,
+    source_lonlat_override: tuple[float, float] | None = None,
 ) -> GeoClawStaging:
     """Stage the GeoClaw ``manifest.json`` (build_spec + input refs) to S3.
 
@@ -276,6 +509,8 @@ def stage_geoclaw_manifest(
         surge_dest=surge_dest,
         extra_topo_files=extra_topo_files,
         base_num_cells=base_num_cells,
+        domain_bbox=domain_bbox,
+        source_lonlat_override=source_lonlat_override,
     )
 
     manifest_dict: dict[str, Any] = {
@@ -315,6 +550,7 @@ def stage_geoclaw_manifest(
     # n_active_cells used only for telemetry + compute-class sizing; the base grid
     # cell count is a coarse proxy (AMR refines it dynamically downstream).
     n_active = int(base_num_cells[0]) * int(base_num_cells[1])
+    _dom = build_spec.get("domain_bbox")
     return GeoClawStaging(
         run_id=rid,
         manifest_uri=manifest_uri,
@@ -323,6 +559,7 @@ def stage_geoclaw_manifest(
         bbox=bbox,  # type: ignore[arg-type]
         n_active_cells=n_active,
         staged_inputs=inputs,
+        domain_bbox=(tuple(_dom) if _dom else None),  # type: ignore[arg-type]
     )
 
 

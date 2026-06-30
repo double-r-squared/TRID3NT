@@ -59,8 +59,11 @@ from ..pipeline_emitter import (
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_geoclaw import PostprocessGeoClawError, postprocess_geoclaw
 from .run_geoclaw import (
+    GEOCLAW_OFFSHORE_SCENARIOS,
     GEOCLAW_SOLVER_NAME,
     GeoClawWorkflowError,
+    plan_geoclaw_domain,
+    resolve_offshore_source,
     stage_geoclaw_manifest,
 )
 from .solve_progress import drive_live_solve_progress
@@ -139,6 +142,42 @@ def _fetch_topo_for_geoclaw(
             "GEOCLAW_DEM_FETCH_FAILED",
             f"both DEM sources failed for bbox {bbox}: topobathy + fetch_dem-10m: {exc}",
         ) from exc
+
+
+#: Base-grid resolution over the AOI (cells per AOI span) + the cap when the
+#: domain is extended offshore (keeps the base grid bounded for big domains).
+_GEOCLAW_BASE_CELLS_PER_AOI: int = 40
+_GEOCLAW_BASE_CELLS_MAX: int = 200
+
+
+def _scaled_base_num_cells(
+    aoi_bbox: tuple[float, float, float, float],
+    domain_bbox: tuple[float, float, float, float],
+) -> tuple[int, int]:
+    """Scale the base grid so an offshore-extended domain preserves AOI resolution.
+
+    The base grid spans the COMPUTATIONAL DOMAIN; if we kept the AOI's cell count
+    over a 3x-wider domain the base (and hence finest-AMR) cells over the AOI would
+    coarsen 3x. We instead scale the cell count by the domain/AOI span ratio so the
+    base cell SIZE -- and the run-up resolution after AMR -- stays ~constant over
+    the AOI. Capped at ``_GEOCLAW_BASE_CELLS_MAX`` per axis to bound base-grid cost
+    (AMR still refines the AOI). Returns ``(40, 40)`` when domain == AOI.
+    """
+    aoi_w = float(aoi_bbox[2]) - float(aoi_bbox[0])
+    aoi_h = float(aoi_bbox[3]) - float(aoi_bbox[1])
+    dom_w = float(domain_bbox[2]) - float(domain_bbox[0])
+    dom_h = float(domain_bbox[3]) - float(domain_bbox[1])
+    sx = (dom_w / aoi_w) if aoi_w > 0 else 1.0
+    sy = (dom_h / aoi_h) if aoi_h > 0 else 1.0
+    nx = min(
+        max(int(round(_GEOCLAW_BASE_CELLS_PER_AOI * sx)), _GEOCLAW_BASE_CELLS_PER_AOI),
+        _GEOCLAW_BASE_CELLS_MAX,
+    )
+    ny = min(
+        max(int(round(_GEOCLAW_BASE_CELLS_PER_AOI * sy)), _GEOCLAW_BASE_CELLS_PER_AOI),
+        _GEOCLAW_BASE_CELLS_MAX,
+    )
+    return (nx, ny)
 
 
 def _record_geoclaw_batch_solve_telemetry(
@@ -223,13 +262,64 @@ async def model_dambreak_geoclaw_scenario(
     #     a no-op outside emit_tool_call (current_emitter() is None).
     begin_substeps(emitter, 5)
 
+    # --- Offshore-domain planning (tsunami) --------------------------------
+    # An Okada (seafloor) source can only generate a run-up if the computational
+    # domain EXTENDS offshore to span the deep-water source -> the AOI coast. For
+    # a tsunami we size that extended domain HERE and fetch the bathymetry over
+    # IT (not just the AOI); dam_break / surge keep domain == AOI.
+    domain_bbox = plan_geoclaw_domain(bbox, run_args.scenario, run_args.source_lonlat)
+    fetch_bbox = domain_bbox  # fetch topo/bathy over the FULL computational domain
+
     # --- Step 1: topo/bathy DEM (off-loop blocking I/O) ---------------------
     if dem_uri is None:
         async with substep(emitter, "fetch_topobathy"):
-            resolved_dem_uri = await asyncio.to_thread(_fetch_topo_for_geoclaw, bbox)
+            resolved_dem_uri = await asyncio.to_thread(
+                _fetch_topo_for_geoclaw, fetch_bbox
+            )
     else:
         resolved_dem_uri = dem_uri
-    logger.info("model_dambreak_geoclaw_scenario: DEM=%s", resolved_dem_uri)
+    logger.info(
+        "model_dambreak_geoclaw_scenario: DEM=%s domain=%s aoi=%s",
+        resolved_dem_uri,
+        domain_bbox,
+        bbox,
+    )
+
+    # --- Bathymetry-aware Okada source placement (tsunami synthetic source) --
+    # Honor a user/composer offshore source when it is over deep water, else
+    # project onto the deepest seaward cell of the fetched bathymetry. Skipped
+    # for a STAGED dtopo (the source is prescribed by that file) and for the
+    # non-offshore scenarios.
+    source_override: tuple[float, float] | None = None
+    if (
+        run_args.scenario in GEOCLAW_OFFSHORE_SCENARIOS
+        and run_args.tsunami_dtopo_uri is None
+    ):
+        source_override = await asyncio.to_thread(
+            resolve_offshore_source,
+            resolved_dem_uri,
+            domain_bbox,
+            bbox,
+            run_args.source_lonlat,
+        )
+        if source_override is None:
+            logger.warning(
+                "model_dambreak_geoclaw_scenario: no below-waterline cell found in "
+                "domain %s; keeping requested source %s (run may not inundate)",
+                domain_bbox,
+                run_args.source_lonlat,
+            )
+        else:
+            logger.info(
+                "model_dambreak_geoclaw_scenario: Okada source placed offshore at "
+                "%s (requested=%s)",
+                source_override,
+                run_args.source_lonlat,
+            )
+
+    # Scale the base grid with the domain/AOI span ratio so extending the domain
+    # offshore preserves the finest-level run-up resolution over the AOI (capped).
+    base_num_cells = _scaled_base_num_cells(bbox, domain_bbox)
 
     # Optional staged tsunami dtopo / surge forcing (already-staged URIs on args).
     dtopo_uri = run_args.tsunami_dtopo_uri
@@ -240,7 +330,8 @@ async def model_dambreak_geoclaw_scenario(
     # --- Step 2: stage the build_spec manifest + DEM reference --------------
     # The USER-GATED fault_* + coastal_gauge_lonlat + fgmax_arrival_tol_m live on
     # run_args and ride into the build_spec inside stage_geoclaw_manifest ->
-    # build_geoclaw_build_spec (only the supplied fault_* are threaded).
+    # build_geoclaw_build_spec (only the supplied fault_* are threaded). The
+    # offshore-extended domain + resolved source ride in via the new kwargs.
     async with substep(emitter, "stage_geoclaw_manifest"):
         staging = await asyncio.to_thread(
             stage_geoclaw_manifest,
@@ -250,6 +341,9 @@ async def model_dambreak_geoclaw_scenario(
             dtopo_uri=dtopo_uri,
             surge_uri=surge_uri,
             extra_dem_uris=extra_dem_uris,
+            base_num_cells=base_num_cells,
+            domain_bbox=domain_bbox,
+            source_lonlat_override=source_override,
         )
 
     # --- Auto vertical scaling from the base grid cell count ----------------

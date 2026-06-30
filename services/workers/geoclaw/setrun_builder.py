@@ -34,7 +34,11 @@ Canonical real-world pipeline (mirrored, not invented):
 The build_spec schema (authored agent-side by ``workflows/run_geoclaw.py``):
     {
       "scenario": "dam_break" | "tsunami" | "surge",
-      "bbox": [min_lon, min_lat, max_lon, max_lat],   # EPSG:4326
+      "bbox": [min_lon, min_lat, max_lon, max_lat],   # EPSG:4326 (the AOI)
+      "domain_bbox": [min_lon, min_lat, max_lon, max_lat],  # optional; the
+          # COMPUTATIONAL DOMAIN (clawdata bounds). For a tsunami the composer
+          # sets this to an OFFSHORE-EXTENDED box that spans the Okada source ->
+          # the AOI coast; absent -> the domain is the AOI ``bbox``.
       "topo_file": "topo.asc",        # staged DEM (topotype-3 ESRI ASCII)
       "sim_duration_s": 3600.0,
       "output_frames": 24,
@@ -100,6 +104,14 @@ class GeoClawBuildSpec:
     scenario: str
     bbox: tuple[float, float, float, float]
     topo_file: str
+    # The COMPUTATIONAL DOMAIN (clawdata lower/upper). When None the domain is the
+    # ``bbox`` (the AOI) -- the back-compat default. For an OFFSHORE-source scenario
+    # (tsunami) the composer passes a domain that EXTENDS offshore so it SPANS the
+    # Okada source -> the AOI coast: an Okada deformation must sit inside the domain
+    # over a deep-water column, and the deep-to-shallow propagation path must be
+    # resolved, before the wave can run up the AOI. The AOI (``bbox``) still drives
+    # the fine-AMR region + fgmax monitor + gauge (the run-up is observed there).
+    domain_bbox: tuple[float, float, float, float] | None = None
     sim_duration_s: float = 3600.0
     output_frames: int = 24
     amr_levels: int = 2
@@ -214,6 +226,31 @@ def parse_build_spec(raw: dict[str, Any]) -> GeoClawBuildSpec:
     if isinstance(src, (list, tuple)) and len(src) == 2:
         source_lonlat = (float(src[0]), float(src[1]))
 
+    # Optional computational domain (clawdata bounds). Validated like ``bbox``;
+    # None -> the deck uses ``bbox`` (back-compat). The composer supplies an
+    # offshore-extended domain for the tsunami (Okada) scenario.
+    dom_raw = raw.get("domain_bbox")
+    domain_bbox: tuple[float, float, float, float] | None = None
+    if dom_raw is not None:
+        if not isinstance(dom_raw, (list, tuple)) or len(dom_raw) != 4:
+            raise GeoClawDeckError(
+                "GEOCLAW_SPEC_INVALID",
+                f"domain_bbox must be [min_lon, min_lat, max_lon, max_lat], got {dom_raw!r}",
+            )
+        try:
+            domain_bbox = tuple(float(v) for v in dom_raw)  # type: ignore[assignment]
+        except (TypeError, ValueError) as exc:
+            raise GeoClawDeckError(
+                "GEOCLAW_SPEC_INVALID",
+                f"domain_bbox values must be numeric: {dom_raw!r}",
+            ) from exc
+        d0, d1, d2, d3 = domain_bbox  # type: ignore[misc]
+        if not (d0 < d2 and d1 < d3):
+            raise GeoClawDeckError(
+                "GEOCLAW_SPEC_INVALID",
+                f"domain_bbox must satisfy min_lon<max_lon and min_lat<max_lat, got {domain_bbox}",
+            )
+
     gauge = raw.get("coastal_gauge_lonlat")
     coastal_gauge_lonlat: tuple[float, float] | None = None
     if isinstance(gauge, (list, tuple)) and len(gauge) == 2:
@@ -254,6 +291,7 @@ def parse_build_spec(raw: dict[str, Any]) -> GeoClawBuildSpec:
         scenario=scenario,
         bbox=bbox,  # type: ignore[arg-type]
         topo_file=topo_file,
+        domain_bbox=domain_bbox,
         sim_duration_s=sim_duration_s,
         output_frames=output_frames,
         amr_levels=amr_levels,
@@ -280,11 +318,31 @@ def parse_build_spec(raw: dict[str, Any]) -> GeoClawBuildSpec:
 
 
 def _centroid(spec: GeoClawBuildSpec) -> tuple[float, float]:
-    """The driver source point — explicit ``source_lonlat`` or the AOI centroid."""
+    """The driver source point — explicit ``source_lonlat`` or the AOI centroid.
+
+    For a tsunami the composer resolves ``source_lonlat`` to an OFFSHORE,
+    over-deep-water point (and extends ``domain_bbox`` to span it) BEFORE the deck
+    is authored, so this honors that point verbatim. The AOI-centroid fallback is
+    retained only for the dam_break qinit column (an onshore release) and as a
+    last-resort when no source was resolved.
+    """
     if spec.source_lonlat is not None:
         return spec.source_lonlat
     min_lon, min_lat, max_lon, max_lat = spec.bbox
     return (0.5 * (min_lon + max_lon), 0.5 * (min_lat + max_lat))
+
+
+def _domain(spec: GeoClawBuildSpec) -> tuple[float, float, float, float]:
+    """The COMPUTATIONAL DOMAIN bounds (clawdata lower/upper).
+
+    The explicit ``domain_bbox`` when the composer supplied one (the offshore-
+    extended domain that spans the Okada source -> the AOI coast), else the AOI
+    ``bbox`` (back-compat: a domain == AOI run). The base grid spans THIS extent;
+    the AOI (``bbox``) drives the fine-AMR region + fgmax + gauge.
+    """
+    if spec.domain_bbox is not None:
+        return spec.domain_bbox
+    return spec.bbox
 
 
 def _coastal_gauge(spec: GeoClawBuildSpec) -> tuple[float, float]:
@@ -488,7 +546,11 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
     import lives INSIDE the generated module (executed only when the entrypoint
     runs it), never in this authoring module.
     """
+    # The AOI (fine-AMR region + fgmax monitor + gauge + rasterize extent).
     min_lon, min_lat, max_lon, max_lat = spec.bbox
+    # The COMPUTATIONAL DOMAIN (clawdata lower/upper + base grid). Extends offshore
+    # to span the Okada source for a tsunami; == AOI otherwise.
+    dom_min_lon, dom_min_lat, dom_max_lon, dom_max_lat = _domain(spec)
     nx, ny = spec.base_num_cells
     amr_levels = int(spec.amr_levels)
     ratios = _refinement_ratios(amr_levels)
@@ -500,10 +562,12 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
     num_output_times = int(spec.output_frames)
     tfinal = float(spec.sim_duration_s)
 
-    # Finest-level cell size over the AOI (dx_fine): the base cell size divided
-    # by the product of the refinement ratios. The fgmax monitor grid aligns to
-    # this so its sample points sit on finest-level FV cell centers.
-    base_dx = (max_lon - min_lon) / float(nx)
+    # Finest-level cell size (dx_fine): the base cell size divided by the product
+    # of the refinement ratios. The BASE grid spans the COMPUTATIONAL DOMAIN, so
+    # base_dx is measured across the domain (NOT the AOI) -- otherwise the fgmax
+    # sample points would be mis-aligned with the finest-level FV cell centers
+    # whenever the domain extends offshore beyond the AOI.
+    base_dx = (dom_max_lon - dom_min_lon) / float(nx)
     refine_product = 1
     for r in ratios:
         refine_product *= int(r)
@@ -602,11 +666,13 @@ def setrun(claw_pkg="geoclaw"):
     clawdata = rundata.clawdata
     clawdata.num_dim = num_dim
 
-    # --- Domain (lon/lat) ---
-    clawdata.lower[0] = {min_lon!r}
-    clawdata.upper[0] = {max_lon!r}
-    clawdata.lower[1] = {min_lat!r}
-    clawdata.upper[1] = {max_lat!r}
+    # --- Domain (lon/lat) --- the COMPUTATIONAL DOMAIN (spans the offshore
+    # source -> the AOI coast for a tsunami); the AOI is refined via the region
+    # block + monitored by fgmax/gauge below.
+    clawdata.lower[0] = {dom_min_lon!r}
+    clawdata.upper[0] = {dom_max_lon!r}
+    clawdata.lower[1] = {dom_min_lat!r}
+    clawdata.upper[1] = {dom_max_lat!r}
 
     # --- Base computational grid ---
     clawdata.num_cells[0] = {nx!r}
@@ -816,9 +882,15 @@ def build_geoclaw_deck(build_spec_raw: dict[str, Any], deck_dir: Any) -> DeckMan
                 render_maketopo_dtopo(spec), encoding="utf-8"
             )
             written.append("maketopo.py")
+            _dom = _domain(spec)
+            _dom_note = (
+                f" domain={tuple(round(v, 4) for v in _dom)}"
+                if spec.domain_bbox is not None
+                else " domain=AOI"
+            )
             driver = (
                 f"tsunami synthetic Okada source Mw{spec.source_magnitude:.1f} "
-                f"at {_centroid(spec)}"
+                f"at {_centroid(spec)}{_dom_note}"
             )
         else:
             driver = f"tsunami staged dtopo {spec.dtopo_file}"

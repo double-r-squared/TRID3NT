@@ -130,6 +130,132 @@ def test_build_spec_surge_with_forcing_and_source_point():
     assert spec["source_lonlat"] == [-85.4, 29.8]
 
 
+def test_build_spec_threads_domain_bbox_and_source_override():
+    from grace2_agent.workflows.run_geoclaw import build_geoclaw_build_spec
+
+    args = GeoClawRunArgs(
+        bbox=_AOI, scenario="tsunami", source_lonlat=(-85.5, 29.9)
+    )
+    dom = (-86.5, 28.9, -85.0, 30.5)
+    spec = build_geoclaw_build_spec(
+        args, domain_bbox=dom, source_lonlat_override=(-86.3, 29.8)
+    )
+    # The offshore-extended domain is threaded (it differs from the AOI).
+    assert spec["domain_bbox"] == [-86.5, 28.9, -85.0, 30.5]
+    # The resolved offshore override WINS over the raw run_args.source_lonlat.
+    assert spec["source_lonlat"] == [-86.3, 29.8]
+
+
+def test_build_spec_omits_domain_bbox_when_equal_to_aoi():
+    from grace2_agent.workflows.run_geoclaw import build_geoclaw_build_spec
+
+    args = GeoClawRunArgs(bbox=_AOI, scenario="dam_break")
+    spec = build_geoclaw_build_spec(args, domain_bbox=tuple(_AOI))
+    # domain == AOI -> not threaded (the worker defaults domain -> AOI).
+    assert "domain_bbox" not in spec
+
+
+# ===========================================================================
+# (2b) Offshore-domain planning + bathymetry-aware source placement.
+# ===========================================================================
+def test_plan_geoclaw_domain_extends_offshore_for_tsunami():
+    from grace2_agent.workflows.run_geoclaw import plan_geoclaw_domain
+
+    # tsunami: the domain extends off the AOI on all sides AND encloses the
+    # requested offshore source with a buffer.
+    src = (-86.20, 29.90)  # well west of the AOI's western edge (-85.75)
+    dom = plan_geoclaw_domain(_AOI, "tsunami", src)
+    assert dom[0] < _AOI[0] and dom[1] < _AOI[1]
+    assert dom[2] > _AOI[2] and dom[3] > _AOI[3]
+    # the requested source sits strictly INSIDE the planned domain.
+    assert dom[0] < src[0] < dom[2] and dom[1] < src[1] < dom[3]
+
+
+def test_plan_geoclaw_domain_unchanged_for_dam_break_and_surge():
+    from grace2_agent.workflows.run_geoclaw import plan_geoclaw_domain
+
+    assert plan_geoclaw_domain(_AOI, "dam_break", None) == tuple(_AOI)
+    assert plan_geoclaw_domain(_AOI, "surge", (-85.4, 29.8)) == tuple(_AOI)
+
+
+def test_resolve_offshore_source_picks_deepest_seaward_cell(tmp_path):
+    # A synthetic bathy DEM: deep ocean on the WEST, dry land on the EAST. The
+    # resolver must place the Okada source over the deepest WEST cell (seaward of
+    # the AOI), never on land.
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    from grace2_agent.workflows.run_geoclaw import resolve_offshore_source
+
+    dom = (-86.5, 28.9, -85.0, 30.5)
+    width, height = 30, 32
+    transform = from_bounds(dom[0], dom[1], dom[2], dom[3], width, height)
+    # West half deep (-2000 m deepening westward), east half land (+50 m).
+    arr = np.zeros((height, width), dtype="float32")
+    lons = np.linspace(dom[0], dom[2], width)
+    for j, lon in enumerate(lons):
+        if lon < -85.9:  # ocean
+            arr[:, j] = -2000.0 * ((-85.9 - lon) / (-85.9 - dom[0]) + 0.1)
+        else:  # land
+            arr[:, j] = 50.0
+    dem = tmp_path / "bathy.tif"
+    with rasterio.open(
+        dem, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform,
+    ) as ds:
+        ds.write(arr, 1)
+
+    pt = resolve_offshore_source(f"file://{dem}", dom, _AOI, None)
+    assert pt is not None
+    lon, lat = pt
+    assert lon < _AOI[0]  # seaward (west) of the AOI
+    # the deepest column is the far-west edge band, inset off the boundary.
+    assert dom[0] < lon < -85.9
+
+
+def test_resolve_offshore_source_honors_valid_requested_source(tmp_path):
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    from grace2_agent.workflows.run_geoclaw import resolve_offshore_source
+
+    dom = (-86.5, 28.9, -85.0, 30.5)
+    width, height = 24, 24
+    transform = from_bounds(dom[0], dom[1], dom[2], dom[3], width, height)
+    arr = np.full((height, width), -500.0, dtype="float32")  # all ocean
+    dem = tmp_path / "ocean.tif"
+    with rasterio.open(
+        dem, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform,
+    ) as ds:
+        ds.write(arr, 1)
+
+    req = (-86.0, 29.7)  # over water, inside the domain -> honored verbatim
+    pt = resolve_offshore_source(f"file://{dem}", dom, _AOI, req)
+    assert pt == req
+
+
+def test_resolve_offshore_source_returns_none_on_dry_domain(tmp_path):
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    from grace2_agent.workflows.run_geoclaw import resolve_offshore_source
+
+    dom = (-86.5, 28.9, -85.0, 30.5)
+    width, height = 16, 16
+    transform = from_bounds(dom[0], dom[1], dom[2], dom[3], width, height)
+    arr = np.full((height, width), 100.0, dtype="float32")  # all land
+    dem = tmp_path / "land.tif"
+    with rasterio.open(
+        dem, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype="float32", crs="EPSG:4326", transform=transform,
+    ) as ds:
+        ds.write(arr, 1)
+
+    # No below-waterline cell -> None (caller keeps the requested source + logs).
+    assert resolve_offshore_source(f"file://{dem}", dom, _AOI, (-86.0, 29.7)) is None
+
+
 # ===========================================================================
 # (3) Solver registration + bridge tool registered.
 # ===========================================================================
@@ -478,9 +604,12 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
     captured: dict = {}
 
     def _fake_stage(ra, *, dem_uri, run_id=None, dtopo_uri=None, surge_uri=None,
-                    extra_dem_uris=None, base_num_cells=(40, 40)):
+                    extra_dem_uris=None, base_num_cells=(40, 40),
+                    domain_bbox=None, source_lonlat_override=None):
         captured["dem_uri"] = dem_uri
         captured["extra_dem_uris"] = extra_dem_uris
+        captured["domain_bbox"] = domain_bbox
+        captured["source_lonlat_override"] = source_lonlat_override
         return GeoClawStaging(
             run_id="STAGERID",
             manifest_uri="s3://cache/geoclaw_setup/STAGERID/manifest.json",
@@ -550,6 +679,9 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
     assert captured["solver"] == "geoclaw"
     assert captured["model_setup_uri"].endswith("manifest.json")
     assert captured["dem_uri"] == "s3://cache/topo.tif"
+    # dam_break keeps domain == AOI and never relocates the source offshore.
+    assert tuple(captured["domain_bbox"]) == tuple(_AOI)
+    assert captured["source_lonlat_override"] is None
 
 
 def _amock(ret):

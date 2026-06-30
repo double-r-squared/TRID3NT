@@ -95,6 +95,55 @@ def test_parse_rejects_nonpositive_duration_and_frames():
         parse_build_spec(_spec(output_frames=0))
 
 
+def test_parse_reads_optional_domain_bbox():
+    dom = [-86.5, 28.9, -85.0, 30.5]
+    spec = parse_build_spec(_spec(scenario="tsunami", domain_bbox=dom))
+    assert spec.domain_bbox == tuple(dom)
+    # default absent -> None (domain falls back to bbox).
+    spec2 = parse_build_spec(_spec(scenario="tsunami"))
+    assert spec2.domain_bbox is None
+
+
+def test_parse_rejects_bad_domain_bbox():
+    with pytest.raises(GeoClawDeckError):
+        parse_build_spec(_spec(domain_bbox=[1, 2, 3]))  # wrong length
+    with pytest.raises(GeoClawDeckError):
+        parse_build_spec(_spec(domain_bbox=[10, 10, 5, 5]))  # min >= max
+
+
+def test_render_setrun_domain_bbox_drives_clawdata_aoi_drives_region_fgmax():
+    # An offshore-extended domain: clawdata bounds span the DOMAIN; the region +
+    # fgmax + gauge stay on the (smaller) AOI bbox -> the wave propagates from the
+    # offshore source across the domain and runs up the refined AOI coast.
+    dom = [-86.50, 28.90, -85.00, 30.50]
+    src = [-86.30, 29.80]  # offshore (west), inside the domain, outside the AOI
+    spec = parse_build_spec(
+        _spec(scenario="tsunami", domain_bbox=dom, source_lonlat=src)
+    )
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # clawdata bounds = the DOMAIN (not the AOI).
+    assert "clawdata.lower[0] = -86.5" in text
+    assert "clawdata.upper[0] = -85.0" in text
+    assert "clawdata.lower[1] = 28.9" in text
+    assert "clawdata.upper[1] = 30.5" in text
+    # The fine-AMR region pins the AOI extent (not the domain).
+    assert "-85.75" in text and "-85.25" in text  # AOI lon edges in region/fgmax
+    # The region line references the AOI bounds.
+    assert ", -85.75, -85.25, 29.55, 30.2])" in text  # regiondata region over AOI
+    # fgmax monitor x1/x2 anchored to the AOI lon edges (half-cell inset).
+    assert "fg.x1 = -85.75 +" in text
+    assert "fg.x2 = -85.25 -" in text
+
+
+def test_render_setrun_domain_defaults_to_aoi_when_absent():
+    # No domain_bbox -> clawdata bounds == AOI bbox (back-compat).
+    spec = parse_build_spec(_spec(scenario="tsunami"))
+    text = render_setrun_py(spec)
+    assert "clawdata.lower[0] = -85.75" in text
+    assert "clawdata.upper[0] = -85.25" in text
+
+
 # ===========================================================================
 # (2) setrun.py generation — valid Python + load-bearing blocks.
 # ===========================================================================
