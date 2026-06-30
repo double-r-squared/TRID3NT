@@ -1063,18 +1063,11 @@ export function LayerLegend({
   // orientation. Keyed off keyModels so it stays in lockstep with the rendered keys.
   const resolvedSides: AoiSide[] = useMemo(
     () =>
-      keyModels.map((k, idx) => {
-        const override = uiState[k.layerId]?.sideOverride;
-        if (override) return override;
-        // CATEGORICAL SIDE-DOCK (NATE 2026-06-29): a CATEGORICAL key (NLCD land
-        // cover) is a tall, narrow swatch column, not a colorbar. Default it to a
-        // vertical SIDE (right) instead of the centered BOTTOM so it docks to the
-        // AOI edge like the colorbar key rather than floating centered below the
-        // bbox. A user drag-snap override (above) still wins. Continuous keys keep
-        // the canonical CCW index side.
-        if (k.data?.kind === "categorical") return "right";
-        return sideForIndex(idx + sideStartOffset);
-      }),
+      keyModels.map(
+        (k, idx) =>
+          uiState[k.layerId]?.sideOverride ??
+          sideForIndex(idx + sideStartOffset),
+      ),
     [keyModels, uiState, sideStartOffset],
   );
 
@@ -1603,19 +1596,6 @@ export function LayerLegend({
   // scale machinery for the per-key MOBILE cards stays ONLY for mobile (the
   // `!isMobile` gate); this desktop strip uses its OWN drag wiring above.
   if (!isMobile) {
-    // CATEGORICAL SIDE-DOCK (NATE 2026-06-29): a CATEGORICAL legend (NLCD land
-    // cover) is a TALL, NARROW swatch column, NOT a short colorbar. The default
-    // bbox dock centers the strip on the bbox center X (translateX(-50%)) just
-    // below the bbox bottom edge; for a tall categorical card the height clamp
-    // then pulls its top UP toward mid-screen, so it ends up FLOATING CENTERED in
-    // the middle of the map (the reported bug). Instead, when the strip carries a
-    // categorical key we DOCK it to the SIDE of the AOI (railing the bbox RIGHT
-    // edge, top-aligned) like the mobile AOI colorbar key, narrow and laid out as
-    // a COLUMN, so it stays attached to the AOI edge and never floats center. A
-    // continuous-only strip keeps the prior centered-below behavior byte-for-byte.
-    const hasCategorical = keyModels.some((m) => m.data?.kind === "categorical");
-    const desktopSideDock =
-      desktopDockMode === "bbox" && aoiRect != null && hasCategorical && !desktopDragPos;
     // The static bottom-center dock style (the prior LANE D placement) - reused
     // for the "bottom" mode AND as the fallback when "bbox" mode has no AOI rect.
     const bottomDockStyle: React.CSSProperties = {
@@ -1672,49 +1652,21 @@ export function LayerLegend({
         const h = rows > 0 ? 64 + rows * 18 : 64;
         return Math.max(tallest, h);
       }, 64);
-      if (desktopSideDock) {
-        // CATEGORICAL SIDE-DOCK: rail the bbox RIGHT edge, TOP-aligned, so a tall
-        // land-cover key docks to the side instead of floating centered. The strip
-        // renders as a narrow COLUMN here (see flexDirection below), so its width is
-        // a single key (DESKTOP_DOCK_KEY_WIDTH) and its height is the SUM of the
-        // stacked keys. Clamp the left so it clears the right CHAT panel
-        // (dockRightInsetPx) + viewport margin, and the top so the whole column
-        // clears the scrubber footprint at the bottom when the scrubber is active.
-        const colWidth = DESKTOP_DOCK_KEY_WIDTH;
-        const colHeight = keyModels.reduce((sum, mdl) => {
-          const rows =
-            mdl.data?.kind === "categorical" ? (mdl.data.classes?.length ?? 0) : 0;
-          const h = rows > 0 ? 40 + rows * 18 : 64;
-          return sum + h + DESKTOP_DOCK_GAP_PX;
-        }, 0);
-        const bottomAvail =
-          vh - (scrubberActive ? DESKTOP_DOCK_SCRUBBER_CLEARANCE_PX : 0);
-        const left = Math.max(
-          m,
-          Math.min(
-            aoiRect.right + DESKTOP_DOCK_BBOX_GAP_PX,
-            vw - m - dockRightInsetPx - colWidth,
-          ),
-        );
-        const top = Math.max(m, Math.min(aoiRect.top, bottomAvail - m - colHeight));
-        posStyle = { position: "fixed", left, top, transform: "none" };
-      } else {
-        const half = estWidth / 2;
-        const centerX = Math.max(
-          m + half,
-          Math.min((aoiRect.left + aoiRect.right) / 2, vw - m - half),
-        );
-        const top = Math.max(
-          m,
-          Math.min(aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX, vh - m - estHeight),
-        );
-        posStyle = {
-          position: "fixed",
-          left: centerX,
-          top,
-          transform: "translateX(-50%)",
-        };
-      }
+      const half = estWidth / 2;
+      const centerX = Math.max(
+        m + half,
+        Math.min((aoiRect.left + aoiRect.right) / 2, vw - m - half),
+      );
+      const top = Math.max(
+        m,
+        Math.min(aoiRect.bottom + DESKTOP_DOCK_BBOX_GAP_PX, vh - m - estHeight),
+      );
+      posStyle = {
+        position: "fixed",
+        left: centerX,
+        top,
+        transform: "translateX(-50%)",
+      };
     } else {
       // BOTTOM dock ("bottom" mode, OR "bbox" with no AOI rect -> never vanish).
       posStyle = bottomDockStyle;
@@ -1729,21 +1681,15 @@ export function LayerLegend({
         data-legend-dock-mode={
           desktopDockMode === "bbox" && aoiRect ? "bbox" : "bottom"
         }
-        data-legend-side-dock={desktopSideDock ? "1" : "0"}
         onPointerDown={startDesktopDrag}
         style={{
           ...posStyle,
           display: "flex",
-          // CATEGORICAL SIDE-DOCK (NATE 2026-06-29): a side-docked strip stacks its
-          // narrow cards in a COLUMN down the AOI edge; the default bottom/bbox dock
-          // keeps the horizontal ROW. Column caps its height to the viewport and
-          // scrolls vertically so a very tall land-cover key never runs off-screen.
-          flexDirection: desktopSideDock ? "column" : "row",
+          flexDirection: "row",
           flexWrap: "nowrap",
           gap: DESKTOP_DOCK_GAP_PX,
-          ...(desktopSideDock
-            ? { maxHeight: "80vh", overflowY: "auto", overflowX: "visible" }
-            : { maxWidth: "92vw", overflowX: "auto" }),
+          maxWidth: "92vw",
+          overflowX: "auto",
           pointerEvents: "auto",
           // The whole strip is the drag handle.
           cursor: "grab",
