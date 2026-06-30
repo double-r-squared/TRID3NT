@@ -422,6 +422,23 @@ def test_render_setrun_appends_coastal_region_over_aoi():
     assert "-85.75, -85.25, 29.55, 30.2])" in text
 
 
+def test_render_setrun_caps_offshore_domain_one_below_finest():
+    # The multi-scale tsunami setup: a whole-DOMAIN region caps the open ocean at
+    # one level below the finest, so the costly finest mesh is created ONLY at the
+    # AOI (the second region), never across the offshore propagation domain.
+    dom = [-125.65, 41.55, -124.06, 41.88]
+    spec = parse_build_spec(
+        _spec(scenario="tsunami", amr_levels=4, domain_bbox=dom)
+    )
+    text = render_setrun_py(spec)
+    ast.parse(text)
+    # offshore cap region: [1, amr_levels-1, 0., tfinal, <domain extent>].
+    assert "rundata.regiondata.regions.append([1, 3, 0., 1800.0, " in text
+    assert "-125.65, -124.06, 41.55, 41.88])" in text
+    # finest pinned over the AOI: [amr_levels, amr_levels, ...].
+    assert "rundata.regiondata.regions.append([4, 4, 0., 1800.0, " in text
+
+
 def test_render_setrun_appends_gauge_fallback_seaward_edge():
     spec = parse_build_spec(_spec(scenario="tsunami"))
     text = render_setrun_py(spec)

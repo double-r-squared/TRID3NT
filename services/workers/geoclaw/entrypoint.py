@@ -202,6 +202,17 @@ def _author_deck(build_spec: dict, cwd: Path) -> Any:
     return build_geoclaw_deck(build_spec, cwd)
 
 
+#: Cap on the topotype-3 topo grid size PER AXIS. The agent stages a full-res
+#: topo/bathy DEM (e.g. ~28 million cells / ~400 MB ASCII over an offshore-extended
+#: domain) -- GeoClaw samples the (high-res) topo onto the COMPUTATIONAL grid, so a
+#: topo far finer than the finest AMR cell (tens of metres) is wasted I/O that
+#: bloats the read/write and slows every step. We integer-decimate any DEM finer
+#: than this cap (uniform stride, square cells preserved) so the topo stays a few
+#: million cells max while remaining finer than the finest grid cell. General: a
+#: DEM already under the cap is left untouched.
+_GEOCLAW_TOPO_MAX_CELLS_PER_AXIS: int = 2000
+
+
 #: Scenarios whose driver is an OFFSHORE seafloor (Okada) source. For these the
 #: computational domain extends into the ocean, so a topo cell with NO data (the
 #: UTM->4326 warp-corner NaNs) must initialize WET (deep ocean) rather than as dry
@@ -250,6 +261,33 @@ def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
         # cell-CENTER coordinates; raster rows run north -> south (dy < 0).
         xs = tr.c + (np.arange(nx) + 0.5) * dx
         ys = tr.f + (np.arange(ny) + 0.5) * dy
+
+    # Downsample a too-fine DEM by an integer stride (uniform spacing + square
+    # cells preserved) so the topotype-3 ASCII stays a few million cells max --
+    # GeoClaw samples topo onto the (coarser) computational grid, so a DEM finer
+    # than the finest AMR cell only bloats read/write. A DEM already under the cap
+    # is untouched. Done BEFORE the nodata fill so the fill follows the new grid.
+    stride = 1
+    cap = int(_GEOCLAW_TOPO_MAX_CELLS_PER_AXIS)
+    if cap > 0 and max(nx, ny) > cap:
+        stride = int(np.ceil(max(nx, ny) / float(cap)))
+    if stride > 1:
+        band = band[::stride, ::stride]
+        xs = xs[::stride]
+        ys = ys[::stride]
+        new_ny, new_nx = band.shape
+        LOG.info(
+            "topo downsample: %s %dx%d -> %dx%d (stride=%d, cell %.6g -> %.6g deg)",
+            path.name,
+            nx,
+            ny,
+            new_nx,
+            new_ny,
+            stride,
+            abs(dx),
+            abs(dx) * stride,
+        )
+        nx, ny = new_nx, new_ny
 
     # Mask numeric nodata -> NaN (NaN nodata is already NaN).
     if nod is not None and not np.isnan(np.float64(nod)):

@@ -111,6 +111,45 @@ def test_normalize_dam_break_does_not_flood_inland(tmp_path: Path) -> None:
     assert mass == 0.0
 
 
+def test_normalize_downsamples_oversized_topo(tmp_path: Path) -> None:
+    """An over-fine DEM (> cap per axis) is integer-decimated so the topotype-3
+    ASCII stays bounded -- while staying a valid, wet, negative-preserving topo."""
+    from services.workers.geoclaw.entrypoint import _GEOCLAW_TOPO_MAX_CELLS_PER_AXIS
+
+    cap = _GEOCLAW_TOPO_MAX_CELLS_PER_AXIS
+    # A DEM ~2.5x the cap on the long axis (stride 3 -> ~1/3 the cells).
+    nx = cap * 5 // 2
+    ny = cap // 2
+    # West half ocean (-200 m), east half land (+30 m) -> wet for tsunami.
+    Z = np.zeros((ny, nx), dtype="float64")
+    Z[:, : nx // 2] = -200.0
+    Z[:, nx // 2 :] = 30.0
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, Z)
+    _normalize_topo_files(tmp_path, {"scenario": "tsunami", "topo_file": "topo.asc"})
+
+    T = topotools.Topography(str(p), topo_type=3)
+    T.read()
+    out_ny, out_nx = np.asarray(T.Z).shape
+    # decimated under the cap on the long axis (general: a few million cells max).
+    assert out_nx <= cap and out_ny <= cap
+    assert out_nx < nx  # actually downsampled
+    # still a valid wet, negative-preserving topo (no science regression).
+    assert np.isfinite(T.Z).all()
+    assert T.Z.min() < 0.0 < T.Z.max()
+
+
+def test_normalize_keeps_small_topo_untouched(tmp_path: Path) -> None:
+    """A DEM already under the cap is NOT decimated (full resolution kept)."""
+    Z = _bathy_grid()  # 40x60, well under the cap
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, Z)
+    _normalize_topo_files(tmp_path, {"scenario": "tsunami", "topo_file": "topo.asc"})
+    T = topotools.Topography(str(p), topo_type=3)
+    T.read()
+    assert np.asarray(T.Z).shape == Z.shape  # untouched resolution
+
+
 def test_normalize_is_idempotent(tmp_path: Path) -> None:
     """A GeoClaw ASCII is not a GDAL raster -> re-running leaves it untouched."""
     p = tmp_path / "topo.asc"

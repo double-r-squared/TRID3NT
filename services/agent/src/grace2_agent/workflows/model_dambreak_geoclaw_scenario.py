@@ -63,6 +63,7 @@ from .run_geoclaw import (
     GEOCLAW_SOLVER_NAME,
     GeoClawWorkflowError,
     plan_geoclaw_domain,
+    plan_geoclaw_grid,
     reproject_dem_to_4326,
     resolve_offshore_source,
     stage_geoclaw_manifest,
@@ -143,42 +144,6 @@ def _fetch_topo_for_geoclaw(
             "GEOCLAW_DEM_FETCH_FAILED",
             f"both DEM sources failed for bbox {bbox}: topobathy + fetch_dem-10m: {exc}",
         ) from exc
-
-
-#: Base-grid resolution over the AOI (cells per AOI span) + the cap when the
-#: domain is extended offshore (keeps the base grid bounded for big domains).
-_GEOCLAW_BASE_CELLS_PER_AOI: int = 40
-_GEOCLAW_BASE_CELLS_MAX: int = 200
-
-
-def _scaled_base_num_cells(
-    aoi_bbox: tuple[float, float, float, float],
-    domain_bbox: tuple[float, float, float, float],
-) -> tuple[int, int]:
-    """Scale the base grid so an offshore-extended domain preserves AOI resolution.
-
-    The base grid spans the COMPUTATIONAL DOMAIN; if we kept the AOI's cell count
-    over a 3x-wider domain the base (and hence finest-AMR) cells over the AOI would
-    coarsen 3x. We instead scale the cell count by the domain/AOI span ratio so the
-    base cell SIZE -- and the run-up resolution after AMR -- stays ~constant over
-    the AOI. Capped at ``_GEOCLAW_BASE_CELLS_MAX`` per axis to bound base-grid cost
-    (AMR still refines the AOI). Returns ``(40, 40)`` when domain == AOI.
-    """
-    aoi_w = float(aoi_bbox[2]) - float(aoi_bbox[0])
-    aoi_h = float(aoi_bbox[3]) - float(aoi_bbox[1])
-    dom_w = float(domain_bbox[2]) - float(domain_bbox[0])
-    dom_h = float(domain_bbox[3]) - float(domain_bbox[1])
-    sx = (dom_w / aoi_w) if aoi_w > 0 else 1.0
-    sy = (dom_h / aoi_h) if aoi_h > 0 else 1.0
-    nx = min(
-        max(int(round(_GEOCLAW_BASE_CELLS_PER_AOI * sx)), _GEOCLAW_BASE_CELLS_PER_AOI),
-        _GEOCLAW_BASE_CELLS_MAX,
-    )
-    ny = min(
-        max(int(round(_GEOCLAW_BASE_CELLS_PER_AOI * sy)), _GEOCLAW_BASE_CELLS_PER_AOI),
-        _GEOCLAW_BASE_CELLS_MAX,
-    )
-    return (nx, ny)
 
 
 def _record_geoclaw_batch_solve_telemetry(
@@ -330,9 +295,25 @@ async def model_dambreak_geoclaw_scenario(
                 run_args.source_lonlat,
             )
 
-    # Scale the base grid with the domain/AOI span ratio so extending the domain
-    # offshore preserves the finest-level run-up resolution over the AOI (capped).
-    base_num_cells = _scaled_base_num_cells(bbox, domain_bbox)
+    # Cost-bounded grid + AMR plan (the SOLVER_TIMEOUT fix): a COARSE base grid
+    # over the full (offshore-extended) propagation domain + NESTED AMR refined
+    # ONLY at the AOI to a tens-of-metres run-up resolution, with the finest mesh
+    # bounded by a cell budget so a WET coastal solve finishes in minutes. The
+    # planned amr_levels OVERRIDES run_args.amr_levels (a level-4 request over a
+    # huge AOI is what TIMED OUT); est_finest_cells is the compute-class work proxy.
+    base_num_cells, planned_amr_levels, est_finest_cells = plan_geoclaw_grid(
+        bbox, domain_bbox, run_args.amr_levels
+    )
+    logger.info(
+        "model_dambreak_geoclaw_scenario: grid plan base=%s amr_levels=%s "
+        "(requested=%s) est_finest_aoi_cells=%d domain=%s aoi=%s",
+        base_num_cells,
+        planned_amr_levels,
+        run_args.amr_levels,
+        est_finest_cells,
+        domain_bbox,
+        bbox,
+    )
 
     # Optional staged tsunami dtopo / surge forcing (already-staged URIs on args).
     dtopo_uri = run_args.tsunami_dtopo_uri
@@ -357,7 +338,18 @@ async def model_dambreak_geoclaw_scenario(
             base_num_cells=base_num_cells,
             domain_bbox=domain_bbox,
             source_lonlat_override=source_override,
+            amr_levels_override=planned_amr_levels,
         )
+
+    # Size the Batch instance from the FINEST-level AOI cell count (the real work
+    # proxy: the finest mesh is pinned over the AOI for the whole run), not the
+    # coarse base-grid count, so a wet solve is not under-provisioned.
+    try:
+        staging.n_active_cells = max(
+            int(getattr(staging, "n_active_cells", 0) or 0), int(est_finest_cells)
+        )
+    except Exception:  # noqa: BLE001 - never break the chain on a proxy update
+        pass
 
     # --- Auto vertical scaling from the base grid cell count ----------------
     from ..tools.solver import (

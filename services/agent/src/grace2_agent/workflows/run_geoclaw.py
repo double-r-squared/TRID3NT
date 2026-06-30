@@ -48,6 +48,7 @@ __all__ = [
     "stage_geoclaw_manifest",
     "register_geoclaw_solver",
     "plan_geoclaw_domain",
+    "plan_geoclaw_grid",
     "resolve_offshore_source",
     "reproject_dem_to_4326",
     "GEOCLAW_SOLVER_NAME",
@@ -156,6 +157,7 @@ def build_geoclaw_build_spec(
     base_num_cells: tuple[int, int] = (40, 40),
     domain_bbox: tuple[float, float, float, float] | None = None,
     source_lonlat_override: tuple[float, float] | None = None,
+    amr_levels_override: int | None = None,
 ) -> dict[str, Any]:
     """Assemble the setrun_builder ``build_spec`` dict from the validated run args.
 
@@ -181,7 +183,14 @@ def build_geoclaw_build_spec(
         "topo_file": topo_dest,
         "sim_duration_s": float(run_args.sim_duration_s),
         "output_frames": int(run_args.output_frames),
-        "amr_levels": int(run_args.amr_levels),
+        # The COMPOSER's cost-bounded AMR-level plan (plan_geoclaw_grid) overrides
+        # the raw run_args.amr_levels so the AOI mesh stays within the runtime
+        # budget; absent -> honor the requested amr_levels verbatim (back-compat).
+        "amr_levels": int(
+            amr_levels_override
+            if amr_levels_override is not None
+            else run_args.amr_levels
+        ),
         "manning_n": float(run_args.manning_n),
         "sea_level_m": float(run_args.sea_level_m),
         "base_num_cells": [int(base_num_cells[0]), int(base_num_cells[1])],
@@ -289,6 +298,135 @@ def plan_geoclaw_domain(
     d_min_lat = max(d_min_lat, -90.0)
     d_max_lat = min(d_max_lat, 90.0)
     return (d_min_lon, d_min_lat, d_max_lon, d_max_lat)
+
+
+# --------------------------------------------------------------------------- #
+# Cost-bounded grid + AMR planning (the SOLVER_TIMEOUT fix).
+#
+# GeoClaw cost is driven by the COMPUTATIONAL GRID, not the topo pixel count. A
+# wet coastal solve over the offshore-extended domain TIMES OUT if the base grid
+# is sized one-cell-per-topo-pixel and the finest AMR level is created over the
+# whole AOI at metres resolution. The canonical tsunami pattern instead is:
+#   - a COARSE base (level-1) grid over the full propagation domain (~1 arcmin),
+#     so the open ocean is only a few thousand cells; and
+#   - NESTED AMR refined ONLY at the coastal AOI (gated by the setrun region), to
+#     a run-up resolution of tens of metres, with the finest mesh BOUNDED by a
+#     cell budget so a wet domain finishes in minutes (not hours).
+# plan_geoclaw_grid sizes both deterministically from the domain + AOI geometry.
+# --------------------------------------------------------------------------- #
+
+#: Target base (level-1) cell size in degrees (~1 arcmin ~= 1.8 km): coarse enough
+#: that the open-ocean propagation grid is only a few thousand cells, fine enough
+#: to carry the long tsunami wave. AMR refines from here toward the AOI.
+_GEOCLAW_BASE_TARGET_DEG: float = 1.0 / 60.0
+#: Base-grid cell-count clamp per axis: a tiny AOI still gets >= _MIN cells; a huge
+#: offshore domain is capped so the base grid stays a few thousand cells total.
+_GEOCLAW_BASE_CELLS_MIN: int = 30
+_GEOCLAW_BASE_CELLS_MAX: int = 90
+#: Run-up resolution target (m): AMR grows until the AOI finest cell is at or below
+#: this (tens of metres) -- the "real coastal inundation" floor.
+_GEOCLAW_TARGET_FINEST_M: float = 40.0
+#: Do NOT refine finer than this (m): a guard against an unbounded finest mesh.
+_GEOCLAW_MIN_FINEST_M: float = 25.0
+#: Budget: max finest-level cells permitted over the AOI. Bounds the per-step AMR
+#: cost (the finest level is pinned over the AOI for the whole run) so the wet
+#: solve stays minutes, not hours.
+_GEOCLAW_FINEST_CELL_BUDGET: int = 400_000
+#: Hard cap on AMR levels regardless of the request (keeps ratios + cost bounded).
+_GEOCLAW_MAX_AMR_LEVELS: int = 4
+#: Approx metres per degree of latitude (spherical mean) for the cost estimate.
+_GEOCLAW_M_PER_DEG: float = 111_320.0
+
+
+def _geoclaw_refinement_product(levels: int) -> int:
+    """Cumulative AMR refinement (base -> finest) for ``levels`` levels.
+
+    MIRRORS ``setrun_builder._refinement_ratios`` (first transition 2x, every
+    later transition 4x) so the agent-side cost estimate matches the deck the
+    worker authors from it. ``levels <= 1`` -> ``1`` (a uniform base grid).
+    """
+    product = 1
+    for i in range(max(int(levels) - 1, 0)):
+        product *= 2 if i == 0 else 4
+    return product
+
+
+def plan_geoclaw_grid(
+    domain_bbox: tuple[float, float, float, float],
+    aoi_bbox: tuple[float, float, float, float],
+    requested_amr_levels: int,
+) -> tuple[tuple[int, int], int, int]:
+    """Plan a tractable (base grid, AMR levels) for a GeoClaw run.
+
+    Returns ``((base_nx, base_ny), amr_levels, est_finest_aoi_cells)``:
+
+      - ``base_num_cells``: a COARSE level-1 grid over ``domain_bbox`` sized to
+        ~``_GEOCLAW_BASE_TARGET_DEG`` per cell, clamped to
+        ``[_GEOCLAW_BASE_CELLS_MIN, _GEOCLAW_BASE_CELLS_MAX]`` per axis (a few
+        thousand cells total -- NOT one cell per topo pixel).
+      - ``amr_levels``: grown level-by-level (using the same refinement schedule
+        the worker authors) until the AOI finest cell reaches
+        ``_GEOCLAW_TARGET_FINEST_M`` (tens of metres) AND the user's request is
+        satisfied, then STOPPED before the finest mesh would exceed
+        ``_GEOCLAW_FINEST_CELL_BUDGET`` cells / go finer than
+        ``_GEOCLAW_MIN_FINEST_M``. Capped at ``_GEOCLAW_MAX_AMR_LEVELS``.
+      - ``est_finest_aoi_cells``: the estimated finest-level cell count over the
+        AOI (used for compute-class sizing -- a far better work proxy than the
+        base-grid cell count, since the finest mesh is pinned over the AOI).
+
+    Deterministic geometry only (no I/O); general for ANY coastal AOI. A large
+    AOI is bounded to a coarser run-up resolution by the budget (still non-zero
+    inundation); a small AOI reaches the tens-of-metres target.
+    """
+    import math
+
+    d0, d1, d2, d3 = (float(v) for v in domain_bbox)
+    a0, a1, a2, a3 = (float(v) for v in aoi_bbox)
+    dom_w = max(d2 - d0, 1e-9)
+    dom_h = max(d3 - d1, 1e-9)
+    aoi_w = max(a2 - a0, 1e-9)
+    aoi_h = max(a3 - a1, 1e-9)
+    coslat = max(math.cos(math.radians(0.5 * (d1 + d3))), 0.1)
+
+    # (1) COARSE base grid: ~_GEOCLAW_BASE_TARGET_DEG per cell, clamped per axis.
+    nx = max(
+        _GEOCLAW_BASE_CELLS_MIN,
+        min(int(round(dom_w / _GEOCLAW_BASE_TARGET_DEG)), _GEOCLAW_BASE_CELLS_MAX),
+    )
+    ny = max(
+        _GEOCLAW_BASE_CELLS_MIN,
+        min(int(round(dom_h / _GEOCLAW_BASE_TARGET_DEG)), _GEOCLAW_BASE_CELLS_MAX),
+    )
+
+    # Base cell size + AOI extent in metres (lon scaled by cos(lat)).
+    base_dx_m = (dom_w / nx) * _GEOCLAW_M_PER_DEG * coslat
+    base_dy_m = (dom_h / ny) * _GEOCLAW_M_PER_DEG
+    aoi_w_m = aoi_w * _GEOCLAW_M_PER_DEG * coslat
+    aoi_h_m = aoi_h * _GEOCLAW_M_PER_DEG
+
+    # (2) NESTED AMR: grow levels toward the run-up target, stop at the budget /
+    #     min-resolution / max-levels guard.
+    req = max(1, int(requested_amr_levels or 1))
+    levels = 1
+    est_finest_cells = (aoi_w_m / base_dx_m) * (aoi_h_m / base_dy_m)
+    for level in range(1, _GEOCLAW_MAX_AMR_LEVELS + 1):
+        product = _geoclaw_refinement_product(level)
+        fx_m = base_dx_m / product
+        fy_m = base_dy_m / product
+        finest_m = min(fx_m, fy_m)
+        finest_cells = (aoi_w_m / fx_m) * (aoi_h_m / fy_m)
+        if finest_m < _GEOCLAW_MIN_FINEST_M or finest_cells > _GEOCLAW_FINEST_CELL_BUDGET:
+            # The NEXT level would be too fine / too costly -- keep the current.
+            break
+        levels = level
+        est_finest_cells = finest_cells
+        if finest_m <= _GEOCLAW_TARGET_FINEST_M and level >= min(
+            req, _GEOCLAW_MAX_AMR_LEVELS
+        ):
+            # Reached the run-up target AND satisfied the request -- stop.
+            break
+
+    return (nx, ny), levels, int(round(est_finest_cells))
 
 
 def _dem_uri_to_local(dem_uri: str) -> tuple[str, bool]:
@@ -592,6 +730,7 @@ def stage_geoclaw_manifest(
     base_num_cells: tuple[int, int] = (40, 40),
     domain_bbox: tuple[float, float, float, float] | None = None,
     source_lonlat_override: tuple[float, float] | None = None,
+    amr_levels_override: int | None = None,
 ) -> GeoClawStaging:
     """Stage the GeoClaw ``manifest.json`` (build_spec + input refs) to S3.
 
@@ -661,6 +800,7 @@ def stage_geoclaw_manifest(
         base_num_cells=base_num_cells,
         domain_bbox=domain_bbox,
         source_lonlat_override=source_lonlat_override,
+        amr_levels_override=amr_levels_override,
     )
 
     manifest_dict: dict[str, Any] = {

@@ -628,8 +628,22 @@ def render_setrun_py(spec: GeoClawBuildSpec) -> str:
             "    fgmax_grids.append(fg)\n"
         )
 
-    # --- GAP3 regions: pin the finest level over the AOI for the whole run ---
+    # --- GAP3 regions: the canonical multi-scale tsunami setup ---------------
+    # COARSE OFFSHORE + FINE AOI. GeoClaw combines overlapping regions by taking
+    # the MAX of the covering regions' max_levels (amrclaw flagregions2.f90), so:
+    #   (1) a whole-DOMAIN region caps the open ocean at one level BELOW the finest
+    #       -- the deep-water wave is still resolved, but the costly finest mesh is
+    #       NOT created over the entire offshore-extended propagation domain;
+    #   (2) an AOI region FORCES the finest level over the coastal AOI for the whole
+    #       run -- where the run-up is computed + monitored.
+    # This is what keeps a WET coastal solve tractable: the finest cells exist only
+    # at the AOI, not across the (much larger) ocean domain. With amr_levels == 1
+    # both collapse to a uniform grid (harmless self-cap).
+    offshore_max = max(amr_levels - 1, 1)
     regions_block = (
+        "    # --- Regions: coarse offshore (cap whole domain one below finest) ---\n"
+        f"    rundata.regiondata.regions.append([1, {offshore_max!r}, "
+        f"0., {tfinal!r}, {dom_min_lon!r}, {dom_max_lon!r}, {dom_min_lat!r}, {dom_max_lat!r}])\n"
         "    # --- Regions: pin the finest AMR level over the AOI for the run ---\n"
         f"    rundata.regiondata.regions.append([{amr_levels!r}, {amr_levels!r}, "
         f"0., {tfinal!r}, {min_lon!r}, {max_lon!r}, {min_lat!r}, {max_lat!r}])\n"

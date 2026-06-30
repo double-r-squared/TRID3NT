@@ -178,6 +178,54 @@ def test_plan_geoclaw_domain_unchanged_for_dam_break_and_surge():
     assert plan_geoclaw_domain(_AOI, "surge", (-85.4, 29.8)) == tuple(_AOI)
 
 
+def test_plan_geoclaw_grid_coarse_base_and_bounded_amr():
+    """The SOLVER_TIMEOUT fix: a COARSE base grid (a few thousand cells) over the
+    full domain + AMR bounded so the AOI finest mesh stays within the cell budget.
+    """
+    from grace2_agent.workflows.run_geoclaw import (
+        _GEOCLAW_BASE_CELLS_MAX,
+        _GEOCLAW_FINEST_CELL_BUDGET,
+        _GEOCLAW_MAX_AMR_LEVELS,
+        plan_geoclaw_domain,
+        plan_geoclaw_grid,
+    )
+
+    # A town-scale coastal AOI with an offshore-extended domain.
+    aoi = (-124.22, 41.72, -124.16, 41.78)  # ~0.06 deg (~5 x 6.6 km)
+    dom = plan_geoclaw_domain(aoi, "tsunami", (-125.6, 41.6))
+    base, levels, est = plan_geoclaw_grid(dom, aoi, requested_amr_levels=4)
+
+    # COARSE base: clamped per axis, a few thousand cells total (NOT one per pixel).
+    assert base[0] <= _GEOCLAW_BASE_CELLS_MAX and base[1] <= _GEOCLAW_BASE_CELLS_MAX
+    assert base[0] * base[1] <= 10_000
+    # AMR bounded; finest AOI cells within the runtime budget.
+    assert 1 <= levels <= _GEOCLAW_MAX_AMR_LEVELS
+    assert 0 < est <= _GEOCLAW_FINEST_CELL_BUDGET
+    # A town AOI reaches the tens-of-metres run-up target at the level cap.
+    assert levels == _GEOCLAW_MAX_AMR_LEVELS
+
+
+def test_plan_geoclaw_grid_large_aoi_is_budget_clamped():
+    """A LARGE AOI is clamped to fewer levels (coarser run-up) so the finest mesh
+    never exceeds the budget -- the run still completes with non-zero inundation.
+    """
+    from grace2_agent.workflows.run_geoclaw import (
+        _GEOCLAW_FINEST_CELL_BUDGET,
+        plan_geoclaw_domain,
+        plan_geoclaw_grid,
+    )
+
+    dom = plan_geoclaw_domain(_AOI, "tsunami", (-86.2, 29.9))
+    _, levels_big, est_big = plan_geoclaw_grid(dom, _AOI, requested_amr_levels=4)
+    # request 4 but the big-AOI finest budget clamps it below the cap.
+    assert levels_big < 4
+    assert est_big <= _GEOCLAW_FINEST_CELL_BUDGET
+
+    # A request for MORE levels than the budget allows is still clamped.
+    _, levels_clamped, _ = plan_geoclaw_grid(dom, _AOI, requested_amr_levels=6)
+    assert levels_clamped == levels_big
+
+
 def test_resolve_offshore_source_picks_deepest_seaward_cell(tmp_path):
     # A synthetic bathy DEM: deep ocean on the WEST, dry land on the EAST. The
     # resolver must place the Okada source over the deepest WEST cell (seaward of
@@ -690,11 +738,14 @@ def test_composer_arg_assembly_and_dispatch(tmp_path: Path):
 
     def _fake_stage(ra, *, dem_uri, run_id=None, dtopo_uri=None, surge_uri=None,
                     extra_dem_uris=None, base_num_cells=(40, 40),
-                    domain_bbox=None, source_lonlat_override=None):
+                    domain_bbox=None, source_lonlat_override=None,
+                    amr_levels_override=None):
         captured["dem_uri"] = dem_uri
         captured["extra_dem_uris"] = extra_dem_uris
         captured["domain_bbox"] = domain_bbox
         captured["source_lonlat_override"] = source_lonlat_override
+        captured["base_num_cells"] = base_num_cells
+        captured["amr_levels_override"] = amr_levels_override
         return GeoClawStaging(
             run_id="STAGERID",
             manifest_uri="s3://cache/geoclaw_setup/STAGERID/manifest.json",
