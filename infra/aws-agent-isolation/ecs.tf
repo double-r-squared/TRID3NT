@@ -172,6 +172,13 @@ resource "aws_ecs_task_definition" "agent" {
         { name = "GRACE2_AWS_BATCH_JOB_DEF_GEOCLAW", value = "grace2-geoclaw" },
         { name = "GRACE2_AWS_BATCH_JOB_DEF_LANDLAB", value = "grace2-landlab" },
         { name = "GRACE2_AWS_BATCH_JOB_DEF_SWAN", value = "grace2-swan" },
+        # TiTiler base for publishing raster COGs (DEM, landcover, and the SFINCS
+        # flood-DEPTH frames) as tile layers. Without it publish_layer fails
+        # RASTER_PUBLISH_UNAVAILABLE and the turn completes layers=0 -- the solve
+        # output is computed + stored but never surfaced. This CloudFront dist
+        # (E2L74AS56MVZ87) serves TiTiler /cog + /tiles; same value the box uses.
+        # (QGIS vector-publish env, job-0308, is a separate concern.) (2026-06-30)
+        { name = "GRACE2_TILE_SERVER_BASE", value = "https://d125yfbyjrpbre.cloudfront.net" },
       ]
 
       logConfiguration = {
