@@ -99,6 +99,8 @@ class GeoClawComposerError(RuntimeError):
 # --------------------------------------------------------------------------- #
 def _fetch_topo_for_geoclaw(
     bbox: tuple[float, float, float, float],
+    *,
+    force_bathy_base: bool = False,
 ) -> str:
     """Fetch a topo/bathy DEM for the AOI and return its ``s3://`` URI.
 
@@ -108,6 +110,12 @@ def _fetch_topo_for_geoclaw(
     inland dam-break where bathymetry is irrelevant (the data-source fallback
     norm: primary -> fallback -> honest typed error).
 
+    ``force_bathy_base`` (tsunami / offshore): pass through to ``fetch_topobathy``
+    so the GLOBAL ETOPO 2022 topo-bathy is laid down as the ALWAYS-ON base over
+    the FULL (offshore-extended) domain -- guaranteeing the open-ocean portion is
+    genuinely-negative bathymetry rather than a flat land-DEM fill (the GeoClaw
+    flat-ocean root cause).
+
     Returns the DEM cache/runs ``s3://`` URI (staged BY REFERENCE - the worker
     downloads it directly). Raises ``GeoClawComposerError`` only when BOTH fail.
     """
@@ -115,7 +123,7 @@ def _fetch_topo_for_geoclaw(
     from ..tools.fetch_topobathy import fetch_topobathy
 
     try:
-        layer = fetch_topobathy(bbox)
+        layer = fetch_topobathy(bbox, force_bathy_base=force_bathy_base)
         uri = getattr(layer, "uri", None) or (
             layer.get("uri") if isinstance(layer, dict) else None
         )
@@ -237,10 +245,17 @@ async def model_dambreak_geoclaw_scenario(
     fetch_bbox = domain_bbox  # fetch topo/bathy over the FULL computational domain
 
     # --- Step 1: topo/bathy DEM (off-loop blocking I/O) ---------------------
+    # For an OFFSHORE source (tsunami) force the ETOPO global topo-bathy as the
+    # always-on base over the FULL offshore-extended domain so the open ocean is
+    # genuinely-negative bathymetry (the flat-ocean root-cause fix), not a flat
+    # land-DEM fill.
+    _force_bathy_base = run_args.scenario in GEOCLAW_OFFSHORE_SCENARIOS
     if dem_uri is None:
         async with substep(emitter, "fetch_topobathy"):
             resolved_dem_uri = await asyncio.to_thread(
-                _fetch_topo_for_geoclaw, fetch_bbox
+                lambda: _fetch_topo_for_geoclaw(
+                    fetch_bbox, force_bathy_base=_force_bathy_base
+                )
             )
     else:
         resolved_dem_uri = dem_uri

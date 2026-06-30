@@ -21,6 +21,7 @@ np = pytest.importorskip("numpy")
 topotools = pytest.importorskip("clawpack.geoclaw.topotools")
 
 from services.workers.geoclaw.entrypoint import (  # noqa: E402
+    GeoClawBathymetryFlatError,
     _normalize_topo_files,
 )
 
@@ -148,6 +149,68 @@ def test_normalize_keeps_small_topo_untouched(tmp_path: Path) -> None:
     T = topotools.Topography(str(p), topo_type=3)
     T.read()
     assert np.asarray(T.Z).shape == Z.shape  # untouched resolution
+
+
+def test_flat_ocean_gate_passes_on_real_bathymetry(tmp_path: Path) -> None:
+    """P0.3: a genuinely-negative ocean topo PASSES the flat-ocean gate."""
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, _bathy_grid())  # bathy to -300, ~25% of cells deep
+    # No raise -> gate passed; ocean still wet.
+    _normalize_topo_files(tmp_path, {"scenario": "tsunami", "topo_file": "topo.asc"})
+    mass, wet, _ = _still_water_mass(p)
+    assert wet > 0 and mass > 0.0
+
+
+def test_flat_ocean_gate_fails_on_flat_land_fill(tmp_path: Path) -> None:
+    """P0.3: a flat ~-0.7 m land-DEM 'ocean' FAILS loudly (GEOCLAW_BATHYMETRY_FLAT).
+
+    This is the exact production root cause: a land-only DEM whose deepest cell is
+    a near-zero coastal value. The OLD nanmin fill manufactured a flat fake ocean
+    that silently passed; the gate now refuses the doomed dry solve. (P0.2 also
+    means the offshore fill no longer invents ocean from this land min.)
+    """
+    ny, nx = 30, 30
+    Z = np.full((ny, nx), -0.7, dtype="float64")  # flat near-zero 'ocean'
+    Z[:5, :5] = 5.0  # a little land
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, Z)
+    with pytest.raises(GeoClawBathymetryFlatError) as ei:
+        _normalize_topo_files(
+            tmp_path, {"scenario": "tsunami", "topo_file": "topo.asc"}
+        )
+    assert ei.value.error_code == "GEOCLAW_BATHYMETRY_FLAT"
+    assert "GEOCLAW_BATHYMETRY_FLAT" in str(ei.value)
+
+
+def test_flat_ocean_gate_not_applied_to_dam_break(tmp_path: Path) -> None:
+    """The gate is OFFSHORE-only: an inland dam_break (no ocean) does NOT raise."""
+    ny, nx = 20, 20
+    Z = np.full((ny, nx), 40.0, dtype="float64")  # all land
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, Z)
+    # dam_break -> no flat-ocean gate -> no raise.
+    _normalize_topo_files(tmp_path, {"scenario": "dam_break", "topo_file": "topo.asc"})
+    mass, wet, _ = _still_water_mass(p)
+    assert wet == 0 and mass == 0.0
+
+
+def test_offshore_fill_does_not_invent_ocean_from_land_min(tmp_path: Path) -> None:
+    """P0.2: a land-only DEM with a nodata corner does NOT become a wet fake ocean.
+
+    The old offshore branch filled nodata with nanmin (the deepest LAND value), so
+    a land-only DEM with a tiny negative coastal cell became a flat wet ocean. Now
+    the fill only uses a GENUINE below-water value when ocean exists; with no ocean
+    the gate fails loudly instead.
+    """
+    ny, nx = 30, 30
+    Z = np.full((ny, nx), 12.0, dtype="float64")  # land only, no real ocean
+    Z[:6, :6] = np.nan  # warp-corner nodata
+    p = tmp_path / "topo.asc"
+    _write_geotiff(p, Z)
+    with pytest.raises(GeoClawBathymetryFlatError):
+        _normalize_topo_files(
+            tmp_path, {"scenario": "tsunami", "topo_file": "topo.asc"}
+        )
 
 
 def test_normalize_is_idempotent(tmp_path: Path) -> None:

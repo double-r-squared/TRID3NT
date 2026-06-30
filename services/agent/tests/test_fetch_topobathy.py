@@ -793,6 +793,70 @@ def test_fetch_topobathy_etopo_global_fallback_when_no_cudem(
     assert res.uri and res.style_preset == "continuous_dem"
 
 
+def test_force_bathy_base_includes_etopo_even_when_cudem_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """P0.1: force_bathy_base lays ETOPO down as the ALWAYS-ON base even when CUDEM
+    has coverage, so the open-ocean portion of the (offshore-extended) domain is
+    genuinely-negative bathymetry -- CUDEM/3DEP paint on top. Without the flag
+    ETOPO is selected ONLY when CUDEM is absent (the SFINCS default)."""
+    land_path = str(tmp_path / "land.tif")
+    cudem_path = str(tmp_path / "cudem.tif")
+    etopo_path = str(tmp_path / "etopo.tif")
+    # CUDEM covers ONLY the east coast columns (>=20); the offshore west is nodata.
+    _write_synth_raster(
+        land_path, bbox=_SMOKE_BBOX, nx=30, ny=30, fill=20.0, nodata=-9999.0
+    )
+    col = np.arange(30)[None, :].repeat(30, axis=0)
+    _write_synth_raster(
+        cudem_path, bbox=_SMOKE_BBOX, nx=30, ny=30, fill=-3.0,
+        nodata=-99999.0, nodata_mask=(col < 20),  # nodata over the open ocean
+    )
+    # ETOPO base: a genuinely-DEEP offshore bed (-500 m) over the whole AOI.
+    _write_synth_raster(
+        etopo_path, bbox=_SMOKE_BBOX, nx=30, ny=30, fill=-500.0, nodata=-99999.0
+    )
+
+    calls: dict[str, int] = {"etopo": 0}
+    real_select_etopo = ftb._select_etopo_tiles
+
+    def _spy_etopo(bbox):  # type: ignore[no-untyped-def]
+        calls["etopo"] += 1
+        return [etopo_path]
+
+    monkeypatch.setattr(ftb, "_select_etopo_tiles", _spy_etopo)
+    _patch_pipeline(monkeypatch, cudem_tiles=[cudem_path], land_path=land_path)
+    # _patch_pipeline overrode _select_etopo_tiles; re-apply the spy AFTER it.
+    monkeypatch.setattr(ftb, "_select_etopo_tiles", _spy_etopo)
+
+    # (a) WITHOUT the flag: CUDEM present -> ETOPO NOT selected (legacy behaviour).
+    calls["etopo"] = 0
+    res_default = fetch_topobathy(bbox=_SMOKE_BBOX)
+    assert calls["etopo"] == 0, "ETOPO must NOT be pulled when CUDEM covers + no flag"
+    assert res_default.cudem_tile_count == 1
+
+    # (b) WITH the flag: ETOPO IS selected as the base even though CUDEM is present.
+    calls["etopo"] = 0
+    res_forced = fetch_topobathy(bbox=_SMOKE_BBOX, force_bathy_base=True)
+    assert calls["etopo"] == 1, "force_bathy_base must pull ETOPO as the base"
+    assert res_forced.bathymetry_present is True
+    assert res_forced.cudem_tile_count == 1
+    # The merged COG offshore (west, where CUDEM is nodata) must carry the REAL
+    # ETOPO deep bed (~ -500 m), not a flat land/zero fill.
+    import rasterio
+
+    with rasterio.open(_local_from_uri(res_forced.uri)) as ds:
+        z = ds.read(1)
+    assert np.nanmin(z) < -100.0, f"offshore must be genuinely deep, got min={np.nanmin(z)}"
+
+
+def _local_from_uri(uri: str) -> str:
+    """Map the test's gs://test-cache/.../<basename>.tif fake URI back to the temp
+    file the fake read_through wrote (same basename in the system temp dir)."""
+    base = os.path.basename(uri)
+    return os.path.join(tempfile.gettempdir(), base)
+
+
 def test_fetch_topobathy_manifest_unreachable_degrades(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:

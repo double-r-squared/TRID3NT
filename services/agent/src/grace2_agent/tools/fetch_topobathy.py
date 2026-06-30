@@ -1091,10 +1091,20 @@ def _fetch_topobathy_bytes_and_flags(
     target_crs: str,
     navd88_offset_m: float | None,
     timeout_s: float,
+    force_bathy_base: bool = False,
 ) -> tuple[bytes, bool, str | None, int]:
     """Produce the merged-topobathy COG bytes + the bathymetry-present flags.
 
     Returns ``(cog_bytes, bathymetry_present, fallback_warning, cudem_count)``.
+
+    ``force_bathy_base`` (the tsunami / coastal GeoClaw caller): lay the seamless
+    GLOBAL ETOPO 2022 topo-bathy down as the ALWAYS-ON base over the FULL domain,
+    even when CUDEM has coverage — CUDEM / 3DEP then paint ON TOP where they
+    exist (land + fine coast). This guarantees the open-ocean portion of an
+    offshore-extended domain is genuinely-negative bathymetry (ETOPO is negative
+    offshore by construction) rather than a land-DEM fill (the GeoClaw flat-ocean
+    root cause). Without it ETOPO is only a CUDEM-absent fallback, so a
+    partially-covered or offshore-extended domain gets a flat / land-filled ocean.
     """
     # 1) Select intersecting CUDEM tiles (best-effort — empty == no coverage).
     cudem_urls: list[str] = []
@@ -1130,16 +1140,25 @@ def _fetch_topobathy_bytes_and_flags(
         datum_offsets.append(offset)
     cudem_vsicurl = gated_paths
 
-    # 2b) GLOBAL topo-bathy fallback (NOAA ETOPO 2022 15") when CUDEM has NO
-    #     coverage for this AOI. CUDEM is pinned to a single US East/Gulf
+    # 2b) GLOBAL topo-bathy base / fallback (NOAA ETOPO 2022 15").
+    #
+    #     ALWAYS-ON BASE (``force_bathy_base``, the tsunami / coastal GeoClaw
+    #     caller): ETOPO is laid down UNCONDITIONALLY as the base over the FULL
+    #     domain so the open-ocean portion is genuinely-negative bathymetry;
+    #     CUDEM / 3DEP paint on top where present. This is the GeoClaw flat-ocean
+    #     root-cause fix -- a partially-covered or offshore-extended domain no
+    #     longer falls back to a land-DEM fill for the ocean.
+    #
+    #     FALLBACK (no ``force_bathy_base``): ETOPO is pulled ONLY when CUDEM has
+    #     NO coverage for this AOI. CUDEM is pinned to a single US East/Gulf
     #     regional collection, so the entire US Pacific / West coast (and other
     #     covered-but-different-collection coasts) finds 0 CUDEM tiles. Rather
     #     than degrade straight to a land-only DEM (which gives a tsunami/surge
-    #     run NO submarine bed -> zero inundation), pull the seamless GLOBAL
-    #     ETOPO 2022 topo-bathy so the AOI still gets a REAL nearshore bed
-    #     (data-source fallback norm: CUDEM -> ETOPO-global -> land-only).
+    #     run NO submarine bed -> zero inundation), the seamless GLOBAL ETOPO 2022
+    #     topo-bathy gives the AOI a REAL nearshore bed (data-source fallback
+    #     norm: CUDEM -> ETOPO-global -> land-only).
     etopo_vsicurl: list[str] = []
-    if not cudem_vsicurl:
+    if force_bathy_base or not cudem_vsicurl:
         try:
             etopo_urls = _select_etopo_tiles(bbox)
             etopo_vsicurl = [f"/vsicurl/{u}" for u in etopo_urls]
@@ -1221,6 +1240,7 @@ def fetch_topobathy(
     target_crs: str = TARGET_CRS,
     navd88_offset_m: float | None = None,
     timeout_s: float = 120.0,
+    force_bathy_base: bool = False,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -1270,6 +1290,13 @@ def fetch_topobathy(
             non-NAVD88 tile with no offset raises ``TopobathyDatumError`` rather
             than silently merging (Invariant 7).
         timeout_s: tile-index download timeout (seconds, default 120).
+        force_bathy_base: when True (the tsunami / coastal GeoClaw caller), lay
+            the seamless GLOBAL ETOPO 2022 topo-bathy down as the ALWAYS-ON base
+            over the FULL bbox even when CUDEM has coverage, with CUDEM / 3DEP
+            painted ON TOP. Guarantees the open-ocean portion of the bbox is
+            genuinely-negative bathymetry (not a land-DEM fill) — the GeoClaw
+            flat-ocean root-cause fix. Default False keeps the original
+            CUDEM-first / ETOPO-only-as-fallback behaviour for SFINCS.
 
     **Returns:**
         A ``TopobathyResult`` (a ``LayerURI`` subclass) pointing at the merged
@@ -1371,7 +1398,7 @@ def fetch_topobathy(
 
     def _fetch() -> bytes:
         cog, bathy, warn, count = _fetch_topobathy_bytes_and_flags(
-            q_bbox, res_m, tcrs, navd88_offset_m, t_s
+            q_bbox, res_m, tcrs, navd88_offset_m, t_s, bool(force_bathy_base)
         )
         _flags["bathymetry_present"] = bathy
         _flags["fallback_warning"] = warn
@@ -1387,6 +1414,9 @@ def fetch_topobathy(
             # offset participates in the key so a different documented offset
             # produces a distinct artifact.
             "navd88_offset_m": navd88_offset_m,
+            # force_bathy_base produces a DIFFERENT merged COG (ETOPO base always
+            # present) so it must participate in the cache key.
+            "force_bathy_base": bool(force_bathy_base),
         },
         ext="tif",
         fetch_fn=_fetch,

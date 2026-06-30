@@ -66,6 +66,14 @@ GEOCLAW_OFFSHORE_SCENARIOS: frozenset[str] = frozenset({"tsunami"})
 #: (i.e. under water) so the seafloor deformation displaces a real water column.
 _SOURCE_WET_ELEV_M: float = 0.0
 
+#: Deep-water FLOOR (m, positive-up) for the resolved Okada source (P1.1). A source
+#: planted over a shallow shelf puddle (e.g. -0.7 m) displaces a negligible water
+#: column; the canonical megathrust source sits over genuinely deep water (tens to
+#: thousands of metres). So we PREFER the deepest cell below this floor, falling
+#: back to any below-waterline cell only when the domain has no genuinely-deep
+#: water (never regressing to the onshore centroid).
+_SOURCE_DEEP_ELEV_M: float = -50.0
+
 
 #: The registry key + handle ``solver`` tag for the GeoClaw engine.
 GEOCLAW_SOLVER_NAME: str = "geoclaw"
@@ -474,10 +482,13 @@ def resolve_offshore_source(
     Reads the fetched topo/bathy DEM (rasterio) over ``domain_bbox`` and:
 
       1. Honors ``requested_source`` when it falls inside the domain AND over
-         below-waterline bathymetry (elevation < ``_SOURCE_WET_ELEV_M``).
-      2. Else projects the source onto the DEEPEST deep-water cell, preferring
-         cells SEAWARD of the AOI (outside the AOI bbox) and inset off the domain
-         boundary (so the source is not on the absorbing edge).
+         GENUINELY-DEEP water (elevation < ``_SOURCE_DEEP_ELEV_M``); a requested
+         source over a shallow shelf puddle is NOT honoured (P1.1) -- it would
+         seed the wave over a negligible water column.
+      2. Else projects the source onto the DEEPEST cell, PREFERRING genuinely-deep
+         water (elevation < ``_SOURCE_DEEP_ELEV_M``) SEAWARD of the AOI and inset
+         off the domain boundary, then any deep water, then (only if the domain
+         has no genuinely-deep water at all) the deepest below-waterline cell.
 
     Returns the resolved ``(lon, lat)``, or ``None`` when the DEM has no
     below-waterline cell in the domain (a fully-dry/inland domain -- the caller
@@ -508,13 +519,16 @@ def resolve_offshore_source(
         valid = ~np.ma.getmaskarray(band)
         elev = band.filled(1.0e9)
         wet = valid & (elev < _SOURCE_WET_ELEV_M)
+        # Genuinely-deep water (P1.1): the preferred substrate for the source.
+        deep = valid & (elev < _SOURCE_DEEP_ELEV_M)
 
-        # (1) Honor a requested source that sits over water.
+        # (1) Honor a requested source ONLY when it sits over genuinely-deep water
+        #     (a requested shallow-shelf source is relocated to deep water below).
         if requested_source is not None:
             rlon, rlat = float(requested_source[0]), float(requested_source[1])
             col = int((rlon - transform.c) / transform.a)
             row = int((rlat - transform.f) / transform.e)
-            if 0 <= row < height and 0 <= col < width and wet[row, col]:
+            if 0 <= row < height and 0 <= col < width and deep[row, col]:
                 return (rlon, rlat)
 
         if not wet.any():
@@ -545,9 +559,19 @@ def resolve_offshore_source(
             idx = np.unravel_index(int(np.argmin(masked_elev)), masked_elev.shape)
             return (float(lon_grid[idx]), float(lat_grid[idx]))
 
-        # Prefer deep water SEAWARD of the AOI, inset off the boundary; then any
-        # inset deep water; then any deep water at all.
-        for mask in (wet & inset & outside_aoi, wet & inset, wet):
+        # Prefer GENUINELY-DEEP water (< _SOURCE_DEEP_ELEV_M) seaward of the AOI +
+        # inset off the boundary, then any inset deep water, then any deep water;
+        # only if the domain has NO genuinely-deep water fall back to the deepest
+        # below-waterline cell (seaward+inset -> inset -> anywhere) -- never the
+        # onshore centroid (P1.1).
+        for mask in (
+            deep & inset & outside_aoi,
+            deep & inset,
+            deep,
+            wet & inset & outside_aoi,
+            wet & inset,
+            wet,
+        ):
             pt = _deepest(mask)
             if pt is not None:
                 return pt

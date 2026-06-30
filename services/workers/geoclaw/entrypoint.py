@@ -220,8 +220,34 @@ _GEOCLAW_TOPO_MAX_CELLS_PER_AXIS: int = 2000
 #: composer's GEOCLAW_OFFSHORE_SCENARIOS.
 _OFFSHORE_SCENARIOS: frozenset[str] = frozenset({"tsunami"})
 
+#: Flat-ocean validation gate (P0.3) thresholds. After staging/merging the topo
+#: for an OFFSHORE (tsunami) scenario the bathymetry that reaches the solver MUST
+#: be genuinely-negative ocean -- a flat ~0 m land-DEM fill holds no water column,
+#: so the Okada source has nothing to displace and the run inundates nothing
+#: (Total mass ~ 1e5 vs the working proof's ~1e9). The gate asserts BOTH:
+#:   - ``min(B) < _OFFSHORE_FLAT_MIN_DEPTH_M`` (somewhere genuinely deep), AND
+#:   - the fraction of cells below ``_OFFSHORE_FLAT_WET_THRESHOLD_M`` is at least
+#:     ``_OFFSHORE_FLAT_MIN_WET_FRACTION`` (a real ocean area, not a noise sliver).
+#: A flat ~-0.7 m fake ocean fails both. A genuine (even shallow-shelf) ocean
+#: passes. On failure the worker raises GeoClawBathymetryFlatError so a future
+#: bathymetry regression is a LOUD typed failure, never a silent dry solve.
+_OFFSHORE_FLAT_MIN_DEPTH_M: float = -5.0
+_OFFSHORE_FLAT_WET_THRESHOLD_M: float = -2.0
+_OFFSHORE_FLAT_MIN_WET_FRACTION: float = 0.05
 
-def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
+
+class GeoClawBathymetryFlatError(RuntimeError):
+    """The staged OFFSHORE topo is effectively flat / non-negative -- no genuine
+    ocean reaches the solver, so the run would inundate nothing.
+
+    Raised by the flat-ocean validation gate (P0.3) instead of running a doomed
+    dry simulation. ``error_code`` rides into the completion manifest so the
+    failure is a named, debuggable typed error (not a silent zero-inundation)."""
+
+    error_code: str = "GEOCLAW_BATHYMETRY_FLAT"
+
+
+def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> dict[str, float]:
     """Rewrite ONE staged topo DEM in place as a genuine GeoClaw topotype-3 ASCII.
 
     The agent stages the topo/bathy DEM as a GeoTIFF/COG (the reprojected
@@ -233,13 +259,21 @@ def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
     tsunami is generated. We read the raster with rasterio and re-emit a real
     topotype-3 ASCII (negative = below sea level preserved; NO sign flip).
 
-    nodata handling: the reprojected raster has large NaN regions in the warp
-    corners. We fill them so the ocean initializes wet -- for an OFFSHORE source
-    (tsunami) missing cells become the file's DEEPEST value (ocean); otherwise
-    they become the highest value (dry land) so an inland dam_break is not
-    spuriously flooded. A file that is ALREADY a GeoClaw topotype-3 ASCII is not
-    a valid GDAL raster header (value-first layout), so ``rasterio.open`` raises
-    and the caller leaves it untouched (idempotent).
+    nodata handling (P0.2): the reprojected raster has NaN regions in the warp
+    corners. For an INLAND (dam_break) run missing cells become the highest value
+    (dry land) so it is not spuriously flooded. For an OFFSHORE (tsunami) run the
+    ocean depth MUST come from real bathymetry (the ETOPO base the composer now
+    forces), NEVER from a land-DEM min: filling with ``nanmin`` of a land-only DEM
+    manufactures a flat ~-0.7 m fake ocean that silently passes downstream. So we
+    fill offshore missing cells with the deepest GENUINE ocean value ONLY when the
+    DEM actually contains below-water cells; if it has NONE, we fill as land (the
+    P0.3 gate then fails loudly rather than inventing an ocean).
+
+    Returns a stats dict ``{min, max, wet_fraction}`` (over the final, decimated +
+    filled band) so the caller can run the flat-ocean validation gate. A file that
+    is ALREADY a GeoClaw topotype-3 ASCII is not a valid GDAL raster header
+    (value-first layout), so ``rasterio.open`` raises and the caller leaves it
+    untouched (idempotent).
     """
     import numpy as np  # noqa: WPS433 - worker image deps
     import rasterio  # noqa: WPS433
@@ -296,7 +330,19 @@ def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
     if not finite.any():
         raise ValueError("topo has no finite cells")
     if not finite.all():
-        fill = float(np.nanmin(band)) if offshore else float(np.nanmax(band))
+        if offshore:
+            # Ocean fill must be REAL bathymetry, not a land-DEM min (P0.2). Use
+            # the deepest GENUINE below-water cell only when the DEM contains
+            # ocean; if it has none, fill as land (highest value) so the P0.3
+            # flat-ocean gate fails loudly instead of faking a thin ocean.
+            ocean = finite & (band < _OFFSHORE_FLAT_WET_THRESHOLD_M)
+            fill = (
+                float(np.nanmin(band))
+                if bool(ocean.any())
+                else float(np.nanmax(band))
+            )
+        else:
+            fill = float(np.nanmax(band))
         band = np.where(finite, band, fill)
 
     # topotools.Topography expects ASCENDING x and y (south-up Z). The write
@@ -312,14 +358,65 @@ def _convert_one_topo_to_topotype3(path: Path, *, offshore: bool) -> None:
     tmp = path.with_name(path.name + ".tt3.tmp")
     topo.write(str(tmp), topo_type=3)
     os.replace(str(tmp), str(path))
+    min_b = float(np.nanmin(band))
+    max_b = float(np.nanmax(band))
+    wet_fraction = float(np.count_nonzero(band < _OFFSHORE_FLAT_WET_THRESHOLD_M))
+    wet_fraction = wet_fraction / float(band.size) if band.size else 0.0
     LOG.info(
-        "topo normalize: %s -> topotype-3 ASCII (%dx%d, min=%.2f max=%.2f, offshore=%s)",
+        "topo normalize: %s -> topotype-3 ASCII (%dx%d, min=%.2f max=%.2f, "
+        "wet_frac<%.0fm=%.3f, offshore=%s)",
         path.name,
         nx,
         ny,
-        float(np.nanmin(band)),
-        float(np.nanmax(band)),
+        min_b,
+        max_b,
+        _OFFSHORE_FLAT_WET_THRESHOLD_M,
+        wet_fraction,
         offshore,
+    )
+    return {"min": min_b, "max": max_b, "wet_fraction": wet_fraction}
+
+
+def _validate_offshore_bathymetry(primary_name: str, stats: dict[str, float] | None) -> None:
+    """Flat-ocean validation gate (P0.3) for an OFFSHORE (tsunami) primary topo.
+
+    Asserts the staged bathymetry that reaches the solver is genuinely-negative
+    ocean (deep somewhere AND a real wet area), else raises
+    ``GeoClawBathymetryFlatError`` so a flat ~0 m land-DEM fill becomes a LOUD
+    typed failure instead of a silent zero-inundation dry solve. ``stats`` is the
+    dict ``_convert_one_topo_to_topotype3`` returned for the primary topo; ``None``
+    (conversion skipped/failed) is a non-fatal warning -- the run then fails loudly
+    on its own downstream rather than mislabelling the cause here.
+    """
+    if stats is None:
+        LOG.warning(
+            "flat-ocean gate: no stats for offshore primary topo %s (conversion "
+            "skipped/failed); skipping the gate -- the solve will surface any "
+            "bathymetry problem downstream",
+            primary_name,
+        )
+        return
+    min_b = float(stats.get("min", 0.0))
+    wet_fraction = float(stats.get("wet_fraction", 0.0))
+    deep_enough = min_b < _OFFSHORE_FLAT_MIN_DEPTH_M
+    wet_enough = wet_fraction >= _OFFSHORE_FLAT_MIN_WET_FRACTION
+    if deep_enough and wet_enough:
+        LOG.info(
+            "flat-ocean gate PASS: %s min=%.2f m wet_frac=%.3f "
+            "(need min<%.1f m and wet_frac>=%.2f)",
+            primary_name, min_b, wet_fraction,
+            _OFFSHORE_FLAT_MIN_DEPTH_M, _OFFSHORE_FLAT_MIN_WET_FRACTION,
+        )
+        return
+    raise GeoClawBathymetryFlatError(
+        f"GEOCLAW_BATHYMETRY_FLAT: the staged OFFSHORE topo {primary_name!r} is "
+        f"effectively flat / non-negative (min={min_b:.2f} m, wet_fraction below "
+        f"{_OFFSHORE_FLAT_WET_THRESHOLD_M:.0f} m = {wet_fraction:.3f}); a genuine "
+        f"ocean requires min < {_OFFSHORE_FLAT_MIN_DEPTH_M:.1f} m AND wet_fraction "
+        f">= {_OFFSHORE_FLAT_MIN_WET_FRACTION:.2f}. No real negative bathymetry "
+        "reached the solver, so the Okada source has no water column to displace "
+        "and the run would inundate nothing. Refusing the doomed dry simulation "
+        "(check the topobathy source covers the full offshore-extended domain)."
     )
 
 
@@ -330,19 +427,28 @@ def _normalize_topo_files(scratch: Path, build_spec: dict) -> None:
     referencing the same filenames). Best-effort per file: a conversion failure is
     logged and the original is left in place so the run proceeds and fails loudly
     downstream rather than here.
+
+    For an OFFSHORE (tsunami) scenario the PRIMARY topo is then run through the
+    flat-ocean validation gate (P0.3) -- a genuinely-flat ocean raises
+    ``GeoClawBathymetryFlatError`` (NOT swallowed) so the worker fails with a named
+    typed error instead of running a zero-inundation dry solve.
     """
     if not isinstance(build_spec, dict):
         return
     scenario = str(build_spec.get("scenario") or "").strip().lower()
     offshore = scenario in _OFFSHORE_SCENARIOS
-    names = [str(build_spec.get("topo_file") or "topo.asc")]
+    primary_name = str(build_spec.get("topo_file") or "topo.asc")
+    names = [primary_name]
     names.extend(str(f) for f in (build_spec.get("extra_topo_files") or []))
+    primary_stats: dict[str, float] | None = None
     for name in names:
         path = scratch / name
         if not path.exists():
             continue
         try:
-            _convert_one_topo_to_topotype3(path, offshore=offshore)
+            stats = _convert_one_topo_to_topotype3(path, offshore=offshore)
+            if name == primary_name:
+                primary_stats = stats
         except Exception as exc:  # noqa: BLE001 - best-effort; keep the original
             LOG.warning(
                 "topo normalize: could not convert %s to topotype-3 (%s); "
@@ -350,6 +456,9 @@ def _normalize_topo_files(scratch: Path, build_spec: dict) -> None:
                 path,
                 exc,
             )
+    # Flat-ocean gate (P0.3): offshore primary topo MUST be genuinely-negative.
+    if offshore:
+        _validate_offshore_bathymetry(primary_name, primary_stats)
 
 
 def _run_geoclaw(cwd: Path) -> tuple[int, Path, Path]:
