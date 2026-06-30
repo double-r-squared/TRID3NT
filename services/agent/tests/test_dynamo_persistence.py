@@ -349,6 +349,47 @@ def test_session_state_round_trip():
     assert contents == ["model the flood", "fetching DEM", "now habitat"]
 
 
+def test_upsert_chat_message_walks_running_to_terminal_in_place():
+    """Durable-card lifecycle on the LIVE backend (Dynamo): a SOLVE card
+    persisted ``running`` at mint, then UPSERTED to ``complete`` by the SAME
+    stable ``message_id``, yields EXACTLY ONE row carrying the terminal state +
+    its original ``created_at`` position (no duplicate running+complete cards)."""
+    from grace2_contracts.case import ToolCardRecord
+
+    p, _ = _new_persistence()
+    case = _fresh_case()
+    t0 = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
+    card_id = new_ulid()
+
+    def _row(state: str, when: datetime) -> CaseChatMessage:
+        rec = ToolCardRecord(
+            tool_name="sfincs:solve", state=state, label="sfincs solve"  # type: ignore[arg-type]
+        )
+        return CaseChatMessage(
+            message_id=card_id,
+            case_id=case.case_id,
+            role="tool",
+            content=rec.model_dump_json(),
+            tool_card=rec,
+            created_at=when,
+        )
+
+    async def run():
+        await p.upsert_case(case, owner_user_id="user-A")
+        # Mint: persist the running card.
+        await p.upsert_chat_message(_row("running", t0))
+        # Terminal: a LATER timestamp must NOT reorder the row (created_at pins on
+        # first insert via $setOnInsert).
+        await p.upsert_chat_message(_row("complete", t0 + timedelta(seconds=90)))
+        return await p.get_session_state(case.case_id)
+
+    state = asyncio.run(run())
+    tool_rows = [m for m in state.chat_history if m.role == "tool"]
+    assert len(tool_rows) == 1, "running -> terminal upserts ONE row, no duplicate"
+    assert tool_rows[0].tool_card.state == "complete"
+    assert tool_rows[0].created_at == t0, "created_at pins on first insert"
+
+
 def test_chart_append_and_ordered_rehydration():
     """charts $push onto the sessions doc, then get_session_state replays
     payloads in emitted_at order, unwrapping .payload — matches file/Mongo."""

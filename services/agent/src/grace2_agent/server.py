@@ -5326,6 +5326,7 @@ async def _persist_chat_turn(
     tool_card: ToolCardRecord | None = None,
     layer_emissions: list[str] | None = None,
     case_id: str | None = None,
+    message_id: str | None = None,
 ) -> None:
     """Append one ``CaseChatMessage`` to Mongo for the active Case.
 
@@ -5348,6 +5349,13 @@ async def _persist_chat_turn(
     wrappers capture it at task entry so even a cancel-and-redispatch race
     cannot re-aim the write); when omitted it resolves via ``_turn_case_id``
     — never the raw write-time ``active_case_id``.
+
+    Durable-card lifecycle: ``message_id``, when supplied, pins the row's stable
+    id and routes the write through ``upsert_chat_message`` (insert-or-replace)
+    instead of ``append_chat_message`` — so a SOLVE card persisted ``running`` at
+    mint can be UPDATED IN PLACE to its terminal state without a duplicate row
+    ("nothing about the chat is transient"). Omitted (the default) keeps the
+    append-a-fresh-row behavior every existing caller relies on.
     """
     target_case = case_id if case_id is not None else _turn_case_id(state)
     if not target_case:
@@ -5356,7 +5364,7 @@ async def _persist_chat_turn(
     if p is None:
         return
     msg = CaseChatMessage(
-        message_id=new_ulid(),
+        message_id=message_id or new_ulid(),
         case_id=target_case,
         role=role,  # type: ignore[arg-type]
         content=content,
@@ -5379,7 +5387,12 @@ async def _persist_chat_turn(
         created_at=now_utc(),
     )
     try:
-        await p.append_chat_message(msg)
+        if message_id is not None:
+            # Durable-card lifecycle: insert-or-replace the SAME row so a
+            # running card walks to terminal in place (no duplicate).
+            await p.upsert_chat_message(msg)
+        else:
+            await p.append_chat_message(msg)
         # Per-turn D.6 heartbeat (job-0203 / M4): the chat turn is the
         # activity signal that keeps the session record's TTL fresh and
         # the turn's Case registered in ``project_ids``.
@@ -5414,6 +5427,7 @@ async def _persist_tool_card(
     raw_args: Any = None,
     function_response: Any = None,
     io_is_error: bool = False,
+    message_id: str | None = None,
 ) -> None:
     """Persist one replayable tool-card row for the active Case (job-0267).
 
@@ -5526,6 +5540,7 @@ async def _persist_tool_card(
             tool_card=record,
             layer_emissions=[],
             case_id=case_id,
+            message_id=message_id,
         )
     except Exception:  # noqa: BLE001 — replay material, never the happy path
         logger.exception(

@@ -898,9 +898,12 @@ export interface PersistedSubStepRecord {
 // terminal record of ONE tool dispatch inside a Case turn. Mirrors
 // `grace2_contracts.case.ToolCardRecord`. The live tool cards render from
 // `pipeline-state` envelopes (wire-only); this record is their persisted
-// twin so a Case reopen re-renders the inline cards. `state` is a CLOSED
-// two-value enum — cancelled dispatches persist nothing (Invariant 8) and
-// pending/running are live-wire-only states.
+// twin so a Case reopen re-renders the inline cards. `state` walks the durable
+// card lifecycle: an off-box SOLVE card is persisted `running` at mint and
+// UPDATED IN PLACE to its terminal state (so a mid-run reconnect/reopen replays
+// it — "nothing about the chat is transient"); `cancelled` is persisted for a
+// stopped solve so it stays traceable. Atomic-tool cards still persist only at
+// terminal (`complete`/`failed`).
 //
 // C1 tool-card IO persistence (A1 produces, W2 consumes): the live IO
 // drop-down (input args + function_response chevron) is driven by the
@@ -917,7 +920,7 @@ export interface PersistedSubStepRecord {
 export interface ToolCardRecord {
   schema_version?: "v1";
   tool_name: string;
-  state: "complete" | "failed";
+  state: "running" | "complete" | "failed" | "cancelled";
   started_at?: string | null;
   duration_ms?: number | null;
   label?: string | null;

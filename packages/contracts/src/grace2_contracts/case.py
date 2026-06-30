@@ -130,12 +130,23 @@ class CaseSummary(GraceModel):
     qgs_project_uri: str | None = None  # gs://.../{case_id}.qgs (lazy-init)
 
 
-# Closed enum: terminal tool-card outcomes that are worth replaying. The set
-# is intentionally minimal at v0.1 (job-0267): a cancelled dispatch produces
-# NO persisted card (Invariant 8 — cancellation aborts the turn; there is no
-# completed exchange to replay), and transient pending/running states are
-# live-wire-only (``pipeline-state`` envelopes), never persisted.
-ToolCardState = Literal["complete", "failed"]
+# Persisted tool-card lifecycle states (durable, replayable).
+#
+# job-0267 originally pinned this to the two TERMINAL outcomes (``complete`` /
+# ``failed``): an on-box atomic tool persists exactly once, at terminal, and a
+# cancelled dispatch left NO row (Invariant 8). A long-running off-box SOLVE is
+# different — its SIM/dispatch card spans a WS reconnect window, so the "nothing
+# about the chat is transient" durability principle (NATE) requires the card to
+# be persisted the moment it is minted (``running``) and UPDATED IN PLACE to its
+# terminal state: a SINGLE row whose ``state`` walks running -> terminal, keyed
+# by a stable ``message_id`` (upsert, never a duplicate). ``cancelled`` is now
+# ALSO persisted for a solve card — a stopped sim is a FINISHED sim the user must
+# be able to trace after the fact (this supersedes Invariant 8's "no row" for the
+# durable solve card specifically; the atomic-tool path still leaves no row on
+# cancel because it persists only at terminal). Children
+# (``PersistedSubStepRecord``) only ever carry the two terminal values at
+# runtime; the wider type is a harmless superset for them.
+ToolCardState = Literal["running", "complete", "failed", "cancelled"]
 
 
 class PersistedSubStepRecord(GraceModel):

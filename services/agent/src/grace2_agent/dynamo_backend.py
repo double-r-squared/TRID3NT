@@ -639,15 +639,35 @@ class DynamoMCPClient:
         ``project_ids``) stay intact; different ids never contend.
         """
         pk = _pk_attr(alias)
+        sk = _sk_attr(alias)
         target_id = filt.get("_id")
         matched = 0
         modified = 0
 
+        # Keyed fast-path upsert: the filter fully specifies the table KEY, so we
+        # can get_item -> apply -> put_item one document directly. Two key shapes:
+        #   * single ``_id`` partition key (cases / sessions / users / secrets),
+        #   * composite ``pk``+``sk`` (the chat table — case_id + message_id —
+        #     which the durable-card lifecycle upserts by, filter carrying BOTH).
+        # Both honor ``upsert`` (``$setOnInsert`` fires on a fresh insert). The
+        # generalization is what lets ``upsert_chat_message`` walk a SOLVE card
+        # running -> terminal in place on the composite-keyed chat table.
+        key: dict[str, Any] | None = None
         if pk == "_id" and isinstance(target_id, str):
-            async with self._lock_for_id(alias, target_id):
-                resp = await asyncio.to_thread(
-                    table.get_item, Key={"_id": target_id}
-                )
+            key = {"_id": target_id}
+        elif (
+            sk is not None
+            and filt.get(pk) is not None
+            and filt.get(sk) is not None
+        ):
+            key = {pk: filt[pk], sk: filt[sk]}
+        elif sk is None and pk != "_id" and filt.get(pk) is not None:
+            key = {pk: filt[pk]}
+
+        if key is not None:
+            lock_id = "|".join(str(v) for v in key.values())
+            async with self._lock_for_id(alias, lock_id):
+                resp = await asyncio.to_thread(table.get_item, Key=key)
                 existing = resp.get("Item")
                 if existing is not None:
                     doc = _from_ddb(existing)
@@ -657,7 +677,7 @@ class DynamoMCPClient:
                     )
                     return {"matchedCount": 1, "modifiedCount": 1}
                 if upsert:
-                    fresh: dict[str, Any] = {"_id": target_id}
+                    fresh: dict[str, Any] = dict(key)
                     self._apply_update(fresh, update, inserting=True)
                     await asyncio.to_thread(
                         table.put_item, Item=_ddb_item(fresh, alias)

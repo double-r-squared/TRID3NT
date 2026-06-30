@@ -919,6 +919,13 @@ class _StepState:
     role: str = "tool"
     batch_job_id: str | None = None
     batch_status: str | None = None
+    #: Durable-card lifecycle (NATE "nothing transient"): the STABLE persisted
+    #: ``message_id`` (a ULID) of this step's tool-card row. Set on an off-box
+    #: SOLVE (compute) step at mint so the card persisted ``running`` and the
+    #: later terminal write target the SAME row (upsert in place — no duplicate).
+    #: ``None`` for a plain tool card (which persists once, at terminal, with a
+    #: fresh appended id).
+    card_message_id: str | None = None
     #: Nested sub-step timeline (task-168). ``parent_step_id`` is set on a CHILD
     #: step (a composer's internal atomic-tool call surfaced as a nested row);
     #: when set, the client nests this step under the parent and never renders it
@@ -1643,6 +1650,10 @@ class PipelineEmitter:
         step.role = "compute"
         step.batch_job_id = batch_job_id
         step.batch_status = batch_status
+        # Durable-card lifecycle: pin a STABLE persisted row id NOW so the card
+        # persisted ``running`` at mint and its later terminal write upsert the
+        # SAME ``chat_history`` row (running -> terminal in place, no duplicate).
+        step.card_message_id = new_ulid()
         # Flip to running (stamps started_at + re-emits) so the compute card is
         # live the moment the solve begins.
         await self.mark_running(step_id)
@@ -1745,38 +1756,37 @@ class PipelineEmitter:
         # for replay-on-rebind so the yellow card survives a WS cycle.
         await self._emit_terminal_pipeline_state()
 
-    async def persist_terminal_compute_card(self, step_id: str) -> None:
-        """task-208: persist the SIM ``compute`` card as a replayable tool-card.
+    async def _persist_step_card(
+        self, step_id: str, *, states: tuple[str, ...]
+    ) -> None:
+        """Persist ``step_id``'s tool-card row through the ``_tool_card_persist``
+        hook IFF its current state is in ``states``.
 
-        Called by ``route_sim_terminal`` AFTER the terminal ``mark_complete`` /
-        ``mark_failed`` transition so the green/red SIM card survives a WS
-        reconnect / Case reopen exactly like an on-box atomic-tool card. The
-        two-card sim observability (task-149) minted this ``role="compute"`` card
-        via ``add_compute_step``; unlike the on-box tool path it was NEVER
-        persisted (the live card lived only on the wire), so a bare reconnect
-        replayed an EMPTY pipeline and the user's solve card vanished.
+        Shared substrate for the durable two-card sim lifecycle (task-208 +
+        the running-durability extension). Routes through the
+        ``_tool_card_persist`` hook ``server`` wired at construction, which
+        closes over ``state`` and calls ``server._persist_tool_card`` -> a
+        ``role="tool"`` ``CaseChatMessage`` + ``ToolCardRecord`` row in
+        ``chat_history`` that round-trips through the existing replay (case-open
+        AND bare-reconnect).
 
-        Routes through the ``_tool_card_persist`` hook ``server`` wired at
-        construction, which closes over ``state`` and calls the SAME
-        ``server._persist_tool_card`` the tool cards use -> a ``role="tool"``
-        ``CaseChatMessage`` + ``ToolCardRecord`` row in ``chat_history`` that
-        round-trips through the existing replay (case-open AND bare-reconnect).
+        ``card_message_id`` (set on a compute step at mint) is forwarded as the
+        STABLE row id so the ``running`` write and the later terminal write
+        UPSERT the SAME row (running -> terminal in place, no duplicate). A plain
+        tool/dispatch step has ``card_message_id is None`` -> the hook appends a
+        fresh row (persist-once-at-terminal, unchanged).
 
-        Persisted ONLY for the two terminal states ``ToolCardRecord`` accepts —
-        ``complete`` / ``failed``. A ``cancelled`` SIM card persists NOTHING
-        (Invariant 8: cancelled dispatches leave no row), matching the on-box
-        tool path. No-op (never raises) when the hook is unbound (verify/CI/
-        direct call), the step is unknown, or the step is non-terminal — the
-        live SIM-card flow is untouched either way. Best-effort: a hook failure
-        is swallowed (the underlying ``_persist_tool_card`` is itself
-        never-raises) so persistence can never break the solve loop.
+        No-op (never raises) when the hook is unbound (verify/CI/direct call),
+        the step is unknown, or its state is not in ``states``. Best-effort: a
+        hook failure is swallowed (``_persist_tool_card`` is itself never-raises)
+        so persistence can never break the solve loop.
         """
         if self._tool_card_persist is None:
             return
         step = self._steps.get(step_id)
         if step is None:
             return
-        if step.state not in ("complete", "failed"):
+        if step.state not in states:
             return
         started_at = step.started_at or self._now_fn()
         duration_ms = step.duration_ms if step.duration_ms is not None else 0
@@ -1787,13 +1797,59 @@ class PipelineEmitter:
                 card_state=step.state,
                 started_at_fallback=started_at,
                 duration_ms_fallback=duration_ms,
+                message_id=step.card_message_id,
             )
         except Exception as exc:  # noqa: BLE001 — persistence, never break solve
             logger.warning(
-                "persist_terminal_compute_card failed (non-fatal) step=%s: %s",
+                "_persist_step_card failed (non-fatal) step=%s: %s",
                 step_id,
                 exc,
             )
+
+    async def persist_running_compute_card(self, step_id: str) -> None:
+        """Persist the SIM ``compute`` card the MOMENT it is minted (running).
+
+        Durability extension (NATE "nothing about the chat is transient"):
+        task-208 persisted the SIM card only at TERMINAL, so a reconnect/reopen
+        WHILE the solve was still running replayed an empty pipeline and the
+        running solve card VANISHED (the user kept only the durable input
+        layers). Persisting the ``running`` card here — keyed by the step's
+        stable ``card_message_id`` — means a mid-run reconnect/reopen replays the
+        spinning card from ``chat_history``; ``persist_terminal_compute_card``
+        later upserts the SAME row to its terminal state. No-op outside the
+        ``running`` state."""
+        await self._persist_step_card(step_id, states=("running",))
+
+    async def persist_terminal_compute_card(self, step_id: str) -> None:
+        """task-208 + durability: drive the SIM ``compute`` card's persisted row
+        to its TERMINAL state.
+
+        Called by ``route_sim_terminal`` AFTER the terminal ``mark_complete`` /
+        ``mark_failed`` / ``mark_cancelled`` transition. UPSERTS the SAME row
+        ``persist_running_compute_card`` minted (stable ``card_message_id``) so
+        the green/red/yellow solve card survives a WS reconnect / Case reopen
+        exactly like an on-box atomic-tool card and stays in the history
+        PERMANENTLY after the sim finishes.
+
+        Now persists ``cancelled`` too (a stopped solve is a finished solve the
+        user must be able to trace — this supersedes Invariant 8's "no row" for
+        the durable solve card; see ``ToolCardState``). The running row was
+        already written at mint, so the cancel upsert simply walks it to its
+        yellow terminal rather than leaving an orphaned ``running`` row."""
+        await self._persist_step_card(
+            step_id, states=("complete", "failed", "cancelled")
+        )
+
+    async def persist_terminal_dispatch_card(self, step_id: str) -> None:
+        """Persist the DISPATCH (Card 1) tool card (terminal, appended once).
+
+        The two-card sim observability mints a Dispatch card (``add_step`` ->
+        ``mark_complete``) recording the off-box submit; it was never persisted,
+        so a Case reopen lost it. It has no ``card_message_id`` (it is a plain
+        tool step that completes instantly at mint) -> the hook APPENDS one
+        durable terminal row. Paired with the SIM card's running/terminal
+        lifecycle so the full two-card pair replays on reconnect/reopen."""
+        await self._persist_step_card(step_id, states=("complete", "failed"))
 
     # ------------------------------------------------------------------ #
     # session-state — current_pipeline + loaded_layers
@@ -2534,6 +2590,9 @@ async def mint_dispatch_and_sim_cards(
         )
         await emitter.mark_running(dispatch_id)
         await emitter.mark_complete(dispatch_id)
+        # Durability: persist the (terminal) Dispatch card so the full two-card
+        # pair replays on a Case reopen, not just live on the wire.
+        await emitter.persist_terminal_dispatch_card(dispatch_id)
         # Card 2 "Sim": the off-box compute card bound to the Batch jobId.
         sim_id = await emitter.add_compute_step(
             name=f"{solver} solve",
@@ -2541,6 +2600,11 @@ async def mint_dispatch_and_sim_cards(
             batch_job_id=job_id,
             batch_status="SUBMITTED",
         )
+        # Durability (NATE "nothing transient"): persist the SIM card NOW, in its
+        # ``running`` state, so a reconnect/reopen WHILE the solve runs replays
+        # the live solve card instead of dropping it. ``route_sim_terminal``
+        # upserts this SAME row to its terminal state when the solve finishes.
+        await emitter.persist_running_compute_card(sim_id)
         logger.info(
             "two-card sim observability: minted dispatch + compute cards "
             "solver=%s backend=%s jobId=%s sim_step_id=%s",
@@ -2571,14 +2635,24 @@ async def route_sim_terminal(
     transition methods, which are J-B-i best-effort on a dead socket (the red /
     green card survives a WS cycle + replays on rebind). No-op when the emitter
     or the sim step is absent. Best-effort: an emit failure is swallowed so the
-    composer's own non-complete guard still raises the typed workflow error."""
+    composer's own non-complete guard still raises the typed workflow error.
+
+    Durability: each terminal branch UPSERTS the SAME persisted row that
+    ``mint_dispatch_and_sim_cards`` wrote ``running`` at mint (stable
+    ``card_message_id``), walking the card running -> terminal in place so it
+    stays in ``chat_history`` permanently with its final state. Cancelled is now
+    persisted too (a stopped solve stays traceable)."""
     if emitter is None or not sim_step_id:
         return
     try:
         status = str(getattr(run_result, "status", "") or "") if run_result is not None else ""
         if run_result is None or status == "cancelled":
-            # Invariant 8: a cancelled SIM card persists NOTHING (no replay row).
             await emitter.mark_cancelled(sim_step_id)
+            # Durability: the SIM card was persisted ``running`` at mint, so a
+            # cancel UPSERTS that SAME row to its terminal ``cancelled`` state
+            # (no orphaned running row). A stopped solve stays traceable —
+            # superseding Invariant 8's "no row" for the durable solve card.
+            await emitter.persist_terminal_compute_card(sim_step_id)
         elif status == "complete":
             await emitter.mark_complete(sim_step_id)
             # task-208: persist the green SIM compute card so it replays on a

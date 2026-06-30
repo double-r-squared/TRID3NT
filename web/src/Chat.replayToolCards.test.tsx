@@ -209,4 +209,62 @@ describe("replayStreamFromChatHistory (job-0267)", () => {
       "agent-message",
     ]);
   });
+
+  // Durable SIM-card lifecycle (NATE "nothing about the chat is transient"):
+  // the SOLVE card is persisted `running` at mint, so a mid-run reconnect/reopen
+  // replays a SPINNING card (state="running") instead of dropping it. After the
+  // solve the SAME row is upserted to its terminal state and replays terminal.
+  it("replays a RUNNING sim card so a mid-run reconnect keeps the live solve card", () => {
+    const s = emptyStreamState();
+    const history = fullStreamHistory();
+    history[1] = {
+      ...history[1]!,
+      content: '{"tool_name":"sfincs:solve","state":"running"}',
+      tool_card: {
+        tool_name: "sfincs:solve",
+        state: "running",
+        started_at: "2026-06-10T00:00:01Z",
+        label: "sfincs solve",
+      },
+    };
+    replayStreamFromChatHistory(s, history);
+
+    expect(s.pipeline.history).toHaveLength(1);
+    const step = s.pipeline.history[0]!.steps![0]!;
+    expect(step.tool_name).toBe("sfincs:solve");
+    expect(step.state).toBe("running");
+
+    // It interleaves as a tool entry carrying running -> PipelineCard spins.
+    const stream = buildInterleavedStream(
+      s.messages,
+      s.pipeline.history,
+      s.pipeline.live,
+      s.messageOrder,
+      s.stepOrder,
+    );
+    const toolEntry = stream.find((e) => e.kind === "tool") as
+      | { kind: "tool"; step: { state: string; tool_name: string } }
+      | undefined;
+    expect(toolEntry).toBeDefined();
+    expect(toolEntry!.step.state).toBe("running");
+    expect(toolEntry!.step.tool_name).toBe("sfincs:solve");
+  });
+
+  it("replays a CANCELLED sim card (a stopped solve stays traceable)", () => {
+    const s = emptyStreamState();
+    const history = fullStreamHistory();
+    history[1] = {
+      ...history[1]!,
+      content: '{"tool_name":"sfincs:solve","state":"cancelled"}',
+      tool_card: {
+        tool_name: "sfincs:solve",
+        state: "cancelled",
+        started_at: "2026-06-10T00:00:01Z",
+        duration_ms: 4200,
+        label: "sfincs solve",
+      },
+    };
+    replayStreamFromChatHistory(s, history);
+    expect(s.pipeline.history[0]!.steps![0]!.state).toBe("cancelled");
+  });
 });

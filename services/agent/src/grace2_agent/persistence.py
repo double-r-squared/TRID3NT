@@ -729,6 +729,49 @@ class Persistence:
             },
         )
 
+    async def upsert_chat_message(self, msg: CaseChatMessage) -> None:
+        """Insert-or-replace one chat row keyed by its stable ``message_id``.
+
+        Durable-card lifecycle (NATE "nothing transient"): an off-box SOLVE card
+        is persisted ``running`` at mint and UPDATED IN PLACE to its terminal
+        state. Unlike ``append_chat_message`` (always a fresh row), this upserts
+        by the stable ``_id`` so the running -> terminal transition rewrites the
+        SAME row — never a duplicate. ``created_at`` is pinned on first insert
+        via ``$setOnInsert`` so the row KEEPS its position in the
+        ``created_at``-sorted replay across the transition (the terminal update
+        must not reorder the card). Every other field is ``$set`` so the terminal
+        ``state`` / ``duration_ms`` / ``tool_card`` overwrite the running values.
+
+        Routes through the SAME ``update-one`` (upsert) surface every backend
+        implements. The filter carries BOTH key shapes so it targets the natural
+        key on each: ``_id`` for the file/Mongo backends (chat ``_id`` ==
+        ``message_id``) AND the composite ``case_id`` + ``message_id`` the live
+        DynamoDB chat table is keyed by — so the get/apply/put upsert lands on
+        exactly one row everywhere. Best-effort at the call sites
+        (``_persist_chat_turn`` swallows write failures), matching
+        ``append_chat_message``.
+        """
+        body = msg.model_dump(mode="json")
+        body["_id"] = msg.message_id
+        created_at = body.pop("created_at", None)
+        update: dict[str, Any] = {"$set": body}
+        if created_at is not None:
+            update["$setOnInsert"] = {"created_at": created_at}
+        await self._mcp.call_tool(
+            "update-one",
+            {
+                "database": self._db,
+                "collection": CHAT_COLLECTION,
+                "filter": {
+                    "_id": msg.message_id,
+                    "case_id": msg.case_id,
+                    "message_id": msg.message_id,
+                },
+                "update": update,
+                "upsert": True,
+            },
+        )
+
     async def get_session_state(self, case_id: str) -> CaseSessionState:
         """Hydrate the rehydration envelope for a Case (FR-MP-6 resume).
 

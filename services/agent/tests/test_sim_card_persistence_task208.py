@@ -93,13 +93,19 @@ class _RunResult:
 
 
 async def _mint_sim_card(state) -> str:
-    """Mint the SIM (role=compute) card on the session emitter; return its id."""
+    """Mint the SIM (role=compute) card + persist it ``running`` (the real flow).
+
+    Mirrors ``mint_dispatch_and_sim_cards``: the SIM card is persisted the MOMENT
+    it is minted (``running``) so a mid-run reconnect/reopen replays it; the
+    later ``route_sim_terminal`` UPSERTS the SAME row to its terminal state.
+    """
     sim_id = await state.emitter.add_compute_step(
         name="sfincs solve",
         tool_name="sfincs:solve",
         batch_job_id="job-abc123",
         batch_status="SUBMITTED",
     )
+    await state.emitter.persist_running_compute_card(sim_id)
     return sim_id
 
 
@@ -172,27 +178,32 @@ async def test_failed_sim_card_persists_failed(file_persistence) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (c) a CANCELLED solve persists NOTHING (Invariant 8)
+# (c) a CANCELLED solve walks its persisted running row to a traceable
+#     ``cancelled`` terminal (durability supersedes Invariant 8's "no row")
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_cancelled_sim_card_persists_nothing(file_persistence) -> None:
+async def test_cancelled_sim_card_persists_cancelled(file_persistence) -> None:
     ws = FakeWS()
     state = server.SessionState(session_id=new_ulid())
     server._ensure_emitter(ws, state)
     case_id = await _create_case(ws, state)
 
-    sim_id = await _mint_sim_card(state)
-    # cancel: run_result is None -> mark_cancelled, NO persist
+    sim_id = await _mint_sim_card(state)  # persists the running row
+    # cancel: run_result is None -> mark_cancelled, UPSERT the running row to
+    # its terminal cancelled state (no orphaned running row; stays traceable).
     await route_sim_terminal(state.emitter, sim_id, run_result=None)
 
     session_state = await file_persistence.get_session_state(case_id)
     tool_rows = [m for m in session_state.chat_history if m.role == "tool"]
-    assert tool_rows == [], (
-        "a cancelled SIM card persists nothing (Invariant 8): a cancel is not a "
-        "completion and must leave no replay row"
+    assert len(tool_rows) == 1, (
+        "a cancelled SIM card persists exactly ONE row — the running row minted "
+        "at solve-start, UPSERTED in place to cancelled (NATE: nothing about the "
+        "chat is transient; a stopped solve stays traceable)"
     )
+    assert tool_rows[0].tool_card is not None
+    assert tool_rows[0].tool_card.state == "cancelled"
 
 
 # --------------------------------------------------------------------------- #
@@ -309,3 +320,142 @@ async def test_reconnect_replays_persisted_sim_card(file_persistence) -> None:
     )
     assert tool_msgs[0]["tool_card"]["state"] == "complete"
     assert tool_msgs[0]["tool_card"]["tool_name"] == "sfincs:solve"
+
+
+# --------------------------------------------------------------------------- #
+# RUNNING DURABILITY (the mid-run reconnect bug NATE hit) — the SIM card is
+# persisted the MOMENT it is minted (running), so a reconnect/reopen WHILE the
+# solve runs replays the spinning card instead of dropping it.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_running_sim_card_persists_at_mint(file_persistence) -> None:
+    """A minted-but-not-yet-terminal SIM card persists a ``running`` row so a
+    mid-run reconnect/reopen has something to replay (the bug: it had nothing)."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws, state)
+    case_id = await _create_case(ws, state)
+
+    # Mint + persist-running ONLY (the solve is still running — no terminal).
+    await _mint_sim_card(state)
+
+    session_state = await file_persistence.get_session_state(case_id)
+    tool_rows = [m for m in session_state.chat_history if m.role == "tool"]
+    assert len(tool_rows) == 1, (
+        "the SIM card must persist the MOMENT it is minted (running) so a "
+        "mid-run reconnect/reopen replays the live solve card"
+    )
+    assert tool_rows[0].tool_card is not None
+    assert tool_rows[0].tool_card.state == "running"
+    assert tool_rows[0].tool_card.tool_name == "sfincs:solve"
+
+
+@pytest.mark.asyncio
+async def test_running_then_terminal_upserts_single_row(file_persistence) -> None:
+    """running -> terminal walks the SAME row in place (upsert), never a
+    duplicate: a reopen after the solve shows ONE green card, not running+green."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws, state)
+    case_id = await _create_case(ws, state)
+
+    sim_id = await _mint_sim_card(state)  # running row
+    # The running row exists now; complete the solve -> upsert SAME row to green.
+    await route_sim_terminal(
+        state.emitter, sim_id, run_result=_RunResult("complete")
+    )
+
+    session_state = await file_persistence.get_session_state(case_id)
+    tool_rows = [m for m in session_state.chat_history if m.role == "tool"]
+    assert len(tool_rows) == 1, (
+        "running -> terminal must UPSERT the same stable row (no duplicate "
+        "running + complete cards)"
+    )
+    assert tool_rows[0].tool_card.state == "complete"
+
+
+@pytest.mark.asyncio
+async def test_reconnect_mid_run_replays_running_sim_card(file_persistence) -> None:
+    """The keystone for NATE's bug: a bare WS reconnect WHILE the solve is still
+    running replays the persisted ``running`` SIM card in the resume
+    session-state's chat_history (it no longer vanishes)."""
+    ws1 = FakeWS()
+    state1 = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws1, state1)
+    case_id = await _create_case(ws1, state1)
+    await _mint_sim_card(state1)  # solve running — NO terminal yet
+
+    # Fresh socket, same session: a bare reconnect mid-run.
+    server._set_session_active_case(state1.session_id, case_id)
+    ws2 = FakeWS()
+    state2 = server.SessionState(session_id=state1.session_id)
+    server._ensure_emitter(ws2, state2)
+    await server._handle_session_resume(ws2, state2)
+
+    states = _session_states(ws2)
+    assert len(states) == 1
+    chat = states[0]["payload"]["chat_history"]
+    tool_msgs = [m for m in chat if m["role"] == "tool"]
+    assert len(tool_msgs) == 1, (
+        "a mid-run reconnect must replay the running SIM card (the bug: it "
+        "vanished, leaving only the durable input layers)"
+    )
+    assert tool_msgs[0]["tool_card"]["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_case_open_reopen_replays_sim_card(file_persistence) -> None:
+    """Re-opening the Case LATER rehydrates the SIM card in the case-open
+    session_state.chat_history (the permanent-trace requirement)."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws, state)
+    case_id = await _create_case(ws, state)
+    sim_id = await _mint_sim_card(state)
+    await route_sim_terminal(
+        state.emitter, sim_id, run_result=_RunResult("complete")
+    )
+
+    # Re-open the Case via the rehydration seam (what a Case reopen reads).
+    reopened = await file_persistence.get_session_state(case_id)
+    tool_rows = [m for m in reopened.chat_history if m.role == "tool"]
+    assert len(tool_rows) == 1
+    assert tool_rows[0].tool_card.state == "complete"
+    assert tool_rows[0].tool_card.tool_name == "sfincs:solve"
+
+
+# --------------------------------------------------------------------------- #
+# FULL TWO-CARD MINT: mint_dispatch_and_sim_cards persists BOTH the (terminal)
+# Dispatch card AND the (running) SIM card, so the pair replays on reopen.
+# --------------------------------------------------------------------------- #
+
+
+class _FakeHandle:
+    def __init__(self, job_id: str) -> None:
+        self.workflows_execution_id = job_id
+        self.workflow_name = "aws-batch"
+
+
+@pytest.mark.asyncio
+async def test_mint_persists_dispatch_and_running_sim(file_persistence) -> None:
+    from grace2_agent.pipeline_emitter import mint_dispatch_and_sim_cards
+
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    server._ensure_emitter(ws, state)
+    case_id = await _create_case(ws, state)
+
+    sim_id = await mint_dispatch_and_sim_cards(
+        emitter=state.emitter, solver="sfincs", handle=_FakeHandle("job-xyz")
+    )
+    assert sim_id is not None
+
+    session_state = await file_persistence.get_session_state(case_id)
+    tool_rows = [m for m in session_state.chat_history if m.role == "tool"]
+    cards = {m.tool_card.tool_name: m.tool_card for m in tool_rows if m.tool_card}
+    assert "sfincs:dispatch" in cards, "the Dispatch card must persist (was lost)"
+    assert cards["sfincs:dispatch"].state == "complete"
+    assert "sfincs:solve" in cards, "the SIM card must persist at mint (running)"
+    assert cards["sfincs:solve"].state == "running"

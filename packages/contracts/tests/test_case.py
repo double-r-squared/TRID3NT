@@ -581,10 +581,12 @@ def test_persisted_substep_record_roundtrip() -> None:
     assert failed_d["error_message"] == "solver exceeded wall-clock budget"
 
 
-def test_persisted_substep_record_rejects_non_terminal_state() -> None:
-    """Closed enum: pending / running / cancelled children persist nothing
-    (mirrors the parent ToolCardRecord contract)."""
-    for bad in ("pending", "running", "cancelled"):
+def test_persisted_substep_record_rejects_unknown_state() -> None:
+    """``state`` is the ``ToolCardState`` lifecycle enum (running/complete/
+    failed/cancelled). ``pending`` and arbitrary strings are still rejected;
+    children only ever carry the two terminal values at runtime, but the wider
+    type is a harmless superset (shared with the parent ToolCardRecord)."""
+    for bad in ("pending", "ok", "succeeded"):
         with pytest.raises(ValidationError):
             PersistedSubStepRecord(
                 step_id=new_ulid(),
@@ -659,9 +661,18 @@ def test_tool_card_record_children_roundtrip_with_failed_child_and_io() -> None:
     ]
 
 
+def test_tool_card_record_accepts_lifecycle_states() -> None:
+    """Durable-card lifecycle: ``running`` (persisted at mint) + the terminal
+    states (complete/failed/cancelled) are all valid persisted states so a SOLVE
+    card walks running -> terminal in place across a reconnect/reopen."""
+    for good in ("running", "complete", "failed", "cancelled"):
+        card = ToolCardRecord(tool_name="sfincs:solve", state=good)  # type: ignore[arg-type]
+        assert card.state == good
+
+
 def test_tool_card_record_rejects_unknown_state() -> None:
-    """Closed enum: pending/running/cancelled are live-wire-only states."""
-    for bad in ("pending", "running", "cancelled", "ok"):
+    """``pending`` is live-wire-only (never persisted); arbitrary strings reject."""
+    for bad in ("pending", "ok", "succeeded"):
         with pytest.raises(ValidationError):
             ToolCardRecord(tool_name="x", state=bad)  # type: ignore[arg-type]
 
