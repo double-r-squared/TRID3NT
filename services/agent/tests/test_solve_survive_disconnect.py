@@ -25,12 +25,14 @@ turn body the way the existing server tests do):
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from grace2_agent import server
 from grace2_agent.pipeline_emitter import PipelineEmitter
 from grace2_contracts.common import new_ulid
+from grace2_contracts.execution import LayerURI
 
 
 class FakeWS:
@@ -203,6 +205,147 @@ async def test_reconnect_rebinds_emitter_to_new_socket() -> None:
     )
     # The dead socket received nothing further.
     assert len(ws_old.sent) == frames_before_disconnect
+
+
+# --------------------------------------------------------------------------- #
+# (c2) the TERMINAL flood-depth layer survives a reconnect that lands AFTER the
+#      terminal emit was already pushed onto the dead launch socket. This is the
+#      real "floods render only the input layers, never the depth output" bug:
+#      the depth layer (published late, after the multi-minute solve) is emitted
+#      onto the now-dead socket in the window before the browser's reconnect, and
+#      the rebind only replays the pipeline CARDS -- not the loaded-layers
+#      session-state -- so without the merge-seed the new socket never sees it.
+# --------------------------------------------------------------------------- #
+
+
+def _last_loaded_uris(ws: FakeWS) -> list[str]:
+    """URIs in the LAST session-state frame the socket received (A.7 snapshot)."""
+    last: list[str] = []
+    for raw in ws.sent:
+        try:
+            env = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            continue
+        if env.get("type") != "session-state":
+            continue
+        layers = (env.get("payload") or {}).get("loaded_layers") or []
+        last = [l.get("uri") for l in layers]
+    return last
+
+
+def _depth_layer() -> LayerURI:
+    return LayerURI(
+        layer_id="flood_depth_peak",
+        name="Peak flood depth",
+        layer_type="raster",
+        uri="s3://runs/flood-run/peak_depth.tif?cog",
+        style_preset="continuous_flood_depth",
+        role="primary",
+    )
+
+
+def _input_layer() -> LayerURI:
+    return LayerURI(
+        layer_id="landcover_input",
+        name="Land cover",
+        layer_type="raster",
+        uri="s3://runs/flood-run/landcover.tif?cog",
+        style_preset="nlcd",
+        role="input",
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_depth_layer_survives_reconnect_after_dead_socket_emit() -> None:
+    """REGRESSION (job-FLOOD-TERMINAL-SURVIVE): a depth layer published AFTER the
+    launch socket died but BEFORE the reconnect must still reach the new socket."""
+    session_id = new_ulid()
+    ws_old = FakeWS()
+    state_old = server.SessionState(session_id=session_id)
+    state_old.emitter = _make_emitter(ws_old, session_id)
+
+    input_done = asyncio.Event()
+    may_publish_depth = asyncio.Event()
+    depth_done = asyncio.Event()
+    may_finish = asyncio.Event()
+
+    async def _flood_turn(emitter: PipelineEmitter) -> None:
+        # Input layer paints EARLY (on the live launch socket).
+        await emitter.add_loaded_layer(_input_layer())
+        input_done.set()
+        # ... multi-minute solve ... the launch socket dies during it ...
+        await may_publish_depth.wait()
+        # TERMINAL depth layer publishes LATE -- onto the now-dead launch sink.
+        await emitter.add_loaded_layer(_depth_layer())
+        depth_done.set()
+        # The turn is STILL running here (metrics, summary, persist-to-Case in
+        # the dispatch finally) -- the realistic window in which the browser's
+        # auto-reconnect lands. Hold it open so the reconnect sees a LIVE turn.
+        await may_finish.wait()
+
+    turn_key = "case-flood"
+    task = asyncio.create_task(_flood_turn(state_old.emitter))
+    state_old.inflight_tasks[turn_key] = task
+    server._register_live_turn(session_id, turn_key, task, state_old.emitter)
+    await input_done.wait()
+    assert "s3://runs/flood-run/landcover.tif?cog" in _last_loaded_uris(ws_old)
+
+    # Launch socket dies; turn detaches (kept running).
+    ws_old.closed = True
+    _simulate_disconnect_finally(state_old)
+
+    # The terminal depth emit fires NOW -- onto the dead old sink (dropped).
+    may_publish_depth.set()
+    await depth_done.wait()
+    # The dead socket never received the depth layer.
+    assert "s3://runs/flood-run/peak_depth.tif?cog" not in _last_loaded_uris(ws_old)
+
+    # The browser reconnects WHILE the turn is still finishing: fresh
+    # SessionState + emitter, then session-resume rebinds the live turn. The
+    # merge-seed must carry the already-published depth layer onto the new
+    # emitter so the reconnect's own session-state delivers it.
+    ws_new = FakeWS()
+    state_new = server.SessionState(session_id=session_id)
+    state_new.emitter = _make_emitter(ws_new, session_id)
+    rebound = server._rebind_live_turns(session_id, state_new.emitter)
+    assert rebound == 1, "the still-running solve must rebind"
+    # Mirror _handle_session_resume: the reconnect emits its own session-state.
+    await state_new.emitter.emit_session_state()
+
+    new_uris = _last_loaded_uris(ws_new)
+    assert "s3://runs/flood-run/peak_depth.tif?cog" in new_uris, (
+        "the terminal flood-depth layer must reach the reconnected socket"
+    )
+    # Inputs survive too -- the full snapshot, not just the terminal layer.
+    assert "s3://runs/flood-run/landcover.tif?cog" in new_uris
+
+    # Let the turn finish cleanly (no leak).
+    may_finish.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_merge_loaded_layers_from_is_union_no_duplicate() -> None:
+    """merge_loaded_layers_from unions by identity -- a layer the target already
+    holds is never duplicated, and side-tables come across for new layers."""
+    sid = new_ulid()
+    live = _make_emitter(FakeWS(), sid)
+    await live.add_loaded_layer(_input_layer())
+    await live.add_loaded_layer(_depth_layer())
+
+    fresh = _make_emitter(FakeWS(), sid)
+    # Pre-seed the fresh emitter with ONE of the two layers (simulates a layer
+    # already known to the reconnect) to prove union-not-append.
+    await fresh.add_loaded_layer(_input_layer())
+
+    merged = fresh.merge_loaded_layers_from(live)
+    assert merged == 1  # only the depth layer is new
+    uris = [l.uri for l in fresh.loaded_layers]
+    assert uris.count("s3://runs/flood-run/landcover.tif?cog") == 1  # no dup
+    assert "s3://runs/flood-run/peak_depth.tif?cog" in uris
+
+    # Idempotent: a second merge adds nothing.
+    assert fresh.merge_loaded_layers_from(live) == 0
 
 
 # --------------------------------------------------------------------------- #

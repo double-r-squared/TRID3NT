@@ -1480,6 +1480,17 @@ def _rebind_live_turns(
             continue
         if lt.emitter is not None and lt.emitter is not emitter:
             lt.emitter.rebind_sink(emitter._sink)
+            # job-FLOOD-TERMINAL-SURVIVE: pointing the live turn's emitter at the
+            # new sink only recovers FUTURE frames + (via rebind_sink) the pipeline
+            # CARDS — NOT a loaded-layers session-state that was emitted onto the
+            # now-dead launch socket in the window before this reconnect (the
+            # TERMINAL flood-depth layer, published late after the multi-minute
+            # solve). Seed THIS reconnect's (fresh, empty) emitter from the live
+            # turn's accumulated layers so the caller's own emit_session_state
+            # carries the full snapshot — inputs AND any already-published depth
+            # layer — to the new socket. Union-by-identity: no duplicate, and the
+            # live turn's later (superset) emits never regress it.
+            emitter.merge_loaded_layers_from(lt.emitter)
             rebound += 1
     if not bucket:
         _SESSION_LIVE_TURNS.pop(session_id, None)

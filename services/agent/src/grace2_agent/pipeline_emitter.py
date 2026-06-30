@@ -1300,6 +1300,58 @@ class PipelineEmitter:
             k: v for k, v in self._density_meta_by_layer_id.items() if k in active_ids
         }
 
+    def merge_loaded_layers_from(self, other: "PipelineEmitter") -> int:
+        """Union ``other``'s in-memory loaded layers into THIS emitter.
+
+        job-FLOOD-TERMINAL-SURVIVE (mid-solve reconnect loses the depth layer):
+        a long SFINCS solve is driven by ONE emitter whose sink closes over the
+        socket that LAUNCHED the turn. When that socket dies and a NEW socket
+        reconnects, ``server._rebind_live_turns`` points the live turn's emitter
+        sink at the new socket -- but ``rebind_sink`` only replays the pipeline
+        CARDS, NOT the loaded-layers ``session-state``. So a TERMINAL flood-depth
+        layer published in the window AFTER the launch socket died but BEFORE the
+        reconnect was emitted onto the now-dead sink and DROPPED, and the new
+        connection's own emitter is fresh+empty -- the depth layer never reaches
+        the reconnected client (the user sees only the EARLY input layers, never
+        the depth output). Seeding the new connection's emitter from the live
+        turn's emitter here makes the reconnect's own ``emit_session_state`` carry
+        the full live snapshot (inputs + any already-published depth layer), so
+        the terminal layer survives the blip deterministically -- independent of
+        the persist-to-Case timing and the 25s keepalive bare-resume.
+
+        Union by COG/layer identity (the same ``_layer_identity_key`` /
+        ``layer_id`` dedup ``add_loaded_layer`` uses) so a layer THIS emitter
+        already holds is never duplicated; the live turn's still-newer emits stay
+        supersets (replace-not-reconcile on the wire), so no later emit regresses
+        the seeded snapshot. Copies each merged layer's inline-GeoJSON / density
+        side-tables so re-emitted vectors stay renderable. Sync (no I/O); returns
+        the count of newly-merged layers for telemetry/tests."""
+        if other is self or not other._loaded_layers:
+            return 0
+        existing_keys = {_layer_identity_key(l.uri) for l in self._loaded_layers}
+        existing_ids = {l.layer_id for l in self._loaded_layers}
+        merged = 0
+        for layer in other._loaded_layers:
+            key = _layer_identity_key(layer.uri)
+            if key in existing_keys or layer.layer_id in existing_ids:
+                continue
+            new_layer = layer.model_copy(deep=True)
+            if new_layer.z_index is None:
+                new_layer.z_index = self._alloc_z()
+            else:
+                self._next_z = max(self._next_z, new_layer.z_index + 1)
+            self._loaded_layers.append(new_layer)
+            existing_keys.add(key)
+            existing_ids.add(new_layer.layer_id)
+            ig = other._inline_geojson_by_layer_id.get(layer.layer_id)
+            if ig is not None:
+                self._inline_geojson_by_layer_id[new_layer.layer_id] = ig
+            dm = other._density_meta_by_layer_id.get(layer.layer_id)
+            if dm is not None:
+                self._density_meta_by_layer_id[new_layer.layer_id] = dm
+            merged += 1
+        return merged
+
     async def reinline_vector_layers(self) -> int:
         """Rebuild ``_inline_geojson_by_layer_id`` for persisted vector layers.
 
