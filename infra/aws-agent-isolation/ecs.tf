@@ -151,6 +151,13 @@ resource "aws_ecs_task_definition" "agent" {
         # off, which is correct -- Fargate cannot docker-run QGIS anyway.)
         { name = "AUTH_REQUIRED", value = "true" },
         { name = "GRACE2_SYNC_TOOL_OFFLOAD", value = "on" },
+        # Solver dispatch: the agent defaults GRACE2_SOLVER_BACKEND=aws-batch but
+        # run_solver hard-fails (fail-fast, no hang) unless the queue is named.
+        # The box sets this out-of-band; the isolation task def must set it too or
+        # every flood dies at dispatch with SOLVER_DISPATCH_FAILED. grace2-solvers
+        # is the canonical shared queue (infra/aws-batch). (2026-06-30)
+        { name = "GRACE2_SOLVER_BACKEND", value = "aws-batch" },
+        { name = "GRACE2_AWS_BATCH_QUEUE", value = "grace2-solvers" },
       ]
 
       logConfiguration = {
