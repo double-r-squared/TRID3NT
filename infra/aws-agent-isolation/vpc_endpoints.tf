@@ -21,15 +21,25 @@ data "aws_route_tables" "vpc" {
 # SG for the Interface endpoints: accept 443 only from the reaper Lambda's ENIs.
 resource "aws_security_group" "vpce" {
   name        = "grace2-agent-isolation-vpce"
-  description = "GRACE-2 isolation interface VPC endpoints. 443 from the reaper Lambda only."
+  description = "GRACE-2 isolation interface VPC endpoints. 443 from in-VPC ECS/Batch consumers: reaper + broker + agents + box."
   vpc_id      = var.vpc_id
 
+  # Private DNS makes these ECS/Batch interface endpoints AUTHORITATIVE for the
+  # whole VPC, so EVERY in-VPC consumer of the ECS/Batch control plane must be
+  # allowed on 443 -- not just the reaper. A reaper-only rule (the original)
+  # blackholed the broker's RunTask AND every agent/box Batch submit_job, which
+  # silently broke per-session provisioning + all flood dispatch (2026-06-30).
   ingress {
-    description     = "HTTPS from the reaper Lambda ENIs."
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [aws_security_group.reaper.id]
+    description = "HTTPS 443 from every in-VPC ECS/Batch control-plane consumer."
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    security_groups = [
+      aws_security_group.reaper.id,     # reaper Lambda -> DynamoDB/ECS/Batch
+      aws_security_group.broker.id,     # broker -> ECS RunTask (provision agents)
+      aws_security_group.agent_task.id, # per-session agents -> Batch submit_job
+      "sg-0d15f32310c874a6e",           # EC2 rollback box agent -> Batch submit_job
+    ]
   }
 
   egress {
