@@ -158,6 +158,20 @@ resource "aws_ecs_task_definition" "agent" {
         # is the canonical shared queue (infra/aws-batch). (2026-06-30)
         { name = "GRACE2_SOLVER_BACKEND", value = "aws-batch" },
         { name = "GRACE2_AWS_BATCH_QUEUE", value = "grace2-solvers" },
+        # Batch job definitions. The in-code SOLVER_BATCH_JOBDEF_REGISTRY is empty,
+        # so _resolve_batch_job_def(solver) resolves ONLY from these env vars (or
+        # it raises SolverDispatchError "backend stays inert"). The generic
+        # GRACE2_AWS_BATCH_JOB_DEF routes solver=sfincs (the flood demo); the
+        # per-solver vars route the other engines. Names = the ACTIVE Batch job
+        # defs (infra/aws-batch). Mirrors the box's out-of-band env. (2026-06-30)
+        { name = "GRACE2_AWS_BATCH_JOB_DEF", value = "grace2-sfincs" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE", value = "grace2-sfincs-quadtree" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_SWMM", value = "grace2-swmm" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_MODFLOW", value = "grace2-modflow" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_OPENQUAKE", value = "grace2-openquake" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_GEOCLAW", value = "grace2-geoclaw" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_LANDLAB", value = "grace2-landlab" },
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_SWAN", value = "grace2-swan" },
       ]
 
       logConfiguration = {
