@@ -126,13 +126,18 @@ variable "route_ttl_seconds" {
 variable "agent_task_cpu" {
   type        = string
   description = "Fargate task CPU units for the per-session agent task. 1024 = 1 vCPU. Valid pairings with agent_task_memory per the Fargate matrix."
-  default     = "1024"
+  default     = "2048"
 }
 
 variable "agent_task_memory" {
   type        = string
-  description = "Fargate task memory (MiB) for the per-session agent task. 2048 = 2 GB. Headroom for the geo/tool-definition closure + the in-loop peak."
-  default     = "2048"
+  # 2 GB OOM-killed (exit 137) the SFINCS BUILD for a hilly AOI (Chattanooga, DEM
+  # range 136-724 m -> heavy hydromt mesh) -- the agent died mid-solve and the
+  # depth never published. The build (hydromt + GDAL/rasterio in-memory arrays)
+  # peaks well past 2 GB; the EC2 box never hit this at 16 GB. Match that headroom.
+  # 2 vCPU + 16384 MiB is the max-memory Fargate pairing for 2 vCPU. (2026-06-30)
+  description = "Fargate task memory (MiB) for the per-session agent task. 16384 = 16 GB to fit the SFINCS build peak (was 2048, which OOM-killed hilly-AOI builds)."
+  default     = "16384"
 }
 
 variable "agent_log_retention_days" {
