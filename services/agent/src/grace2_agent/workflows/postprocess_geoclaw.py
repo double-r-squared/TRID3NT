@@ -740,6 +740,7 @@ def postprocess_geoclaw(
     target_ground_res_m: float = GEOCLAW_TARGET_GROUND_RES_M,
     runs_bucket: str | None = None,
     topo_grid: Any = None,
+    mask_ocean: bool = False,
     fgmax_arrival_tol_m: float = GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M,
 ) -> tuple[list[GeoClawDepthLayerURI], dict[str, Any]]:
     """Rasterize a solved GeoClaw run into a peak + per-frame depth-COG layer set.
@@ -773,7 +774,16 @@ def postprocess_geoclaw(
             shape when ``grid_shape`` is None (ignored when a shape is passed).
         runs_bucket: optional override for the runs bucket name.
         topo_grid: optional ``(H, W)`` topography grid (same shape) for the
-            ``max_inundation_m`` land/ocean split.
+            ``max_inundation_m`` land/ocean split AND (with ``mask_ocean``) the
+            overland depth mask.
+        mask_ocean: when True AND ``topo_grid`` is supplied, mask the published
+            depth (peak + every frame + metrics) to OVERLAND cells only — set
+            depth to NaN wherever ``topo_grid < 0`` (below the still-water datum =
+            open sea) so the layer renders coastal inundation on dry land, not the
+            full water column that includes the ocean. A NO-OP when the AOI has no
+            ocean cells (an inland ``dam_break`` where every topo cell is >= 0), so
+            it can never erase a legitimate inland flood. The composer gates this
+            to the OFFSHORE/COASTAL scenario families (tsunami / surge).
         fgmax_arrival_tol_m: the fgmax wet-cell threshold (m) backing
             ``arrival_time_s`` when an fgmax monitor was run.
 
@@ -832,6 +842,57 @@ def postprocess_geoclaw(
             ) from exc
         grids.append(rasterize_frame_to_grid(patches, bbox, grid_shape))
 
+    # --- Overland (ocean-masked) inundation -------------------------------- #
+    # For an OFFSHORE / COASTAL scenario (tsunami / surge) whose domain reaches the
+    # open sea, GeoClaw's water DEPTH (q[0]=h) is the FULL water column, so the
+    # ocean portion of the AOI renders as a sheet of sea rather than the coastal
+    # flood. Mask the depth to OVERLAND cells only: set depth to NaN wherever the
+    # aligned topography is below the still-water datum (topo < 0 = sea). Applied to
+    # EVERY frame here so the PEAK, the per-frame COGs, AND all derived metrics are
+    # consistently overland. Guarded three ways so a legitimate inland flood is
+    # never erased: (1) the composer only sets mask_ocean for tsunami/surge, (2) a
+    # topo_grid must be supplied and shape-match, (3) it is a strict no-op when no
+    # topo cell is < 0 (an inland dam_break over all-positive terrain).
+    if mask_ocean and topo_grid is not None:
+        try:
+            topo = np.asarray(topo_grid, dtype="float64")
+            if topo.shape == tuple(grid_shape):
+                ocean = np.isfinite(topo) & (topo < 0.0)
+                n_ocean = int(ocean.sum())
+                if n_ocean:
+                    for _i in range(len(grids)):
+                        gi = np.asarray(grids[_i], dtype="float64").copy()
+                        gi[ocean] = np.nan
+                        grids[_i] = gi
+                    logger.info(
+                        "postprocess_geoclaw run_id=%s masked %d/%d ocean cells "
+                        "(topo<0) -> overland inundation (was total water column)",
+                        run_id,
+                        n_ocean,
+                        int(topo.size),
+                    )
+                else:
+                    logger.info(
+                        "postprocess_geoclaw run_id=%s mask_ocean requested but no "
+                        "topo<0 cells (all-land AOI) — no-op",
+                        run_id,
+                    )
+            else:
+                logger.warning(
+                    "postprocess_geoclaw run_id=%s topo_grid shape %s != output "
+                    "grid %s; skipping ocean mask (publishing total-depth)",
+                    run_id,
+                    tuple(topo.shape),
+                    tuple(grid_shape),
+                )
+        except Exception as exc:  # noqa: BLE001 — mask is best-effort; never sink the run
+            logger.warning(
+                "postprocess_geoclaw run_id=%s ocean mask failed (%s); publishing "
+                "unmasked total-depth",
+                run_id,
+                exc,
+            )
+
     n_steps = len(grids)
 
     # --- PEAK grid (max-total-depth step) ---
@@ -864,6 +925,16 @@ def postprocess_geoclaw(
         metrics["max_inundation_m"] = float(fgmax["max_inundation_m"])
         metrics["arrival_time_s"] = fgmax["arrival_time_s"]
         metrics["fgmax_used"] = True
+
+    # When the depth is masked to overland, the narrated PEAK depth must be the
+    # land run-up too — otherwise the fort.q peak grid is ocean-masked but an fgmax
+    # override could re-inject the deep-ocean max (fgmax's max_depth_m is over ALL
+    # points, sea included). Pin max_depth_m to the on-land inundation max so the
+    # scalar matches the published overland COG (honest: it is the max depth on dry
+    # land = the run-up depth). The unmasked (no ocean) case is untouched because
+    # there max_inundation_m already equals max_depth_m.
+    if mask_ocean and topo_grid is not None:
+        metrics["max_depth_m"] = float(metrics.get("max_inundation_m", 0.0))
 
     logger.info(
         "postprocess_geoclaw run_id=%s scenario=%s n_steps=%d max_depth_m=%.4g "

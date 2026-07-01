@@ -96,6 +96,17 @@ _GEOCLAW_SEC_PER_CELL: float = 0.05
 #: anyway). GeoClaw picks finest-in-overlap, so this fine AOI tile wins the coast.
 _GEOCLAW_FINE_NEARSHORE_PIXEL_M: float = 10.0
 
+#: Scenario families whose computational domain / AOI reaches the OPEN SEA, so the
+#: published depth must be masked to OVERLAND cells (topo >= 0) to render coastal
+#: inundation instead of the full water column that includes the ocean. tsunami =
+#: the offshore Okada/dtopo source; surge = the coastal storm-surge forcing. An
+#: inland ``dam_break`` (domain == AOI, no sea) is DELIBERATELY excluded so the mask
+#: can never erase a legitimate inland flood (e.g. a below-MSL basin whose terrain
+#: is negative relative to the vertical datum).
+_GEOCLAW_OCEAN_MASK_SCENARIOS: frozenset[str] = GEOCLAW_OFFSHORE_SCENARIOS | frozenset(
+    {"surge"}
+)
+
 
 class GeoClawComposerError(RuntimeError):
     """Raised on a fatal composer failure (carries an open-set ``error_code``)."""
@@ -221,6 +232,75 @@ def _fetch_fine_nearshore_for_geoclaw(
         aoi_bbox, cudem_n, regional_n,
     )
     return None
+
+
+def _rasterize_topo_to_depth_grid(
+    dem_uri: str,
+    bbox: tuple[float, float, float, float],
+    grid_shape: tuple[int, int],
+) -> Any:
+    """Warp the STAGED EPSG:4326 topo/bathy DEM onto the SAME (H, W) grid + AOI
+    ``bbox`` as the depth raster so postprocess can split land (topo >= 0) from
+    ocean (topo < 0) cell-for-cell.
+
+    ``dem_uri`` is the primary topo/bathy DEM GeoClaw actually ran on (the
+    ``resolve_offshore_source`` / reproject_dem_to_4326 output — the seamless
+    ETOPO-bathy base over the full offshore-extended domain, which covers the AOI).
+    We read it with rasterio and reproject/resample it onto the depth grid's
+    ``from_bounds`` transform (north-up, row 0 = north — the SAME orientation
+    ``rasterize_frame_to_grid`` builds), bilinear so the coastline (the topo=0
+    contour) is smooth. Runs off the asyncio loop (blocking S3 read + rasterio) —
+    the caller wraps it in ``asyncio.to_thread``.
+
+    Returns the ``(H, W)`` float elevation grid, or ``None`` on ANY failure
+    (unreachable DEM, rasterio error) so the run degrades to publishing the
+    unmasked total-depth exactly as before this fix (never a hard failure — the
+    data-source fallback norm).
+    """
+    import os
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    from rasterio.warp import Resampling
+    from rasterio.warp import reproject as _warp_reproject
+
+    from .run_geoclaw import _dem_uri_to_local
+
+    src_local: str | None = None
+    is_temp = False
+    try:
+        src_local, is_temp = _dem_uri_to_local(dem_uri)
+        nrows, ncols = int(grid_shape[0]), int(grid_shape[1])
+        min_lon, min_lat, max_lon, max_lat = bbox
+        dst_transform = from_bounds(min_lon, min_lat, max_lon, max_lat, ncols, nrows)
+        dst = np.full((nrows, ncols), np.nan, dtype="float64")
+        with rasterio.open(src_local) as src:
+            _warp_reproject(
+                source=rasterio.band(src, 1),
+                destination=dst,
+                src_transform=src.transform,
+                src_crs=src.crs or "EPSG:4326",
+                dst_transform=dst_transform,
+                dst_crs="EPSG:4326",
+                resampling=Resampling.bilinear,
+            )
+        return dst
+    except Exception as exc:  # noqa: BLE001 — best-effort; degrade to unmasked depth
+        logger.warning(
+            "model_dambreak_geoclaw_scenario: could not rasterize staged topo %s "
+            "onto the depth grid for the overland mask (%s); publishing UNMASKED "
+            "total-depth",
+            dem_uri,
+            exc,
+        )
+        return None
+    finally:
+        if is_temp and src_local:
+            try:
+                os.unlink(src_local)
+            except OSError:
+                pass
 
 
 def _record_geoclaw_batch_solve_telemetry(
@@ -631,6 +711,33 @@ async def model_dambreak_geoclaw_scenario(
         tuple(bbox),
     )
 
+    # --- Overland mask topo (offshore/coastal only) ------------------------
+    # For tsunami / surge the AOI reaches the open sea, so the raw GeoClaw depth is
+    # the FULL water column and an offshore AOI renders as ocean, not the coastal
+    # flood. Rasterize the STAGED topo/bathy DEM (the one GeoClaw ran on) onto the
+    # SAME adaptive depth grid so postprocess masks depth to OVERLAND cells (topo
+    # >= 0). Inland dam_break is excluded (mask_ocean stays False) — its depth is
+    # published in full, unchanged. A None topo_grid (fetch failed) degrades to the
+    # unmasked total-depth (same as before this fix).
+    mask_ocean = run_args.scenario in _GEOCLAW_OCEAN_MASK_SCENARIOS
+    topo_grid = None
+    if mask_ocean:
+        topo_grid = await asyncio.to_thread(
+            _rasterize_topo_to_depth_grid,
+            resolved_dem_uri,
+            bbox,
+            geoclaw_grid_shape,
+        )
+        logger.info(
+            "model_dambreak_geoclaw_scenario run_id=%s overland-mask topo %s for "
+            "scenario=%s (grid H=%d W=%d)",
+            staging.run_id,
+            "rasterized" if topo_grid is not None else "UNAVAILABLE",
+            run_args.scenario,
+            geoclaw_grid_shape[0],
+            geoclaw_grid_shape[1],
+        )
+
     try:
         # --- Step 5: postprocess (rasterize fort.q -> peak + frames) -------
         async with substep(emitter, "postprocess_geoclaw"):
@@ -641,6 +748,8 @@ async def model_dambreak_geoclaw_scenario(
                 run_id=staging.run_id,
                 scenario=run_args.scenario,
                 grid_shape=geoclaw_grid_shape,
+                topo_grid=topo_grid,
+                mask_ocean=mask_ocean,
                 fgmax_arrival_tol_m=run_args.fgmax_arrival_tol_m,
             )
     finally:

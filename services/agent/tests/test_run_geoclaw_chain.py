@@ -944,6 +944,142 @@ def test_postprocess_geoclaw_fgmax_overrides_fortq(tmp_path: Path):
 
 
 # ===========================================================================
+# (4c) Overland ocean mask (topo<0 -> nodata) for offshore/coastal scenarios.
+# ===========================================================================
+def _write_split_run(out: Path, n_frames: int = 3) -> None:
+    """Write ``n_frames`` fort.q frames over ``_AOI`` where the WEST half (col i<16,
+    32x32 patch) is 2.0 m deep (the "land" side) and the EAST half (i>=16) is 10.0 m
+    (the "ocean" side). All cells are wet so the ocean mask is the only thing that
+    removes cells."""
+    out.mkdir(parents=True, exist_ok=True)
+    for fi in range(n_frames):
+        text = _synthetic_fort_q(
+            32, 32, _AOI, lambda i, j: 2.0 if i < 16 else 10.0
+        )
+        (out / f"fort.q{fi:04d}").write_text(text)
+        (out / f"fort.t{fi:04d}").write_text(f"{fi * 60.0:.6e}    time\n")
+
+
+def _split_topo(land_west: float = 5.0, ocean_east: float = -5.0) -> "np.ndarray":
+    """A (32,32) topo grid: WEST half (col<16) = land elevation, EAST half = ocean
+    (negative), aligned cell-for-cell with the split depth run above."""
+    topo = np.empty((32, 32), dtype="float64")
+    topo[:, :16] = land_west
+    topo[:, 16:] = ocean_east
+    return topo
+
+
+def _capturing_upload():
+    """An upload stub that ALSO reads back each written COG into a name->array dict
+    (nodata=NaN preserved) so a test can assert the published pixels."""
+    captured: dict[str, "np.ndarray"] = {}
+
+    def _upload(local_cog, run_id, runs_bucket=None, *, dest_filename="x.tif"):  # noqa: ANN001
+        import rasterio
+
+        with rasterio.open(local_cog) as ds:
+            assert str(ds.crs) == "EPSG:4326"
+            captured[dest_filename] = ds.read(1)
+        return f"s3://fake-runs/{run_id}/{dest_filename}"
+
+    return captured, _upload
+
+
+def test_ocean_mask_publishes_overland_only(tmp_path: Path):
+    """mask_ocean=True (tsunami/surge): the published PEAK + FRAME COGs are NaN over
+    ocean cells (topo<0) and preserved over wet LAND cells; metrics reflect the
+    OVERLAND field (land run-up depth + smaller flooded area)."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    _write_split_run(tmp_path / "_output", n_frames=3)
+    topo = _split_topo()
+    captured, upload = _capturing_upload()
+
+    with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
+        layers, metrics = pg.postprocess_geoclaw(
+            tmp_path,
+            _AOI,
+            run_id="MASKRID",
+            scenario="tsunami",
+            grid_shape=(32, 32),
+            topo_grid=topo,
+            mask_ocean=True,
+        )
+
+    peak_arr = captured["geoclaw_depth_peak.tif"]
+    # EAST half (ocean, topo<0) is masked to nodata (NaN); WEST half (land) kept 2.0.
+    assert np.isnan(peak_arr[:, 16:]).all()
+    assert np.allclose(peak_arr[:, :16], 2.0, equal_nan=False)
+    # A per-FRAME COG is masked identically (peak + frames consistent).
+    frame_keys = [k for k in captured if k.startswith("geoclaw_depth_frame_")]
+    assert frame_keys
+    for k in frame_keys:
+        assert np.isnan(captured[k][:, 16:]).all()
+        assert np.allclose(captured[k][:, :16], 2.0)
+    # Metrics reflect OVERLAND: max_depth is the LAND run-up (2.0), NOT the masked
+    # ocean 10.0; flooded area counts only the 32x16 land cells.
+    assert metrics["max_depth_m"] == pytest.approx(2.0)
+    assert metrics["max_inundation_m"] == pytest.approx(2.0)
+    assert metrics["flooded_cell_count"] == 32 * 16
+    assert layers[0].max_depth_m == pytest.approx(2.0)
+
+
+def test_ocean_mask_noop_when_no_ocean_cells(tmp_path: Path):
+    """mask_ocean=True but ALL topo >= 0 (an all-land AOI): a strict NO-OP — every
+    wet cell (incl. the deep 10.0 side) is preserved, nothing masked."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    _write_split_run(tmp_path / "_output", n_frames=3)
+    topo = _split_topo(land_west=5.0, ocean_east=3.0)  # BOTH sides land (>=0)
+    captured, upload = _capturing_upload()
+
+    with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
+        _layers, metrics = pg.postprocess_geoclaw(
+            tmp_path,
+            _AOI,
+            run_id="NOOPRID",
+            scenario="surge",
+            grid_shape=(32, 32),
+            topo_grid=topo,
+            mask_ocean=True,
+        )
+
+    peak_arr = captured["geoclaw_depth_peak.tif"]
+    assert not np.isnan(peak_arr).any()  # nothing masked
+    assert metrics["max_depth_m"] == pytest.approx(10.0)
+    assert metrics["flooded_cell_count"] == 32 * 32
+
+
+def test_ocean_mask_off_preserves_inland_flood(tmp_path: Path):
+    """dam_break (mask_ocean=False) with a below-datum (negative-topo) inland basin:
+    the mask is NOT applied, so the legitimate inland flood over the negative-topo
+    cells is preserved (the mask can never erase an inland flood)."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    _write_split_run(tmp_path / "_output", n_frames=3)
+    topo = _split_topo(land_west=5.0, ocean_east=-5.0)  # east is below-datum land
+    captured, upload = _capturing_upload()
+
+    with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
+        _layers, metrics = pg.postprocess_geoclaw(
+            tmp_path,
+            _AOI,
+            run_id="INLANDRID",
+            scenario="dam_break",
+            grid_shape=(32, 32),
+            topo_grid=topo,
+            mask_ocean=False,  # composer keeps this False for dam_break
+        )
+
+    peak_arr = captured["geoclaw_depth_peak.tif"]
+    # The negative-topo (east) cells are STILL flooded (10.0), not masked away.
+    assert not np.isnan(peak_arr).any()
+    assert np.allclose(peak_arr[:, 16:], 10.0)
+    assert metrics["max_depth_m"] == pytest.approx(10.0)
+    assert metrics["flooded_cell_count"] == 32 * 32
+
+
+# ===========================================================================
 # (5) Composer arg-assembly with run_solver / wait_for_completion MOCKED.
 # ===========================================================================
 class _FakeHandle:
