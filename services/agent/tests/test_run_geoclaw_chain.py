@@ -944,25 +944,44 @@ def test_postprocess_geoclaw_fgmax_overrides_fortq(tmp_path: Path):
 
 
 # ===========================================================================
-# (4c) Overland ocean mask (topo<0 -> nodata) for offshore/coastal scenarios.
+# (4c) Overland ocean mask (INITIAL-WET -> nodata) for offshore/coastal scenarios.
+#
+# The ocean (permanent water) is the set of cells WET AT t=0 (grids[0] = GeoClaw's
+# still-water initial condition). Overland inundation = cells DRY at t=0 that are
+# wet in a later frame. This is robust on ANY coast (it replaced the old `topo<0`
+# test that FAILED on ETOPO coasts where nearshore bathy reads ~0 m, not negative).
 # ===========================================================================
-def _write_split_run(out: Path, n_frames: int = 3) -> None:
-    """Write ``n_frames`` fort.q frames over ``_AOI`` where the WEST half (col i<16,
-    32x32 patch) is 2.0 m deep (the "land" side) and the EAST half (i>=16) is 10.0 m
-    (the "ocean" side). All cells are wet so the ocean mask is the only thing that
-    removes cells."""
+def _write_coastal_run(
+    out: Path,
+    n_frames: int = 3,
+    *,
+    ocean_depth: float = 10.0,
+    land_depth: float = 2.0,
+    land_wet_at_t0: bool = False,
+) -> None:
+    """Write a REALISTIC coastal fort.q run over ``_AOI`` (32x32 patch).
+
+    Column split: WEST half (i<16) = LAND, EAST half (i>=16) = OCEAN. Frame 0 is
+    the STILL-WATER initial condition: the ocean is wet (``ocean_depth``) and the
+    land is DRY (unless ``land_wet_at_t0``). Every LATER frame wets the land
+    (``land_depth``) — the inundation — while the ocean stays wet. So the
+    initial-wet criterion tags exactly the EAST (ocean) band as permanent water and
+    the WEST (land) band as newly-wetted overland inundation.
+    """
     out.mkdir(parents=True, exist_ok=True)
     for fi in range(n_frames):
-        text = _synthetic_fort_q(
-            32, 32, _AOI, lambda i, j: 2.0 if i < 16 else 10.0
-        )
-        (out / f"fort.q{fi:04d}").write_text(text)
+        land_here = land_depth if (fi > 0 or land_wet_at_t0) else 0.0
+
+        def _depth(i, j, _lh=land_here):  # noqa: ANN001
+            return _lh if i < 16 else ocean_depth
+
+        (out / f"fort.q{fi:04d}").write_text(_synthetic_fort_q(32, 32, _AOI, _depth))
         (out / f"fort.t{fi:04d}").write_text(f"{fi * 60.0:.6e}    time\n")
 
 
 def _split_topo(land_west: float = 5.0, ocean_east: float = -5.0) -> "np.ndarray":
-    """A (32,32) topo grid: WEST half (col<16) = land elevation, EAST half = ocean
-    (negative), aligned cell-for-cell with the split depth run above."""
+    """A (32,32) topo grid: WEST half (col<16) = land elevation, EAST half = ocean,
+    aligned cell-for-cell with the split depth run above."""
     topo = np.empty((32, 32), dtype="float64")
     topo[:, :16] = land_west
     topo[:, 16:] = ocean_east
@@ -970,9 +989,11 @@ def _split_topo(land_west: float = 5.0, ocean_east: float = -5.0) -> "np.ndarray
 
 
 def _capturing_upload():
-    """An upload stub that ALSO reads back each written COG into a name->array dict
-    (nodata=NaN preserved) so a test can assert the published pixels."""
+    """An upload stub that reads back each written COG into a name->array dict AND a
+    name->nodata dict (masked cells read as NaN) so a test can assert the published
+    pixels + that an explicit nodata value is stamped on the COG."""
     captured: dict[str, "np.ndarray"] = {}
+    nodata: dict[str, "float | None"] = {}
 
     def _upload(local_cog, run_id, runs_bucket=None, *, dest_filename="x.tif"):  # noqa: ANN001
         import rasterio
@@ -980,20 +1001,22 @@ def _capturing_upload():
         with rasterio.open(local_cog) as ds:
             assert str(ds.crs) == "EPSG:4326"
             captured[dest_filename] = ds.read(1)
+            nodata[dest_filename] = ds.nodata
         return f"s3://fake-runs/{run_id}/{dest_filename}"
 
-    return captured, _upload
+    return captured, nodata, _upload
 
 
 def test_ocean_mask_publishes_overland_only(tmp_path: Path):
     """mask_ocean=True (tsunami/surge): the published PEAK + FRAME COGs are NaN over
-    ocean cells (topo<0) and preserved over wet LAND cells; metrics reflect the
-    OVERLAND field (land run-up depth + smaller flooded area)."""
+    the INITIALLY-WET ocean band and PRESERVED over the newly-wetted LAND; metrics
+    reflect the OVERLAND field (land run-up depth + smaller flooded area); an
+    explicit nodata value is stamped on every COG."""
     from grace2_agent.workflows import postprocess_geoclaw as pg
 
-    _write_split_run(tmp_path / "_output", n_frames=3)
+    _write_coastal_run(tmp_path / "_output", n_frames=3)
     topo = _split_topo()
-    captured, upload = _capturing_upload()
+    captured, nodata, upload = _capturing_upload()
 
     with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
         layers, metrics = pg.postprocess_geoclaw(
@@ -1007,15 +1030,23 @@ def test_ocean_mask_publishes_overland_only(tmp_path: Path):
         )
 
     peak_arr = captured["geoclaw_depth_peak.tif"]
-    # EAST half (ocean, topo<0) is masked to nodata (NaN); WEST half (land) kept 2.0.
+    # EAST half (ocean, wet at t=0) masked to nodata (NaN); WEST (land) kept 2.0.
     assert np.isnan(peak_arr[:, 16:]).all()
     assert np.allclose(peak_arr[:, :16], 2.0, equal_nan=False)
-    # A per-FRAME COG is masked identically (peak + frames consistent).
+    # Explicit nodata stamped on the COG (matches postprocess_flood's NaN nodata).
+    assert nodata["geoclaw_depth_peak.tif"] is not None
+    assert np.isnan(nodata["geoclaw_depth_peak.tif"])
+    # A per-FRAME COG is masked identically (peak + frames consistent): the EAST
+    # ocean band is ALWAYS nodata; the WEST land is dry (nan) at t=0 and 2.0 once
+    # inundated — never the masked ocean 10.0.
     frame_keys = [k for k in captured if k.startswith("geoclaw_depth_frame_")]
     assert frame_keys
     for k in frame_keys:
         assert np.isnan(captured[k][:, 16:]).all()
-        assert np.allclose(captured[k][:, :16], 2.0)
+        west = captured[k][:, :16]
+        finite = west[np.isfinite(west)]
+        assert finite.size == 0 or np.allclose(finite, 2.0)
+        assert nodata[k] is not None and np.isnan(nodata[k])
     # Metrics reflect OVERLAND: max_depth is the LAND run-up (2.0), NOT the masked
     # ocean 10.0; flooded area counts only the 32x16 land cells.
     assert metrics["max_depth_m"] == pytest.approx(2.0)
@@ -1024,14 +1055,99 @@ def test_ocean_mask_publishes_overland_only(tmp_path: Path):
     assert layers[0].max_depth_m == pytest.approx(2.0)
 
 
-def test_ocean_mask_noop_when_no_ocean_cells(tmp_path: Path):
-    """mask_ocean=True but ALL topo >= 0 (an all-land AOI): a strict NO-OP — every
-    wet cell (incl. the deep 10.0 side) is preserved, nothing masked."""
+def test_ocean_mask_initial_wet_catches_zero_topo_ocean(tmp_path: Path):
+    """THE EXACT BUG: on an ETOPO coast the nearshore ocean bathymetry reads ~0 m
+    (topo NOT < 0), so the old `topo<0` mask caught ~none of the ocean. The
+    initial-wet criterion tags it correctly — the ocean band (wet at t=0) is masked
+    even though its topo is 0.0. Before/after: `topo<0` alone masks 0 cells; the
+    initial-wet mask removes the whole 32x16 ocean band."""
     from grace2_agent.workflows import postprocess_geoclaw as pg
 
-    _write_split_run(tmp_path / "_output", n_frames=3)
+    _write_coastal_run(tmp_path / "_output", n_frames=3)
+    # Ocean topo reads ~0 m (flat, NOT negative) — the ETOPO-coast failure mode.
+    topo = _split_topo(land_west=5.0, ocean_east=0.0)
+
+    # Sanity: the OLD `topo<0` criterion would catch ZERO ocean cells here.
+    assert int((topo < 0.0).sum()) == 0
+
+    captured, nodata, upload = _capturing_upload()
+    with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
+        _layers, metrics = pg.postprocess_geoclaw(
+            tmp_path,
+            _AOI,
+            run_id="ZEROTOPO",
+            scenario="tsunami",
+            grid_shape=(32, 32),
+            topo_grid=topo,
+            mask_ocean=True,
+        )
+
+    peak_arr = captured["geoclaw_depth_peak.tif"]
+    masked_fraction = float(np.isnan(peak_arr).mean())
+    # The initial-wet mask removed the whole EAST ocean band (topo<0 would remove 0).
+    assert np.isnan(peak_arr[:, 16:]).all()
+    assert np.allclose(peak_arr[:, :16], 2.0)
+    assert masked_fraction == pytest.approx(0.5, abs=1e-6)  # 32x16 of 32x32
+    assert metrics["max_depth_m"] == pytest.approx(2.0)  # land run-up, not ocean 10
+    assert metrics["flooded_cell_count"] == 32 * 16
+
+
+def test_ocean_mask_topo_or_catches_below_datum_dry_start(tmp_path: Path):
+    """Belt-and-suspenders OR: a below-datum (topo<0) cell that is DRY at t=0 but
+    floods later is still ocean and must be masked (the CUDEM regression guard). The
+    initial-wet criterion alone would MISS it (dry at t=0); the `topo<0` OR-term
+    catches it."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    # EAST ocean is DRY at t=0 (land_wet_at_t0=False + we make ocean start dry by
+    # writing land-only frame 0), but topo marks the east as below-datum sea.
+    out = tmp_path / "_output"
+    out.mkdir(parents=True, exist_ok=True)
+    # Frame 0: EVERYTHING dry (no standing water at all). Later: both sides wet.
+    for fi in range(3):
+        depth = (lambda i, j: 0.0) if fi == 0 else (
+            lambda i, j: 2.0 if i < 16 else 10.0
+        )
+        (out / f"fort.q{fi:04d}").write_text(_synthetic_fort_q(32, 32, _AOI, depth))
+        (out / f"fort.t{fi:04d}").write_text(f"{fi * 60.0:.6e}    time\n")
+
+    topo = _split_topo(land_west=5.0, ocean_east=-5.0)  # east below datum
+    captured, nodata, upload = _capturing_upload()
+    with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
+        _layers, metrics = pg.postprocess_geoclaw(
+            tmp_path,
+            _AOI,
+            run_id="BELOWDATUM",
+            scenario="surge",
+            grid_shape=(32, 32),
+            topo_grid=topo,
+            mask_ocean=True,
+        )
+
+    peak_arr = captured["geoclaw_depth_peak.tif"]
+    # initial-wet is EMPTY (frame 0 all dry), but topo<0 OR masks the east band.
+    assert np.isnan(peak_arr[:, 16:]).all()
+    assert np.allclose(peak_arr[:, :16], 2.0)
+    assert metrics["flooded_cell_count"] == 32 * 16
+
+
+def test_ocean_mask_noop_when_no_permanent_water(tmp_path: Path):
+    """mask_ocean=True but NO permanent water (no cell wet at t=0 AND all topo>=0):
+    a strict NO-OP — every later-wetted cell is preserved, nothing masked."""
+    from grace2_agent.workflows import postprocess_geoclaw as pg
+
+    # Frame 0 all dry; later frames wet the whole domain (a pure inland flood, no sea).
+    out = tmp_path / "_output"
+    out.mkdir(parents=True, exist_ok=True)
+    for fi in range(3):
+        depth = (lambda i, j: 0.0) if fi == 0 else (
+            lambda i, j: 2.0 if i < 16 else 10.0
+        )
+        (out / f"fort.q{fi:04d}").write_text(_synthetic_fort_q(32, 32, _AOI, depth))
+        (out / f"fort.t{fi:04d}").write_text(f"{fi * 60.0:.6e}    time\n")
+
     topo = _split_topo(land_west=5.0, ocean_east=3.0)  # BOTH sides land (>=0)
-    captured, upload = _capturing_upload()
+    captured, nodata, upload = _capturing_upload()
 
     with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
         _layers, metrics = pg.postprocess_geoclaw(
@@ -1051,14 +1167,14 @@ def test_ocean_mask_noop_when_no_ocean_cells(tmp_path: Path):
 
 
 def test_ocean_mask_off_preserves_inland_flood(tmp_path: Path):
-    """dam_break (mask_ocean=False) with a below-datum (negative-topo) inland basin:
-    the mask is NOT applied, so the legitimate inland flood over the negative-topo
-    cells is preserved (the mask can never erase an inland flood)."""
+    """dam_break (mask_ocean=False): the mask is NOT applied, so the legitimate
+    inland flood over EVERY cell (incl. the initially-wet 10.0 side) is preserved
+    (the mask can never erase an inland flood)."""
     from grace2_agent.workflows import postprocess_geoclaw as pg
 
-    _write_split_run(tmp_path / "_output", n_frames=3)
-    topo = _split_topo(land_west=5.0, ocean_east=-5.0)  # east is below-datum land
-    captured, upload = _capturing_upload()
+    _write_coastal_run(tmp_path / "_output", n_frames=3)
+    topo = _split_topo(land_west=5.0, ocean_east=-5.0)
+    captured, nodata, upload = _capturing_upload()
 
     with patch.object(pg, "_upload_cog_to_runs_bucket", upload):
         _layers, metrics = pg.postprocess_geoclaw(
@@ -1072,9 +1188,10 @@ def test_ocean_mask_off_preserves_inland_flood(tmp_path: Path):
         )
 
     peak_arr = captured["geoclaw_depth_peak.tif"]
-    # The negative-topo (east) cells are STILL flooded (10.0), not masked away.
+    # Nothing masked: the east (10.0) and the wetted west (2.0) are BOTH preserved.
     assert not np.isnan(peak_arr).any()
     assert np.allclose(peak_arr[:, 16:], 10.0)
+    assert np.allclose(peak_arr[:, :16], 2.0)
     assert metrics["max_depth_m"] == pytest.approx(10.0)
     assert metrics["flooded_cell_count"] == 32 * 32
 
