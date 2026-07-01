@@ -57,7 +57,12 @@ from ..pipeline_emitter import (
     substep,
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
-from .postprocess_geoclaw import PostprocessGeoClawError, postprocess_geoclaw
+from .postprocess_geoclaw import (
+    GEOCLAW_TARGET_GROUND_RES_M,
+    PostprocessGeoClawError,
+    compute_geoclaw_grid_shape,
+    postprocess_geoclaw,
+)
 from .run_geoclaw import (
     GEOCLAW_OFFSHORE_SCENARIOS,
     GEOCLAW_SOLVER_NAME,
@@ -611,6 +616,21 @@ async def model_dambreak_geoclaw_scenario(
     batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
     out_dir = await asyncio.to_thread(_download_batch_geoclaw_outputs, batch_run_id)
 
+    # Adaptive output raster: size the depth COG from the AOI at the native
+    # run-up ground resolution (~25 m, matching the finest CoNED/AMR nest) so the
+    # inundation renders as a smooth, dense sheet (SFINCS parity) instead of the
+    # legacy fixed 256x256 specks. Floored at 256, capped for huge AOIs.
+    geoclaw_grid_shape = compute_geoclaw_grid_shape(bbox)
+    logger.info(
+        "model_dambreak_geoclaw_scenario run_id=%s adaptive depth-raster grid "
+        "H=%d W=%d (~%.0f m/px) over bbox=%s",
+        staging.run_id,
+        geoclaw_grid_shape[0],
+        geoclaw_grid_shape[1],
+        GEOCLAW_TARGET_GROUND_RES_M,
+        tuple(bbox),
+    )
+
     try:
         # --- Step 5: postprocess (rasterize fort.q -> peak + frames) -------
         async with substep(emitter, "postprocess_geoclaw"):
@@ -620,6 +640,7 @@ async def model_dambreak_geoclaw_scenario(
                 bbox,
                 run_id=staging.run_id,
                 scenario=run_args.scenario,
+                grid_shape=geoclaw_grid_shape,
                 fgmax_arrival_tol_m=run_args.fgmax_arrival_tol_m,
             )
     finally:

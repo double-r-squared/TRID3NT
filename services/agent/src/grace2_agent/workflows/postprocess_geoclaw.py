@@ -70,13 +70,32 @@ __all__ = [
     "postprocess_geoclaw",
     "parse_fort_q_frame",
     "rasterize_frame_to_grid",
+    "compute_geoclaw_grid_shape",
     "compute_geoclaw_depth_metrics",
     "read_fgmax_output",
     "GEOCLAW_DEPTH_STYLE_PRESET",
+    "GEOCLAW_TARGET_GROUND_RES_M",
     "NODATA_DEPTH_M",
     "MAX_FLOOD_FRAMES",
     "RUNS_BUCKET_DEFAULT",
 ]
+
+#: Target GROUND resolution (metres/pixel) for the adaptive GeoClaw output
+#: raster. ~25 m matches the finest CoNED/level-5 AMR nest at the AOI so the
+#: overland run-up band rasterizes as a smooth, dense sheet (SFINCS parity, whose
+#: quadtree raster defaults to ~30 m) instead of the legacy fixed 256x256 grid
+#: (~33-53 m over an ~8 km AOI -> chunky specks).
+GEOCLAW_TARGET_GROUND_RES_M: float = 25.0
+
+#: Floor: never coarser than the legacy fixed 256x256 grid (a tiny AOI rasterizes
+#: FINER than the target res rather than exploding cell size).
+GEOCLAW_MIN_PX_PER_SIDE: int = 256
+
+#: Caps so a huge AOI can never produce a monster COG: at most this many pixels
+#: per side AND at most this many total cells (aspect-preserving downscale when
+#: the total-cell cap bites).
+GEOCLAW_MAX_PX_PER_SIDE: int = 2500
+GEOCLAW_MAX_TOTAL_CELLS: int = 5_000_000
 
 #: fgmax time-column sentinel: GeoClaw writes an extreme value (|t| > 1e8) at a
 #: point the wave never reached. The reader maps these (and any negative time)
@@ -242,6 +261,61 @@ def _frame_time_from_t_header(text: str) -> float | None:
     return None
 
 
+def compute_geoclaw_grid_shape(
+    bbox: tuple[float, float, float, float],
+    *,
+    target_res_m: float = GEOCLAW_TARGET_GROUND_RES_M,
+    min_px_per_side: int = GEOCLAW_MIN_PX_PER_SIDE,
+    max_px_per_side: int = GEOCLAW_MAX_PX_PER_SIDE,
+    max_total_cells: int = GEOCLAW_MAX_TOTAL_CELLS,
+) -> tuple[int, int]:
+    """Adaptive output raster ``(H, W)`` for an AOI at a target ground resolution.
+
+    Sizes the GeoClaw depth raster from the AOI's REAL ground extent so the
+    overland run-up rasterizes at ~``target_res_m`` (matching the finest AMR /
+    CoNED nearshore, SFINCS-parity) instead of a fixed 256x256 grid that made
+    cells 33-53 m over an ~8 km AOI (chunky specks). ``H`` from the latitude span,
+    ``W`` from the longitude span with a ``cos(mean_lat)`` correction so the metric
+    aspect ratio is honest.
+
+    Bounded on both ends:
+      - FLOOR ``min_px_per_side`` — never coarser than the legacy 256; a tiny AOI
+        gets a FINER-than-target grid, never a coarser one.
+      - CAP ``max_px_per_side`` per side AND ``max_total_cells`` overall
+        (aspect-preserving downscale) so a huge AOI can't produce a monster COG.
+
+    Pure arithmetic — unit-testable.
+    """
+    import math
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    if max_lon <= min_lon or max_lat <= min_lat:
+        return (min_px_per_side, min_px_per_side)
+
+    mean_lat = 0.5 * (min_lat + max_lat)
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(math.cos(math.radians(mean_lat)), 1e-6)
+    aoi_h_m = (max_lat - min_lat) * m_per_deg_lat
+    aoi_w_m = (max_lon - min_lon) * m_per_deg_lon
+
+    res = max(float(target_res_m), 1e-6)
+    nrows = int(round(aoi_h_m / res))
+    ncols = int(round(aoi_w_m / res))
+
+    # Floor to the legacy minimum, then cap per side.
+    nrows = min(max(nrows, min_px_per_side), max_px_per_side)
+    ncols = min(max(ncols, min_px_per_side), max_px_per_side)
+
+    # Cap total cells (aspect-preserving); re-apply the floor afterwards so an
+    # extreme aspect ratio can't drop a side below the legacy minimum.
+    if nrows * ncols > max_total_cells:
+        scale = math.sqrt(max_total_cells / float(nrows * ncols))
+        nrows = max(min_px_per_side, int(nrows * scale))
+        ncols = max(min_px_per_side, int(ncols * scale))
+
+    return (nrows, ncols)
+
+
 def rasterize_frame_to_grid(
     patches: list[_Patch],
     bbox: tuple[float, float, float, float],
@@ -250,10 +324,21 @@ def rasterize_frame_to_grid(
     """Rasterize a frame's AMR patches onto a regular AOI grid (finest wins).
 
     Builds an ``(H, W)`` depth grid over ``bbox`` (EPSG:4326), row 0 = NORTH (the
-    standard COG orientation). Each patch is painted by nearest-cell sampling;
-    patches are sorted by AMR level ASCENDING so a finer (higher-level) patch
-    OVERWRITES a coarser one where they overlap. Dry / sub-threshold cells stay
-    NaN. Pure numpy — unit-testable on a synthetic patch list.
+    standard COG orientation). Each AMR patch cell PAINTS its full footprint —
+    every output cell whose centre falls inside that patch cell's ``dx``/``dy``
+    extent takes its depth (area/coverage fill), NOT a single nearest-cell
+    scatter. That is what keeps the field GAP-FREE when the output grid is FINER
+    than a coarse AMR patch: at the old resolution a coarse-patch cell mapped to
+    one output cell and left its neighbours NaN (a speckled, holey grid); the
+    coverage fill spans every output cell the patch cell covers instead.
+
+    Patches are sorted by AMR level ASCENDING so a finer (higher-level) patch is
+    painted LAST and OVERWRITES a coarser one where they overlap (the existing
+    finest-wins semantics). Only wet (>= ``NODATA_DEPTH_M``) patch cells write, so
+    a finer patch's dry cells never erase a coarser patch's wet value (unchanged
+    from the scatter version). Dry / sub-threshold / uncovered cells stay NaN.
+    Fully vectorized per patch (inverse sampling: each output cell -> the patch
+    cell that contains its centre) — unit-testable on a synthetic patch list.
     """
     import numpy as np
 
@@ -265,28 +350,38 @@ def rasterize_frame_to_grid(
     gdx = (max_lon - min_lon) / ncols
     gdy = (max_lat - min_lat) / nrows
 
+    # Output cell-centre coordinates (row 0 = north -> descending latitude).
+    xcen = min_lon + (np.arange(ncols) + 0.5) * gdx  # lon centres, west->east
+    ycen = max_lat - (np.arange(nrows) + 0.5) * gdy  # lat centres, north->south
+
     for patch in sorted(patches, key=lambda p: p.level):
-        # For each output cell, map its centre to the patch index; if inside the
-        # patch and wet, write it. We iterate the patch cells and scatter into the
-        # output (cheaper than per-output-cell lookup for typical AMR patches).
-        for pj in range(patch.my):
-            ycen = patch.ylow + (pj + 0.5) * patch.dy
-            if ycen < min_lat or ycen >= max_lat:
-                continue
-            # output row: row 0 = north -> flip y.
-            orow = int((max_lat - ycen) / gdy)
-            if not (0 <= orow < nrows):
-                continue
-            for pi in range(patch.mx):
-                hv = patch.h[pj, pi]
-                if not np.isfinite(hv) or hv < NODATA_DEPTH_M:
-                    continue
-                xcen = patch.xlow + (pi + 0.5) * patch.dx
-                if xcen < min_lon or xcen >= max_lon:
-                    continue
-                ocol = int((xcen - min_lon) / gdx)
-                if 0 <= ocol < ncols:
-                    grid[orow, ocol] = float(hv)
+        if patch.mx <= 0 or patch.my <= 0 or patch.dx <= 0 or patch.dy <= 0:
+            continue
+        p_xmin = patch.xlow
+        p_xmax = patch.xlow + patch.mx * patch.dx
+        p_ymin = patch.ylow
+        p_ymax = patch.ylow + patch.my * patch.dy
+        # Output columns / rows whose centres fall inside the patch footprint.
+        cols = np.nonzero((xcen >= p_xmin) & (xcen < p_xmax))[0]
+        rows = np.nonzero((ycen >= p_ymin) & (ycen < p_ymax))[0]
+        if cols.size == 0 or rows.size == 0:
+            continue
+        # Containing-patch-cell index for each covered output col / row (paint the
+        # full dx/dy footprint: every output cell in the span maps to one patch
+        # cell, so there are no interior gaps at a finer output resolution).
+        pi = ((xcen[cols] - patch.xlow) / patch.dx).astype(np.intp)
+        pj = ((ycen[rows] - patch.ylow) / patch.dy).astype(np.intp)
+        np.clip(pi, 0, patch.mx - 1, out=pi)
+        np.clip(pj, 0, patch.my - 1, out=pj)
+        # Gather the (rows x cols) sub-block of patch depths (row 0 of `patch.h`
+        # is ylow=south; `rows` is north->south, so pj already indexes correctly).
+        sub = patch.h[np.ix_(pj, pi)]
+        wet = np.isfinite(sub) & (sub >= NODATA_DEPTH_M)
+        if not wet.any():
+            continue
+        block = grid[np.ix_(rows, cols)]
+        block[wet] = sub[wet]
+        grid[np.ix_(rows, cols)] = block
     return grid
 
 
@@ -641,7 +736,8 @@ def postprocess_geoclaw(
     *,
     run_id: str,
     scenario: str = "dam_break",
-    grid_shape: tuple[int, int] = (256, 256),
+    grid_shape: tuple[int, int] | None = None,
+    target_ground_res_m: float = GEOCLAW_TARGET_GROUND_RES_M,
     runs_bucket: str | None = None,
     topo_grid: Any = None,
     fgmax_arrival_tol_m: float = GEOCLAW_DEFAULT_FGMAX_ARRIVAL_TOL_M,
@@ -656,6 +752,13 @@ def postprocess_geoclaw(
     ``postprocess_flood`` returns so the Phase-1 scrubber path consumes it
     unchanged.
 
+    When ``grid_shape`` is ``None`` (the live default) the output raster is sized
+    ADAPTIVELY from the AOI at ``target_ground_res_m`` metres/pixel via
+    ``compute_geoclaw_grid_shape`` (floor 256, capped for huge AOIs) so the run-up
+    band is a smooth, dense sheet rather than chunky ~256x256 specks. The peak
+    grid, every frame grid, AND ``topo_grid`` share this one shape (they are
+    compared cell-for-cell for ``max_inundation_m``).
+
     Args:
         out_dir: directory containing the GeoClaw fort.q frames (or an ``_output/``
             subdir).
@@ -664,7 +767,10 @@ def postprocess_geoclaw(
         run_id: the run identifier the COGs are keyed under in the runs bucket.
         scenario: the GeoClaw driver family (echoed onto the layers).
         grid_shape: the regular output raster ``(H, W)`` to rasterize the AMR
-            frames onto.
+            frames onto. ``None`` (default) -> adaptive from ``bbox`` +
+            ``target_ground_res_m``.
+        target_ground_res_m: target ground resolution (m/px) for the adaptive
+            shape when ``grid_shape`` is None (ignored when a shape is passed).
         runs_bucket: optional override for the runs bucket name.
         topo_grid: optional ``(H, W)`` topography grid (same shape) for the
             ``max_inundation_m`` land/ocean split.
@@ -696,6 +802,23 @@ def postprocess_geoclaw(
         )
 
     import numpy as np
+
+    # Adaptive output raster (None -> size from the AOI at the target ground
+    # resolution; floor 256, capped for huge AOIs). Peak + every frame + topo_grid
+    # all share this ONE shape (cell-for-cell comparison for max_inundation_m).
+    if grid_shape is None:
+        grid_shape = compute_geoclaw_grid_shape(
+            bbox, target_res_m=target_ground_res_m
+        )
+        logger.info(
+            "postprocess_geoclaw run_id=%s adaptive output grid H=%d W=%d "
+            "(~%.0f m/px target) over bbox=%s",
+            run_id,
+            grid_shape[0],
+            grid_shape[1],
+            target_ground_res_m,
+            tuple(bbox),
+        )
 
     grids: list[Any] = []
     for _no, q_path, _t_path in frame_files:

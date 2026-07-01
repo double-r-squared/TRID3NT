@@ -608,6 +608,124 @@ def test_rasterize_and_metrics_on_synthetic_frame():
     assert m["flooded_area_km2"] > 0.0
 
 
+def _mk_patch(level, mx, my, xlow, ylow, dx, dy, depth_fn):
+    """Build a _Patch directly (bypassing fort.q text) for rasterize tests."""
+    from grace2_agent.workflows.postprocess_geoclaw import _Patch
+
+    h = np.full((my, mx), np.nan, dtype="float64")
+    for j in range(my):
+        for i in range(mx):
+            h[j, i] = depth_fn(i, j)
+    return _Patch(level, mx, my, xlow, ylow, dx, dy, h)
+
+
+def test_compute_geoclaw_grid_shape_adaptive_floor_and_cap():
+    """Adaptive shape: ~8 km AOI -> ~300-400 px/side at 25 m; huge AOI capped;
+    tiny AOI floored at the legacy 256 (never coarser)."""
+    from grace2_agent.workflows.postprocess_geoclaw import (
+        GEOCLAW_MAX_PX_PER_SIDE,
+        GEOCLAW_MAX_TOTAL_CELLS,
+        GEOCLAW_MIN_PX_PER_SIDE,
+        compute_geoclaw_grid_shape,
+    )
+
+    # ~8 km square AOI near 30N: 8 km / 25 m = 320 px/side (in the 300-400 band).
+    lat0 = 30.0
+    dlat = 8000.0 / 111_320.0
+    import math
+
+    dlon = 8000.0 / (111_320.0 * math.cos(math.radians(lat0)))
+    aoi8 = (-85.0, lat0, -85.0 + dlon, lat0 + dlat)
+    h, w = compute_geoclaw_grid_shape(aoi8)
+    assert 300 <= h <= 400 and 300 <= w <= 400
+    # Much denser than the legacy 256x256 speck grid.
+    assert h * w > 256 * 256
+
+    # Tiny AOI (~500 m): floored at 256, never coarser than the legacy grid.
+    dlat_t = 500.0 / 111_320.0
+    dlon_t = 500.0 / (111_320.0 * math.cos(math.radians(lat0)))
+    aoi_tiny = (-85.0, lat0, -85.0 + dlon_t, lat0 + dlat_t)
+    ht, wt = compute_geoclaw_grid_shape(aoi_tiny)
+    assert (ht, wt) == (GEOCLAW_MIN_PX_PER_SIDE, GEOCLAW_MIN_PX_PER_SIDE)
+
+    # Huge AOI (~5 deg): capped on both the per-side and total-cell limits.
+    aoi_huge = (-90.0, 25.0, -85.0, 30.0)
+    hh, wh = compute_geoclaw_grid_shape(aoi_huge)
+    assert hh <= GEOCLAW_MAX_PX_PER_SIDE and wh <= GEOCLAW_MAX_PX_PER_SIDE
+    assert hh * wh <= GEOCLAW_MAX_TOTAL_CELLS
+    assert hh >= GEOCLAW_MIN_PX_PER_SIDE and wh >= GEOCLAW_MIN_PX_PER_SIDE
+
+
+def test_rasterize_paint_fill_is_gap_free_and_finest_wins():
+    """A COARSE patch painted onto a FINER output grid must produce NO interior
+    NaN holes within its wetted footprint (paint-fill, not nearest-scatter); a
+    finer nested patch OVERWRITES it in the overlap (finest-wins)."""
+    from grace2_agent.workflows.postprocess_geoclaw import rasterize_frame_to_grid
+
+    min_lon, min_lat, max_lon, max_lat = _AOI
+    # Coarse level-1 patch (10x10) covering the whole AOI, uniformly wet at 1.0.
+    coarse = _mk_patch(
+        1, 10, 10, min_lon, min_lat,
+        (max_lon - min_lon) / 10.0, (max_lat - min_lat) / 10.0,
+        lambda i, j: 1.0,
+    )
+    # Finer level-2 patch (8x8) over the CENTRAL quarter, wet at 5.0.
+    cx0 = min_lon + 0.25 * (max_lon - min_lon)
+    cy0 = min_lat + 0.25 * (max_lat - min_lat)
+    cw = 0.5 * (max_lon - min_lon)
+    ch = 0.5 * (max_lat - min_lat)
+    fine = _mk_patch(
+        2, 8, 8, cx0, cy0, cw / 8.0, ch / 8.0, lambda i, j: 5.0,
+    )
+
+    # Output grid FINER than either patch (120x120 >> 10x10 / 8x8).
+    grid = rasterize_frame_to_grid([coarse, fine], _AOI, (120, 120))
+
+    # (a) GAP-FREE: the coarse patch fills the AOI interior -> no NaN holes.
+    #     (Exclude the outermost ring: output-cell centres just inside the AOI
+    #     edge still map into the patch, but be robust to boundary rounding.)
+    interior = grid[1:-1, 1:-1]
+    assert np.isfinite(interior).all(), (
+        f"{int(np.isnan(interior).sum())} interior NaN holes (speckle) remain"
+    )
+
+    # (b) FINEST-WINS: the central quarter carries the finer patch's 5.0.
+    assert np.nanmax(grid) == pytest.approx(5.0)
+    cr = grid[45:75, 45:75]  # a block inside the central quarter
+    assert np.allclose(cr, 5.0)
+
+    # (c) The coarse-only margin still carries 1.0 (finer did not erase it).
+    assert grid[5, 5] == pytest.approx(1.0)
+
+
+def test_rasterize_paint_fill_beats_nearest_scatter_wet_count():
+    """Before/after: at a finer-than-patch output grid the paint-fill fills the
+    whole wetted footprint where a nearest-scatter would leave most cells NaN."""
+    from grace2_agent.workflows.postprocess_geoclaw import (
+        NODATA_DEPTH_M,
+        rasterize_frame_to_grid,
+    )
+
+    min_lon, min_lat, max_lon, max_lat = _AOI
+    # One coarse 16x16 patch, fully wet, over the whole AOI.
+    coarse = _mk_patch(
+        1, 16, 16, min_lon, min_lat,
+        (max_lon - min_lon) / 16.0, (max_lat - min_lat) / 16.0,
+        lambda i, j: 2.0,
+    )
+    out_shape = (256, 256)
+    grid = rasterize_frame_to_grid([coarse], _AOI, out_shape)
+    wet_paint = int(np.isfinite(grid).sum())
+
+    # A nearest-scatter (one output cell per patch cell) tops out at 16*16=256
+    # wet cells; the paint-fill covers ~ the whole 256x256 output (65536).
+    n_patch_cells = 16 * 16
+    assert wet_paint > 10 * n_patch_cells
+    # Gap-free interior (the holey scatter symptom is gone).
+    assert np.isfinite(grid[1:-1, 1:-1]).all()
+    del NODATA_DEPTH_M  # (imported to document the wet threshold used above)
+
+
 def _fake_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="x.tif"):
     # assert the COG is a valid EPSG:4326 raster before "uploading".
     import rasterio
