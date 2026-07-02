@@ -1,0 +1,8 @@
+# Tofu local state (intentionally not remote for this module)
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Lambda zip artifact (generated at plan/apply time)
+build/*.zip
