@@ -130,7 +130,7 @@ variable "agent_task_cpu" {
 }
 
 variable "agent_task_memory" {
-  type        = string
+  type = string
   # 2 GB OOM-killed (exit 137) the SFINCS BUILD for a hilly AOI (Chattanooga, DEM
   # range 136-724 m -> heavy hydromt mesh) -- the agent died mid-solve and the
   # depth never published. The build (hydromt + GDAL/rasterio in-memory arrays)
@@ -220,6 +220,18 @@ variable "reaper_health_timeout_s" {
 
 variable "reaper_dry_run" {
   type        = bool
-  description = "When true the reaper LOGS the StopTask decision but does NOT call StopTask -- lets the orchestrator validate against live canary tasks before arming. Flip to false to enable per-task auto-stop."
-  default     = true
+  description = "When true the reaper LOGS the StopTask decision but does NOT call StopTask (and makes NO route deletes) -- lets the orchestrator validate against live canary tasks before arming. Flip to false to enable per-task auto-stop AND the orphan/max-age reaping (the leak fix): a dry-run reaper cannot stop the orphaned tasks that exhausted the vCPU quota."
+  default     = false
+}
+
+variable "reaper_orphan_grace_seconds" {
+  type        = number
+  description = "A RUNNING agent-session task with NO live route is only reaped once it is older than this (seconds). Protects a task mid-provision (RunTask fired, task RUNNING, but the broker has not yet health-polled + written its route). The broker provision path bounds at ~90s, so 600s is a wide safety margin."
+  default     = 600
+}
+
+variable "reaper_max_age_seconds" {
+  type        = number
+  description = "A RUNNING agent-session task older than this (seconds) is reaped regardless of route -- the ultimate backstop against a leaked task. A legitimate solve runs Batch-side (wait_for_completion caps at 1800s), so no genuine session should keep a task alive this long. A route-backed task that is INDIVIDUALLY busy right now is spared for that tick. 5400 = 90 min."
+  default     = 5400
 }

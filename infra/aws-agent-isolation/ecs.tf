@@ -151,6 +151,15 @@ resource "aws_ecs_task_definition" "agent" {
         # off, which is correct -- Fargate cannot docker-run QGIS anyway.)
         { name = "AUTH_REQUIRED", value = "true" },
         { name = "GRACE2_SYNC_TOOL_OFFLOAD", value = "on" },
+        # SELF-IDLE-EXIT (belt to the reaper's suspenders): the session task stops
+        # ITSELF after this many seconds of GENUINE idle -- ZERO client connections
+        # AND zero in-flight work (no detached turn, no in-flight solve, no pending
+        # coldview PUT). Requiring zero connections is stricter than the reaper's
+        # idle rule, so an open viewer / a live recording is never self-exited; only
+        # a truly-abandoned task is. Guarantees a task cannot leak vCPU forever even
+        # if the reaper is broken/disarmed. 1800 = 30 min. (box leaves this unset ->
+        # disabled, so the always-on EC2 box is unchanged.)
+        { name = "GRACE2_AGENT_IDLE_EXIT_SECONDS", value = "1800" },
         # Solver dispatch: the agent defaults GRACE2_SOLVER_BACKEND=aws-batch but
         # run_solver hard-fails (fail-fast, no hang) unless the queue is named.
         # The box sets this out-of-band; the isolation task def must set it too or

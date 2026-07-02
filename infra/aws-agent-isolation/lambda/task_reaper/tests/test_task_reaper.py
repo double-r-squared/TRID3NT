@@ -171,6 +171,9 @@ def test_dry_run_does_not_stop(reaper, monkeypatch):
     assert out["stopped"] == 1          # decision counted
     assert ecs.stopped == []            # but no real StopTask
     assert out["decisions"][0]["action"] == "stop_dryrun"
+    # LEAK FIX: dry-run must NOT delete the route (deleting it while the task
+    # keeps running is exactly how the old code manufactured orphans).
+    assert "S1" not in ddb.deletes
 
 
 def test_unreadable_health_is_busy(reaper):
@@ -182,6 +185,150 @@ def test_unreadable_health_is_busy(reaper):
     out = reaper.handler({}, None)
     assert out["stopped"] == 0          # fail-safe busy -> no stop
     assert ("S1", "0") in ddb.updates
+
+
+# --------------------------------------------------------------------------- #
+# Orphan + max-age reaping (the outage fix)
+# --------------------------------------------------------------------------- #
+def _dec(reaper, **kw):
+    """Call the pure decision with sane thresholds unless overridden."""
+    kw.setdefault("orphan_grace_seconds", 600)
+    kw.setdefault("max_age_seconds", 5400)
+    kw.setdefault("batch_busy", False)
+    kw.setdefault("health_busy", False)
+    return reaper._orphan_maxage_decision(**kw)
+
+
+def test_orphan_older_than_grace_is_stopped(reaper):
+    action, reason = _dec(reaper, age_seconds=900, has_live_route=False)
+    assert (action, reason) == ("stop", "orphan")
+
+
+def test_no_route_within_grace_is_kept(reaper):
+    # mid-provision: RUNNING but the broker has not written its route yet.
+    action, reason = _dec(reaper, age_seconds=120, has_live_route=False)
+    assert (action, reason) == ("keep", "orphan_within_grace")
+
+
+def test_orphan_kept_while_batch_in_flight(reaper):
+    action, reason = _dec(reaper, age_seconds=900, has_live_route=False, batch_busy=True)
+    assert (action, reason) == ("keep", "orphan_batch_in_flight")
+
+
+def test_orphan_kept_when_health_busy(reaper):
+    action, reason = _dec(reaper, age_seconds=900, has_live_route=False, health_busy=True)
+    assert (action, reason) == ("keep", "orphan_busy")
+
+
+def test_over_max_age_no_route_stops(reaper):
+    action, reason = _dec(reaper, age_seconds=6000, has_live_route=False)
+    assert (action, reason) == ("stop", "max_age")
+
+
+def test_over_max_age_route_backed_but_busy_is_spared(reaper):
+    # SAFETY: never kill a live-route task that is busy mid-work, even at max-age.
+    action, reason = _dec(reaper, age_seconds=6000, has_live_route=True, health_busy=True)
+    assert (action, reason) == ("keep", "max_age_but_route_busy")
+
+
+def test_over_max_age_route_backed_idle_stops(reaper):
+    action, reason = _dec(reaper, age_seconds=6000, has_live_route=True, health_busy=False)
+    assert (action, reason) == ("stop", "max_age")
+
+
+def test_route_backed_and_young_is_kept(reaper):
+    action, reason = _dec(reaper, age_seconds=300, has_live_route=True)
+    assert (action, reason) == ("keep", "route_backed")
+
+
+class FakeECSList:
+    """ECS fake supporting the orphan pass (list_tasks + describe_tasks) + stop."""
+
+    def __init__(self, tasks):
+        self._tasks = {t["taskArn"]: t for t in tasks}
+        self.stopped: list[str] = []
+
+    def list_tasks(self, cluster, family, desiredStatus, maxResults, nextToken=None):
+        return {"taskArns": list(self._tasks)}
+
+    def describe_tasks(self, cluster, tasks):
+        return {"tasks": [self._tasks[a] for a in tasks if a in self._tasks]}
+
+    def stop_task(self, cluster, task, reason):
+        self.stopped.append(task)
+
+
+def _task(arn, *, age_s, ip="10.0.0.9"):
+    from datetime import datetime, timedelta, timezone
+
+    return {
+        "taskArn": arn,
+        "lastStatus": "RUNNING",
+        "startedAt": datetime.now(timezone.utc) - timedelta(seconds=age_s),
+        "attachments": [
+            {
+                "type": "ElasticNetworkInterface",
+                "details": [{"name": "privateIPv4Address", "value": ip}],
+            }
+        ],
+    }
+
+
+def test_reap_orphans_stops_leaked_task(reaper):
+    import time as _t
+
+    reaper.ORPHAN_GRACE_SECONDS = 600
+    reaper.MAX_AGE_SECONDS = 5400
+    orphan = _task("arn:task/orphan", age_s=900)
+    backed = _task("arn:task/backed", age_s=300)
+    ecs = FakeECSList([orphan, backed])
+    reaper._ecs = ecs
+    reaper._probe_health = lambda ip: {"reachable": True, "busy": False, "active_connections": 0}
+    route_map = {"arn:task/backed": ("U1", "S1")}
+
+    decisions = reaper._reap_orphans_and_max_age(
+        [orphan, backed], route_map, batch_busy=False, now=_t.time()
+    )
+    assert ecs.stopped == ["arn:task/orphan"]  # only the leaked orphan
+    by_id = {d["task_id"]: d for d in decisions}
+    assert by_id["orphan"]["action"] == "orphan"
+    assert by_id["backed"]["action"] == "keep"
+
+
+def test_reap_max_age_stops_old_route_backed_idle(reaper):
+    import time as _t
+
+    reaper.ORPHAN_GRACE_SECONDS = 600
+    reaper.MAX_AGE_SECONDS = 5400
+    old = _task("arn:task/old", age_s=6000)
+    ecs = FakeECSList([old])
+    reaper._ecs = ecs
+    reaper._probe_health = lambda ip: {"reachable": True, "busy": False, "active_connections": 0}
+    route_map = {"arn:task/old": ("U1", "S1")}
+
+    decisions = reaper._reap_orphans_and_max_age(
+        [old], route_map, batch_busy=False, now=_t.time()
+    )
+    assert ecs.stopped == ["arn:task/old"]
+    assert decisions[0]["action"] == "max_age"
+
+
+def test_reap_spares_busy_task_at_max_age(reaper):
+    import time as _t
+
+    reaper.ORPHAN_GRACE_SECONDS = 600
+    reaper.MAX_AGE_SECONDS = 5400
+    old = _task("arn:task/busy", age_s=6000)
+    ecs = FakeECSList([old])
+    reaper._ecs = ecs
+    reaper._probe_health = lambda ip: {"reachable": True, "busy": True, "active_connections": 1}
+    route_map = {"arn:task/busy": ("U1", "S1")}
+
+    decisions = reaper._reap_orphans_and_max_age(
+        [old], route_map, batch_busy=False, now=_t.time()
+    )
+    assert ecs.stopped == []  # live-route + busy is spared even past max-age
+    assert decisions[0]["action"] == "keep"
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1765,6 +1765,126 @@ def liveness_snapshot() -> dict[str, object]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# AGENT SELF-IDLE-EXIT (per-session Fargate belt-and-suspenders).
+#
+# The per-session Fargate agent tasks are meant to be stopped by the external
+# reaper Lambda once idle. But if the reaper is broken / disarmed (dry-run) /
+# blind to a task (an orphan whose route row vanished), the task runs forever and
+# vCPU quota is exhausted (the 2026-07-01 outage). This is the belt: the task
+# stops ITSELF after GRACE2_AGENT_IDLE_EXIT_SECONDS of genuine idle, so a task can
+# never outlive its usefulness even if the reaper never fires.
+#
+# GENUINE idle == NO client connected (active_connection_count() == 0) AND NO work
+# in flight (is_busy() False: no detached turn, no in-flight solve, no pending
+# coldview snapshot PUT). Requiring ZERO connections is STRICTER than the reaper's
+# Stage-3 rule (which ignores idle-open tabs) -- so an open viewer / a live
+# recording session is NEVER self-exited, only a truly-abandoned task is.
+#
+# DISABLED by default (0) so the always-on EC2 box (same image) is byte-for-byte
+# unchanged; the Fargate session task def sets GRACE2_AGENT_IDLE_EXIT_SECONDS.
+# --------------------------------------------------------------------------- #
+
+#: Default idle-exit window (seconds). 0 == disabled. The Fargate task def sets a
+#: real value (e.g. 1800 = 30 min); the box leaves it unset -> disabled.
+_IDLE_EXIT_SECONDS_DEFAULT = 0
+
+#: How often the idle-exit monitor samples liveness (seconds).
+_IDLE_EXIT_CHECK_INTERVAL_S = 30.0
+
+#: Hold a strong ref to the monitor task so it is not GC'd (create_task keeps only
+#: a weak reference).
+_IDLE_EXIT_TASK: "asyncio.Task | None" = None
+
+
+def _idle_exit_seconds() -> int:
+    """Resolve GRACE2_AGENT_IDLE_EXIT_SECONDS (default disabled). <=0 disables."""
+    raw = os.environ.get("GRACE2_AGENT_IDLE_EXIT_SECONDS")
+    if raw is None:
+        return _IDLE_EXIT_SECONDS_DEFAULT
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _IDLE_EXIT_SECONDS_DEFAULT
+
+
+def _idle_exit_decision(
+    *,
+    idle_exit_seconds: int,
+    busy: bool,
+    active_connections: int,
+    idle_since: float | None,
+    now: float,
+) -> tuple[bool, float | None]:
+    """Pure idle-exit gate. Returns ``(should_exit, new_idle_since)``.
+
+    ``idle_since`` is the monotonic timestamp when the current idle streak began
+    (None when not currently idle). The task exits ONLY after it has been
+    continuously idle -- NO client connected AND NO work in flight -- for the full
+    window. Any client attach or any in-flight work RESETS the clock (returns
+    ``idle_since=None``), so the task can never exit mid-solve or with a client
+    attached or with a background Batch job in flight (all fold into ``busy``)."""
+    if idle_exit_seconds <= 0:
+        return False, None  # disabled
+    is_idle = (not busy) and active_connections <= 0
+    if not is_idle:
+        return False, None  # real work or a client attached -> reset the clock
+    if idle_since is None:
+        return False, now  # idle streak starts now
+    if now - idle_since >= idle_exit_seconds:
+        return True, idle_since
+    return False, idle_since
+
+
+async def _run_idle_exit_monitor(
+    *, check_interval_s: float = _IDLE_EXIT_CHECK_INTERVAL_S
+) -> None:
+    """Background loop that self-stops a genuinely-idle session task.
+
+    No-op when GRACE2_AGENT_IDLE_EXIT_SECONDS is unset / <=0 (the box). On the
+    Fargate session task it flushes any pending coldview snapshot writes and then
+    ``os._exit(0)`` so the container exits cleanly and the Fargate task STOPS,
+    releasing its vCPU. The gate (``_idle_exit_decision``) guarantees this only
+    fires with zero connections and zero in-flight work."""
+    secs = _idle_exit_seconds()
+    if secs <= 0:
+        logger.info("agent self-idle-exit disabled (GRACE2_AGENT_IDLE_EXIT_SECONDS unset/<=0)")
+        return
+    logger.info(
+        "agent self-idle-exit armed: stop after %ds idle (no client, no in-flight work)",
+        secs,
+    )
+    idle_since: float | None = None
+    while True:
+        await asyncio.sleep(check_interval_s)
+        try:
+            busy = is_busy()
+            conns = active_connection_count()
+        except Exception:  # noqa: BLE001 -- the monitor must never crash the loop
+            logger.exception("idle-exit monitor sample failed; skipping this tick")
+            continue
+        should_exit, idle_since = _idle_exit_decision(
+            idle_exit_seconds=secs,
+            busy=busy,
+            active_connections=conns,
+            idle_since=idle_since,
+            now=_monotonic(),
+        )
+        if should_exit:
+            logger.warning(
+                "agent self-idle-exit: idle >= %ds (connections=%d busy=%s) -> "
+                "draining + stopping this session task",
+                secs,
+                conns,
+                busy,
+            )
+            try:
+                await _drain_bg_snapshot_tasks()
+            except Exception:  # noqa: BLE001 -- never block the exit on a drain error
+                logger.exception("idle-exit drain failed; exiting anyway")
+            os._exit(0)
+
+
 @dataclass
 class SessionState:
     """Per-session in-memory state. M1 keeps everything in-process; Mongo-backed
@@ -12002,6 +12122,13 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     _coldview_task = asyncio.create_task(_run_coldview_backfill())
     _BG_SNAPSHOT_TASKS.add(_coldview_task)
     _coldview_task.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+    # AGENT SELF-IDLE-EXIT (belt-and-suspenders): a per-session Fargate task stops
+    # ITSELF after GRACE2_AGENT_IDLE_EXIT_SECONDS of genuine idle (no client, no
+    # in-flight work) so it can never outlive its usefulness even if the reaper is
+    # broken/disarmed. No-op on the always-on box (env unset -> disabled). Hold a
+    # strong ref so the task is not GC'd.
+    global _IDLE_EXIT_TASK
+    _IDLE_EXIT_TASK = asyncio.create_task(_run_idle_exit_monitor())
     handler = _make_handler(settings)
 
     # Wave 4.10 C1: best-effort mount of the catalog HTTP listener.

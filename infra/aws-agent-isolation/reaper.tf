@@ -143,6 +143,13 @@ resource "aws_lambda_function" "reaper" {
       HEALTH_TIMEOUT_S      = tostring(var.reaper_health_timeout_s)
       ROUTE_TTL_SECONDS     = tostring(var.route_ttl_seconds)
       DRY_RUN               = var.reaper_dry_run ? "true" : "false"
+      # Orphan + max-age reaping (the leak fix): enumerate RUNNING tasks of THIS
+      # family directly and stop any that no live route backs (past the grace) or
+      # that are simply too old. AGENT_TASK_FAMILY is pinned to the task-def
+      # resource so it can never drift from the family the broker RunTasks.
+      AGENT_TASK_FAMILY    = aws_ecs_task_definition.agent.family
+      ORPHAN_GRACE_SECONDS = tostring(var.reaper_orphan_grace_seconds)
+      MAX_AGE_SECONDS      = tostring(var.reaper_max_age_seconds)
     }
   }
 
