@@ -411,6 +411,26 @@ def _build_argv_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
+    """Write the worker postprocess ``publish_manifest.json`` before completion."""
+    from services.workers._raster_postprocess import manifest as _manifest_mod
+
+    body = json.dumps(pp_manifest, indent=2)
+    uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+    _scheme, _bucket, _key = _split_object_uri(uri)
+    if _scheme == "s3":
+        _s3_client().put_object(
+            Bucket=_bucket, Key=_key,
+            Body=body.encode("utf-8"), ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+            body, content_type="application/json"
+        )
+    LOG.info("landlab postprocess: wrote %s", uri)
+    return uri
+
+
 def _write_completion(
     run_id: str,
     status: str,
@@ -422,6 +442,8 @@ def _write_completion(
     stderr_uri: str | None,
     started_at: str,
     error: str | None,
+    publish_manifest_uri: str | None = None,
+    error_code: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -432,6 +454,8 @@ def _write_completion(
         "landlab_stdout_uri": stdout_uri,
         "landlab_stderr_uri": stderr_uri,
         "output_uris": output_uris,
+        "publish_manifest_uri": publish_manifest_uri,
+        "error_code": error_code,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
@@ -483,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
     error_msg: str | None = None
     result_block: dict[str, Any] | None = None
     analysis: str | None = None
+    publish_manifest_uri: str | None = None
+    error_code: str | None = None
     exit_code = 1
     status = "error"
 
@@ -537,10 +563,38 @@ def main(argv: list[str] | None = None) -> int:
         stdout_uri = _upload(stdout_path, _runs_uri(run_id, "landlab.stdout"))
         stderr_uri = _upload(stderr_path, _runs_uri(run_id, "landlab.stderr"))
 
+        # Postprocess: write publish_manifest.json (worker-side COG + manifest).
+        if exit_code == 0:
+            try:
+                from services.workers._landlab_postprocess import run_landlab_postprocess
+                pp = run_landlab_postprocess(
+                    run_id=run_id,
+                    scratch=scratch,
+                    analysis=analysis or "landslide_probability",
+                    result_block=result_block,
+                    runs_uri_for=lambda rel: _runs_uri(run_id, rel),
+                )
+                if pp.status == "ok" and pp.manifest is not None:
+                    publish_manifest_uri = _write_publish_manifest(run_id, pp.manifest)
+                    LOG.info(
+                        "landlab postprocess ok: publish_manifest_uri=%s",
+                        publish_manifest_uri,
+                    )
+                else:
+                    error_code = pp.error_code
+                    LOG.warning(
+                        "landlab postprocess honesty gate: %s %s",
+                        pp.error_code, pp.error_message,
+                    )
+            except Exception as pp_exc:  # noqa: BLE001
+                LOG.warning("landlab postprocess failed (non-fatal): %s", pp_exc)
+
         for path in _expand_outputs(list(outputs), scratch):
             rel = path.relative_to(scratch).as_posix()
             uri = _upload(path, _runs_uri(run_id, rel))
             output_uris.append(uri)
+        if publish_manifest_uri and publish_manifest_uri not in output_uris:
+            output_uris.append(publish_manifest_uri)
 
         if status == "ok" and not output_uris:
             status = "error"
@@ -564,6 +618,8 @@ def main(argv: list[str] | None = None) -> int:
         stderr_uri=stderr_uri,
         started_at=started_at,
         error=error_msg,
+        publish_manifest_uri=publish_manifest_uri,
+        error_code=error_code,
     )
     return exit_code
 

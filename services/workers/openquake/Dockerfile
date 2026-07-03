@@ -62,6 +62,7 @@ RUN python3 -m venv "$VENV" \
         "numba" \
         "networkx" \
         "boto3>=1.34,<2" \
+        "rasterio>=1.3,<2" \
     && "$VENV/bin/python" -c "import openquake.baselib, boto3; from openquake.commonlib import logs; print('openquake deps import OK')"
 
 # --------------------------------------------------------------------------- #

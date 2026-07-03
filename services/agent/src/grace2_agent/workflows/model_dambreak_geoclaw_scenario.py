@@ -692,6 +692,80 @@ async def model_dambreak_geoclaw_scenario(
             },
         )
 
+    # Register-only fast path: if the worker wrote a publish_manifest alongside
+    # completion.json, skip the fort.q download + agent-side postprocess. The
+    # worker already produced COGs + band_stats + TiTiler URLs; we just register
+    # them and return early. Falls through when the manifest is absent (pre-
+    # manifest workers or unknown schema version).
+    from .register_published_manifest import (
+        read_publish_manifest,
+        register_manifest_layers,
+    )
+    batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
+    _gc_manifest = await asyncio.to_thread(read_publish_manifest, run_result)
+    if _gc_manifest is not None:
+        async with substep(emitter, "postprocess_geoclaw"):
+            _gc_reg = register_manifest_layers(
+                _gc_manifest, run_id=batch_run_id, bbox=tuple(bbox)
+            )
+        if not _gc_reg.layers:
+            raise GeoClawComposerError(
+                "GEOCLAW_NO_LAYERS",
+                "worker publish_manifest produced no registered depth layers "
+                "(honesty floor: cannot narrate an empty solve)",
+            )
+        _gc_m = _gc_reg.metrics
+        _gc_prim = _gc_reg.layers[0]
+        _gc_frame_layers = _gc_reg.layers[1:]
+        peak = GeoClawDepthLayerURI(
+            uri=_gc_prim.uri,
+            layer_type=_gc_prim.layer_type,
+            layer_id=_gc_prim.layer_id,
+            name=_gc_prim.name,
+            style_preset=_gc_prim.style_preset,
+            bbox=tuple(bbox),
+            role=_gc_prim.role,
+            max_depth_m=float(_gc_m.get("max_depth_m", 0.0)),
+            flooded_area_km2=float(_gc_m.get("flooded_area_km2", 0.0)),
+            max_inundation_m=float(_gc_m.get("max_inundation_m", 0.0)),
+            arrival_time_s=(
+                float(_gc_m["arrival_time_s"])
+                if _gc_m.get("arrival_time_s") is not None
+                else None
+            ),
+            scenario=run_args.scenario,
+        )
+        emitted_frames = await _emit_frame_layers(
+            emitter,
+            _gc_frame_layers,  # type: ignore[arg-type]
+            batch_run_id,
+        )
+        logger.info(
+            "model_dambreak_geoclaw_scenario (manifest path) run_id=%s "
+            "scenario=%s max_depth_m=%.4g flooded_area_km2=%.6g "
+            "max_inundation_m=%.4g arrival_time_s=%s "
+            "frames_emitted=%d/%d peak_uri=%s",
+            batch_run_id,
+            run_args.scenario,
+            peak.max_depth_m,
+            peak.flooded_area_km2,
+            peak.max_inundation_m,
+            peak.arrival_time_s,
+            emitted_frames,
+            len(_gc_frame_layers),
+            peak.uri,
+        )
+        if emitter is not None:
+            try:
+                await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
+            except Exception as _ze:  # noqa: BLE001
+                logger.warning(
+                    "model_dambreak_geoclaw_scenario: zoom-to (manifest path) "
+                    "failed: %s",
+                    _ze,
+                )
+        return peak
+
     # --- Step 4: download the Batch fort.q outputs -------------------------
     batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
     out_dir = await asyncio.to_thread(_download_batch_geoclaw_outputs, batch_run_id)

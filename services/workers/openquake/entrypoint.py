@@ -114,6 +114,7 @@ _DEFAULT_OUTPUT_GLOBS: tuple[str, ...] = (
     "*.csv",
     "job.ini",
     "*.xml",
+    "*.tif",
 )
 
 
@@ -331,6 +332,26 @@ def _build_argv_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
+    """Write the worker postprocess ``publish_manifest.json`` (before completion)."""
+    from services.workers._raster_postprocess import manifest as _manifest_mod
+
+    body = json.dumps(pp_manifest, indent=2)
+    uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+    _scheme, _bucket, _key = _split_object_uri(uri)
+    if _scheme == "s3":
+        _s3_client().put_object(
+            Bucket=_bucket, Key=_key,
+            Body=body.encode("utf-8"), ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+            body, content_type="application/json"
+        )
+    LOG.info("openquake postprocess: wrote %s", uri)
+    return uri
+
+
 def _write_completion(
     run_id: str,
     status: str,
@@ -342,6 +363,8 @@ def _write_completion(
     hazard_map_uri: str | None,
     started_at: str,
     error: str | None,
+    publish_manifest_uri: str | None = None,
+    error_code: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -355,6 +378,8 @@ def _write_completion(
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
+        "publish_manifest_uri": publish_manifest_uri,
+        "error_code": error_code,
     }
     completion_uri = _runs_uri(run_id, "completion.json")
     scheme, bucket, key = _split_object_uri(completion_uri)
@@ -405,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
     oq_args: list[str] = []
     exit_code = 1
     status = "error"
+    publish_manifest_uri: str | None = None
+    error_code: str | None = None
 
     try:
         build_spec = _read_manifest(manifest_uri)
@@ -432,6 +459,27 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             error_msg = f"openquake worker exited with non-zero code {rc}"
 
+        if rc == 0:
+            try:
+                from services.workers._openquake_postprocess import run_openquake_postprocess
+                pp = run_openquake_postprocess(
+                    run_id=run_id,
+                    scratch=scratch,
+                    build_spec=build_spec,
+                    runs_uri_for=lambda rel: _runs_uri(run_id, rel),
+                )
+                if pp.status == "ok" and pp.manifest is not None:
+                    publish_manifest_uri = _write_publish_manifest(run_id, pp.manifest)
+                    LOG.info("openquake postprocess ok: publish_manifest_uri=%s", publish_manifest_uri)
+                else:
+                    error_code = pp.error_code
+                    LOG.warning("openquake postprocess honesty gate: %s %s", pp.error_code, pp.error_message)
+            except Exception as pp_exc:
+                LOG.warning("openquake postprocess failed (non-fatal): %s", pp_exc)
+
+        if publish_manifest_uri and publish_manifest_uri not in output_uris:
+            output_uris.append(publish_manifest_uri)
+
     except Exception as exc:  # pragma: no cover — defensive, logged + emitted
         LOG.exception("solver entrypoint failed")
         error_msg = f"{type(exc).__name__}: {exc}"
@@ -449,6 +497,8 @@ def main(argv: list[str] | None = None) -> int:
         hazard_map_uri=hazard_map_uri,
         started_at=started_at,
         error=error_msg,
+        publish_manifest_uri=publish_manifest_uri,
+        error_code=error_code,
     )
     return exit_code
 

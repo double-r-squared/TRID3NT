@@ -355,11 +355,22 @@ def stage_swmm_manifest(staging: SWMMStaging) -> str:
 
     # The worker downloads inputs[] BY SCHEME (the field name is the legacy
     # ``gs_uri``; the VALUE is the s3:// URI). outputs[] glob the .out the
-    # postprocess reads + the .rpt for continuity provenance.
+    # postprocess reads + the .rpt for continuity provenance + *.tif for worker
+    # postprocess COGs. postprocess_spec carries the georegistration provenance
+    # the worker-side SWMM postprocess (run_swmm_postprocess) needs to scatter
+    # node depths onto the grid and reproject to EPSG:4326 COG.
+    _bbox = list(staging.run_args.bbox)
     manifest_dict: dict[str, Any] = {
         "inputs": [{"gs_uri": inp_uri, "dest": "mesh.inp"}],
         "swmm_args": ["mesh.inp"],
-        "outputs": ["*.out", "*.rpt"],
+        "outputs": ["*.out", "*.rpt", "*.tif"],
+        "postprocess_spec": {
+            "grid_shape": list(staging.build.grid_shape),
+            "resolution_m": staging.build.resolution_m,
+            "crs": staging.build.crs,
+            "transform": list(staging.build.transform),
+            "bbox": _bbox,
+        },
     }
 
     import json

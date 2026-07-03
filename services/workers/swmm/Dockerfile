@@ -41,6 +41,7 @@ ENV VENV=/opt/grace2/.venv \
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv "$VENV" \
@@ -49,7 +50,9 @@ RUN python3 -m venv "$VENV" \
         "pyswmm>=2.0,<3" \
         "swmm-api>=0.4,<0.5" \
         "boto3>=1.34,<2" \
-    && "$VENV/bin/python" -c "import pyswmm, swmm_api, boto3; print('swmm deps import OK — pyswmm', pyswmm.__version__)"
+        "numpy>=1.23,<2" \
+        "rasterio>=1.3,<2" \
+    && "$VENV/bin/python" -c "import pyswmm, swmm_api, boto3, numpy, rasterio; print('swmm deps import OK — pyswmm', pyswmm.__version__)"
 
 # --------------------------------------------------------------------------- #
 # Stage 2 — runtime: a fresh minimal python:slim with ONLY the resolved venv +
@@ -63,9 +66,11 @@ LABEL org.opencontainers.image.title="grace-2-swmm-solver" \
       org.opencontainers.image.licenses="MIT"
 
 # ca-certificates so boto3's HTTPS calls to S3 verify (the slim base ships none).
+# libexpat1 backs rasterio's GDAL XML parser (opened at import; absent -> crash).
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ONLY the resolved venv from the builder — the hygiene payoff.

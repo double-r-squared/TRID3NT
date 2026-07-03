@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -804,10 +805,65 @@ async def model_seismic_hazard_scenario(
                 },
             )
 
+    # --- Register-only branch (worker postprocess offload) -------------------
+    # If the worker wrote a publish_manifest.json (schema_version==1), read +
+    # schema-gate it and SHORT-CIRCUIT the on-box heavy tail (no CSV download,
+    # no postprocess_openquake). Degrades cleanly to legacy path when absent.
+    from .register_published_manifest import (
+        read_publish_manifest,
+        register_manifest_layers,
+    )
+
+    batch_run_id = getattr(run_result, "run_id", None) or run_id
+    _oq_manifest = await asyncio.to_thread(read_publish_manifest, run_result)
+    if _oq_manifest is not None:
+        logger.info(
+            "model_seismic_hazard_scenario: REGISTER-ONLY path (worker postprocess "
+            "offload) run_id=%s engine=%s layers=%d",
+            batch_run_id, _oq_manifest.engine, len(_oq_manifest.layers),
+        )
+        async with substep(current_emitter(), "publish_layer"):
+            _oq_reg = register_manifest_layers(
+                _oq_manifest, run_id=batch_run_id,
+                bbox=tuple(run_args.bbox) if run_args.bbox else None,
+            )
+        _oq_primary_layers = [lyr for lyr in _oq_reg.layers if lyr.role == "primary"]
+        if not _oq_primary_layers:
+            raise OpenQuakeWorkflowError(
+                "OQ_NO_LAYERS",
+                message="worker publish_manifest produced no primary layer (empty solve?)",
+            )
+        _oq_prim = _oq_primary_layers[0]
+        _oq_m = _oq_reg.metrics
+        _poe = float(run_args.poe)
+        _inv = float(run_args.investigation_time_years)
+        try:
+            _rp = -_inv / math.log(1.0 - _poe)
+        except (ValueError, ZeroDivisionError):
+            _rp = 0.0
+        _oq_layer = SeismicHazardLayerURI(
+            uri=_oq_prim.uri,
+            layer_type=_oq_prim.layer_type,
+            layer_id=_oq_prim.layer_id,
+            name=_oq_prim.name,
+            style_preset=_oq_prim.style_preset,
+            bbox=tuple(run_args.bbox) if run_args.bbox else None,
+            role=_oq_prim.role,
+            imt=run_args.imt,
+            poe=_poe,
+            investigation_time_years=_inv,
+            return_period_years=_rp,
+            max_hazard_value=float(_oq_m.get("max_pga_g", 0.0)),
+            hazard_area_km2=float(_oq_m.get("hazard_area_km2", 0.0)),
+            n_sites=int(_oq_m.get("n_sites", 0)),
+            source_model_kind=source_model_kind,
+            source_model_note=source_model_note,
+        )
+        return _oq_layer
+
     # 3) Download the hazard-map CSV from the worker's run_id prefix (the Batch
     #    dispatch mints a fresh run_id; the worker writes under run_result.run_id,
     #    NOT the composer's run_id — mirror the SWMM/SFINCS Batch lesson).
-    batch_run_id = getattr(run_result, "run_id", None) or run_id
     async with substep(current_emitter(), "_download_batch_hazard_csv"):
         hazard_csv_text = await asyncio.to_thread(
             _download_batch_hazard_csv, run_result, batch_run_id

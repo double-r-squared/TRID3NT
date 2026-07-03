@@ -548,6 +548,26 @@ def _build_argv_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
+    """Write the worker postprocess ``publish_manifest.json`` (before completion)."""
+    from services.workers._raster_postprocess import manifest as _manifest_mod
+
+    body = json.dumps(pp_manifest, indent=2)
+    uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+    _scheme, _bucket, _key = _split_object_uri(uri)
+    if _scheme == "s3":
+        _s3_client().put_object(
+            Bucket=_bucket, Key=_key,
+            Body=body.encode("utf-8"), ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+            body, content_type="application/json"
+        )
+    LOG.info("swan postprocess: wrote %s", uri)
+    return uri
+
+
 def _write_completion(
     run_id: str,
     status: str,
@@ -559,6 +579,7 @@ def _write_completion(
     started_at: str,
     error: str | None,
     error_code: str | None = None,
+    publish_manifest_uri: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -572,6 +593,7 @@ def _write_completion(
         "finished_at": _utc_now(),
         "error": error,
         "error_code": error_code,
+        "publish_manifest_uri": publish_manifest_uri,
     }
     completion_uri = _runs_uri(run_id, "completion.json")
     scheme, bucket, key = _split_object_uri(completion_uri)
@@ -600,6 +622,7 @@ DEFAULT_OUTPUT_GLOBS: list[str] = [
     "Errfile",
     "swan.stdout",
     "swan.stderr",
+    "*.tif",
 ]
 
 #: Diagnostic-file globs uploaded UNCONDITIONALLY (even on an early failure /
@@ -670,6 +693,7 @@ def main(argv: list[str] | None = None) -> int:
     stderr_uri: str | None = None
     error_msg: str | None = None
     error_code: str | None = None
+    publish_manifest_uri: str | None = None
     mode: str | None = None
     exit_code = 1
     status = "error"
@@ -724,6 +748,27 @@ def main(argv: list[str] | None = None) -> int:
         status, error_msg = classify_swan_outcome(scratch, rc)
         exit_code = rc if status == "ok" else (rc or 1)
 
+        if status == "ok":
+            try:
+                from services.workers._swan_postprocess import run_swan_postprocess
+                pp = run_swan_postprocess(
+                    run_id=run_id,
+                    scratch=scratch,
+                    build_spec=build_spec,
+                    runs_uri_for=lambda rel: _runs_uri(run_id, rel),
+                )
+                if pp.status == "ok" and pp.manifest is not None:
+                    publish_manifest_uri = _write_publish_manifest(run_id, pp.manifest)
+                    LOG.info("swan postprocess ok: publish_manifest_uri=%s", publish_manifest_uri)
+                else:
+                    error_code = pp.error_code
+                    LOG.warning("swan postprocess honesty gate: %s %s", pp.error_code, pp.error_message)
+            except Exception as pp_exc:
+                LOG.warning("swan postprocess failed (non-fatal): %s", pp_exc)
+
+        if publish_manifest_uri and publish_manifest_uri not in output_uris:
+            output_uris.append(publish_manifest_uri)
+
     except SwanBathyCoverageError as exc:
         LOG.error("swan bathy no-coverage: %s", exc)
         error_msg = str(exc)
@@ -766,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
         started_at=started_at,
         error=error_msg,
         error_code=error_code,
+        publish_manifest_uri=publish_manifest_uri,
     )
     return exit_code
 

@@ -409,8 +409,65 @@ async def model_landslide_scenario(
             },
         )
 
-    # --- Step 4: download the field COG + read the worker result block ------
+    # --- Register-only branch (worker postprocess offload) -------------------
+    # If the worker wrote a publish_manifest.json (schema_version==1), read +
+    # schema-gate it and SHORT-CIRCUIT the on-box heavy tail (no download, no
+    # postprocess_landlab). Degrades cleanly to the legacy on-box path when
+    # absent (pre-rebuild worker image) or schema unknown.
+    from .register_published_manifest import (
+        read_publish_manifest,
+        register_manifest_layers,
+    )
+
     batch_run_id = getattr(run_result, "run_id", None) or rid
+    _manifest = await asyncio.to_thread(read_publish_manifest, run_result)
+    if _manifest is not None:
+        logger.info(
+            "model_landslide_scenario: REGISTER-ONLY path (worker postprocess "
+            "offload) run_id=%s engine=%s layers=%d",
+            batch_run_id, _manifest.engine, len(_manifest.layers),
+        )
+        async with substep(current_emitter(), "publish_layer"):
+            _reg = register_manifest_layers(
+                _manifest, run_id=batch_run_id, bbox=tuple(bbox)
+            )
+        _primary_layers = [lyr for lyr in _reg.layers if lyr.role == "primary"]
+        _frame_layers = [lyr for lyr in _reg.layers if lyr.role != "primary"]
+        if _frame_layers and emitter is not None:
+            for _lyr in _frame_layers:
+                try:
+                    await emitter.add_loaded_layer(_lyr)
+                except Exception:  # noqa: BLE001
+                    pass
+        if not _primary_layers:
+            raise LandslideWorkflowError(
+                "LANDLAB_NO_LAYERS",
+                "worker publish_manifest produced no primary layer (empty solve?)",
+            )
+        _prim = _primary_layers[0]
+        _m = _reg.metrics
+        _typed_primary = LandlabSusceptibilityLayerURI(
+            uri=_prim.uri,
+            layer_type=_prim.layer_type,
+            layer_id=_prim.layer_id,
+            name=_prim.name,
+            style_preset=_prim.style_preset,
+            bbox=tuple(bbox),
+            role=_prim.role,
+            unstable_area_fraction=float(_m.get("unstable_area_fraction", 0.0)),
+            min_factor_of_safety=float(_m.get("min_factor_of_safety", 0.0)),
+            mean_probability_of_failure=float(_m.get("mean_probability_of_failure", 0.0)),
+        )
+        if emitter is not None:
+            try:
+                await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "model_landslide_scenario: authoritative zoom-to emit failed: %s", exc
+                )
+        return _typed_primary
+
+    # --- Step 4: download the field COG + read the worker result block ------
     async with substep(current_emitter(), "download_landlab_outputs"):
         (
             local_field,

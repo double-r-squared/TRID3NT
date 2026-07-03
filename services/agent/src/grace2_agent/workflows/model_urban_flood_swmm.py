@@ -786,6 +786,104 @@ async def model_urban_flood_swmm(
                         },
                     )
 
+            # Register-only fast path: if the Batch worker wrote a
+            # publish_manifest (MANIFEST_SCHEMA_VERSION=1) alongside
+            # completion.json, skip the .out download + agent-side postprocess
+            # entirely.  The worker already produced COGs + band_stats + TiTiler
+            # tile URLs; we just register them and return early.  Falls through
+            # to the legacy download+postprocess path when the manifest is absent
+            # (pre-manifest workers, manifest schema unknown).
+            from .register_published_manifest import (
+                read_publish_manifest,
+                register_manifest_layers,
+            )
+            batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
+            _swmm_manifest = await asyncio.to_thread(
+                read_publish_manifest, run_result
+            )
+            if _swmm_manifest is not None:
+                async with substep(emitter, "postprocess_swmm"):
+                    _swmm_reg = register_manifest_layers(
+                        _swmm_manifest, run_id=batch_run_id, bbox=tuple(bbox)
+                    )
+                if not _swmm_reg.layers:
+                    raise SWMMWorkflowError(
+                        "SWMM_NO_LAYERS",
+                        "worker publish_manifest produced no registered depth "
+                        "layers (honesty floor: cannot narrate an empty solve)",
+                    )
+                _swmm_m = _swmm_reg.metrics
+                _swmm_prim = _swmm_reg.layers[0]
+                _swmm_frame_layers = _swmm_reg.layers[1:]
+                peak = SWMMDepthLayerURI(
+                    uri=_swmm_prim.uri,
+                    layer_type=_swmm_prim.layer_type,
+                    layer_id=_swmm_prim.layer_id,
+                    name=_swmm_prim.name,
+                    style_preset=_swmm_prim.style_preset,
+                    bbox=tuple(bbox),
+                    role=_swmm_prim.role,
+                    max_depth_m=float(_swmm_m.get("max_depth_m", 0.0)),
+                    flooded_area_km2=float(_swmm_m.get("flooded_area_km2", 0.0)),
+                    n_buildings_affected=int(
+                        _swmm_m.get("n_buildings_affected", 0)
+                    ),
+                )
+                # Authoritative bbox stamp + buildings-obstacle name suffix
+                # (mirror the non-manifest path below).
+                _n_bldg_dropped = int(
+                    getattr(staging.build, "n_buildings_dropped", 0) or 0
+                )
+                _peak_upd: dict[str, Any] = {}
+                if tuple(peak.bbox or ()) != tuple(bbox):
+                    _peak_upd["bbox"] = tuple(bbox)
+                if _n_bldg_dropped > 0 and "(" not in (peak.name or ""):
+                    _plural = (
+                        "building" if _n_bldg_dropped == 1 else "buildings"
+                    )
+                    _peak_upd["name"] = (
+                        f"{peak.name} ({_n_bldg_dropped} {_plural} as obstacles)"
+                    )
+                if _peak_upd:
+                    peak = peak.model_copy(update=_peak_upd)
+                # Emit frame animation layers (already TiTiler URLs; no
+                # publish_layer round-trip needed).
+                _emitted_frames = await _emit_frame_layers(
+                    emitter,
+                    _swmm_frame_layers,  # type: ignore[arg-type]
+                    batch_run_id,
+                )
+                # Authoritative zoom-to (mirrors the non-manifest path).
+                if emitter is not None:
+                    try:
+                        await emitter.emit_map_command(
+                            "zoom-to", {"bbox": list(bbox)}
+                        )
+                    except Exception as _ze:  # noqa: BLE001
+                        logger.warning(
+                            "model_urban_flood_swmm: zoom-to (manifest path) "
+                            "failed: %s",
+                            _ze,
+                        )
+                if cleanup_deck and deck_dir_to_clean:
+                    _cleanup_deck_dir(deck_dir_to_clean)
+                logger.info(
+                    "model_urban_flood_swmm (manifest path) run_id=%s "
+                    "max_depth_m=%.4g flooded_area_km2=%.6g "
+                    "n_buildings_dropped=%d n_buildings_affected=%d "
+                    "frames_emitted=%d/%d peak_uri=%s",
+                    batch_run_id,
+                    peak.max_depth_m,
+                    peak.flooded_area_km2,
+                    _n_bldg_dropped,
+                    peak.n_buildings_affected,
+                    _emitted_frames,
+                    len(_swmm_frame_layers),
+                    peak.uri,
+                )
+                return peak
+
+            # --- Legacy path: download .out + agent-side postprocess ----------
             # Download the Batch .out (+ .rpt for continuity provenance) to a
             # local tmp dir, then postprocess from a run-shim carrying the local
             # out_path (postprocess_swmm reads only run.out_path; the S_i_j
@@ -795,16 +893,17 @@ async def model_urban_flood_swmm(
             # composer's RESULT came back null/no narration"): the AWS-Batch
             # dispatch (_run_solver_aws_batch) MINTS A FRESH run_id (new_ulid())
             # for the job and the worker writes completion.json + the .out/.rpt
-            # under s3://<runs_bucket>/<run_result.run_id>/ — NOT under the
-            # deck-build's staging.run_id. Passing staging.run_id here pointed the
-            # download at an EMPTY prefix, so completion.json + .out were never
-            # found and the branch raised SWMM_BATCH_OUTPUT_MISSING (or, worse,
-            # the postprocess ran on an absent/empty out and the result never
-            # populated the narration scalars) — exactly the silent-no-narration
-            # symptom. Mirror model_flood_scenario's SFINCS Batch path, which
-            # postprocesses from run_result.output_uri / run_result.run_id (the
-            # worker's run_id), NEVER the staged deck's id. Fall back to
-            # staging.run_id only if the RunResult carries no run_id (defensive).
+            # under s3://<runs_bucket>/<run_result.run_id>/ -- NOT under the
+            # deck-build's staging.run_id. Passing staging.run_id here pointed
+            # the download at an EMPTY prefix, so completion.json + .out were
+            # never found and the branch raised SWMM_BATCH_OUTPUT_MISSING (or,
+            # worse, the postprocess ran on an absent/empty out and the result
+            # never populated the narration scalars) -- exactly the
+            # silent-no-narration symptom. Mirror model_flood_scenario's SFINCS
+            # Batch path, which postprocesses from run_result.output_uri /
+            # run_result.run_id (the worker's run_id), NEVER the staged deck's
+            # id. Fall back to staging.run_id only if the RunResult carries no
+            # run_id (defensive).
             batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
             # task-168: the Batch-output download + rasterize-to-COG postprocess is
             # ONE user-meaningful "postprocess_swmm" child row. A download miss
