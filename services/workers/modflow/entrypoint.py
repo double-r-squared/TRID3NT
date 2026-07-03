@@ -432,19 +432,64 @@ def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
     return uri
 
 
-def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
-    """Build the FloPy deck, run mf6, plume-postprocess; return the completion dict.
 
-    Returns a dict the caller folds into ``_write_completion``. The deck is built
-    FLAT into the scratch dir (mf6 resolves ``mfsim.nam`` package refs relative to
-    CWD, so no gwf/gwt subdir reorg is needed for a same-dir run) and mf6 runs
-    there; the plume COG lands in the same dir so the output sweep uploads it.
+# Archetype dispatch table lives in the postprocess module (single source of
+# truth for both the worker entrypoint and the agent-side tests).
+from services.workers._modflow_postprocess.postprocess import (  # noqa: E402
+    _ARCHETYPE_POSTPROCESS_RUNNERS,
+)
+
+
+def _dispatch_archetype_postprocess(
+    archetype: str | None,
+    run_id: str,
+    scratch: Path,
+    model_crs: str,
+) -> Any:
+    """Dispatch to the correct postprocess runner by archetype.
+
+    Returns a ``ModflowPostprocessResult``. When ``archetype`` is None or not in
+    the offload table, falls back to the plume runner (spill/contamination path).
+    """
+    from services.workers import _modflow_postprocess as _pp_mod
+
+    runs_uri_fn = lambda rel: _runs_uri(run_id, rel)  # noqa: E731
+    if archetype and archetype in _ARCHETYPE_POSTPROCESS_RUNNERS:
+        runner_name = _ARCHETYPE_POSTPROCESS_RUNNERS[archetype]
+        runner = getattr(_pp_mod, runner_name)
+        LOG.info(
+            "build_mode archetype postprocess: archetype=%s runner=%s",
+            archetype, runner_name,
+        )
+        return runner(run_id, scratch, model_crs, runs_uri_fn)
+    # Default: spill/plume path.
+    LOG.info(
+        "build_mode plume postprocess: archetype=%s (fallback to plume runner)",
+        archetype,
+    )
+    return _pp_mod.run_plume_postprocess(run_id, scratch, model_crs, runs_uri_fn)
+
+
+def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
+    """Build the FloPy deck, run mf6, archetype-dispatch postprocess; return completion dict.
+
+    The deck is built FLAT into the scratch dir (mf6 resolves ``mfsim.nam``
+    package refs relative to CWD) and mf6 runs there; the postprocess COG(s) land
+    in the same dir so the output sweep uploads them with no extra code.
+
+    Postprocess dispatch:
+      archetype=None (spill)                -> run_plume_postprocess (UCN->plume COG)
+      archetype=sustainable_yield           -> run_drawdown_postprocess
+      archetype=mine_dewatering             -> run_dewatering_postprocess
+      archetype=regional_water_budget       -> run_budget_partition_postprocess
+      archetype=MAR                         -> run_mounding_postprocess
+      archetype=ASR                         -> run_asr_postprocess
+      archetype=wetland_hydroperiod         -> run_wetland_hydroperiod_postprocess
     """
     from services.workers._modflow_build import (
         build_deck_kwargs_from_spec,
         validate_job_spec,
     )
-    from services.workers._modflow_postprocess import run_plume_postprocess
     from services.workers.modflow import gwt_adapter
 
     result: dict = {
@@ -462,10 +507,11 @@ def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
         workdir=str(scratch), write=True, **deck_kwargs
     )
     model_crs = getattr(deck_manifest, "model_crs", None)
+    archetype = getattr(deck_manifest, "archetype", None)
     result["model_crs"] = model_crs
     result["deck"] = {
         "model_crs": model_crs,
-        "archetype": getattr(deck_manifest, "archetype", None),
+        "archetype": archetype,
         "gwt_present": bool(getattr(deck_manifest, "gwt_present", True)),
         "spill_lat": float(getattr(deck_manifest, "spill_lat", 0.0)),
         "spill_lon": float(getattr(deck_manifest, "spill_lon", 0.0)),
@@ -479,14 +525,13 @@ def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
     result["stdout_uri"] = _upload(stdout_path, _runs_uri(run_id, "mf6.stdout"))
     result["stderr_uri"] = _upload(stderr_path, _runs_uri(run_id, "mf6.stderr"))
 
-    # Plume postprocess ONLY on a clean, converged solve (else the UCN is
-    # meaningless). Runs ON THE WORKER; writes the plume COG into scratch BEFORE
-    # the output sweep (so the *.tif glob ships it) + the publish manifest.
+    # Postprocess ONLY on a clean, converged solve. The runner is selected by the
+    # archetype from the deck manifest; runs ON THE WORKER; COG(s) land in scratch
+    # BEFORE the output sweep (so the *.tif glob ships them) + publish manifest.
     pp = None
     if rc == 0 and converged:
-        pp = run_plume_postprocess(
-            run_id, scratch, model_crs or "EPSG:4326",
-            lambda rel: _runs_uri(run_id, rel),
+        pp = _dispatch_archetype_postprocess(
+            archetype, run_id, scratch, model_crs or "EPSG:4326"
         )
         if pp.manifest is not None:
             result["publish_manifest_uri"] = _write_publish_manifest(
@@ -499,8 +544,8 @@ def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
     if result["publish_manifest_uri"]:
         result["output_uris"].append(result["publish_manifest_uri"])
 
-    # Status resolution: solve first (mf6 rc + convergence), then the empty-plume
-    # honesty gate (a clean solve with an empty plume is still a failure).
+    # Status resolution: solve first (mf6 rc + convergence), then the honesty gate
+    # (a clean solve with an empty result is still a failure).
     if rc != 0:
         result.update(exit_code=rc, status="error",
                       error=f"mf6 exited with non-zero code {rc}",
@@ -512,7 +557,7 @@ def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
     elif pp is not None and pp.status == "error":
         result.update(exit_code=1, status="error",
                       error=pp.error_message
-                      or f"plume postprocess honesty gate: {pp.error_code}",
+                      or f"postprocess honesty gate: {pp.error_code}",
                       error_code=pp.error_code)
     else:
         result.update(exit_code=0, status="ok", error=None, error_code=None)
