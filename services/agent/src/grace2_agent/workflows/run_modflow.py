@@ -138,6 +138,9 @@ __all__ = [
     "modflow_build_offload_enabled",
     "compose_and_upload_modflow_build_spec",
     "read_modflow_build_manifest",
+    # Archetype offload (GRACE2_MODFLOW_ARCHETYPE_OFFLOAD).
+    "modflow_archetype_offload_enabled",
+    "read_modflow_archetype_manifest",
 ]
 
 
@@ -1261,6 +1264,180 @@ def read_modflow_build_manifest(
         bbox=tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None,
         max_concentration_mgl=float(metrics.get("max_concentration_mgl", 0.0)),
         plume_area_km2=float(metrics.get("plume_area_km2", 0.0)),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# ARCHETYPE OFFLOAD GATE + MANIFEST READER
+# (GRACE2_MODFLOW_ARCHETYPE_OFFLOAD, default OFF, independent of the spill gate)
+# --------------------------------------------------------------------------- #
+
+
+def modflow_archetype_offload_enabled() -> bool:
+    """True when the MODFLOW archetype build + postprocess should run on Batch.
+
+    Gated OFF by default (``GRACE2_MODFLOW_ARCHETYPE_OFFLOAD`` unset) so the
+    archetype tools stay byte-identical to the legacy in-agent path. A truthy
+    value (``1``/``on``/``true``/``yes``) activates the combined
+    build+solve+archetype-postprocess Batch job. PRT archetypes
+    (``capture_zone`` / ``wellhead_protection``) and ``saltwater_intrusion``
+    are LOCAL-ONLY and are NEVER offloaded even when the gate is ON.
+    """
+    return (
+        os.environ.get("GRACE2_MODFLOW_ARCHETYPE_OFFLOAD") or ""
+    ).strip().lower() in {"1", "on", "true", "yes"}
+
+
+def read_modflow_archetype_manifest(
+    run_result: Any,
+    archetype: str,
+    *,
+    publish: bool = True,
+) -> Any:
+    """Read the worker ``publish_manifest.json`` -> archetype LayerURI (register-only).
+
+    The offload tail for archetype runs: after the combined build+solve+postprocess
+    Batch job succeeds, the worker has already rasterized the outputs into a COG
+    + written the publish manifest. The agent becomes register-only: read the thin
+    manifest, (optionally) publish the bare COG to a TiTiler tile URL, and return
+    the typed archetype LayerURI carrying the worker-computed metrics (Invariant 1).
+
+    Dispatches to the correct LayerURI subtype by ``archetype``:
+      sustainable_yield        -> DrawdownLayerURI
+      mine_dewatering          -> DewaterLayerURI
+      regional_water_budget    -> BudgetPartitionLayerURI
+      MAR                      -> MoundingLayerURI
+      ASR                      -> ASRLayerURI
+      wetland_hydroperiod      -> HydroperiodLayerURI
+
+    Raises ``MODFLOWWorkflowError`` when the manifest is missing/unparseable or
+    the worker's honesty gate flagged an empty result.
+    """
+    from grace2_contracts.modflow_contracts import (
+        ASRLayerURI,
+        BudgetPartitionLayerURI,
+        DewaterLayerURI,
+        DrawdownLayerURI,
+        HydroperiodLayerURI,
+        MoundingLayerURI,
+    )
+
+    run_id = getattr(run_result, "run_id", None)
+    prefix = getattr(run_result, "output_uri", None) or (
+        f"s3://{_runs_bucket()}/{run_id}/"
+    )
+    manifest_uri = prefix.rstrip("/") + "/publish_manifest.json"
+    try:
+        manifest = json.loads(_read_object_text(manifest_uri))
+    except Exception as exc:  # noqa: BLE001
+        raise MODFLOWWorkflowError(
+            "MODFLOW_ARCHETYPE_OUTPUT_MISSING",
+            message=(
+                f"could not read publish_manifest.json from {manifest_uri}: {exc}"
+            ),
+            details={"run_id": run_id, "manifest_uri": manifest_uri},
+        ) from exc
+
+    if manifest.get("status") != "ok":
+        raise MODFLOWWorkflowError(
+            manifest.get("error_code") or "MODFLOW_ARCHETYPE_EMPTY_RESULT",
+            message=(
+                "MODFLOW archetype worker reported a non-ok postprocess "
+                f"(status={manifest.get('status')!r}, "
+                f"error_code={manifest.get('error_code')!r})"
+            ),
+            details={"run_id": run_id, "archetype": archetype},
+        )
+
+    layers = manifest.get("layers") or []
+    if not layers:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_ARCHETYPE_EMPTY_RESULT",
+            message=f"publish_manifest.json carried no layers (archetype={archetype!r})",
+            details={"run_id": run_id},
+        )
+    layer = layers[0]
+    metrics = layer.get("metrics") or manifest.get("metrics") or {}
+    cog_uri = layer.get("cog_uri")
+    bbox = layer.get("bbox")
+    bbox_tuple = (
+        tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None
+    )
+
+    final_uri: str = cog_uri or ""
+    if publish and isinstance(cog_uri, str) and (
+        cog_uri.startswith("s3://") or cog_uri.startswith("gs://")
+    ):
+        try:
+            from ..tools.publish_layer import publish_layer
+
+            wms_url = publish_layer(
+                layer_uri=cog_uri,
+                layer_id=layer.get("layer_id_stem", f"{archetype}-{run_id}"),
+                style_preset=layer.get("style_preset", "continuous_head_m"),
+            )
+            if wms_url:
+                final_uri = wms_url
+        except Exception as exc:  # noqa: BLE001 -- non-fatal (COG URI survives)
+            logger.warning(
+                "publish_layer failed for offload archetype %s: %s", archetype, exc
+            )
+
+    # Shared kwargs for all typed LayerURIs.
+    common: dict[str, Any] = {
+        "layer_id": layer.get("layer_id_stem", f"{archetype}-{run_id}"),
+        "name": layer.get("name", archetype),
+        "layer_type": layer.get("layer_type", "raster"),
+        "uri": final_uri,
+        "style_preset": layer.get("style_preset", "continuous_head_m"),
+        "role": layer.get("role", "primary"),
+        "units": layer.get("units", "m"),
+        "bbox": bbox_tuple,
+    }
+
+    if archetype == "sustainable_yield":
+        return DrawdownLayerURI(
+            **common,
+            max_drawdown_m=max(0.0, float(metrics.get("max_drawdown_m", 0.0))),
+            head_decline_timeseries=metrics.get("head_decline_timeseries"),
+        )
+    if archetype == "mine_dewatering":
+        return DewaterLayerURI(
+            **common,
+            dewatering_rate_m3_day=max(0.0, float(metrics.get("dewatering_rate_m3_day", 0.0))),
+            drain_cell_count=int(metrics.get("drain_cell_count", 0)),
+        )
+    if archetype == "regional_water_budget":
+        return BudgetPartitionLayerURI(
+            **common,
+            budget_partition_m3_day=metrics.get("budget_partition_m3_day") or {},
+        )
+    if archetype == "MAR":
+        return MoundingLayerURI(
+            **common,
+            max_mounding_m=max(0.0, float(metrics.get("max_mounding_m", 0.0))),
+            recharged_volume_m3=metrics.get("recharged_volume_m3"),
+        )
+    if archetype == "ASR":
+        return ASRLayerURI(
+            **common,
+            recovery_efficiency=metrics.get("recovery_efficiency"),
+            head_timeseries=metrics.get("head_timeseries"),
+        )
+    if archetype == "wetland_hydroperiod":
+        return HydroperiodLayerURI(
+            **common,
+            seasonal_head_range_m=max(0.0, float(metrics.get("seasonal_head_range_m", 0.0))),
+            head_timeseries=metrics.get("head_timeseries"),
+        )
+    # Should never reach here if gate guards PRT/saltwater correctly.
+    raise MODFLOWWorkflowError(
+        "MODFLOW_ARCHETYPE_UNKNOWN",
+        message=(
+            f"read_modflow_archetype_manifest called with unrecognised archetype "
+            f"{archetype!r} -- this archetype is not offloadable"
+        ),
+        details={"run_id": run_id, "archetype": archetype},
     )
 
 
