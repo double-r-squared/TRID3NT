@@ -194,7 +194,7 @@ resource "aws_ecs_task_definition" "agent" {
         # unset. The "sfincs-build" solver key falls back to the grace2-sfincs job
         # def (same image), so no new job def is required. Flip to "0"/remove to roll
         # back instantly (next new session reverts to in-agent build).
-        { name = "GRACE2_SFINCS_BUILD_OFFLOAD", value = "0" },
+        { name = "GRACE2_SFINCS_BUILD_OFFLOAD", value = "1" },
       ]
 
       logConfiguration = {
