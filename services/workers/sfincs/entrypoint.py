@@ -315,6 +315,17 @@ def _build_argv_parser() -> argparse.ArgumentParser:
         default=os.environ.get("GRACE2_MANIFEST_URI", "").strip(),
         help="gs:// URI of the setup manifest (also $GRACE2_MANIFEST_URI).",
     )
+    p.add_argument(
+        "--build-spec-uri",
+        default=os.environ.get("GRACE2_BUILD_SPEC_URI", "").strip(),
+        help=(
+            "s3:// URI of the agent-composed SFINCS BUILD job_spec (also "
+            "$GRACE2_BUILD_SPEC_URI). When set, the worker runs the hydromt "
+            "model BUILD (heavy-compute offload) BEFORE the solve + postprocess, "
+            "so the always-on agent never loads a DEM/NetCDF. Takes precedence "
+            "over --manifest-uri."
+        ),
+    )
     return p
 
 
@@ -328,6 +339,8 @@ def _write_completion(
     started_at: str,
     error: str | None,
     publish_manifest_uri: str | None = None,
+    deck: dict | None = None,
+    error_code: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -337,6 +350,15 @@ def _write_completion(
         "sfincs_stderr_uri": stderr_uri,
         "output_uris": output_uris,
         "publish_manifest_uri": publish_manifest_uri,
+        # Build-mode (heavy-compute offload) provenance: autoscale / grid_res /
+        # nlcd gate result the worker's hydromt build produced. None on the
+        # legacy pre-built-deck (--manifest-uri) path. Mirrors the deckbuilder
+        # (quadtree) worker's completion.json ``deck`` block.
+        "deck": deck,
+        # The A.6 open-set error code (e.g. LULC_MAPPING_MISMATCH) when the build
+        # or the honesty gate failed, so the agent maps it into the SAME failed
+        # AssessmentEnvelope it produced for the in-agent build. None on success.
+        "error_code": error_code,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
@@ -359,25 +381,130 @@ def _write_completion(
     return completion_uri
 
 
+class _BuildAborted(Exception):
+    """Internal sentinel: the hydromt build failed with a typed SFINCSSetupError.
+
+    Its ``result`` dict is already populated with the error_code, so the outer
+    handler just skips to writing completion.json (no generic re-wrap)."""
+
+
+def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
+    """Write the worker postprocess ``publish_manifest.json`` (before completion)."""
+    from services.workers._raster_postprocess import manifest as _manifest_mod
+
+    body = json.dumps(pp_manifest, indent=2)
+    uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+    _scheme, _bucket, _key = _split_object_uri(uri)
+    if _scheme == "s3":
+        _s3_client().put_object(
+            Bucket=_bucket, Key=_key,
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+            body, content_type="application/json"
+        )
+    LOG.info("raster postprocess: wrote %s", uri)
+    return uri
+
+
+def _solve_postprocess_sweep(
+    run_id: str,
+    run_dir: Path,
+    sfincs_args: list[str],
+    output_globs: list[str],
+) -> dict:
+    """Run SFINCS in ``run_dir`` -> postprocess -> sweep outputs (shared tail).
+
+    Used by BOTH the legacy pre-built-deck (--manifest-uri) path and the new
+    build-mode (--build-spec-uri) path: the deck already sits in ``run_dir``
+    (downloaded flat for the manifest path, built into ``<scratch>/deck`` for the
+    build path), so from the solve onward the two modes are IDENTICAL. Writes the
+    ``publish_manifest.json`` BEFORE the caller writes completion.json (Spot-
+    reclaim atomicity). Returns a dict the caller folds into completion.json.
+    """
+    rc, stdout_path, stderr_path = _run_sfincs(list(sfincs_args), run_dir)
+    # Always upload stdout/stderr so the smoke run produces evidence.
+    stdout_uri = _upload(stdout_path, _runs_uri(run_id, "sfincs.stdout"))
+    stderr_uri = _upload(stderr_path, _runs_uri(run_id, "sfincs.stderr"))
+
+    # ---- RASTER POSTPROCESS (NetCDF -> COG on the LOCAL run_dir) --------
+    # Runs ON THE WORKER (postprocess-offload): write overview-bearing COGs into
+    # run_dir BEFORE the output sweep (so the *.tif glob ships them), build the
+    # publish manifest, apply the empty-field honesty gate. Clean solve only.
+    output_uris: list[str] = []
+    publish_manifest_uri: str | None = None
+    pp_status_override: str | None = None
+    pp_error_code: str | None = None
+    if rc == 0:
+        pp_manifest, pp_status_override, pp_error_code = run_raster_postprocess(
+            run_id, run_dir
+        )
+        if pp_manifest is not None:
+            publish_manifest_uri = _write_publish_manifest(run_id, pp_manifest)
+
+    for path in _expand_outputs(list(output_globs), run_dir):
+        rel = path.relative_to(run_dir).as_posix()
+        uri = _upload(path, _runs_uri(run_id, rel))
+        output_uris.append(uri)
+    if publish_manifest_uri:
+        output_uris.append(publish_manifest_uri)
+
+    if rc != 0:
+        status = "error"
+        error_msg = f"sfincs exited with non-zero code {rc}"
+        error_code = "SOLVER_FAILED"
+    elif pp_status_override == "error":
+        # Clean solve but an empty flood field -> honesty gate (Invariant 1).
+        status = "error"
+        error_msg = (
+            f"raster postprocess honesty gate: {pp_error_code} "
+            "(solve clean but the flood field is empty)"
+        )
+        error_code = pp_error_code
+    else:
+        status = "ok"
+        error_msg = None
+        error_code = None
+
+    return {
+        "status": status,
+        "exit_code": rc,
+        "error": error_msg,
+        "error_code": error_code,
+        "output_uris": output_uris,
+        "stdout_uri": stdout_uri,
+        "stderr_uri": stderr_uri,
+        "publish_manifest_uri": publish_manifest_uri,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_argv_parser()
     args = parser.parse_args(argv)
 
     run_id = args.run_id
     manifest_uri = args.manifest_uri
+    build_spec_uri = getattr(args, "build_spec_uri", "") or ""
     if not run_id:
         LOG.error("run_id is required (pass --run-id or set $GRACE2_RUN_ID)")
         return 2
-    if not manifest_uri:
-        LOG.error("manifest_uri is required (pass --manifest-uri or set $GRACE2_MANIFEST_URI)")
+    if not manifest_uri and not build_spec_uri:
+        LOG.error(
+            "one of --manifest-uri / --build-spec-uri is required "
+            "(also $GRACE2_MANIFEST_URI / $GRACE2_BUILD_SPEC_URI)"
+        )
         return 2
 
+    build_mode = bool(build_spec_uri)
     LOG.info(
-        "grace-2-sfincs-solver starting — project=%s run_id=%s manifest=%s "
+        "grace-2-sfincs-solver starting — project=%s run_id=%s mode=%s src=%s "
         "object_store=%s",
         GCP_PROJECT,
         run_id,
-        manifest_uri,
+        "build+solve" if build_mode else "solve",
+        build_spec_uri if build_mode else manifest_uri,
         _output_scheme(),
     )
     started_at = _utc_now()
@@ -385,107 +512,88 @@ def main(argv: list[str] | None = None) -> int:
     # Best-effort completion writing: even on hard error we attempt to write
     # completion.json so wait_for_completion (job-0041) sees a terminal state
     # instead of polling forever.
-    output_uris: list[str] = []
-    stdout_uri: str | None = None
-    stderr_uri: str | None = None
-    publish_manifest_uri: str | None = None
-    error_msg: str | None = None
-    exit_code = 1
-    status = "error"
+    result: dict = {
+        "status": "error",
+        "exit_code": 1,
+        "error": None,
+        "error_code": None,
+        "output_uris": [],
+        "stdout_uri": None,
+        "stderr_uri": None,
+        "publish_manifest_uri": None,
+    }
+    deck_provenance: dict | None = None
 
     try:
-        manifest = _read_manifest(manifest_uri)
-        inputs = manifest.get("inputs", []) or []
-        sfincs_args = manifest.get("sfincs_args", []) or []
-        outputs = manifest.get("outputs", []) or []
-
         scratch = _prepare_scratch()
-
-        for item in inputs:
-            # Manifest input entries keep the LEGACY field name ``gs_uri``; the
-            # VALUE is resolved by scheme (s3:// on Batch, gs:// on Cloud Run).
-            input_uri = item["gs_uri"]
-            dest = scratch / item["dest"]
-            _download(input_uri, dest)
-
-        rc, stdout_path, stderr_path = _run_sfincs(list(sfincs_args), scratch)
-
-        # Always upload stdout/stderr so the smoke run produces evidence.
-        stdout_uri = _upload(stdout_path, _runs_uri(run_id, "sfincs.stdout"))
-        stderr_uri = _upload(stderr_path, _runs_uri(run_id, "sfincs.stderr"))
-
-        # ---- RASTER POSTPROCESS (NetCDF -> COG on the LOCAL scratch) --------
-        # Runs ON THE WORKER (postprocess-offload spike): write overview-bearing
-        # COGs into scratch BEFORE the output sweep (so the *.tif glob ships
-        # them), build the publish manifest, apply the empty-field honesty gate.
-        # Only attempted on a clean solve; best-effort.
-        pp_status_override: str | None = None
-        pp_error_code: str | None = None
-        if rc == 0:
-            pp_manifest, pp_status_override, pp_error_code = run_raster_postprocess(
-                run_id, scratch
+        if build_mode:
+            # ---- BUILD MODE (heavy-compute offload) --------------------------
+            # The agent handed us a job_spec of already-fetched input COG URIs +
+            # the serialized forcing/options; run the hydromt model BUILD HERE
+            # (the 16 GB in-agent driver), then the SAME solve + postprocess as
+            # the legacy path on the freshly-built deck. A build failure (NLCD
+            # gate, forcing sanity, hydromt) surfaces its A.6 error_code so the
+            # agent reproduces the SAME failed AssessmentEnvelope.
+            from services.workers._sfincs_build import (
+                build_sfincs_deck,
+                validate_job_spec,
             )
-            if pp_manifest is not None:
-                # Manifest written BEFORE completion.json (Spot-reclaim atomicity).
-                from services.workers._raster_postprocess import (
-                    manifest as _manifest_mod,
+            from services.workers._sfincs_build.deck import SFINCSSetupError
+
+            spec = validate_job_spec(_read_manifest(build_spec_uri))
+            try:
+                deck_provenance = build_sfincs_deck(spec, scratch, _download)
+            except SFINCSSetupError as exc:
+                LOG.warning("worker build failed: %s (%s)", exc.error_code, exc)
+                result.update(
+                    status="error",
+                    exit_code=1,
+                    error=str(exc),
+                    error_code=exc.error_code,
                 )
-
-                body = json.dumps(pp_manifest, indent=2)
-                uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
-                _scheme, _bucket, _key = _split_object_uri(uri)
-                if _scheme == "s3":
-                    _s3_client().put_object(
-                        Bucket=_bucket, Key=_key,
-                        Body=body.encode("utf-8"),
-                        ContentType="application/json",
-                    )
-                else:
-                    _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
-                        body, content_type="application/json"
-                    )
-                publish_manifest_uri = uri
-                LOG.info("raster postprocess: wrote %s", publish_manifest_uri)
-
-        for path in _expand_outputs(list(outputs), scratch):
-            rel = path.relative_to(scratch).as_posix()
-            uri = _upload(path, _runs_uri(run_id, rel))
-            output_uris.append(uri)
-        if publish_manifest_uri:
-            output_uris.append(publish_manifest_uri)
-
-        exit_code = rc
-        if rc != 0:
-            status = "error"
-            error_msg = f"sfincs exited with non-zero code {rc}"
-        elif pp_status_override == "error":
-            # Clean solve but an empty flood field -> honesty gate (Invariant 1).
-            status = "error"
-            error_msg = (
-                f"raster postprocess honesty gate: {pp_error_code} "
-                "(solve clean but the flood field is empty)"
+                raise _BuildAborted() from exc
+            run_dir = Path(deck_provenance["deck_dir"])
+            result = _solve_postprocess_sweep(
+                run_id, run_dir, [], ["sfincs_map.nc", "*.nc", "*.tif"]
             )
         else:
-            status = "ok"
+            # ---- LEGACY SOLVE MODE (pre-built deck via --manifest-uri) -------
+            manifest = _read_manifest(manifest_uri)
+            inputs = manifest.get("inputs", []) or []
+            sfincs_args = manifest.get("sfincs_args", []) or []
+            outputs = manifest.get("outputs", []) or []
+            for item in inputs:
+                # Entries keep the LEGACY field name ``gs_uri``; the VALUE is
+                # resolved by scheme (s3:// on Batch, gs:// on Cloud Run).
+                _download(item["gs_uri"], scratch / item["dest"])
+            result = _solve_postprocess_sweep(
+                run_id, scratch, list(sfincs_args), list(outputs)
+            )
 
+    except _BuildAborted:
+        pass  # result already carries the typed build failure
     except Exception as exc:  # pragma: no cover — defensive, logged + emitted
         LOG.exception("solver entrypoint failed")
-        error_msg = f"{type(exc).__name__}: {exc}"
-        exit_code = 1
-        status = "error"
+        result.update(
+            status="error",
+            exit_code=1,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
     _write_completion(
         run_id=run_id,
-        status=status,
-        exit_code=exit_code,
-        output_uris=output_uris,
-        stdout_uri=stdout_uri,
-        stderr_uri=stderr_uri,
+        status=result["status"],
+        exit_code=result["exit_code"],
+        output_uris=result["output_uris"],
+        stdout_uri=result["stdout_uri"],
+        stderr_uri=result["stderr_uri"],
         started_at=started_at,
-        error=error_msg,
-        publish_manifest_uri=publish_manifest_uri,
+        error=result["error"],
+        publish_manifest_uri=result["publish_manifest_uri"],
+        deck=deck_provenance,
+        error_code=result["error_code"],
     )
-    return exit_code
+    return result["exit_code"]
 
 
 if __name__ == "__main__":  # pragma: no cover

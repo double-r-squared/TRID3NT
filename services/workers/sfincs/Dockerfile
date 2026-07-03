@@ -57,8 +57,13 @@ RUN apt-get update \
         "rasterio>=1.3,<2" \
         "pyproj>=3.4" \
         "h5netcdf>=1.1" \
+        "pyyaml>=6.0" \
+        "geopandas>=0.13" \
+        "pandas>=2.0,<3" \
+        "hydromt-sfincs>=1.1.2,<2.0" \
     && python3 -c "from google.cloud import storage; import boto3; print('storage SDKs import OK (gcs + boto3)')" \
-    && python3 -c "import xarray; from scipy.interpolate import griddata; import rasterio, pyproj; from pyproj import Transformer; print('raster_postprocess geo stack + GDAL/PROJ tripwire OK')"
+    && python3 -c "import xarray; from scipy.interpolate import griddata; import rasterio, pyproj; from pyproj import Transformer; print('raster_postprocess geo stack + GDAL/PROJ tripwire OK')" \
+    && python3 -c "import hydromt_sfincs, geopandas, yaml; print('hydromt-sfincs build stack import OK (heavy-compute offload)')"
 
 # COPY the entrypoint into a stable runtime path. Build context is the repo
 # root (see infra/sfincs/cloudbuild.yaml); paths below are relative to repo
@@ -71,6 +76,15 @@ COPY services/workers/sfincs/ /opt/grace2/services/workers/sfincs/
 # regress to raw-NetCDF (the quadtree worker carries the same package).
 RUN mkdir -p /opt/grace2/services/workers/_raster_postprocess
 COPY services/workers/_raster_postprocess/ /opt/grace2/services/workers/_raster_postprocess/
+
+# The SFINCS regular-grid deck BUILD substrate (heavy-compute offload). Vendored
+# pure hydromt-SFINCS build logic (dataclasses + Manning/NLCD gate + adaptive
+# autoscale + YAML config generator) + the ``build_sfincs_deck`` orchestrator the
+# entrypoint's --build-spec-uri mode calls. The hydromt-sfincs dep installed
+# above powers it. Kept in sync with the agent's sfincs_builder.py (see the
+# module header); ``services/workers/`` is not on the agent import path.
+RUN mkdir -p /opt/grace2/services/workers/_sfincs_build
+COPY services/workers/_sfincs_build/ /opt/grace2/services/workers/_sfincs_build/
 
 # WORKDIR controls where SFINCS writes its scratch outputs before the
 # entrypoint uploads them. /opt/grace2/work is a writable scratch dir; the
@@ -95,11 +109,15 @@ ENV PYTHONPATH=/opt/grace2 \
 #   GRACE2_RUN_ID        — the run ID under which outputs land (set per Batch job).
 #   GRACE2_MANIFEST_URI  — s3:// URI of the JSON setup manifest the entrypoint
 #                          reads (lists input objects + bbox + scenario).
+#   GRACE2_BUILD_SPEC_URI — s3:// URI of the agent-composed BUILD job_spec; when
+#                          set the worker runs hydromt build + solve + postprocess
+#                          (heavy-compute offload). Takes precedence over MANIFEST.
 ENV GRACE2_OBJECT_STORE=s3 \
     GRACE2_CACHE_BUCKET=grace2-hazard-cache-226996537797 \
     GRACE2_RUNS_BUCKET=grace2-hazard-runs-226996537797 \
     GRACE2_RUN_ID="" \
-    GRACE2_MANIFEST_URI=""
+    GRACE2_MANIFEST_URI="" \
+    GRACE2_BUILD_SPEC_URI=""
 
 # Build-time smoke: the SFINCS binary exists where we expect, and the
 # entrypoint module imports cleanly. Catches a base-image path shift or a
@@ -107,7 +125,8 @@ ENV GRACE2_OBJECT_STORE=s3 \
 RUN test -x /usr/local/bin/sfincs \
     && echo "SFINCS binary OK at /usr/local/bin/sfincs" \
     && python3 -c "from services.workers.sfincs.entrypoint import main, run_raster_postprocess; print('entrypoint import OK')" \
-    && python3 -c "from services.workers._raster_postprocess import postprocess, cog, sfincs_reader, manifest, band_stats; print('raster_postprocess substrate import OK')"
+    && python3 -c "from services.workers._raster_postprocess import postprocess, cog, sfincs_reader, manifest, band_stats; print('raster_postprocess substrate import OK')" \
+    && python3 -c "from services.workers._sfincs_build import build_sfincs_deck, validate_job_spec; print('sfincs_build (offload) substrate import OK')"
 
 # ENTRYPOINT overrides the upstream sfincs default so this image runs as a
 # one-shot solver Job, not an interactive container. CMD is empty so Cloud
