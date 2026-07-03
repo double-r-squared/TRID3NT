@@ -59,7 +59,6 @@ from ..pipeline_emitter import (
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_geoclaw import (
     GEOCLAW_TARGET_GROUND_RES_M,
-    PostprocessGeoClawError,
     compute_geoclaw_grid_shape,
     postprocess_geoclaw,
 )
