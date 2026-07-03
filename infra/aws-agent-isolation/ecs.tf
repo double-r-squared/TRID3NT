@@ -195,6 +195,12 @@ resource "aws_ecs_task_definition" "agent" {
         # def (same image), so no new job def is required. Flip to "0"/remove to roll
         # back instantly (next new session reverts to in-agent build).
         { name = "GRACE2_SFINCS_BUILD_OFFLOAD", value = "1" },
+        # Same heavy-compute offload for the MODFLOW spill/contamination (GWF+GWT
+        # plume) path: build (FloPy) + plume postprocess run in the grace2-modflow
+        # worker. Gated ON; only the spill tool reads it (archetypes stay legacy,
+        # byte-identical). "modflow-build" solver falls back to the grace2-modflow
+        # job def. Flip to "0" to roll back instantly. (2026-07-03)
+        { name = "GRACE2_MODFLOW_BUILD_OFFLOAD", value = "1" },
       ]
 
       logConfiguration = {
