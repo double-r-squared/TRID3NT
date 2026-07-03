@@ -188,6 +188,13 @@ resource "aws_ecs_task_definition" "agent" {
         # (E2L74AS56MVZ87) serves TiTiler /cog + /tiles; same value the box uses.
         # (QGIS vector-publish env, job-0308, is a separate concern.) (2026-06-30)
         { name = "GRACE2_TILE_SERVER_BASE", value = "https://d125yfbyjrpbre.cloudfront.net" },
+        # Heavy-compute offload (2026-07-03): move the pluvial SFINCS hydromt BUILD
+        # off the agent into the grace2-sfincs Batch worker (build+solve+postprocess
+        # in one tear-down job). Gated ON here; the composer is byte-identical when
+        # unset. The "sfincs-build" solver key falls back to the grace2-sfincs job
+        # def (same image), so no new job def is required. Flip to "0"/remove to roll
+        # back instantly (next new session reverts to in-agent build).
+        { name = "GRACE2_SFINCS_BUILD_OFFLOAD", value = "0" },
       ]
 
       logConfiguration = {
