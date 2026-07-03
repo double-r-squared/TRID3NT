@@ -327,6 +327,17 @@ def _build_argv_parser() -> argparse.ArgumentParser:
         default=os.environ.get("GRACE2_MANIFEST_URI", "").strip(),
         help="gs:// URI of the setup manifest (also $GRACE2_MANIFEST_URI).",
     )
+    p.add_argument(
+        "--build-spec-uri",
+        default=os.environ.get("GRACE2_BUILD_SPEC_URI", "").strip(),
+        help=(
+            "s3:// URI of the agent-composed MODFLOW BUILD job_spec (also "
+            "$GRACE2_BUILD_SPEC_URI). When set, the worker runs the FloPy deck "
+            "BUILD (build_modflow_deck) BEFORE the mf6 solve + plume postprocess "
+            "(heavy-compute offload), so the always-on agent never builds the deck "
+            "or rasterizes the UCN. Takes precedence over --manifest-uri."
+        ),
+    )
     return p
 
 
@@ -341,6 +352,9 @@ def _write_completion(
     stderr_uri: str | None,
     started_at: str,
     error: str | None,
+    publish_manifest_uri: str | None = None,
+    deck: dict | None = None,
+    error_code: str | None = None,
 ) -> str:
     payload = {
         "run_id": run_id,
@@ -351,6 +365,13 @@ def _write_completion(
         "mf6_stdout_uri": stdout_uri,
         "mf6_stderr_uri": stderr_uri,
         "output_uris": output_uris,
+        # Build-mode (heavy-compute offload) fields. None on the legacy pre-built-
+        # deck (--manifest-uri) path -> byte-identical completion.json there.
+        # Mirrors the SFINCS worker's completion.json ``publish_manifest_uri`` /
+        # ``deck`` / ``error_code`` block.
+        "publish_manifest_uri": publish_manifest_uri,
+        "deck": deck,
+        "error_code": error_code,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "error": error,
@@ -373,25 +394,156 @@ def _write_completion(
     return completion_uri
 
 
+# --------------------------------------------------------------------------- #
+# BUILD MODE (heavy-compute offload) — build_modflow_deck -> mf6 -> plume COG.
+# The agent hands us a job_spec of confirmed MODFLOWRunArgs; the FloPy deck BUILD
+# (which used to run in the always-on agent) runs HERE, then the SAME mf6 solve +
+# convergence guard, then the plume raster postprocess (also formerly in-agent).
+# Mirrors services/workers/sfincs/entrypoint.py's --build-spec-uri branch.
+# --------------------------------------------------------------------------- #
+
+#: Build-mode output globs (the deck is built FLAT in scratch; mf6 writes outputs
+#: + the postprocess writes the plume COG there). A recursive net is
+#: belt-and-suspenders. Mirrors run_modflow._compose_manifest's output set + the
+#: postprocess *.tif.
+_BUILD_OUTPUT_GLOBS: tuple[str, ...] = (
+    "*.ucn", "*.hds", "*.cbc", "*.lst", "mfsim.lst", "*.tif",
+    "**/*.ucn", "**/*.lst",
+)
+
+
+def _write_publish_manifest(run_id: str, pp_manifest: dict) -> str:
+    """Write the worker postprocess ``publish_manifest.json`` (before completion)."""
+    from services.workers._raster_postprocess import manifest as _manifest_mod
+
+    body = json.dumps(pp_manifest, indent=2)
+    uri = _runs_uri(run_id, _manifest_mod.MANIFEST_FILENAME)
+    _scheme, _bucket, _key = _split_object_uri(uri)
+    if _scheme == "s3":
+        _s3_client().put_object(
+            Bucket=_bucket, Key=_key,
+            Body=body.encode("utf-8"), ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(_bucket).blob(_key).upload_from_string(
+            body, content_type="application/json"
+        )
+    LOG.info("modflow postprocess: wrote %s", uri)
+    return uri
+
+
+def _run_build_mode(run_id: str, build_spec_uri: str) -> dict:
+    """Build the FloPy deck, run mf6, plume-postprocess; return the completion dict.
+
+    Returns a dict the caller folds into ``_write_completion``. The deck is built
+    FLAT into the scratch dir (mf6 resolves ``mfsim.nam`` package refs relative to
+    CWD, so no gwf/gwt subdir reorg is needed for a same-dir run) and mf6 runs
+    there; the plume COG lands in the same dir so the output sweep uploads it.
+    """
+    from services.workers._modflow_build import (
+        build_deck_kwargs_from_spec,
+        validate_job_spec,
+    )
+    from services.workers._modflow_postprocess import run_plume_postprocess
+    from services.workers.modflow import gwt_adapter
+
+    result: dict = {
+        "status": "error", "exit_code": 1, "converged": False,
+        "model_crs": None, "output_uris": [], "stdout_uri": None,
+        "stderr_uri": None, "publish_manifest_uri": None, "deck": None,
+        "error": None, "error_code": None,
+    }
+
+    scratch = _prepare_scratch()
+    spec = validate_job_spec(_read_manifest(build_spec_uri))
+    deck_kwargs = build_deck_kwargs_from_spec(spec)
+
+    deck_manifest = gwt_adapter.build_modflow_deck(
+        workdir=str(scratch), write=True, **deck_kwargs
+    )
+    model_crs = getattr(deck_manifest, "model_crs", None)
+    result["model_crs"] = model_crs
+    result["deck"] = {
+        "model_crs": model_crs,
+        "archetype": getattr(deck_manifest, "archetype", None),
+        "gwt_present": bool(getattr(deck_manifest, "gwt_present", True)),
+        "spill_lat": float(getattr(deck_manifest, "spill_lat", 0.0)),
+        "spill_lon": float(getattr(deck_manifest, "spill_lon", 0.0)),
+        "nrow": int(getattr(deck_manifest, "nrow", 0)),
+        "ncol": int(getattr(deck_manifest, "ncol", 0)),
+    }
+
+    rc, stdout_path, stderr_path = _run_mf6([], scratch)
+    converged, conv_note = _check_convergence(scratch)
+    result["converged"] = converged
+    result["stdout_uri"] = _upload(stdout_path, _runs_uri(run_id, "mf6.stdout"))
+    result["stderr_uri"] = _upload(stderr_path, _runs_uri(run_id, "mf6.stderr"))
+
+    # Plume postprocess ONLY on a clean, converged solve (else the UCN is
+    # meaningless). Runs ON THE WORKER; writes the plume COG into scratch BEFORE
+    # the output sweep (so the *.tif glob ships it) + the publish manifest.
+    pp = None
+    if rc == 0 and converged:
+        pp = run_plume_postprocess(
+            run_id, scratch, model_crs or "EPSG:4326",
+            lambda rel: _runs_uri(run_id, rel),
+        )
+        if pp.manifest is not None:
+            result["publish_manifest_uri"] = _write_publish_manifest(
+                run_id, pp.manifest
+            )
+
+    for path in _expand_outputs(list(_BUILD_OUTPUT_GLOBS), scratch):
+        rel = path.relative_to(scratch).as_posix()
+        result["output_uris"].append(_upload(path, _runs_uri(run_id, rel)))
+    if result["publish_manifest_uri"]:
+        result["output_uris"].append(result["publish_manifest_uri"])
+
+    # Status resolution: solve first (mf6 rc + convergence), then the empty-plume
+    # honesty gate (a clean solve with an empty plume is still a failure).
+    if rc != 0:
+        result.update(exit_code=rc, status="error",
+                      error=f"mf6 exited with non-zero code {rc}",
+                      error_code="MODFLOW_SOLVER_FAILED")
+    elif not converged:
+        result.update(exit_code=2, status="error",
+                      error=conv_note or "solver_diverged",
+                      error_code="MODFLOW_SOLVER_DIVERGED")
+    elif pp is not None and pp.status == "error":
+        result.update(exit_code=1, status="error",
+                      error=pp.error_message
+                      or f"plume postprocess honesty gate: {pp.error_code}",
+                      error_code=pp.error_code)
+    else:
+        result.update(exit_code=0, status="ok", error=None, error_code=None)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_argv_parser()
     args = parser.parse_args(argv)
 
     run_id = args.run_id
     manifest_uri = args.manifest_uri
+    build_spec_uri = getattr(args, "build_spec_uri", "") or ""
     if not run_id:
         LOG.error("run_id is required (pass --run-id or set $GRACE2_RUN_ID)")
         return 2
-    if not manifest_uri:
-        LOG.error("manifest_uri is required (pass --manifest-uri or set $GRACE2_MANIFEST_URI)")
+    if not manifest_uri and not build_spec_uri:
+        LOG.error(
+            "one of --manifest-uri / --build-spec-uri is required "
+            "(also $GRACE2_MANIFEST_URI / $GRACE2_BUILD_SPEC_URI)"
+        )
         return 2
 
+    build_mode = bool(build_spec_uri)
     LOG.info(
-        "grace-2-modflow-solver starting — project=%s run_id=%s manifest=%s "
+        "grace-2-modflow-solver starting — project=%s run_id=%s mode=%s src=%s "
         "object_store=%s",
         GCP_PROJECT,
         run_id,
-        manifest_uri,
+        "build+solve" if build_mode else "solve",
+        build_spec_uri if build_mode else manifest_uri,
         _output_scheme(),
     )
     started_at = _utc_now()
@@ -407,56 +559,73 @@ def main(argv: list[str] | None = None) -> int:
     status = "error"
     converged = False
     model_crs: str | None = None
+    publish_manifest_uri: str | None = None
+    deck_provenance: dict | None = None
+    error_code: str | None = None
 
     try:
-        manifest = _read_manifest(manifest_uri)
-        inputs = manifest.get("inputs", []) or []
-        mf6_args = manifest.get("mf6_args", []) or []
-        outputs = manifest.get("outputs", []) or []
-        model_crs = manifest.get("model_crs")
-
-        scratch = _prepare_scratch()
-
-        for item in inputs:
-            # Manifest input entries keep the LEGACY field name ``gs_uri``; the
-            # VALUE is resolved by scheme (s3:// on Batch, gs:// on Cloud Run).
-            input_uri = item["gs_uri"]
-            # dest may carry a subdir path (gwf/..., gwt/...); _download
-            # mkdir -p's the parent, reconstructing the mfsim.nam-referenced
-            # subdirectory tree in scratch.
-            dest = scratch / item["dest"]
-            _download(input_uri, dest)
-
-        rc, stdout_path, stderr_path = _run_mf6(list(mf6_args), scratch)
-
-        # Convergence guard — list file is authoritative (design doc § 8).
-        converged, conv_note = _check_convergence(scratch)
-
-        # Always upload stdout/stderr so the smoke run produces evidence.
-        stdout_uri = _upload(stdout_path, _runs_uri(run_id, "mf6.stdout"))
-        stderr_uri = _upload(stderr_path, _runs_uri(run_id, "mf6.stderr"))
-
-        for path in _expand_outputs(list(outputs), scratch):
-            rel = path.relative_to(scratch).as_posix()
-            uri = _upload(path, _runs_uri(run_id, rel))
-            output_uris.append(uri)
-
-        # Exit-code resolution (design doc § 8):
-        #   - mf6 nonzero  -> error, surface the raw code.
-        #   - mf6 zero but list file shows divergence -> override exit_code=2
-        #     (solver_diverged), status=error. The list file overrides the 0.
-        #   - mf6 zero and converged -> ok.
-        if rc != 0:
-            exit_code = rc
-            status = "error"
-            error_msg = f"mf6 exited with non-zero code {rc}"
-        elif not converged:
-            exit_code = 2
-            status = "error"
-            error_msg = conv_note or "solver_diverged"
+        if build_mode:
+            # ---- BUILD MODE (heavy-compute offload) --------------------------
+            result = _run_build_mode(run_id, build_spec_uri)
+            status = result["status"]
+            exit_code = result["exit_code"]
+            converged = result["converged"]
+            model_crs = result["model_crs"]
+            output_uris = result["output_uris"]
+            stdout_uri = result["stdout_uri"]
+            stderr_uri = result["stderr_uri"]
+            publish_manifest_uri = result["publish_manifest_uri"]
+            deck_provenance = result["deck"]
+            error_msg = result["error"]
+            error_code = result["error_code"]
         else:
-            exit_code = 0
-            status = "ok"
+            # ---- LEGACY SOLVE MODE (pre-built deck via --manifest-uri) -------
+            manifest = _read_manifest(manifest_uri)
+            inputs = manifest.get("inputs", []) or []
+            mf6_args = manifest.get("mf6_args", []) or []
+            outputs = manifest.get("outputs", []) or []
+            model_crs = manifest.get("model_crs")
+
+            scratch = _prepare_scratch()
+
+            for item in inputs:
+                # Manifest input entries keep the LEGACY field name ``gs_uri``;
+                # the VALUE is resolved by scheme (s3:// on Batch, gs:// on Cloud
+                # Run). dest may carry a subdir path (gwf/..., gwt/...);
+                # _download mkdir -p's the parent, reconstructing the
+                # mfsim.nam-referenced subdirectory tree in scratch.
+                _download(item["gs_uri"], scratch / item["dest"])
+
+            rc, stdout_path, stderr_path = _run_mf6(list(mf6_args), scratch)
+
+            # Convergence guard — list file is authoritative (design doc § 8).
+            converged, conv_note = _check_convergence(scratch)
+
+            # Always upload stdout/stderr so the smoke run produces evidence.
+            stdout_uri = _upload(stdout_path, _runs_uri(run_id, "mf6.stdout"))
+            stderr_uri = _upload(stderr_path, _runs_uri(run_id, "mf6.stderr"))
+
+            for path in _expand_outputs(list(outputs), scratch):
+                rel = path.relative_to(scratch).as_posix()
+                uri = _upload(path, _runs_uri(run_id, rel))
+                output_uris.append(uri)
+
+            # Exit-code resolution (design doc § 8):
+            #   - mf6 nonzero  -> error, surface the raw code.
+            #   - mf6 zero but list file shows divergence -> override
+            #     exit_code=2 (solver_diverged), status=error.
+            #   - mf6 zero and converged -> ok.
+            if rc != 0:
+                exit_code = rc
+                status = "error"
+                error_msg = f"mf6 exited with non-zero code {rc}"
+            elif not converged:
+                exit_code = 2
+                status = "error"
+                error_msg = conv_note or "solver_diverged"
+            else:
+                exit_code = 0
+                status = "ok"
 
     except Exception as exc:  # pragma: no cover — defensive, logged + emitted
         LOG.exception("solver entrypoint failed")
@@ -476,6 +645,9 @@ def main(argv: list[str] | None = None) -> int:
         stderr_uri=stderr_uri,
         started_at=started_at,
         error=error_msg,
+        publish_manifest_uri=publish_manifest_uri,
+        deck=deck_provenance,
+        error_code=error_code,
     )
     return exit_code
 

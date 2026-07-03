@@ -200,6 +200,10 @@ __all__ = [
     "SOLVER_BATCH_JOBDEF_REGISTRY",
     "SFINCS_DECKBUILDER_SOLVER",
     "SFINCS_QUADTREE_SOLVER",
+    "SFINCS_BUILD_SOLVER",
+    "MODFLOW_BUILD_SOLVER",
+    "submit_modflow_build_solve",
+    "run_modflow_build_solve",
     "DeckBuildError",
     "submit_sfincs_deckbuild",
     "build_sfincs_quadtree_deck",
@@ -442,6 +446,24 @@ SFINCS_QUADTREE_SOLVER: str = "sfincs-quadtree"
 #: identical to the legacy in-agent build until NATE rebuilds+deploys the image
 #: (which now bundles hydromt) and flips the flag.
 SFINCS_BUILD_SOLVER: str = "sfincs-build"
+
+#: Per-solver key for the COMBINED MODFLOW deck BUILD + mf6 solve + plume
+#: postprocess Batch job (heavy-compute offload — reports/design/heavy-compute-
+#: offload-2026-07-02.md, MODFLOW phase). Runs on the SAME ``grace2-modflow``
+#: image (which already carries flopy + the deck builder): the entrypoint's
+#: ``--build-spec-uri`` mode runs ``build_modflow_deck`` (the former in-agent
+#: FloPy build), then the mf6 solve + convergence guard, then the UCN -> plume COG
+#: raster postprocess (the former in-agent ``postprocess_modflow``), and writes
+#: ONE completion.json (+ publish_manifest.json). Unlike the generic
+#: ``_resolve_batch_job_def`` chain, this key's job-def resolution FALLS BACK to
+#: the MODFLOW-specific ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` (NOT the generic
+#: ``GRACE2_AWS_BATCH_JOB_DEF``, which points at the SFINCS image on the live box —
+#: honoring it would cross-route a MODFLOW build to the SFINCS container). Same
+#: image as the solve job-def, so NO new job-def is required. The OFFLOAD itself is
+#: gated in the composer (``GRACE2_MODFLOW_BUILD_OFFLOAD``) so it stays byte-
+#: identical to the legacy in-agent build+postprocess until NATE rebuilds+deploys
+#: the image (now carrying pyproj + the shared substrate) and flips the flag.
+MODFLOW_BUILD_SOLVER: str = "modflow-build"
 
 #: ``ExecutionHandle.workflow_name`` sentinel for the deck-build Batch job. It is
 #: the SAME AWS Batch poll branch (``_wait_for_completion_aws_batch``) — the deck
@@ -2492,6 +2514,224 @@ async def run_sfincs_build_solve(
     )
     logger.info(
         "combined hydromt build+solve run complete run_id=%s status=%s output_uri=%s",
+        result.run_id,
+        result.status,
+        getattr(result, "output_uri", None),
+    )
+    return result
+
+
+def _resolve_modflow_build_job_def() -> str:
+    """Resolve the AWS Batch job-def for the combined MODFLOW build+solve job.
+
+    Deliberately NOT the generic ``_resolve_batch_job_def`` chain: its final
+    fallback is ``GRACE2_AWS_BATCH_JOB_DEF`` which on the live box points at the
+    SFINCS image, so honoring it would cross-route a MODFLOW build to the SFINCS
+    container. Resolution order (first non-empty wins), mirroring the run_modflow
+    ``is_batch_mode`` gate's MODFLOW-only tiers:
+
+        1. ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW_BUILD`` (a dedicated larger-memory
+           build job-def, if provisioned).
+        2. ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` (the generic grace2-modflow solve
+           job-def — the SAME image, so build+solve works there with NO new
+           job-def).
+        3. ``SOLVER_BATCH_JOBDEF_REGISTRY['modflow-build']`` / ``['modflow']``
+           in-code defaults.
+
+    Raises ``DeckBuildError`` (the inert-until-provisioned gate) when none resolve.
+    """
+    for env_name in (
+        "GRACE2_AWS_BATCH_JOB_DEF_MODFLOW_BUILD",
+        "GRACE2_AWS_BATCH_JOB_DEF_MODFLOW",
+    ):
+        candidate = (os.environ.get(env_name) or "").strip()
+        if candidate:
+            return candidate
+    for key in (MODFLOW_BUILD_SOLVER, "modflow"):
+        candidate = (SOLVER_BATCH_JOBDEF_REGISTRY.get(key) or "").strip()
+        if candidate:
+            return candidate
+    raise DeckBuildError(
+        "No AWS Batch job definition for the MODFLOW build+solve job: set "
+        "GRACE2_AWS_BATCH_JOB_DEF_MODFLOW_BUILD (a dedicated build job-def) or "
+        "GRACE2_AWS_BATCH_JOB_DEF_MODFLOW (the generic grace2-modflow job-def — "
+        "the SAME image serves build+solve with no new job-def). The offload "
+        "stays inert until one is set."
+    )
+
+
+def submit_modflow_build_solve(
+    build_spec_uri: str, compute_class: str = "standard"
+) -> ExecutionHandle:
+    """Submit the COMBINED MODFLOW deck BUILD + mf6 solve + plume postprocess job.
+
+    Heavy-compute offload (reports/design/heavy-compute-offload-2026-07-02.md,
+    MODFLOW phase): ONE submit against the ``grace2-modflow`` image (which already
+    carries flopy + the deck builder + — after this change — pyproj + the shared
+    postprocess substrate). The worker entrypoint's ``--build-spec-uri`` mode reads
+    the agent-composed job_spec (confirmed MODFLOWRunArgs), runs ``build_modflow_
+    deck`` locally (the former in-agent FloPy build), runs mf6 in that deck dir,
+    runs the UCN -> plume COG raster postprocess (the former in-agent
+    ``postprocess_modflow``), and writes ONE solve-schema ``completion.json`` (+
+    ``publish_manifest.json``) to ``s3://<runs_bucket>/<run_id>/``. So
+    ``wait_for_completion`` polls it identically to a plain solve.
+
+    Command/env shape mirrors ``submit_sfincs_build_solve`` (``--run-id`` +
+    ``--build-spec-uri`` + ``GRACE2_BUILD_SPEC_URI``); the per-solver job-def key is
+    ``MODFLOW_BUILD_SOLVER`` resolved via ``_resolve_modflow_build_job_def`` (which
+    falls back to the generic grace2-modflow job-def, NOT the SFINCS generic).
+
+    BATCH-ONLY: the whole point is to get the build+postprocess OFF the agent, so a
+    non-``aws-batch`` backend raises a typed ``DeckBuildError``.
+    """
+    if not isinstance(build_spec_uri, str) or not build_spec_uri:
+        raise DeckBuildError(
+            f"build_spec_uri must be a non-empty string; got {build_spec_uri!r}"
+        )
+    if not (
+        build_spec_uri.startswith("s3://")
+        or build_spec_uri.startswith("gs://")
+        or build_spec_uri.startswith("file://")
+    ):
+        raise DeckBuildError(
+            "build_spec_uri must be an s3:// / gs:// / file:// URI for the "
+            f"build+solve worker to download; got {build_spec_uri!r}"
+        )
+
+    backend = solver_backend()
+    if backend != SOLVER_BACKEND_AWS_BATCH:
+        raise DeckBuildError(
+            "The combined MODFLOW BUILD + solve + postprocess runs ONLY as an AWS "
+            "Batch job (the whole point of the heavy-compute offload is to get the "
+            "FloPy build + UCN rasterize OFF the always-on agent). Set "
+            "GRACE2_SOLVER_BACKEND=aws-batch to enable it. Active backend is "
+            f"{backend!r} — staying inert."
+        )
+
+    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
+    if schema_compute_class is None:
+        raise DeckBuildError(
+            f"compute_class {compute_class!r} not recognized; allowed: "
+            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
+        )
+
+    runs_bucket = _get_local_runs_bucket()  # fail fast on missing GRACE2_RUNS_BUCKET
+
+    queue = (os.environ.get("GRACE2_AWS_BATCH_QUEUE") or "").strip()
+    if not queue:
+        raise DeckBuildError(
+            "GRACE2_AWS_BATCH_QUEUE must be set for the combined build+solve job "
+            "(the Batch job queue ARN/name — NATE provisions it)."
+        )
+    job_def = _resolve_modflow_build_job_def()
+
+    sizing = _aws_batch_sizing(compute_class)
+    run_id = new_ulid()
+    submitted_at = datetime.now(timezone.utc)
+
+    container_overrides: dict[str, Any] = {
+        "command": [
+            "--run-id",
+            run_id,
+            "--build-spec-uri",
+            build_spec_uri,
+        ],
+        "environment": [
+            {"name": "GRACE2_RUNS_BUCKET", "value": runs_bucket},
+            {"name": "GRACE2_RUN_ID", "value": run_id},
+            {"name": "GRACE2_BUILD_SPEC_URI", "value": build_spec_uri},
+            {"name": "OMP_NUM_THREADS", "value": str(sizing["omp_threads"])},
+            {"name": "GRACE2_OBJECT_STORE", "value": "s3"},
+        ],
+        "resourceRequirements": [
+            {"type": "VCPU", "value": str(sizing["vcpus"])},
+            {"type": "MEMORY", "value": str(sizing["mem_mib"])},
+        ],
+    }
+
+    logger.info(
+        "aws-batch submit BUILD+SOLVE solver=%s run_id=%s compute_class=%s "
+        "vcpus=%d mem_mib=%d queue=%s job_def=%s build_spec=%s",
+        MODFLOW_BUILD_SOLVER,
+        run_id,
+        compute_class,
+        sizing["vcpus"],
+        sizing["mem_mib"],
+        queue,
+        job_def,
+        build_spec_uri,
+    )
+
+    client = _get_batch_client()
+    try:
+        resp = client.submit_job(
+            jobName=f"grace2-{MODFLOW_BUILD_SOLVER}-{run_id}",
+            jobQueue=queue,
+            jobDefinition=job_def,
+            containerOverrides=container_overrides,
+        )
+    except SolverDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DeckBuildError(
+            f"AWS Batch submit_job failed for the MODFLOW build+solve job "
+            f"(queue={queue} job_def={job_def}): {exc}"
+        ) from exc
+
+    job_id = (
+        (resp or {}).get("jobId")
+        if isinstance(resp, dict)
+        else getattr(resp, "jobId", None)
+    )
+    if not job_id:
+        raise DeckBuildError(
+            f"AWS Batch submit_job returned no jobId for the MODFLOW build+solve "
+            f"job: {resp!r}"
+        )
+    _register_inflight_batch_job(str(job_id))
+
+    handle = ExecutionHandle(
+        handle_id=new_ulid(),
+        run_id=run_id,
+        solver=MODFLOW_BUILD_SOLVER,
+        compute_class=schema_compute_class,  # type: ignore[arg-type]
+        workflows_execution_id=str(job_id),
+        workflow_name=AWS_BATCH_WORKFLOW_NAME,
+        workflow_location=_aws_region(),
+        submitted_at=submitted_at,
+    )
+    logger.info(
+        "aws-batch BUILD+SOLVE submitted run_id=%s handle_id=%s jobId=%s",
+        run_id,
+        handle.handle_id,
+        job_id,
+    )
+    return handle
+
+
+async def run_modflow_build_solve(
+    build_spec_uri: str,
+    compute_class: str = "standard",
+    poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+) -> RunResult:
+    """Submit the combined MODFLOW build+solve+postprocess job, await, return it.
+
+    The single offload entrypoint the composer calls in place of the in-agent
+    ``build_and_stage_modflow_deck`` + ``submit_modflow_run`` +
+    ``postprocess_modflow``: SUBMIT (``submit_modflow_build_solve``), poll
+    ``completion.json`` on S3 (``wait_for_completion`` — same Batch poll +
+    early-FAILED consult + cancel chain), and RETURN the ``RunResult``
+    (``output_uri`` carries the UCN + the plume COG + ``publish_manifest.json``).
+    No second solve submit; the caller reads the manifest + publishes thin layer
+    refs. ``asyncio.CancelledError`` propagates (Invariant 8).
+    """
+    handle = submit_modflow_build_solve(build_spec_uri, compute_class=compute_class)
+    result = await wait_for_completion(
+        handle, poll_interval_s=poll_interval_s, timeout_s=timeout_s
+    )
+    logger.info(
+        "combined modflow build+solve run complete run_id=%s status=%s output_uri=%s",
         result.run_id,
         result.status,
         getattr(result, "output_uri", None),

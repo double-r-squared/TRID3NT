@@ -87,7 +87,8 @@ RUN python3 -m venv "$VENV" \
         "boto3>=1.34,<2" \
         "numpy>=1.26,<3" \
         "rasterio>=1.3,<2" \
-    && "$VENV/bin/python" -c "import flopy, numpy, rasterio, boto3; from google.cloud import storage; print('python deps import OK — flopy', flopy.__version__)"
+        "pyproj>=3.6,<4" \
+    && "$VENV/bin/python" -c "import flopy, numpy, rasterio, boto3, pyproj; from google.cloud import storage; print('python deps import OK — flopy', flopy.__version__)"
 
 # venv on PATH so `python3`/`pip` resolve to the venv for all later layers
 # and at run time.
@@ -111,6 +112,20 @@ RUN curl -fL "$MF6_ZIP_URL" -o /tmp/mf6.zip \
 # below are relative to repo root.
 RUN mkdir -p /opt/grace2/services/workers/modflow
 COPY services/workers/modflow/ /opt/grace2/services/workers/modflow/
+
+# --- COPY the shared offload substrate packages --------------------------
+# Heavy-compute offload (reports/design/heavy-compute-offload-2026-07-02.md):
+# the --build-spec-uri path imports the agent-import-free job_spec contract
+# (_modflow_build), the plume postprocess (_modflow_postprocess), and the shared
+# raster manifest/upload helpers (_raster_postprocess). All are PEP-420 namespace
+# subpackages under services/workers/ (no __init__ at services/ level). Mirrors
+# the SFINCS worker image's _raster_postprocess + _sfincs_build COPYs.
+RUN mkdir -p /opt/grace2/services/workers/_raster_postprocess \
+    && mkdir -p /opt/grace2/services/workers/_modflow_build \
+    && mkdir -p /opt/grace2/services/workers/_modflow_postprocess
+COPY services/workers/_raster_postprocess/ /opt/grace2/services/workers/_raster_postprocess/
+COPY services/workers/_modflow_build/ /opt/grace2/services/workers/_modflow_build/
+COPY services/workers/_modflow_postprocess/ /opt/grace2/services/workers/_modflow_postprocess/
 
 # WORKDIR controls where mf6 writes its scratch outputs before the entrypoint
 # uploads them. /opt/grace2/work is a writable scratch dir; the entrypoint
@@ -143,7 +158,10 @@ ENV GRACE2_CACHE_BUCKET=grace2-hazard-cache-226996537797 \
 RUN test -x /usr/local/bin/mf6 \
     && mf6 --version \
     && echo "mf6 binary OK at /usr/local/bin/mf6" \
-    && python3 -c "from services.workers.modflow.entrypoint import main; print('entrypoint import OK')"
+    && python3 -c "from services.workers.modflow.entrypoint import main; print('entrypoint import OK')" \
+    && python3 -c "from services.workers._modflow_build import validate_job_spec, build_deck_kwargs_from_spec; print('modflow_build (offload) substrate import OK')" \
+    && python3 -c "from services.workers._modflow_postprocess import run_plume_postprocess; from services.workers._raster_postprocess import manifest, upload; print('modflow_postprocess substrate import OK')" \
+    && python3 -c "from services.workers.modflow import gwt_adapter; print('gwt_adapter (build) import OK — has build_modflow_deck:', hasattr(gwt_adapter, 'build_modflow_deck'))"
 
 # ENTRYPOINT runs this image as a one-shot solver Job. CMD is empty so Cloud
 # Run Job task args feed straight through as argv to the module; env-var

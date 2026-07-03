@@ -100,7 +100,6 @@ AWS path.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -135,6 +134,10 @@ __all__ = [
     "set_runs_bucket",
     "set_mf6_binary",
     "build_modflow_deck",  # re-exported adapter alias (engine, job-0221)
+    # Heavy-compute offload (reports/design/heavy-compute-offload-2026-07-02.md).
+    "modflow_build_offload_enabled",
+    "compose_and_upload_modflow_build_spec",
+    "read_modflow_build_manifest",
 ]
 
 
@@ -954,6 +957,310 @@ def build_and_stage_modflow_deck(
         drain_cell_count=int(getattr(manifest_obj, "drain_cell_count", 0)),
         well_lat=float(getattr(manifest_obj, "well_lat", 0.0)),
         well_lon=float(getattr(manifest_obj, "well_lon", 0.0)),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Heavy-compute offload (reports/design/heavy-compute-offload-2026-07-02.md).
+#
+# Move the FloPy deck BUILD + the UCN -> plume-COG POSTPROCESS off the always-on
+# agent onto the grace2-modflow tear-down Batch worker (the MODFLOW analogue of
+# the SFINCS pluvial reference, commit ce1ba9d). Gated OFF by default
+# (``GRACE2_MODFLOW_BUILD_OFFLOAD`` unset) so live behavior is BYTE-IDENTICAL to
+# the legacy in-agent build+postprocess until NATE rebuilds+deploys the
+# grace2-modflow image (now carrying pyproj + the shared substrate) and flips the
+# flag. Mirrors ``model_flood_scenario._sfincs_build_offload_enabled`` +
+# ``_compose_and_upload_flood_build_spec``.
+# --------------------------------------------------------------------------- #
+
+
+def modflow_build_offload_enabled() -> bool:
+    """True when the MODFLOW deck build + plume postprocess should run on Batch.
+
+    Gated OFF by default (``GRACE2_MODFLOW_BUILD_OFFLOAD`` unset) so the composer
+    stays byte-identical to the legacy in-agent path. A truthy value
+    (``1``/``on``/``true``/``yes``) activates the combined build+solve+postprocess
+    Batch job. EXACT mirror of ``model_flood_scenario._sfincs_build_offload_enabled``.
+    """
+    return (os.environ.get("GRACE2_MODFLOW_BUILD_OFFLOAD") or "").strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+
+
+def _run_args_to_deck_kwargs(run_args: MODFLOWRunArgs) -> dict[str, Any]:
+    """Assemble the ``build_modflow_deck`` kwargs for the worker job_spec.
+
+    Reproduces ``build_and_stage_modflow_deck``'s river-geometry resolution +
+    archetype threading + advanced-physics resolution so the WORKER's
+    ``build_modflow_deck`` call is identical to the in-agent one. Every value is
+    JSON-serializable (tuples round-trip to lists; ``build_modflow_deck`` accepts
+    list-or-tuple for every coordinate field). A resolution/validation failure
+    raises the SAME typed ``MODFLOWWorkflowError`` the in-agent path raises.
+    """
+    from .physics_registry import (
+        PhysicsRegistryError,
+        validate_and_resolve_physics,
+    )
+
+    kwargs: dict[str, Any] = {
+        "spill_location_latlon": list(run_args.spill_location_latlon),
+        "contaminant": run_args.contaminant,
+        "release_rate_kg_s": float(run_args.release_rate_kg_s),
+        "duration_days": float(run_args.duration_days),
+        "aquifer_k_ms": float(run_args.aquifer_k_ms),
+        "porosity": float(run_args.porosity),
+    }
+
+    # --- River-coupling (sprint-17 J9): resolve the flowline to lon/lat verts. --
+    river_uri = getattr(run_args, "river_geometry_uri", None)
+    if river_uri:
+        kwargs["river_polyline_lonlat"] = [
+            list(v) for v in resolve_river_polyline_lonlat(river_uri)
+        ]
+        for name in (
+            "river_stage_m",
+            "river_stage_depth_m",
+            "streambed_conductance_m2_day",
+        ):
+            val = getattr(run_args, name, None)
+            if val is not None:
+                kwargs[name] = val
+        kwargs["along_river_source"] = bool(
+            getattr(run_args, "along_river_source", False)
+        )
+
+    # --- Archetype threading (sprint-18): thread every present per-archetype field.
+    archetype = getattr(run_args, "archetype", None)
+    if archetype is not None:
+        kwargs["archetype"] = archetype
+        for name in (
+            "well_location_latlon",
+            "pumping_rate_m3_day",
+            "aquifer_sy",
+            "aquifer_ss",
+            "sim_years",
+            "n_periods",
+            "pit_footprint_lonlat",
+            "drain_elevation_m",
+            "drain_conductance_m2_day",
+            "well_pumping_rate_m3_day",
+            "zone_partition",
+            "basin_footprint_lonlat",
+            "infiltration_rate_m_day",
+            "recharge_months",
+            "injection_rate_m3_day",
+            "recovery_rate_m3_day",
+            "injection_months",
+            "recovery_months",
+            "n_cycles",
+            "wetland_footprint_lonlat",
+            "recharge_schedule_m_day",
+            "et_surface_m",
+            "et_max_rate_m_day",
+            "et_extinction_depth_m",
+            "specific_yield",
+        ):
+            val = getattr(run_args, name, None)
+            if val is not None:
+                # Coordinate lists carry tuples; normalize to plain lists for JSON.
+                if isinstance(val, (list, tuple)) and val and isinstance(
+                    val[0], (list, tuple)
+                ):
+                    kwargs[name] = [list(x) for x in val]
+                elif isinstance(val, tuple):
+                    kwargs[name] = list(val)
+                else:
+                    kwargs[name] = val
+
+    # --- advanced-physics overrides (resolved; None -> omitted). ----------------
+    try:
+        resolved_physics = validate_and_resolve_physics(
+            "modflow", getattr(run_args, "advanced_physics", None)
+        )
+    except PhysicsRegistryError as exc:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_PHYSICS_INVALID",
+            message=f"invalid advanced_physics: {exc}",
+            details={"engine": "modflow", "key": getattr(exc, "key", None)},
+        ) from exc
+    if resolved_physics:
+        kwargs["advanced_physics"] = resolved_physics
+
+    return kwargs
+
+
+def compose_and_upload_modflow_build_spec(
+    run_args: MODFLOWRunArgs,
+    *,
+    run_id: str | None = None,
+    compute_class: str = "standard",
+) -> str:
+    """Compose + upload the MODFLOW BUILD job_spec; return its s3:// URI.
+
+    Replaces the in-agent ``build_and_stage_modflow_deck`` on the offload path:
+    resolves the ``build_modflow_deck`` kwargs (river/archetype/physics), wraps
+    them in the ``_modflow_build`` job_spec schema, and uploads it to the cache
+    bucket. The DECK is NEVER built here (the worker builds it) — only the small
+    JSON spec is written. Requires an S3 storage backend (the Batch worker reads
+    the spec from S3).
+
+    Raises ``MODFLOWWorkflowError`` (kwargs resolution / storage-backend / upload).
+    """
+    from ..tools.cache import storage_scheme
+
+    rid = run_id or new_ulid()
+    deck_kwargs = _run_args_to_deck_kwargs(run_args)
+
+    scheme = storage_scheme()
+    if scheme != "s3":
+        raise MODFLOWWorkflowError(
+            "MODFLOW_DISPATCH_FAILED",
+            message=(
+                "The MODFLOW build offload requires an S3 storage backend so the "
+                "Batch worker can read the job_spec (GRACE2_STORAGE_BACKEND=s3). "
+                "Staying inert."
+            ),
+            details={"run_id": rid},
+        )
+    cache_bucket = _cache_bucket()
+    spec_id = new_ulid()
+    base_prefix = f"cache/static-30d/modflow_build/{spec_id}/"
+    job_spec_uri = f"s3://{cache_bucket}/{base_prefix}modflow_build_spec.json"
+
+    job_spec: dict[str, Any] = {
+        "schema_version": 1,
+        "engine": "modflow",
+        "spec_id": spec_id,
+        "run_args": deck_kwargs,
+        "options": {"compute_class": compute_class},
+    }
+    payload = json.dumps(job_spec, indent=2).encode("utf-8")
+    try:
+        from ..tools.solver import _get_s3_client
+
+        s3 = _get_s3_client()
+        s3_bucket, _, key = job_spec_uri[len("s3://"):].partition("/")
+        s3.put_object(
+            Bucket=s3_bucket, Key=key, Body=payload, ContentType="application/json"
+        )
+    except MODFLOWWorkflowError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise MODFLOWWorkflowError(
+            "MODFLOW_DISPATCH_FAILED",
+            message=f"failed to upload the MODFLOW build job_spec to {job_spec_uri}: {exc}",
+            details={"run_id": rid, "job_spec_uri": job_spec_uri},
+        ) from exc
+
+    logger.info(
+        "MODFLOW build offload: composed job_spec -> %s (archetype=%s)",
+        job_spec_uri,
+        deck_kwargs.get("archetype"),
+    )
+    return job_spec_uri
+
+
+def _read_object_text(uri: str) -> str:
+    """Read a small text object (the publish_manifest.json) by scheme."""
+    if uri.startswith("s3://"):
+        from ..tools.cache import read_object_bytes_s3
+
+        return read_object_bytes_s3(uri).decode("utf-8")
+    if uri.startswith("gs://"):
+        import fsspec  # type: ignore[import-not-found]
+
+        with fsspec.open(uri, "rb") as fh:  # type: ignore[no-untyped-call]
+            return fh.read().decode("utf-8")
+    return Path(uri.replace("file://", "")).read_text(encoding="utf-8")
+
+
+def read_modflow_build_manifest(
+    run_result: Any,
+    *,
+    publish: bool = True,
+) -> Any:
+    """Read the worker ``publish_manifest.json`` -> ``PlumeLayerURI`` (register-only).
+
+    The offload tail: after the combined build+solve+postprocess Batch job
+    succeeds, the worker has already rasterized the UCN into a plume COG + written
+    the publish manifest. The agent becomes register-only: read the thin manifest,
+    (optionally) publish the bare COG to a TiTiler tile URL, and return the typed
+    ``PlumeLayerURI`` carrying the worker-computed metrics (Invariant 1 — the agent
+    narrates the worker's numbers, never invents them).
+
+    Raises ``MODFLOWWorkflowError`` when the manifest is missing/unparseable or the
+    worker's honesty gate flagged an empty plume (``MODFLOW_PLUME_EMPTY``).
+    """
+    from grace2_contracts.modflow_contracts import PlumeLayerURI
+
+    run_id = getattr(run_result, "run_id", None)
+    prefix = getattr(run_result, "output_uri", None) or (
+        f"s3://{_runs_bucket()}/{run_id}/"
+    )
+    manifest_uri = prefix.rstrip("/") + "/publish_manifest.json"
+    try:
+        manifest = json.loads(_read_object_text(manifest_uri))
+    except Exception as exc:  # noqa: BLE001
+        raise MODFLOWWorkflowError(
+            "MODFLOW_PLUME_OUTPUT_MISSING",
+            message=f"could not read publish_manifest.json from {manifest_uri}: {exc}",
+            details={"run_id": run_id, "manifest_uri": manifest_uri},
+        ) from exc
+
+    if manifest.get("status") != "ok":
+        raise MODFLOWWorkflowError(
+            manifest.get("error_code") or "MODFLOW_PLUME_EMPTY",
+            message=(
+                "MODFLOW build+solve worker reported a non-ok postprocess "
+                f"(status={manifest.get('status')!r}, "
+                f"error_code={manifest.get('error_code')!r})"
+            ),
+            details={"run_id": run_id},
+        )
+
+    layers = manifest.get("layers") or []
+    if not layers:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_PLUME_EMPTY",
+            message="publish_manifest.json carried no layers (empty plume)",
+            details={"run_id": run_id},
+        )
+    layer = layers[0]
+    metrics = layer.get("metrics") or manifest.get("metrics") or {}
+    cog_uri = layer.get("cog_uri")
+    bbox = layer.get("bbox")
+
+    final_uri = cog_uri
+    if publish and isinstance(cog_uri, str) and (
+        cog_uri.startswith("s3://") or cog_uri.startswith("gs://")
+    ):
+        try:
+            from ..tools.publish_layer import publish_layer
+
+            wms_url = publish_layer(
+                layer_uri=cog_uri,
+                layer_id=layer.get("layer_id_stem", f"plume-concentration-{run_id}"),
+                style_preset=layer.get("style_preset", "continuous_plume_concentration"),
+            )
+            if wms_url:
+                final_uri = wms_url
+        except Exception as exc:  # noqa: BLE001 — non-fatal (COG URI survives)
+            logger.warning("publish_layer failed for offload plume: %s", exc)
+
+    return PlumeLayerURI(
+        layer_id=layer.get("layer_id_stem", f"plume-concentration-{run_id}"),
+        name=layer.get("name", "Contaminant Plume (peak concentration)"),
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=layer.get("style_preset", "continuous_plume_concentration"),
+        role=layer.get("role", "primary"),
+        units=layer.get("units", "mg/L"),
+        bbox=tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None,
+        max_concentration_mgl=float(metrics.get("max_concentration_mgl", 0.0)),
+        plume_area_km2=float(metrics.get("plume_area_km2", 0.0)),
     )
 
 
