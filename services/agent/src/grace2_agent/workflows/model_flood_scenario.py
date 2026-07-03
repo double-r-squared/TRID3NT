@@ -77,7 +77,7 @@ from grace2_contracts.envelope import (
     Provenance,
     ResultLayer,
 )
-from grace2_contracts.execution import ExecutionHandle, LayerURI, RunResult
+from grace2_contracts.execution import ExecutionHandle, LayerURI, ModelSetup, RunResult
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from ..layer_uri_emit import emit_layer_uri, publish_input_layer
@@ -100,6 +100,7 @@ from ..tools.fetch_topobathy import TopobathyError, fetch_topobathy
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from ..tools.solver import (
     DeckBuildError,
+    run_sfincs_build_solve,
     run_sfincs_quadtree,
     run_solver,
     select_compute_class,
@@ -129,8 +130,16 @@ from .sfincs_builder import (
     SFINCSSetupError,
     WaterlevelForcing,
     WindForcing,
+    # Heavy-compute offload: the NLCD validation gate stays a light PRE-SUBMIT
+    # check on the fetched landcover (so LULC_MAPPING_MISMATCH still surfaces as
+    # the SAME failed envelope), and the bbox-only autoscale sizes the Batch job
+    # + telemetry (the worker re-does the DEM-active autoscale for real).
+    _extract_unique_nlcd_classes,
     _to_vsigs,
     build_sfincs_model,
+    load_manning_mapping,
+    suggest_sfincs_resolution_from_bbox,
+    validate_nlcd_vintage_against_mapping,
 )
 from .physics_registry import PhysicsRegistryError, validate_and_resolve_physics
 from .sfincs_forcing_adapter import SFINCSForcingAdapterError
@@ -1633,6 +1642,303 @@ def _compose_and_upload_deckbuild_spec(
         bool(rivers_uri),
     )
     return build_spec_uri
+
+
+# --------------------------------------------------------------------------- #
+# REGULAR-GRID (pluvial) BUILD offload — compose a job_spec, submit ONE combined
+# hydromt-BUILD + SFINCS-solve Batch job (heavy-compute offload, the reference
+# implementation). Mirrors the quadtree ``_compose_and_upload_deckbuild_spec`` +
+# ``run_sfincs_quadtree`` pattern, but for the regular-grid ``build_sfincs_model``
+# path: the agent stops running hydromt in-process (the 16 GB driver) and instead
+# hands the worker the already-fetched input COG URIs + the serialized forcing /
+# options. See reports/design/heavy-compute-offload-2026-07-02.md.
+# --------------------------------------------------------------------------- #
+
+
+#: Forcing-member file-URI keys the worker downloads (superset of the quadtree
+#: helper's — also covers wind/pressure ``grid_uri`` + infiltration rasters). A
+#: LOCAL value (a /tmp adapter/parametric file) must be uploaded to S3 before it
+#: enters the job_spec, else the remote worker cannot read it.
+_FLOOD_BUILD_FORCING_FILE_KEYS = (
+    "timeseries_uri",
+    "locations_uri",
+    "geodataset_uri",
+    "rivers_uri",
+    "hydrography_uri",
+    "grid_uri",
+    "cn_uri",
+    "lulc_uri",
+    "reclass_table_uri",
+)
+
+
+def _sfincs_build_offload_enabled() -> bool:
+    """True when the pluvial SFINCS build should run on the Batch worker.
+
+    Gated OFF by default (``GRACE2_SFINCS_BUILD_OFFLOAD`` unset) so live behavior
+    is byte-identical to the legacy in-agent build until NATE rebuilds+deploys the
+    ``grace2-sfincs`` image (which now bundles hydromt) and flips the flag — the
+    same inert-until-provisioned discipline the quadtree path uses. A truthy value
+    (``1``/``on``/``true``/``yes``) activates it."""
+    return (os.environ.get("GRACE2_SFINCS_BUILD_OFFLOAD") or "").strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+
+
+def _forcing_member_to_dict(member: Any) -> dict[str, Any] | None:
+    """Serialize a ForcingSpec sub-member dataclass (or None) to a plain dict."""
+    if member is None:
+        return None
+    from dataclasses import asdict, is_dataclass
+
+    if is_dataclass(member):
+        return asdict(member)
+    if isinstance(member, dict):
+        return dict(member)
+    return None
+
+
+def _forcing_spec_to_dict(forcing: "ForcingSpec") -> dict[str, Any]:
+    """Serialize a ``ForcingSpec`` to the flat job_spec ``forcing`` dict.
+
+    Scalar fields verbatim; each surge/discharge/wind/pressure/infiltration member
+    is a nested dict (``None`` -> absent). Round-trips through
+    ``_sfincs_build.deck.forcing_spec_from_dict`` in the worker.
+    """
+    return {
+        "forcing_type": forcing.forcing_type,
+        "precip_inches": forcing.precip_inches,
+        "duration_hours": forcing.duration_hours,
+        "return_period_years": forcing.return_period_years,
+        "precip_magnitude_mm_per_hr": forcing.precip_magnitude_mm_per_hr,
+        "waterlevel": _forcing_member_to_dict(forcing.waterlevel),
+        "discharge": _forcing_member_to_dict(forcing.discharge),
+        "breach": _forcing_member_to_dict(forcing.breach),
+        "wind": _forcing_member_to_dict(forcing.wind),
+        "pressure": _forcing_member_to_dict(forcing.pressure),
+        "infiltration": _forcing_member_to_dict(forcing.infiltration),
+        "provenance": dict(forcing.provenance or {}),
+    }
+
+
+def _build_options_to_dict(options: "BuildOptions") -> dict[str, Any]:
+    """Serialize ``BuildOptions`` to the job_spec ``options`` dict (worker
+    reconstructs via ``_sfincs_build.deck.build_options_from_dict``)."""
+    return {
+        "grid_resolution_m": options.grid_resolution_m,
+        "simulation_hours": options.simulation_hours,
+        "crs": options.crs,
+        "compute_class": options.compute_class,
+        "autoscale_grid": options.autoscale_grid,
+        "output_interval_min": options.output_interval_min,
+        "enable_subgrid": options.enable_subgrid,
+        "subgrid_nr_subgrid_pixels": options.subgrid_nr_subgrid_pixels,
+        "building_obstacle_uri": options.building_obstacle_uri,
+        "building_obstacle_mode": options.building_obstacle_mode,
+        "advanced_physics": options.advanced_physics,
+    }
+
+
+def _stage_local_forcing_files_full(
+    forcing_dict: dict[str, Any],
+    *,
+    cache_bucket: str,
+    scheme: str,
+    key_prefix: str,
+) -> dict[str, Any]:
+    """Upload any LOCAL forcing FILE URIs to S3 + rewrite in place (full key set).
+
+    Like ``_upload_local_forcing_files_to_s3`` but over the serialized
+    ``forcing`` dict (scalars + member sub-dicts) and the SUPERSET key list (wind/
+    pressure grids + infiltration rasters). Already-remote (s3:///gs://) and
+    non-file fields pass through. Raises ``DeckBuildError`` on a missing local file
+    / upload failure (honest typed failure)."""
+    from ..tools.solver import DeckBuildError as _DeckBuildError
+
+    s3 = None
+    out: dict[str, Any] = {}
+    for member_name, member in forcing_dict.items():
+        if not isinstance(member, dict):
+            out[member_name] = member
+            continue
+        new_member = dict(member)
+        for key in _FLOOD_BUILD_FORCING_FILE_KEYS:
+            uri = new_member.get(key)
+            if not uri or not isinstance(uri, str) or _is_remote_object_uri(uri):
+                continue
+            local_path = uri[len("file://"):] if uri.startswith("file://") else uri
+            if not os.path.isfile(local_path):
+                raise _DeckBuildError(
+                    f"forcing file for {member_name}.{key} is a LOCAL path the "
+                    f"remote build worker cannot read and it does not exist: {uri!r}"
+                )
+            filename = os.path.basename(local_path)
+            s3_key = f"{key_prefix}{member_name}/{filename}"
+            s3_uri = f"{scheme}://{cache_bucket}/{s3_key}"
+            try:
+                if s3 is None:
+                    from ..tools.solver import _get_s3_client
+
+                    s3 = _get_s3_client()
+                with open(local_path, "rb") as fh:
+                    s3.put_object(
+                        Bucket=cache_bucket, Key=s3_key, Body=fh.read(),
+                        ContentType="application/octet-stream",
+                    )
+            except _DeckBuildError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise _DeckBuildError(
+                    f"failed to upload forcing file {member_name}.{key} "
+                    f"({local_path}) to {s3_uri}: {exc}"
+                ) from exc
+            new_member[key] = s3_uri
+        out[member_name] = new_member
+    return out
+
+
+def _compose_and_upload_flood_build_spec(
+    *,
+    bbox: tuple[float, float, float, float],
+    dem_uri: str,
+    landcover_uri: str,
+    river_uri: str | None,
+    forcing_spec: "ForcingSpec",
+    options: "BuildOptions",
+    nlcd_vintage_year: int | None,
+) -> ModelSetup:
+    """Compose + upload the SFINCS BUILD job_spec; return a build-spec ModelSetup.
+
+    Replaces the in-agent ``build_sfincs_model`` on the pluvial (regular-grid)
+    path when the offload is enabled. Runs the OQ-4 §4 NLCD validation gate
+    PRE-SUBMIT (light read of the already-fetched landcover -> a
+    ``LULC_MAPPING_MISMATCH`` here surfaces as the SAME failed envelope the
+    in-agent build produced), computes the bbox-only autoscale estimate (for Batch
+    sizing + telemetry; the worker re-does the DEM-active autoscale for real),
+    uploads any LOCAL forcing files to S3, serializes forcing + options + input
+    URIs into the ``job_spec``, uploads it, and returns a ``ModelSetup`` whose
+    ``setup_uri`` is the job_spec URI and whose ``parameters['sfincs_build_spec']``
+    marks the combined build+solve dispatch. The DEM/NetCDF are NEVER loaded here.
+
+    Raises ``SFINCSSetupError`` (NLCD gate / mapping load) — caught by the
+    composer's existing handler — and ``DeckBuildError`` (storage backend not S3,
+    forcing upload, spec upload).
+    """
+    from ..tools.cache import storage_scheme
+    from ..tools.solver import DeckBuildError as _DeckBuildError
+
+    # --- PRE-SUBMIT NLCD validation gate (Invariant 7; light landcover read) ---
+    mapping = load_manning_mapping()
+    fetched_classes = _extract_unique_nlcd_classes(landcover_uri)
+    if nlcd_vintage_year is not None:
+        validate_nlcd_vintage_against_mapping(
+            fetched_classes=fetched_classes,
+            nlcd_vintage_year=int(nlcd_vintage_year),
+            mapping=mapping,
+        )
+
+    # --- bbox-only autoscale estimate (sizing + telemetry) ---
+    autoscale = suggest_sfincs_resolution_from_bbox(
+        bbox,
+        base_resolution_m=options.grid_resolution_m,
+        compute_class=options.compute_class,
+    )
+
+    scheme = storage_scheme()
+    if scheme != "s3":
+        raise _DeckBuildError(
+            "The SFINCS build offload requires an S3 storage backend so the Batch "
+            "worker can read the job_spec (GRACE2_STORAGE_BACKEND=s3). Staying inert."
+        )
+    cache_bucket = os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
+    spec_id = new_ulid()
+    base_prefix = f"cache/static-30d/sfincs_build/{spec_id}/"
+    job_spec_uri = f"{scheme}://{cache_bucket}/{base_prefix}sfincs_build_spec.json"
+
+    forcing_dict = _stage_local_forcing_files_full(
+        _forcing_spec_to_dict(forcing_spec),
+        cache_bucket=cache_bucket,
+        scheme=scheme,
+        key_prefix=f"{base_prefix}forcing/",
+    )
+
+    job_spec: dict[str, Any] = {
+        "schema_version": 1,
+        "engine": "sfincs",
+        "spec_id": spec_id,
+        "bbox": [float(b) for b in bbox],
+        "nlcd_vintage_year": nlcd_vintage_year,
+        "inputs": {
+            "dem_uri": dem_uri,
+            "landcover_uri": landcover_uri,
+            "river_uri": river_uri,
+        },
+        "forcing": forcing_dict,
+        "options": _build_options_to_dict(options),
+    }
+    payload = json.dumps(job_spec, indent=2).encode("utf-8")
+    try:
+        from ..tools.solver import _get_s3_client
+
+        s3 = _get_s3_client()
+        s3_bucket, _, key = job_spec_uri[len("s3://"):].partition("/")
+        s3.put_object(
+            Bucket=s3_bucket, Key=key, Body=payload, ContentType="application/json"
+        )
+    except _DeckBuildError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _DeckBuildError(
+            f"failed to upload the SFINCS build job_spec to {job_spec_uri}: {exc}"
+        ) from exc
+
+    logger.info(
+        "SFINCS build offload: composed job_spec -> %s (est_res=%.1fm est_cells=%s "
+        "est_solve=%ss forcing_type=%s)",
+        job_spec_uri,
+        autoscale.grid_resolution_m,
+        autoscale.estimated_active_cells,
+        autoscale.estimated_solve_seconds,
+        forcing_spec.forcing_type,
+    )
+    return ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri=job_spec_uri,
+        grid_resolution_m=autoscale.grid_resolution_m,
+        bbox=bbox,
+        parameters={
+            # The build+solve dispatch marker Step 6 branches on.
+            "sfincs_build_spec": True,
+            "crs": options.crs,
+            "simulation_hours": options.simulation_hours,
+            "output_interval_min": options.output_interval_min,
+            "nlcd_vintage_year": nlcd_vintage_year,
+            "fetched_classes": sorted(fetched_classes),
+            "forcing_type": forcing_spec.forcing_type,
+            "forcing_provenance": dict(forcing_spec.provenance),
+            "compute_class": options.compute_class,
+            # bbox-only estimate (the worker's manifest carries the real
+            # DEM-active autoscale); shape matches build_sfincs_model's block so
+            # _extract_solve_autoscale + the solve-telemetry read it uniformly.
+            "autoscale": {
+                "grid_resolution_m": autoscale.grid_resolution_m,
+                "estimated_active_cells": autoscale.estimated_active_cells,
+                "estimated_active_cells_at_base": autoscale.estimated_active_cells_at_base,
+                "cell_cap": autoscale.cell_cap,
+                "vcpus": autoscale.vcpus,
+                "base_resolution_m": autoscale.base_resolution_m,
+                "estimated_solve_seconds": autoscale.estimated_solve_seconds,
+                "coarsened": autoscale.coarsened,
+                "reason": autoscale.reason,
+                "estimate_only": True,
+            },
+        },
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -3800,6 +4106,18 @@ async def model_flood_scenario(
         # adapter failure raises INSIDE the substep -> the child reads red (honesty
         # floor) and re-raises to the existing except cascade below, which returns
         # the corresponding failed envelope unchanged. No-op when no emitter bound.
+        # HEAVY-COMPUTE OFFLOAD (reports/design/heavy-compute-offload-2026-07-02):
+        # on the pluvial (regular-grid) path, REPLACE the in-agent hydromt build
+        # (the 16 GB Chattanooga-OOM driver) with composing a job_spec the
+        # grace2-sfincs Batch worker builds+solves+postprocesses in ONE job. Gated
+        # OFF (GRACE2_SFINCS_BUILD_OFFLOAD unset) so live behavior is byte-identical
+        # until NATE rebuilds+deploys the image (now bundling hydromt) + flips it.
+        # The coastal / quadtree path KEEPS the in-agent build unchanged — it feeds
+        # the cht_sfincs deckbuild spec (grid params / mask bounds) from the built
+        # ModelSetup, so is_coastal / quadtree excludes the offload.
+        _build_offload = (
+            _sfincs_build_offload_enabled() and not is_coastal and not quadtree
+        )
         async with substep(emitter, "build_sfincs_model"):
             # NO-RECONNECT (NATE 2026-06-29): build_sfincs_model (hydromt: DEM
             # reproject + active-mask + manning rasterize + deck write + S3
@@ -3817,24 +4135,45 @@ async def model_flood_scenario(
                 )
             )
             try:
-                model_setup = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        build_sfincs_model,
-                        dem_uri=dem_layer.uri,
-                        landcover_uri=landcover_layer.uri,
-                        # job-0307: None when the best-effort river fetch failed
-                        # (pluvial deck ignores it; build_sfincs_model documents
-                        # river_geometry_uri as "may be None").
-                        river_geometry_uri=(
-                            river_layer.uri if river_layer is not None else None
+                if _build_offload:
+                    # OFFLOAD: compose the build job_spec (NLCD gate + bbox
+                    # autoscale + S3 puts only — the DEM/NetCDF are NEVER loaded
+                    # in-agent). Still off-loop (S3 I/O) + bounded so a wedged
+                    # upload surfaces as PRESOLVER_TIMEOUT, not a silent hang.
+                    model_setup = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _compose_and_upload_flood_build_spec,
+                            bbox=resolved_bbox,
+                            dem_uri=dem_layer.uri,
+                            landcover_uri=landcover_layer.uri,
+                            river_uri=(
+                                river_layer.uri if river_layer is not None else None
+                            ),
+                            forcing_spec=forcing_spec,
+                            options=options,
+                            nlcd_vintage_year=nlcd_vintage_year,
                         ),
-                        forcing=forcing_spec,
-                        bbox=resolved_bbox,
-                        options=options,
-                        nlcd_vintage_year=nlcd_vintage_year,
-                    ),
-                    timeout=_BUILD_PHASE_TIMEOUT_S,
-                )
+                        timeout=_BUILD_PHASE_TIMEOUT_S,
+                    )
+                else:
+                    model_setup = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            build_sfincs_model,
+                            dem_uri=dem_layer.uri,
+                            landcover_uri=landcover_layer.uri,
+                            # job-0307: None when the best-effort river fetch failed
+                            # (pluvial deck ignores it; build_sfincs_model documents
+                            # river_geometry_uri as "may be None").
+                            river_geometry_uri=(
+                                river_layer.uri if river_layer is not None else None
+                            ),
+                            forcing=forcing_spec,
+                            bbox=resolved_bbox,
+                            options=options,
+                            nlcd_vintage_year=nlcd_vintage_year,
+                        ),
+                        timeout=_BUILD_PHASE_TIMEOUT_S,
+                    )
             finally:
                 _build_progress_task.cancel()
                 try:
@@ -3889,6 +4228,31 @@ async def model_flood_scenario(
             project_id=proj_id,
             session_id=sess_id,
             error_code=exc.error_code,
+            error_detail=str(exc),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
+    except DeckBuildError as exc:
+        # HEAVY-COMPUTE OFFLOAD: composing/uploading the build job_spec failed
+        # (storage backend not S3, a LOCAL forcing file missing, or the spec
+        # put_object failed). Honest typed failed envelope — never a silent
+        # degrade to an unrun scenario.
+        logger.warning(
+            "model_flood_scenario: SFINCS build-spec compose failed "
+            "(error_code=%s) — returning failed envelope: %s",
+            getattr(exc, "error_code", "DECK_BUILD_FAILED"),
+            exc,
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code=getattr(exc, "error_code", "DECK_BUILD_FAILED"),
             error_detail=str(exc),
             workflow_name=workflow_name,
             data_sources=data_sources,
@@ -3975,6 +4339,13 @@ async def model_flood_scenario(
     quadtree = quadtree or is_coastal
     solve_model_setup_uri = model_setup.setup_uri
     quadtree_run_result: RunResult | None = None
+    # HEAVY-COMPUTE OFFLOAD: set when the combined hydromt-build + SFINCS-solve
+    # Batch job (Step 5.6) ran; treated exactly like quadtree_run_result (skip the
+    # separate run_solver — the combined job already built + solved).
+    build_solve_run_result: RunResult | None = None
+    _is_build_spec = bool(
+        getattr(model_setup, "parameters", {}).get("sfincs_build_spec")
+    )
     if quadtree:
         logger.info(
             "model_flood_scenario: quadtree=True — assembling build_spec + "
@@ -4119,6 +4490,68 @@ async def model_flood_scenario(
                 grid_resolution_m=grid_resolution_m,
             )
 
+    # --- Step 5.6: COMBINED hydromt BUILD + SFINCS solve (heavy-compute offload) -
+    # When Step 5 composed a build job_spec (the pluvial offload path,
+    # ``_is_build_spec``), REPLACE the separate run_solver with ONE combined Batch
+    # job: the grace2-sfincs worker runs the hydromt BUILD (the former in-agent
+    # 16 GB driver), the SFINCS solve, AND the raster postprocess, then writes the
+    # publish_manifest.json. Mirrors the quadtree Step 5.5 exactly (submit ONE job,
+    # consume its solve RunResult; the register-only manifest path publishes). A
+    # DeckBuildError (inert / submit failure) surfaces as a typed failed envelope.
+    if _is_build_spec and quadtree_run_result is None:
+        # Size the combined build+solve from the bbox element estimate (the build
+        # is memory-heavy; the solve is the long pole).
+        _bs_autoscale = _extract_solve_autoscale(model_setup)
+        _bs_elements = _bs_autoscale.get("estimated_active_cells")
+        _bs_compute_class = (
+            select_compute_class(_bs_elements) if _bs_elements else compute_class
+        )
+        try:
+            async with substep(emitter, "run_sfincs_build_solve"):
+                build_solve_run_result = await run_sfincs_build_solve(
+                    solve_model_setup_uri,
+                    compute_class=_bs_compute_class,
+                )
+            solver_run_ids.append(build_solve_run_result.run_id)
+            data_sources.append(
+                DataSource(
+                    name="SFINCS hydromt build + solve + postprocess (combined Batch worker)",
+                    uri=build_solve_run_result.output_uri
+                    or _default_runs_prefix(build_solve_run_result.run_id),
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+            logger.info(
+                "model_flood_scenario: combined build+solve complete -> run_id=%s "
+                "status=%s output_uri=%s",
+                build_solve_run_result.run_id,
+                build_solve_run_result.status,
+                build_solve_run_result.output_uri,
+            )
+        except asyncio.CancelledError:
+            raise
+        except DeckBuildError as exc:
+            logger.warning(
+                "model_flood_scenario: combined build+solve job failed "
+                "(error_code=%s) — returning failed envelope: %s",
+                getattr(exc, "error_code", "SOLVER_DISPATCH_FAILED"),
+                exc,
+            )
+            return _build_failed_envelope(
+                bbox=resolved_bbox,
+                project_id=proj_id,
+                session_id=sess_id,
+                error_code=getattr(exc, "error_code", "SOLVER_DISPATCH_FAILED"),
+                error_detail=str(exc),
+                workflow_name=workflow_name,
+                data_sources=data_sources,
+                forcing=forcing_summary,
+                solver_run_ids=solver_run_ids,
+                return_period_years=return_period_yr,
+                duration_hours=float(duration_hr),
+                grid_resolution_m=grid_resolution_m,
+            )
+
     # --- Step 6: run_solver (Invariant 9 confirmation seam owned by agent) ---
     # Auto vertical scaling per case (NATE 2026-06-17): size the Batch
     # compute_class from the AOI/mesh element count the adaptive-grid autoscale
@@ -4135,6 +4568,11 @@ async def model_flood_scenario(
     handle: ExecutionHandle | None = None
     if quadtree_run_result is not None:
         run_result: RunResult = quadtree_run_result
+    elif build_solve_run_result is not None:
+        # HEAVY-COMPUTE OFFLOAD: the combined build+solve job (Step 5.6) already
+        # built + solved + postprocessed; carry its RunResult straight into the
+        # telemetry + register-only manifest tail (no second run_solver).
+        run_result = build_solve_run_result
     else:
         _autoscale_for_sizing = _extract_solve_autoscale(model_setup)
         _estimated_elements = _autoscale_for_sizing.get("estimated_active_cells")

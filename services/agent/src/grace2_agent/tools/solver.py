@@ -426,6 +426,23 @@ SFINCS_DECKBUILDER_SOLVER: str = "sfincs-deckbuilder"
 #: solve job-def; the per-solver routing keeps the two images from cross-routing.
 SFINCS_QUADTREE_SOLVER: str = "sfincs-quadtree"
 
+#: Per-solver key for the COMBINED hydromt regular-grid BUILD + SFINCS solve
+#: Batch job (heavy-compute offload — reports/design/heavy-compute-offload-2026-
+#: 07-02.md). Unlike the quadtree combined job, this runs on the SAME
+#: ``deltares/sfincs-cpu`` ``grace2-sfincs`` image (now carrying hydromt-sfincs):
+#: the entrypoint's ``--build-spec-uri`` mode runs the hydromt model BUILD (the
+#: former in-agent 16 GB driver), then the identical solve + raster postprocess
+#: on the freshly-built local deck, and writes ONE solve-schema completion.json
+#: (+ publish_manifest.json). Routed through ``_resolve_batch_job_def`` under this
+#: key so the canonical override is ``GRACE2_AWS_BATCH_JOB_DEF_SFINCS_BUILD``
+#: (e.g. a larger-memory job-def for the build phase) → the generic
+#: ``GRACE2_AWS_BATCH_JOB_DEF`` fallback (the ``grace2-sfincs`` job-def — the same
+#: image, so build+solve works there with NO new job-def). The OFFLOAD itself is
+#: gated in the composer (``GRACE2_SFINCS_BUILD_OFFLOAD``) so it stays byte-
+#: identical to the legacy in-agent build until NATE rebuilds+deploys the image
+#: (which now bundles hydromt) and flips the flag.
+SFINCS_BUILD_SOLVER: str = "sfincs-build"
+
 #: ``ExecutionHandle.workflow_name`` sentinel for the deck-build Batch job. It is
 #: the SAME AWS Batch poll branch (``_wait_for_completion_aws_batch``) — the deck
 #: worker writes the SAME completion.json schema — so we reuse
@@ -2296,6 +2313,192 @@ async def run_sfincs_quadtree(
     return result
 
 
+def submit_sfincs_build_solve(
+    build_spec_uri: str, compute_class: str = "standard"
+) -> ExecutionHandle:
+    """Submit the COMBINED hydromt regular-grid BUILD + SFINCS solve Batch job.
+
+    Heavy-compute offload (reports/design/heavy-compute-offload-2026-07-02.md):
+    ONE submit against the ``grace2-sfincs`` image (now carrying hydromt-sfincs).
+    The worker entrypoint's ``--build-spec-uri`` mode reads the agent-composed
+    job_spec (already-fetched DEM/landcover/river COG URIs + serialized
+    forcing/options), runs the hydromt model BUILD locally (the former in-agent
+    16 GB driver), runs SFINCS in that local deck dir, runs the raster
+    postprocess, and writes ONE solve-schema ``completion.json`` (+
+    ``publish_manifest.json``) to ``s3://<runs_bucket>/<run_id>/``. So
+    ``wait_for_completion`` polls it identically to a plain solve; on success the
+    run is DONE (no second solve submit — the register-only manifest path
+    publishes).
+
+    Command/env shape mirrors ``submit_sfincs_quadtree`` (``--run-id`` +
+    ``--build-spec-uri`` + ``GRACE2_BUILD_SPEC_URI``); the ONLY difference is the
+    per-solver job-def key (``SFINCS_BUILD_SOLVER``) so a dedicated
+    ``GRACE2_AWS_BATCH_JOB_DEF_SFINCS_BUILD`` can point at a larger-memory build
+    job-def, else the generic ``GRACE2_AWS_BATCH_JOB_DEF`` (the ``grace2-sfincs``
+    job-def — the SAME image, so no new job-def is required).
+
+    BATCH-ONLY: build+solve fuses the hydromt build + the SFINCS binary in one
+    image; there is no in-agent path here (the whole point is to get the build
+    OFF the agent). A non-``aws-batch`` backend raises a typed ``DeckBuildError``.
+    """
+    if not isinstance(build_spec_uri, str) or not build_spec_uri:
+        raise DeckBuildError(
+            f"build_spec_uri must be a non-empty string; got {build_spec_uri!r}"
+        )
+    if not (
+        build_spec_uri.startswith("s3://")
+        or build_spec_uri.startswith("gs://")
+        or build_spec_uri.startswith("file://")
+    ):
+        raise DeckBuildError(
+            "build_spec_uri must be an s3:// / gs:// / file:// URI for the "
+            f"build+solve worker to download; got {build_spec_uri!r}"
+        )
+
+    backend = solver_backend()
+    if backend != SOLVER_BACKEND_AWS_BATCH:
+        raise DeckBuildError(
+            "The combined hydromt BUILD + SFINCS solve runs ONLY as an AWS Batch "
+            "job (the whole point of the heavy-compute offload is to get the "
+            "16 GB hydromt build OFF the always-on agent). Set "
+            "GRACE2_SOLVER_BACKEND=aws-batch to enable it. Active backend is "
+            f"{backend!r} — staying inert."
+        )
+
+    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
+    if schema_compute_class is None:
+        raise DeckBuildError(
+            f"compute_class {compute_class!r} not recognized; allowed: "
+            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
+        )
+
+    runs_bucket = _get_local_runs_bucket()  # fail fast on missing GRACE2_RUNS_BUCKET
+
+    queue = (os.environ.get("GRACE2_AWS_BATCH_QUEUE") or "").strip()
+    if not queue:
+        raise DeckBuildError(
+            "GRACE2_AWS_BATCH_QUEUE must be set for the combined build+solve job "
+            "(the Batch job queue ARN/name — NATE provisions it)."
+        )
+    try:
+        job_def = _resolve_batch_job_def(SFINCS_BUILD_SOLVER)
+    except SolverDispatchError as exc:
+        raise DeckBuildError(str(exc)) from exc
+
+    sizing = _aws_batch_sizing(compute_class)
+    run_id = new_ulid()
+    submitted_at = datetime.now(timezone.utc)
+
+    container_overrides: dict[str, Any] = {
+        "command": [
+            "--run-id",
+            run_id,
+            "--build-spec-uri",
+            build_spec_uri,
+        ],
+        "environment": [
+            {"name": "GRACE2_RUNS_BUCKET", "value": runs_bucket},
+            {"name": "GRACE2_RUN_ID", "value": run_id},
+            {"name": "GRACE2_BUILD_SPEC_URI", "value": build_spec_uri},
+            {"name": "OMP_NUM_THREADS", "value": str(sizing["omp_threads"])},
+            {"name": "GRACE2_OBJECT_STORE", "value": "s3"},
+        ],
+        "resourceRequirements": [
+            {"type": "VCPU", "value": str(sizing["vcpus"])},
+            {"type": "MEMORY", "value": str(sizing["mem_mib"])},
+        ],
+    }
+
+    logger.info(
+        "aws-batch submit BUILD+SOLVE solver=%s run_id=%s compute_class=%s "
+        "vcpus=%d mem_mib=%d queue=%s job_def=%s build_spec=%s",
+        SFINCS_BUILD_SOLVER,
+        run_id,
+        compute_class,
+        sizing["vcpus"],
+        sizing["mem_mib"],
+        queue,
+        job_def,
+        build_spec_uri,
+    )
+
+    client = _get_batch_client()
+    try:
+        resp = client.submit_job(
+            jobName=f"grace2-{SFINCS_BUILD_SOLVER}-{run_id}",
+            jobQueue=queue,
+            jobDefinition=job_def,
+            containerOverrides=container_overrides,
+        )
+    except SolverDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DeckBuildError(
+            f"AWS Batch submit_job failed for the build+solve job "
+            f"(queue={queue} job_def={job_def}): {exc}"
+        ) from exc
+
+    job_id = (
+        (resp or {}).get("jobId")
+        if isinstance(resp, dict)
+        else getattr(resp, "jobId", None)
+    )
+    if not job_id:
+        raise DeckBuildError(
+            f"AWS Batch submit_job returned no jobId for the build+solve job: {resp!r}"
+        )
+    _register_inflight_batch_job(str(job_id))
+
+    handle = ExecutionHandle(
+        handle_id=new_ulid(),
+        run_id=run_id,
+        solver=SFINCS_BUILD_SOLVER,
+        compute_class=schema_compute_class,  # type: ignore[arg-type]
+        workflows_execution_id=str(job_id),
+        workflow_name=AWS_BATCH_WORKFLOW_NAME,
+        workflow_location=_aws_region(),
+        submitted_at=submitted_at,
+    )
+    logger.info(
+        "aws-batch BUILD+SOLVE submitted run_id=%s handle_id=%s jobId=%s",
+        run_id,
+        handle.handle_id,
+        job_id,
+    )
+    return handle
+
+
+async def run_sfincs_build_solve(
+    build_spec_uri: str,
+    compute_class: str = "standard",
+    poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+) -> RunResult:
+    """Submit the combined hydromt BUILD + SFINCS solve job, await it, return the
+    RunResult.
+
+    The single regular-grid offload entrypoint the composer calls in place of the
+    in-agent ``build_sfincs_model`` + ``run_solver``: SUBMIT
+    (``submit_sfincs_build_solve``), poll ``completion.json`` on S3
+    (``wait_for_completion`` — same Batch poll + early-FAILED consult + cancel
+    chain), and RETURN the ``RunResult`` (``output_uri`` carries ``sfincs_map.nc``
+    + the display-ready COGs + ``publish_manifest.json``). No second solve submit;
+    the caller runs the register-only manifest path exactly as for the quadtree
+    combined job. ``asyncio.CancelledError`` propagates (Invariant 8).
+    """
+    handle = submit_sfincs_build_solve(build_spec_uri, compute_class=compute_class)
+    result = await wait_for_completion(
+        handle, poll_interval_s=poll_interval_s, timeout_s=timeout_s
+    )
+    logger.info(
+        "combined hydromt build+solve run complete run_id=%s status=%s output_uri=%s",
+        result.run_id,
+        result.status,
+        getattr(result, "output_uri", None),
+    )
+    return result
+
+
 def _batch_terminal_failure(job_id: str) -> str | None:
     """Consult ``batch.describe_jobs`` for an EARLY terminal FAILED detection.
 
@@ -3280,11 +3483,14 @@ def _solver_error_code(manifest: dict[str, Any]) -> str:
     Surfaced as OQ-41-ERROR-CODE-REGISTRY — when sprint-08 lands more
     solver-specific failure modes (SFINCS_MASS_BALANCE_DIVERGED,
     MODEL_DECK_INVALID, etc.) the registry expands here.
+
+    Heavy-compute offload: the combined build+solve worker writes an explicit
+    ``error_code`` into completion.json (e.g. ``HYDROMT_BUILD_FAILED``,
+    ``LULC_MAPPING_MISMATCH``, ``RUN_OUTPUT_EMPTY``) so a BUILD-phase failure
+    surfaces the SAME typed code the in-agent build produced. Prefer it when
+    present; otherwise fall back to the generic ``SOLVER_FAILED`` bucket.
     """
-    exit_code = manifest.get("exit_code")
-    if exit_code is not None and exit_code != 0:
-        # Surface the most common known SFINCS exit shapes once we observe
-        # them in real runs; for now we surface a generic code carrying the
-        # exit code in the message.
-        return "SOLVER_FAILED"
+    explicit = manifest.get("error_code")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
     return "SOLVER_FAILED"
