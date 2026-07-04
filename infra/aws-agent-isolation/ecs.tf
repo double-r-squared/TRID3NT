@@ -201,6 +201,12 @@ resource "aws_ecs_task_definition" "agent" {
         # byte-identical). "modflow-build" solver falls back to the grace2-modflow
         # job def. Flip to "0" to roll back instantly. (2026-07-03)
         { name = "GRACE2_MODFLOW_BUILD_OFFLOAD", value = "1" },
+        # Extends the MODFLOW offload to 6 archetypes (sustainable_yield,
+        # mine_dewatering, regional_water_budget, MAR, ASR, wetland_hydroperiod);
+        # the other 5 archetypes stay in-agent (lightweight FloPy builds). The
+        # 5-engine postprocess offload (GeoClaw/SWMM/OpenQuake/SWAN/Landlab) needs
+        # no flag -- it is manifest-presence-gated + falls back to in-agent. (2026-07-03)
+        { name = "GRACE2_MODFLOW_ARCHETYPE_OFFLOAD", value = "1" },
       ]
 
       logConfiguration = {

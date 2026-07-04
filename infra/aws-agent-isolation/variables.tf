@@ -131,13 +131,20 @@ variable "agent_task_cpu" {
 
 variable "agent_task_memory" {
   type = string
-  # 2 GB OOM-killed (exit 137) the SFINCS BUILD for a hilly AOI (Chattanooga, DEM
-  # range 136-724 m -> heavy hydromt mesh) -- the agent died mid-solve and the
-  # depth never published. The build (hydromt + GDAL/rasterio in-memory arrays)
-  # peaks well past 2 GB; the EC2 box never hit this at 16 GB. Match that headroom.
-  # 2 vCPU + 16384 MiB is the max-memory Fargate pairing for 2 vCPU. (2026-06-30)
-  description = "Fargate task memory (MiB) for the per-session agent task. 16384 = 16 GB to fit the SFINCS build peak (was 2048, which OOM-killed hilly-AOI builds)."
-  default     = "16384"
+  # HISTORY: 2 GB OOM-killed (exit 137) the in-agent SFINCS BUILD for a hilly AOI
+  # (Chattanooga) so this was raised to 16 GB on 2026-06-30 to fit the hydromt +
+  # GDAL/rasterio in-agent build peak.
+  # 2026-07-03 heavy-compute offload: the SFINCS build, the MODFLOW build + plume
+  # postprocess, the 6 MODFLOW archetypes, and the GeoClaw/SWMM/OpenQuake/Landlab
+  # postprocess now all run on tear-down Batch WORKERS (gates ON in ecs.tf; the
+  # postprocess set is manifest-presence-gated with an in-agent fallback). The
+  # agent is a thin orchestrator that never loads a DEM/NetCDF into RAM, so the
+  # 16 GB headroom is no longer needed. Shrunk 16384 -> 8192 (safe interim: 8 GB
+  # still gives the manifest-fallback path headroom so it cannot OOM). Target is
+  # ~4096 once every engine's offload is confirmed by real usage. 2 vCPU pairs
+  # with 4096-16384 MiB on the Fargate matrix, so 8192 is valid.
+  description = "Fargate task memory (MiB) for the per-session agent task. 8192 = 8 GB (post heavy-compute offload; was 16384). Target 4096 after offload is usage-confirmed."
+  default     = "8192"
 }
 
 variable "agent_log_retention_days" {
