@@ -206,6 +206,12 @@ dependencies = [
     # geopandas). NOTE: the SSM file-swap deploy does NOT pip-install, so the
     # deployed agent box venv must have pmtiles installed out-of-band.
     "pmtiles>=3,<4",
+    # offline/local build (GAP 1 -- trid3nt-local offline-architecture.md):
+    # openai is the client for ANY OpenAI-compatible chat.completions endpoint
+    # (Ollama, vLLM, llama.cpp, LM Studio, OpenAI, Groq, DeepSeek, OpenRouter).
+    # Dormant unless MODEL_PROVIDER=openai is selected; zero impact on the live
+    # Bedrock path. AsyncOpenAI + streaming tool-call support requires >= 1.40.
+    "openai>=1.40",
     # Consumed verbatim from packages/contracts/ (editable install via make run-agent).
     "grace2-contracts>=0.1,<0.2",
 ]

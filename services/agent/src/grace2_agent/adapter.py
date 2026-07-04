@@ -2399,7 +2399,7 @@ async def stream_events_with_contents(
         tool-call telemetry record.
     """
     # sprint-14-aws (job-0286): model-provider switch. When MODEL_PROVIDER=bedrock,
-    # delegate to the Bedrock Converse adapter — it converts the genai contents +
+    # delegate to the Bedrock Converse adapter -- it converts the genai contents +
     # tool declarations at the boundary and yields the SAME StreamEvent union, so
     # the server.py dispatch loop, validator, emitter, and UI are untouched.
     # cached_content_name is a Gemini-only fast-path and does not apply here.
@@ -2423,6 +2423,21 @@ async def stream_events_with_contents(
 
     if model_provider() == "bedrock":
         async for _ev in stream_bedrock(
+            contents=contents,
+            tool_declarations=tool_declarations,
+            system_prompt=system_prompt,
+            model=bedrock_model,
+        ):
+            yield _ev
+        return
+
+    # MODEL_PROVIDER=openai: delegate to the OpenAI-compatible adapter. Covers
+    # Ollama, vLLM, llama.cpp server, LM Studio, OpenAI, Groq, DeepSeek,
+    # OpenRouter -- any endpoint that speaks the chat.completions streaming API.
+    # Dormant unless selected; zero cloud impact when MODEL_PROVIDER != "openai".
+    if model_provider() == "openai":
+        from .openai_adapter import stream_openai
+        async for _ev in stream_openai(
             contents=contents,
             tool_declarations=tool_declarations,
             system_prompt=system_prompt,
