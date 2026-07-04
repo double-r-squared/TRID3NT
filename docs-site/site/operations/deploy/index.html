@@ -1,0 +1,1227 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../../reference/data-stores/">
+      
+      
+        <link rel="next" href="../runbook/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Deploy - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#deploy" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Deploy
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/session-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#web-frontend-vercel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web frontend (Vercel)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-fargate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent (Fargate)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Agent (Fargate)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-bundle-upload-dev-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Bundle + upload (dev machine)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-build-image-codebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Build image (CodeBuild)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workers-batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workers (Batch)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#infra-opentofu-terraform" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Infra (OpenTofu / Terraform)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cold-tool-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cold tool catalog
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deployment-sequence-for-a-full-stack-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deployment sequence for a full-stack change
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#web-frontend-vercel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web frontend (Vercel)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#agent-fargate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent (Fargate)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Agent (Fargate)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-bundle-upload-dev-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 1: Bundle + upload (dev machine)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-build-image-codebuild" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Step 2: Build image (CodeBuild)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workers-batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workers (Batch)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#infra-opentofu-terraform" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Infra (OpenTofu / Terraform)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cold-tool-catalog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cold tool catalog
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deployment-sequence-for-a-full-stack-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deployment sequence for a full-stack change
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="deploy">Deploy<a class="headerlink" href="#deploy" title="Permanent link">&para;</a></h1>
+<p>Each tier deploys independently. There is no monolithic deploy pipeline.</p>
+<hr />
+<h2 id="web-frontend-vercel">Web frontend (Vercel)<a class="headerlink" href="#web-frontend-vercel" title="Permanent link">&para;</a></h2>
+<p><strong>Trigger:</strong> push to <code>origin/main</code>
+<strong>No manual step needed.</strong> Vercel auto-deploys on every push via <code>web/vercel.json</code> (Vite build).</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>push<span class="w"> </span>origin<span class="w"> </span>main<span class="w">   </span><span class="c1"># Vercel picks this up automatically</span>
+</code></pre></div>
+<p>Env vars for the frontend are managed in the Vercel dashboard. Do NOT <code>aws s3 sync</code> the frontend --
+that targets the legacy dead S3 bucket, not Vercel.</p>
+<hr />
+<h2 id="agent-fargate">Agent (Fargate)<a class="headerlink" href="#agent-fargate" title="Permanent link">&para;</a></h2>
+<p>New per-session agent tasks pick up the <code>:latest</code> ECR image automatically on the next provision.</p>
+<p><strong>Two-step process:</strong></p>
+<h3 id="step-1-bundle-upload-dev-machine">Step 1: Bundle + upload (dev machine)<a class="headerlink" href="#step-1-bundle-upload-dev-machine" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>bash<span class="w"> </span>scripts/deploy_agent_bundle.sh
+</code></pre></div>
+<p>This script:
+1. Tars <code>services/agent/src/grace2_agent/</code>, <code>services/agent/src/grace2_contracts/</code>,
+   <code>python_sandbox/executor.py</code>, and <code>workers_modflow/gwt_adapter.py</code>.
+2. Uploads the bundle to <code>s3://grace2-agent-bundle-226996537797/engine-build/agent_deploy_src.tgz</code>
+   with a sha256 sidecar.
+3. Publishes <code>catalog/tool-catalog.json</code> to the web bucket (<code>grace2-hazard-web-226996537797</code>)
+   as public-read, <code>max-age=300</code>. (Skip with <code>GRACE2_SKIP_COLD_CATALOG=1</code>.)</p>
+<h3 id="step-2-build-image-codebuild">Step 2: Build image (CodeBuild)<a class="headerlink" href="#step-2-build-image-codebuild" title="Permanent link">&para;</a></h3>
+<p>AWS CodeBuild project <code>grace2-agent-builder</code> pulls the bundle from S3, builds a Docker image,
+and pushes to ECR <code>:latest</code>. The IaC lives in <code>infra/aws-codebuild/</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Trigger the build (CodeBuild picks up the bundle automatically, or trigger manually)</span>
+aws<span class="w"> </span>codebuild<span class="w"> </span>start-build<span class="w"> </span>--project-name<span class="w"> </span>grace2-agent-builder<span class="w"> </span>--region<span class="w"> </span>us-west-2
+</code></pre></div>
+<p>New sessions provision the updated image automatically. There is no need to drain or restart
+the broker; the broker calls <code>ecs:RunTask</code> with the task definition that references <code>:latest</code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Standing deploy authorization</p>
+<p>NATE has granted standing authorization for agent code deploys. No per-deploy confirmation
+is needed. See memory entry <code>project_agent_deploy_via_custom_ssm_doc.md</code>.</p>
+</div>
+<hr />
+<h2 id="workers-batch">Workers (Batch)<a class="headerlink" href="#workers-batch" title="Permanent link">&para;</a></h2>
+<p>Each worker has its own CodeBuild project triggered by <code>WORKER_DIR</code> and <code>ECR_REPO</code> overrides:</p>
+<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>codebuild<span class="w"> </span>start-build<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--project-name<span class="w"> </span>grace2-worker-builder<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--environment-variables-override<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="nv">name</span><span class="o">=</span>WORKER_DIR,value<span class="o">=</span>services/workers/sfincs_deckbuilder,type<span class="o">=</span>PLAINTEXT<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="nv">name</span><span class="o">=</span>ECR_REPO,value<span class="o">=</span>&lt;ecr_repo_uri&gt;,type<span class="o">=</span>PLAINTEXT<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--region<span class="w"> </span>us-west-2
+</code></pre></div>
+<p>Workers use <code>:latest</code> mutable tags. Digest pinning is a TODO (see
+<code>reports/design/scale-to-zero-architecture-2026-07-04.md</code> section 1.6).</p>
+<p><strong>Container hygiene norm:</strong> before any ECR push, inspect size + <code>docker history</code> + build context.
+Use multi-stage builds, minimal base images, and <code>.dockerignore</code>. Report size/layer breakdown.</p>
+<hr />
+<h2 id="infra-opentofu-terraform">Infra (OpenTofu / Terraform)<a class="headerlink" href="#infra-opentofu-terraform" title="Permanent link">&para;</a></h2>
+<p>Each infra stack is in a separate <code>infra/&lt;stack&gt;/</code> directory with its own <code>versions.tf</code> backend:</p>
+<table>
+<thead>
+<tr>
+<th>Stack</th>
+<th>Directory</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session isolation (broker, agent ECS, ALB)</td>
+<td><code>infra/aws-agent-isolation/</code></td>
+<td>Main live stack</td>
+</tr>
+<tr>
+<td>TiTiler EC2</td>
+<td><code>infra/aws-titiler/</code></td>
+<td>Always-on tiles box</td>
+</tr>
+<tr>
+<td>Auto-stop (legacy idle check)</td>
+<td><code>infra/aws-autostop/</code></td>
+<td>CORS, autostop Lambda (superseded by broker/reaper)</td>
+</tr>
+<tr>
+<td>AWS Batch</td>
+<td><code>infra/aws-batch/</code></td>
+<td>Queue, CEs, job defs</td>
+</tr>
+<tr>
+<td>CodeBuild</td>
+<td><code>infra/aws-codebuild/</code></td>
+<td>Build pipelines</td>
+</tr>
+<tr>
+<td>Ops watchdog</td>
+<td><code>infra/aws-ops-watchdog/</code></td>
+<td>EventBridge Lambda watchdog</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>infra/aws-agent-isolation
+tofu<span class="w"> </span>init
+tofu<span class="w"> </span>plan
+tofu<span class="w"> </span>apply<span class="w">    </span><span class="c1"># requires explicit NATE confirmation for live mutations</span>
+</code></pre></div>
+<p><strong>Gate flags</strong> controlling feature behavior are env vars set in <code>infra/aws-agent-isolation/ecs.tf</code>
+(e.g. <code>GRACE2_DYNAMO_TABLE_PREFIX=trid3nt_</code>, <code>AUTH_REQUIRED=true</code>, <code>GRACE2_SOLVER_BACKEND=aws-batch</code>).</p>
+<hr />
+<h2 id="cold-tool-catalog">Cold tool catalog<a class="headerlink" href="#cold-tool-catalog" title="Permanent link">&para;</a></h2>
+<p>The tool catalog is published as a static JSON during the agent bundle deploy:</p>
+<div class="highlight"><pre><span></span><code>s3://grace2-hazard-web-226996537797/catalog/tool-catalog.json
+  Cache-Control: max-age=300
+  ACL: public-read
+</code></pre></div>
+<p>The web client reads this cold-first (no agent wake needed) to display tool descriptions. The agent
+also serves the same catalog at <code>/api/tools</code> (CloudFront -&gt; agent :8766) when the agent is live.</p>
+<hr />
+<h2 id="deployment-sequence-for-a-full-stack-change">Deployment sequence for a full-stack change<a class="headerlink" href="#deployment-sequence-for-a-full-stack-change" title="Permanent link">&para;</a></h2>
+<p>For changes touching agent code, worker code, and infra simultaneously:</p>
+<pre class="mermaid"><code>graph LR
+    A[Push to origin/main] --&gt; B[Vercel auto-deploys frontend]
+    C[deploy_agent_bundle.sh] --&gt; D[CodeBuild grace2-agent-builder]
+    D --&gt; E[ECR :latest updated]
+    E --&gt; F[Next broker RunTask uses new image]
+    G[grace2-worker-builder per worker] --&gt; H[ECR worker :latest updated]
+    I[tofu apply per stack] --&gt; J[Infra live]</code></pre>
+<p>Steps B, C/D/E, G/H, and I are all independent and can run in parallel.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

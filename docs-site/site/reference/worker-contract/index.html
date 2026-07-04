@@ -1,0 +1,1429 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../ws-protocol/">
+      
+      
+        <link rel="next" href="../engines/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Worker Contract - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#worker-contract" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Worker Contract
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/session-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#output-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output location
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-ordering-spot-atomicity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write ordering (Spot atomicity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publish_manifestjson-schema-schema_version-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        publish_manifest.json schema (schema_version 1)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="publish_manifest.json schema (schema_version 1)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#field-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Field reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-entry-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer entry fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#completionjson-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        completion.json schema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#honesty-floor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Honesty floor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manifest-presence-gating-and-in-agent-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manifest-presence gating and in-agent fallback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#job-spec-staging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job spec staging
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/deploy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#output-location" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output location
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-ordering-spot-atomicity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write ordering (Spot atomicity)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publish_manifestjson-schema-schema_version-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        publish_manifest.json schema (schema_version 1)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="publish_manifest.json schema (schema_version 1)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#field-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Field reference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-entry-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer entry fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#completionjson-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        completion.json schema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#honesty-floor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Honesty floor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#manifest-presence-gating-and-in-agent-fallback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manifest-presence gating and in-agent fallback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#job-spec-staging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job spec staging
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="worker-contract">Worker Contract<a class="headerlink" href="#worker-contract" title="Permanent link">&para;</a></h1>
+<p>Every Batch worker must follow this contract exactly. The agent uses these files to determine
+success/failure, extract layer references, and publish map tiles.</p>
+<p>Source files: <code>services/workers/_raster_postprocess/manifest.py</code>,
+<code>services/agent/src/grace2_agent/tools/solver.py</code>.</p>
+<hr />
+<h2 id="output-location">Output location<a class="headerlink" href="#output-location" title="Permanent link">&para;</a></h2>
+<p>All outputs land under a single S3 prefix:</p>
+<div class="highlight"><pre><span></span><code>s3://grace2-hazard-runs-226996537797/runs/&lt;run_id&gt;/
+  publish_manifest.json   (written BEFORE completion.json)
+  completion.json
+  &lt;engine_outputs&gt;/       (COG rasters, NetCDF, logs, etc.)
+</code></pre></div>
+<p>The <code>&lt;run_id&gt;</code> is a ULID generated by the agent at submit time and passed to the worker via
+environment variable or <code>job_spec</code>.</p>
+<hr />
+<h2 id="write-ordering-spot-atomicity">Write ordering (Spot atomicity)<a class="headerlink" href="#write-ordering-spot-atomicity" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant W as Worker
+    participant S3 as S3
+    participant A as Agent
+
+    W-&gt;&gt;W: build + solve
+    W-&gt;&gt;W: postprocess -&gt; COGs
+    W-&gt;&gt;S3: PutObject publish_manifest.json (FIRST)
+    W-&gt;&gt;S3: PutObject completion.json (SECOND)
+    loop poll every 10 s (off agent asyncio loop)
+        A-&gt;&gt;S3: HeadObject completion.json
+    end
+    A-&gt;&gt;S3: GetObject publish_manifest.json
+    A-&gt;&gt;A: publish layers from manifest</code></pre>
+<p><strong>Why manifest before completion:</strong> if Spot reclaims the task after COGs are written but before
+<code>completion.json</code> lands, the agent can still recover the layer references from the manifest. The
+manifest-presence gate in the agent checks for <code>publish_manifest.json</code> first; <code>completion.json</code>
+is the final signal to stop polling.</p>
+<hr />
+<h2 id="publish_manifestjson-schema-schema_version-1"><code>publish_manifest.json</code> schema (schema_version 1)<a class="headerlink" href="#publish_manifestjson-schema-schema_version-1" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;engine&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sfincs&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;run_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;ulid&gt;&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;frame_count&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">144</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nt">&quot;layers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;layer_id_stem&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;flood_depth&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Flood Depth (m)&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;layer_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;raster&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;primary&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;style_preset&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;continuous_flood_depth&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;units&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;m&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;cog_uri&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;s3://grace-2-hazard-prod-cog/runs/&lt;run_id&gt;/flood_depth.tif&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;frame_no&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;bbox&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">lo</span><span class="kc">n</span><span class="err">_mi</span><span class="kc">n</span><span class="p">,</span><span class="w"> </span><span class="err">la</span><span class="kc">t</span><span class="err">_mi</span><span class="kc">n</span><span class="p">,</span><span class="w"> </span><span class="err">lo</span><span class="kc">n</span><span class="err">_max</span><span class="p">,</span><span class="w"> </span><span class="err">la</span><span class="kc">t</span><span class="err">_max</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;has_overviews&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;band_stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;min&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;max&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">3.4</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;mean&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.12</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;std&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.31</span>
+<span class="w">      </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="err">...</span><span class="w"> </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="field-reference">Field reference<a class="headerlink" href="#field-reference" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schema_version</code></td>
+<td>int</td>
+<td>Must be <code>1</code>. Unknown version triggers in-agent postprocess fallback.</td>
+</tr>
+<tr>
+<td><code>engine</code></td>
+<td>string</td>
+<td>Engine identifier (<code>sfincs</code>, <code>modflow</code>, <code>geoclaw</code>, etc.)</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>string</td>
+<td>ULID; matches the S3 prefix</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>string</td>
+<td><code>"ok"</code> or <code>"error"</code></td>
+</tr>
+<tr>
+<td><code>frame_count</code></td>
+<td>int</td>
+<td>Number of time-step frames (1 for steady-state)</td>
+</tr>
+<tr>
+<td><code>metrics</code></td>
+<td>object</td>
+<td>Engine-specific scalar outputs (peak discharge, max depth, etc.)</td>
+</tr>
+<tr>
+<td><code>layers</code></td>
+<td>array</td>
+<td>List of layer entries (see below)</td>
+</tr>
+<tr>
+<td><code>error_code</code></td>
+<td>string</td>
+<td>Present only when <code>status="error"</code> (see honesty floor)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="layer-entry-fields">Layer entry fields<a class="headerlink" href="#layer-entry-fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layer_id_stem</code></td>
+<td>string</td>
+<td>Stable ID base; agent appends suffix for multi-frame layers</td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Display name shown in the layer panel</td>
+</tr>
+<tr>
+<td><code>layer_type</code></td>
+<td>string</td>
+<td><code>"raster"</code> (default) or <code>"vector"</code></td>
+</tr>
+<tr>
+<td><code>role</code></td>
+<td>string</td>
+<td><code>"primary"</code>, <code>"secondary"</code>, <code>"background"</code></td>
+</tr>
+<tr>
+<td><code>style_preset</code></td>
+<td>string</td>
+<td>Rendering preset key (e.g. <code>"continuous_flood_depth"</code>)</td>
+</tr>
+<tr>
+<td><code>units</code></td>
+<td>string</td>
+<td>Display units (e.g. <code>"m"</code>, <code>"m/s"</code>, <code>"mm"</code>)</td>
+</tr>
+<tr>
+<td><code>cog_uri</code></td>
+<td>string</td>
+<td><strong>Bare <code>s3://</code> URI</strong> -- the agent resolves to a signed URL or TiTiler URL at publish time</td>
+</tr>
+<tr>
+<td><code>frame_no</code></td>
+<td>int or null</td>
+<td>Frame index for time-stepped outputs; null for steady-state</td>
+</tr>
+<tr>
+<td><code>bbox</code></td>
+<td>[float, float, float, float]</td>
+<td><code>[lon_min, lat_min, lon_max, lat_max]</code> WGS84</td>
+</tr>
+<tr>
+<td><code>has_overviews</code></td>
+<td>bool</td>
+<td><code>true</code> if COG overviews are included (default <code>true</code>)</td>
+</tr>
+<tr>
+<td><code>band_stats</code></td>
+<td>object</td>
+<td><code>{min, max, mean, std}</code></td>
+</tr>
+<tr>
+<td><code>metrics</code></td>
+<td>object or null</td>
+<td>Per-layer scalar metrics</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title">COG URI must be s3:// at write time</p>
+<p>Workers write bare <code>s3://</code> URIs to the manifest. The agent converts these to TiTiler tile URLs
+or presigned URLs at publish time. Never write <code>https://</code> URLs directly into the manifest --
+they are not re-signable on reconnect.</p>
+</div>
+<hr />
+<h2 id="completionjson-schema"><code>completion.json</code> schema<a class="headerlink" href="#completionjson-schema" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;run_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;ulid&gt;&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;engine&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sfincs&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;elapsed_s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">143.2</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;error_code&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;deck_provenance&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;grid_cells&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12800</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;compute_class&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;standard&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;job_def&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;grace2-sfincs-quadtree:5&quot;</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>status</code></td>
+<td><code>"ok"</code> or <code>"error"</code></td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>ULID</td>
+</tr>
+<tr>
+<td><code>engine</code></td>
+<td>Engine identifier</td>
+</tr>
+<tr>
+<td><code>elapsed_s</code></td>
+<td>Wall time for the Batch task</td>
+</tr>
+<tr>
+<td><code>error_code</code></td>
+<td>Typed error code on failure (see honesty floor)</td>
+</tr>
+<tr>
+<td><code>deck_provenance</code></td>
+<td>Engine-specific build metadata for auditing</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="honesty-floor">Honesty floor<a class="headerlink" href="#honesty-floor" title="Permanent link">&para;</a></h2>
+<p>A manifest with <code>status="ok"</code> but no actual COG layers is <strong>forbidden</strong>. If the engine produced
+no useful output, the worker must write <code>status="error"</code> with a typed <code>error_code</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Error code pattern</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>*_OUTPUT_EMPTY</code></td>
+<td>Engine ran to completion but produced zero output cells/points</td>
+</tr>
+<tr>
+<td><code>*_SOLVE_FAILED</code></td>
+<td>Numerical solver returned non-zero exit code</td>
+</tr>
+<tr>
+<td><code>*_BUILD_FAILED</code></td>
+<td>Model deck construction failed before solve</td>
+</tr>
+<tr>
+<td><code>*_POSTPROCESS_FAILED</code></td>
+<td>Solve succeeded but rasterization failed</td>
+</tr>
+</tbody>
+</table>
+<p>The agent rejects any manifest with <code>status="ok"</code> and an empty <code>layers</code> array and reports a typed
+error to the user. This prevents silent successes that display blank map tiles.</p>
+<hr />
+<h2 id="manifest-presence-gating-and-in-agent-fallback">Manifest-presence gating and in-agent fallback<a class="headerlink" href="#manifest-presence-gating-and-in-agent-fallback" title="Permanent link">&para;</a></h2>
+<p>The agent's manifest-reading path:</p>
+<ol>
+<li>Poll <code>completion.json</code> every 10 s (off the asyncio loop via <code>asyncio.to_thread</code>).</li>
+<li>On <code>completion.json</code> present: read <code>publish_manifest.json</code>.</li>
+<li>If <code>publish_manifest.json</code> present with valid <code>schema_version=1</code>: publish layers from manifest.</li>
+<li>If <code>publish_manifest.json</code> absent OR <code>schema_version</code> unknown: trigger in-agent postprocess
+   fallback (legacy path -- reads raw solver outputs and builds layer refs locally).</li>
+</ol>
+<p>The fallback exists for backwards compatibility with workers that predate the manifest contract.
+New workers must produce <code>publish_manifest.json</code>.</p>
+<hr />
+<h2 id="job-spec-staging">Job spec staging<a class="headerlink" href="#job-spec-staging" title="Permanent link">&para;</a></h2>
+<p>The agent composes a <code>job_spec</code> JSON object and passes it to the worker via S3 (staging key
+<code>runs/&lt;run_id&gt;/job_spec.json</code>) and/or Batch job environment variables. The job spec contains:</p>
+<ul>
+<li>Input data URIs (DEM, landcover, forcing, boundary conditions)</li>
+<li>Simulation parameters (resolution, duration, storm params)</li>
+<li>Output S3 prefix (<code>s3://grace2-hazard-runs-226996537797/runs/&lt;run_id&gt;/</code>)</li>
+<li>Compute class hint</li>
+</ul>
+<p>The worker reads the job spec at startup, executes the full pipeline, and writes outputs to the
+specified prefix. It never calls back to the agent during execution.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

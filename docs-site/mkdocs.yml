@@ -1,0 +1,46 @@
+site_name: TRID3NT (GRACE-2) Developer Documentation
+site_description: >-
+  Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench
+  (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Edge and Web: architecture/edge-and-web.md
+    - Session Tier: architecture/session-tier.md
+    - Agent Process: architecture/agent.md
+    - Compute Tier: architecture/compute-tier.md
+  - Reference:
+    - WebSocket Protocol: reference/ws-protocol.md
+    - Worker Contract: reference/worker-contract.md
+    - Engines: reference/engines.md
+    - Data Stores: reference/data-stores.md
+  - Operations:
+    - Deploy: operations/deploy.md
+    - Runbook: operations/runbook.md
+    - Verification: operations/verification.md
+  - Contributing: contributing.md

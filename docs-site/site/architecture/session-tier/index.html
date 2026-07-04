@@ -1,0 +1,1225 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../edge-and-web/">
+      
+      
+        <link rel="next" href="../agent/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Session Tier - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#session-tier" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Session Tier
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#component-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#route-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Route table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cold-provision-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cold provision flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#teardown-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Teardown paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reaper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reaper
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#broker-image-size-note" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Broker image size note
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/deploy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#component-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Component overview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#route-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Route table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cold-provision-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cold provision flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#teardown-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Teardown paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reaper" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reaper
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#broker-image-size-note" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Broker image size note
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="session-tier">Session Tier<a class="headerlink" href="#session-tier" title="Permanent link">&para;</a></h1>
+<p>The session tier manages the lifecycle of per-user WebSocket sessions and per-session agent tasks.</p>
+<p>Source files: <code>infra/aws-agent-isolation/</code> (IaC), <code>infra/aws-agent-isolation/broker/app.py</code> (broker),
+<code>infra/aws-agent-isolation/lambda/reaper.py</code> (reaper), <code>infra/aws-agent-isolation/RUNBOOK.md</code>.</p>
+<hr />
+<h2 id="component-overview">Component overview<a class="headerlink" href="#component-overview" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>CloudFront /ws*
+    |
+    v
+ALB grace2-agent-broker (always-on, HTTP/WS :443)
+    |
+    v
+Broker Fargate task (0.5 vCPU / 1 GB, desired_count=1, always-on)
+  - token verify (Cognito JWKS, cached in-process)
+  - route lookup: DynamoDB grace2_session_routes
+  - cold provision: ecs:RunTask grace2-agent-session
+  - bidirectional frame pump (two sockets open per session)
+    |
+    v (per session)
+Agent Fargate task (2 vCPU / 8 GB, ephemeral, no ECS service)
+  - asyncio WS :8765 + HTTP :8766
+  - task family: grace2-agent-session
+  - teardown: reaper + self-idle-exit + route-row TTL
+</code></pre></div>
+<hr />
+<h2 id="route-table">Route table<a class="headerlink" href="#route-table" title="Permanent link">&para;</a></h2>
+<p><strong>Table:</strong> <code>grace2_session_routes</code> (DynamoDB PAY_PER_REQUEST, PITR on, TTL 24 h)</p>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user_ulid</code></td>
+<td>PK (String)</td>
+<td>Cognito sub encoded as ULID</td>
+</tr>
+<tr>
+<td><code>session_id</code></td>
+<td>SK (String)</td>
+<td>Client-generated session UUID</td>
+</tr>
+<tr>
+<td><code>task_arn</code></td>
+<td>String</td>
+<td>ECS task ARN for the agent Fargate task</td>
+</tr>
+<tr>
+<td><code>private_ip</code></td>
+<td>String</td>
+<td>Agent task private IP (probed at <code>:8766</code>)</td>
+</tr>
+<tr>
+<td>TTL</td>
+<td>Number</td>
+<td>Route row expires 24 h after write</td>
+</tr>
+</tbody>
+</table>
+<p>In-process broker state: provisioning locks + JWKS cache only. A broker restart loses nothing;
+reconnects re-resolve from the route table.</p>
+<hr />
+<h2 id="cold-provision-flow">Cold provision flow<a class="headerlink" href="#cold-provision-flow" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>sequenceDiagram
+    participant C as Client (WS)
+    participant B as Broker
+    participant ECS as ECS
+    participant A as Agent Task
+    participant DDB as DynamoDB
+
+    C-&gt;&gt;B: WS connect (auth-token FIRST frame)
+    B-&gt;&gt;B: verify Cognito JWT (JWKS cache)
+    B-&gt;&gt;DDB: GetItem(user_ulid, session_id)
+    alt route hit (warm)
+        B-&gt;&gt;A: forward frames (private_ip:8765)
+    else no route (cold)
+        B-&gt;&gt;B: acquire per-(user,session) in-process lock
+        B-&gt;&gt;ECS: RunTask(grace2-agent-session, VPC subnets, SGs)
+        loop poll DescribeTasks every 2s
+            B-&gt;&gt;ECS: DescribeTasks
+        end
+        Note over B: task RUNNING + ENI assigned
+        loop health-probe :8766 every 2s
+            B-&gt;&gt;A: GET http://private_ip:8766/health
+        end
+        Note over B: ~40-48 s total cold provision
+        B-&gt;&gt;DDB: PutItem route row (TTL 24 h)
+        B--&gt;&gt;C: 8 s DATA-frame keepalive during wait\n(defeats 10 s pong watchdog)
+        B-&gt;&gt;A: forward frames (private_ip:8765)
+    end</code></pre>
+<div class="admonition warning">
+<p class="admonition-title">Known fragility: stale route after crash</p>
+<p>If an agent task crashes mid-session, the route row is not immediately removed. The broker
+will continue dialing the dead private IP for up to 5 minutes until the reaper tick cleans
+it. The fix (broker deletes route on failed dial) is tracked as a hardening item.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Known fragility: provision timeout mismatch</p>
+<p>The broker's provision timeout is 90 s; the agent's ECS health startPeriod is 120 s.
+If the agent is slow to start, the broker times out before ECS declares it healthy.
+Target fix: raise broker provision timeout to 150 s.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Scale limit at desired_count=1</p>
+<p>The dual-socket convergence (two concurrent connects for the same user+session) is guarded
+by an in-process lock. This is correct at <code>desired_count=1</code> but has a documented double-RunTask
+race at <code>desired_count&gt;=2</code> because the conditional PutItem guard is not yet implemented.</p>
+</div>
+<hr />
+<h2 id="teardown-paths">Teardown paths<a class="headerlink" href="#teardown-paths" title="Permanent link">&para;</a></h2>
+<p>An agent task is torn down by one of three independent mechanisms:</p>
+<table>
+<thead>
+<tr>
+<th>Mechanism</th>
+<th>Trigger</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Self-idle-exit</strong></td>
+<td>30 min of no tool calls</td>
+<td><code>os._exit(0)</code> from idle monitor in agent process</td>
+</tr>
+<tr>
+<td><strong>Reaper</strong></td>
+<td>15 min idle streak (3 ticks) OR 90 min max-age</td>
+<td>Lambda <code>grace2-agent-task-reaper</code> on 5-min EventBridge schedule; HTTP-probes <code>:8766</code> per task</td>
+</tr>
+<tr>
+<td><strong>Route-row TTL</strong></td>
+<td>24 h after route write</td>
+<td>DynamoDB TTL; stale rows cleaned automatically</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid"><code>stateDiagram-v2
+    [*] --&gt; Provisioning: broker RunTask
+    Provisioning --&gt; Active: health probe OK
+    Active --&gt; Idle: no tool calls
+    Idle --&gt; Active: user message
+    Idle --&gt; SelfExit: 30 min idle\n(agent process)
+    Active --&gt; SelfExit: 30 min idle
+    Active --&gt; ReaperKill: 90 min max-age\n(reaper Lambda)
+    Idle --&gt; ReaperKill: 15 min idle streak\n(reaper Lambda)
+    SelfExit --&gt; [*]: ECS StopTask
+    ReaperKill --&gt; [*]: ECS StopTask</code></pre>
+<hr />
+<h2 id="reaper">Reaper<a class="headerlink" href="#reaper" title="Permanent link">&para;</a></h2>
+<p><strong>Lambda:</strong> <code>grace2-agent-task-reaper</code>
+<strong>Schedule:</strong> EventBridge 5-min cron
+<strong>State table:</strong> <code>grace2-autostop-state</code> (idle-streak tracking)</p>
+<p>The reaper:
+1. Lists running ECS tasks in the <code>grace2-agents</code> cluster with family <code>grace2-agent-session</code>.
+2. HTTP-probes each task's private <code>:8766</code> to check if the agent is idle.
+3. Increments the idle streak counter (in <code>grace2-autostop-state</code>); reaps at streak &gt;= 3 (15 min).
+4. Also reaps tasks exceeding <code>max_age</code> (90 min) regardless of idle state.</p>
+<div class="admonition note">
+<p class="admonition-title">Reaper + Batch guard (current vs. target)</p>
+<p>The current reaper is VPC-attached (to reach private agent IPs) and uses a GLOBAL Batch guard:
+any in-flight Batch solve job keeps ALL idle sessions alive -- not just the session that owns
+the job. The target redesign (Phase 1 migration) replaces HTTP probing with a DynamoDB
+heartbeat written by the agent every ~60 s, removes the VPC attachment, and gains per-session
+Batch guard. This also deletes both VPC interface endpoints (~$29/mo).</p>
+</div>
+<hr />
+<h2 id="broker-image-size-note">Broker image size note<a class="headerlink" href="#broker-image-size-note" title="Permanent link">&para;</a></h2>
+<p>The current broker image is ~1.4 GB because it installs the full <code>grace2_agent</code> package for
+zero-drift Cognito JWT verification reuse. This is identified as vastly oversized for what the broker
+process actually does. A Go rewrite of the broker would yield ~15-20 MB RSS and ~15 MB image.
+This is an optional fast-follow after the broker-onto-TiTiler-box migration (Phase 2).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

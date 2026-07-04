@@ -1,0 +1,1393 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../session-tier/">
+      
+      
+        <link rel="next" href="../compute-tier/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Agent Process - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#agent-process" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Agent Process
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../session-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#process-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#startup-and-tool-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Startup and tool registry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#llm-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#heartbeats-and-keepalive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Heartbeats and keepalive
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#durable-state-survives-process-death" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Durable state (survives process death)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Durable state (survives process death)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#in-memory-state-lost-on-crash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In-memory state (lost on crash)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#confirmation-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Confirmation gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-invariant-8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancellation (Invariant 8)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#heavy-compute-offload-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Heavy-compute offload status
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/deploy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#process-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Process architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#startup-and-tool-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Startup and tool registry
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#llm-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#heartbeats-and-keepalive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Heartbeats and keepalive
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#durable-state-survives-process-death" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Durable state (survives process death)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Durable state (survives process death)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#in-memory-state-lost-on-crash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In-memory state (lost on crash)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#confirmation-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Confirmation gates
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cancellation-invariant-8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cancellation (Invariant 8)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#heavy-compute-offload-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Heavy-compute offload status
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="agent-process">Agent Process<a class="headerlink" href="#agent-process" title="Permanent link">&para;</a></h1>
+<p>The agent is the core orchestrator of every live session. It holds the WebSocket connection,
+drives LLM turns, dispatches tools, and submits solver jobs to AWS Batch.</p>
+<p>Source files: <code>services/agent/src/grace2_agent/server.py</code>, <code>services/agent/src/grace2_agent/</code>,
+<code>services/agent/src/grace2_agent/tools/solver.py</code>.</p>
+<hr />
+<h2 id="process-architecture">Process architecture<a class="headerlink" href="#process-architecture" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>Agent Fargate Task (2 vCPU / 8 GB)
+ |
+ +-- asyncio event loop
+      |
+      +-- WebSocket server :8765   (client connections via broker)
+      +-- HTTP server :8766        (health probe, catalog endpoint)
+      |
+      +-- Per-connection coroutine
+           |
+           +-- auth handshake (auth-token frame)
+           +-- session-resume handler (replay state)
+           +-- user-message handler
+                |
+                +-- Bedrock converse_stream (tool_use loop)
+                     |
+                     +-- Tool dispatch (~160 registered tools)
+                          |
+                          +-- Lightweight tools: run in-loop
+                          +-- Heavy sync tools: asyncio.to_thread
+                               (_ALWAYS_OFFLOAD_SYNC_TOOLS set, 38 tools)
+                          +-- Solver tools: submit to AWS Batch
+                               (off-loop poll, DescribeJobs every 10 s)
+</code></pre></div>
+<hr />
+<h2 id="startup-and-tool-registry">Startup and tool registry<a class="headerlink" href="#startup-and-tool-registry" title="Permanent link">&para;</a></h2>
+<p>At startup the agent:
+1. Imports ~130-160 tool modules (eager import; several pull in rasterio/GDAL/numpy).
+2. Registers tools via <code>register_tool</code> decorators -- each tool has <code>name</code>, <code>description</code>, <code>schema</code>,
+   <code>cacheable</code>, <code>ttl_class</code>, <code>source_class</code>, <code>primary_category</code>.
+3. Boots the asyncio WS + HTTP servers.
+4. Runs cold-view backfill (populates S3 snapshot for any case with no existing snapshot).
+5. Starts the idle-exit monitor (30 min, <code>os._exit(0)</code>).</p>
+<p><strong>Tool count:</strong> approximately 160 registered tools spanning data fetch, engine workflows,
+spatial analysis, visualization, and utility categories.</p>
+<p><strong>Tool categories (primary_category values):</strong> <code>data_fetch</code>, <code>engine_workflow</code>, <code>spatial_analysis</code>,
+<code>visualization</code>, <code>utility</code>, <code>credentials</code>, <code>case_management</code>.</p>
+<p><strong>Memory floor:</strong> GDAL alone contributes ~300-500 MB RSS. The google-genai SDK is imported at
+module level (used as a types lingua franca for Bedrock adapter compatibility) even when running
+Bedrock. This is tracked as a Phase-4 diet item.</p>
+<hr />
+<h2 id="llm-integration">LLM integration<a class="headerlink" href="#llm-integration" title="Permanent link">&para;</a></h2>
+<p><strong>Provider:</strong> AWS Bedrock (<code>MODEL_PROVIDER=bedrock</code>, default)
+<strong>Default model:</strong> <code>us.anthropic.claude-sonnet-4-6</code>
+<strong>Selectable models:</strong> Haiku, Nova (via client model-selector in Settings)
+<strong>Adapter:</strong> <code>services/agent/src/grace2_agent/bedrock_adapter.py</code></p>
+<p>The legacy <code>google-genai</code> / Vertex Gemini path in <code>adapter.py</code> is retained as a dormant, reversible
+seam. The <code>google-adk</code> dep is decommissioned; <code>register_with_adk</code> is dead/uncalled.</p>
+<p><strong>Tool retrieval mode:</strong> controlled by env <code>GRACE2_TOOL_RETRIEVAL</code>:
+- <code>off</code> (default): all tools sent in every turn
+- <code>shadow</code>: RAG retrieval run but result not enforced
+- <code>enforce</code>: RAG top-k selection enforced</p>
+<hr />
+<h2 id="heartbeats-and-keepalive">Heartbeats and keepalive<a class="headerlink" href="#heartbeats-and-keepalive" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Server -&gt; client DATA heartbeat:</strong> every 12 s per connected session. This satisfies the client's
+  10 s pong deadline (see WS Protocol page).</li>
+<li><strong>Agent idle-exit monitor:</strong> after 30 min of no tool calls, <code>os._exit(0)</code>.</li>
+<li><strong>Cold provision keepalive:</strong> broker sends DATA-frame keepalives to the client during the ~40-48 s
+  cold provision to prevent the client's pong watchdog from force-reconnecting.</li>
+</ul>
+<hr />
+<h2 id="durable-state-survives-process-death">Durable state (survives process death)<a class="headerlink" href="#durable-state-survives-process-death" title="Permanent link">&para;</a></h2>
+<p>All durable state is external -- in DynamoDB and S3. A process death loses only the in-flight LLM
+turn; every Batch job runs independently and completes to S3 regardless.</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Storage</th>
+<th>Key / table</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cases</td>
+<td>DynamoDB <code>trid3nt_cases</code></td>
+<td>PK <code>_id</code>, GSI <code>user_id-index</code></td>
+</tr>
+<tr>
+<td>Chat history</td>
+<td>DynamoDB <code>trid3nt_chat</code></td>
+<td>per-case</td>
+</tr>
+<tr>
+<td>Sessions</td>
+<td>DynamoDB <code>trid3nt_sessions</code></td>
+<td>session -&gt; user mapping</td>
+</tr>
+<tr>
+<td>Users</td>
+<td>DynamoDB <code>trid3nt_users</code></td>
+<td>PK <code>_id</code>, GSI <code>firebase_uid-index</code> (legacy name)</td>
+</tr>
+<tr>
+<td>Secrets (vault)</td>
+<td>DynamoDB <code>trid3nt_secrets</code></td>
+<td>per-user soft-revokable</td>
+</tr>
+<tr>
+<td>Telemetry</td>
+<td>DynamoDB (telemetry table)</td>
+<td>per-tool invocation records</td>
+</tr>
+<tr>
+<td>Case snapshot (cold view)</td>
+<td>S3 <code>grace2-hazard-runs-*/case-views/&lt;case_id&gt;/</code></td>
+<td>JSON layer refs</td>
+</tr>
+<tr>
+<td>Case manifests</td>
+<td>S3 <code>grace2-hazard-runs-*/case-manifests/</code></td>
+<td>per-case published manifest</td>
+</tr>
+<tr>
+<td>Run outputs</td>
+<td>S3 <code>grace2-hazard-runs-*/runs/&lt;run_id&gt;/</code></td>
+<td>completion.json + COG URIs</td>
+</tr>
+<tr>
+<td>Published COGs</td>
+<td>S3 <code>grace-2-hazard-prod-cog</code></td>
+<td><code>/cog/</code> prefix; served via TiTiler</td>
+</tr>
+<tr>
+<td>QGS project files</td>
+<td>S3 <code>grace-2-hazard-prod-qgs</code></td>
+<td>per-case <code>.qgs</code> files</td>
+</tr>
+</tbody>
+</table>
+<h3 id="in-memory-state-lost-on-crash">In-memory state (lost on crash)<a class="headerlink" href="#in-memory-state-lost-on-crash" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Pending confirmation Futures (<code>_PENDING_CONFIRMATIONS</code>, <code>_PENDING_CREDENTIALS</code>,
+  <code>_PENDING_REGION_CHOICES</code>, <code>_PENDING_SPATIAL_INPUTS</code>)</li>
+<li>Live-turn registry (in-flight LLM turn context)</li>
+<li>Session-to-case pointer (rehydrated from DynamoDB on session-resume)</li>
+</ul>
+<hr />
+<h2 id="confirmation-gates">Confirmation gates<a class="headerlink" href="#confirmation-gates" title="Permanent link">&para;</a></h2>
+<p>Before any high-consequence action the agent pauses and sends a wire envelope requesting user
+confirmation. Three gate types:</p>
+<table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Env</th>
+<th>Tools</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Solver confirm</strong></td>
+<td><code>SOLVER_CONFIRM_TOOLS</code> set</td>
+<td><code>run_model_groundwater_contamination_scenario</code>, <code>run_model_contamination_affected_fields</code>, <code>run_model_flood_scenario</code>, <code>run_model_flood_habitat_scenario</code>, <code>run_swmm_urban_flood</code>, <code>run_seismic_hazard_psha</code></td>
+</tr>
+<tr>
+<td><strong>Fetch confirm</strong></td>
+<td><code>FETCH_CONFIRM_TOOLS</code> set</td>
+<td><code>fetch_dem</code>, <code>fetch_topobathy</code></td>
+</tr>
+<tr>
+<td><strong>Payload warning</strong></td>
+<td>Size threshold</td>
+<td>Any tool whose args exceed the size limit</td>
+</tr>
+<tr>
+<td><strong>Code exec</strong></td>
+<td><code>code-exec-request</code> frame</td>
+<td>Before sandbox dispatch</td>
+</tr>
+</tbody>
+</table>
+<p>Decision options: <code>proceed</code>, <code>cancel</code>, <code>narrow_scope</code> (for solver/fetch/payload); <code>proceed</code>, <code>cancel</code>
+(for code exec). <code>narrow_scope</code> includes <code>revised_args</code> in the wire frame.</p>
+<hr />
+<h2 id="cancellation-invariant-8">Cancellation (Invariant 8)<a class="headerlink" href="#cancellation-invariant-8" title="Permanent link">&para;</a></h2>
+<p>Cancellation is first-class: end-to-end within 30 s. The cancel path:</p>
+<ol>
+<li>Client sends <code>cancel</code> frame.</li>
+<li>Agent's <code>CancelledError</code> propagates from poll sleep -&gt; <code>_terminate_batch_job</code> / <code>_request_local_cancel</code> -&gt; re-raise.</li>
+<li><code>pipeline-state(cancelled)</code> emitted to client within NFR-R-3 30 s.</li>
+</ol>
+<p>Per-turn <code>ContextVar</code> tracks in-flight Batch jobs so cancel terminates the Batch job (orphan-job guard).</p>
+<hr />
+<h2 id="heavy-compute-offload-status">Heavy-compute offload status<a class="headerlink" href="#heavy-compute-offload-status" title="Permanent link">&para;</a></h2>
+<p>See <code>reports/design/heavy-compute-offload-2026-07-02.md</code> for the full design.</p>
+<table>
+<thead>
+<tr>
+<th>Engine</th>
+<th>Build</th>
+<th>Solve</th>
+<th>Postprocess</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SFINCS coastal quadtree</td>
+<td>Worker (<code>sfincs_deckbuilder</code>)</td>
+<td>Worker</td>
+<td>Worker</td>
+<td>Fully offloaded</td>
+</tr>
+<tr>
+<td>SFINCS pluvial</td>
+<td>Worker (<code>sfincs-build</code>)</td>
+<td>Worker</td>
+<td>Worker</td>
+<td>Offloaded 2026-07-03</td>
+</tr>
+<tr>
+<td>MODFLOW (all archetypes)</td>
+<td>Worker (<code>modflow-build</code>)</td>
+<td>Worker</td>
+<td>Worker</td>
+<td>Offloaded 2026-07-03</td>
+</tr>
+<tr>
+<td>GeoClaw</td>
+<td>In-agent</td>
+<td>Worker</td>
+<td>Worker (manifest-gated, in-agent fallback)</td>
+<td>Solve/post offloaded</td>
+</tr>
+<tr>
+<td>PySWMM</td>
+<td>In-agent</td>
+<td>Worker</td>
+<td>Worker (manifest-gated, in-agent fallback)</td>
+<td>Solve/post offloaded</td>
+</tr>
+<tr>
+<td>OpenQuake</td>
+<td>In-agent</td>
+<td>Worker</td>
+<td>Worker (manifest-gated, in-agent fallback)</td>
+<td>Solve/post offloaded</td>
+</tr>
+<tr>
+<td>Landlab</td>
+<td>In-agent</td>
+<td>Worker</td>
+<td>Worker (manifest-gated, in-agent fallback)</td>
+<td>Solve/post offloaded</td>
+</tr>
+<tr>
+<td>SWAN</td>
+<td>In-agent</td>
+<td>Worker</td>
+<td>Worker (manifest-gated, in-agent fallback)</td>
+<td>Solve/post offloaded</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Remaining in-agent heavy work:</strong> the 38-tool <code>_ALWAYS_OFFLOAD_SYNC_TOOLS</code> fetcher set
+(rasterio/xarray, 50-200 MB per active thread), vector densify (shapely), geopandas county fetch,
+and in-agent postprocess fallbacks.</p>
+<p><strong>Agent size target:</strong> from 8 GB toward 4 GB after Phase-4 diet (lazy imports + fetcher offload).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

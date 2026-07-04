@@ -1,0 +1,1376 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../operations/verification/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Contributing - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#contributing" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Contributing
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/session-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/worker-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/deploy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#conventions-hard-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conventions (hard rules)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repository-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-job-system-orchestrator-specialists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The job system (orchestrator / specialists)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The job system (orchestrator / specialists)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agents-and-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agents and routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#state-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-a-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to add a tool
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-an-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to add an engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-architectural-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10 Architectural Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#conventions-hard-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conventions (hard rules)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repository-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-job-system-orchestrator-specialists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The job system (orchestrator / specialists)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The job system (orchestrator / specialists)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agents-and-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agents and routing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#job-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Job lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#state-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-a-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to add a tool
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-add-an-engine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to add an engine
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-architectural-invariants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10 Architectural Invariants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="contributing">Contributing<a class="headerlink" href="#contributing" title="Permanent link">&para;</a></h1>
+<hr />
+<h2 id="conventions-hard-rules">Conventions (hard rules)<a class="headerlink" href="#conventions-hard-rules" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Details</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ASCII hyphens only</strong></td>
+<td>Never use em-dash (--) or en-dash (-) in commands, code, config, or tags. CLI flags are literal <code>--</code>.</td>
+</tr>
+<tr>
+<td><strong>No emojis in UI</strong></td>
+<td>Do not add emojis to UI code or commit messages unless explicitly requested.</td>
+</tr>
+<tr>
+<td><strong>Commit per job</strong></td>
+<td>Commit locally after each job; push to <code>origin/main</code> after each significant change. Never push without user say-so.</td>
+</tr>
+<tr>
+<td><strong>Never edit <code>docs/SRS_v0.3.md</code> directly</strong></td>
+<td>That file is regenerated from <code>docs/srs/*.md</code> by <code>make srs</code>. Amendments land in the narrow section file; run <code>make srs</code> to regenerate.</td>
+</tr>
+<tr>
+<td><strong>Worktree isolation</strong></td>
+<td>For parallel work: branch off <code>main</code>, work in <code>/tmp/grace2-&lt;name&gt;</code>, commit early. Never work in the shared main checkout when the orchestrator might be deploying.</td>
+</tr>
+<tr>
+<td><strong>Never sync blocks the asyncio loop</strong></td>
+<td>Wrap all boto3/file/network/compute calls in <code>asyncio.to_thread</code>.</td>
+</tr>
+<tr>
+<td><strong>Mobile + desktop both tested</strong></td>
+<td>Use <code>useIsMobile()</code> to gate mobile-specific fixes; leave the other env byte-for-byte unchanged.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="repository-layout">Repository layout<a class="headerlink" href="#repository-layout" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>GRACE-2/
+  docs/                   Frozen SRS (docs/srs/*.md canonical; docs/SRS_v0.3.md generated)
+  docs-site/              This documentation site (mkdocs.yml + docs/)
+  agents/                 Orchestrator + specialist agent instructions
+    AGENTS.md             Workflow conventions (read first)
+    orchestrator.md       Orchestrator role + invariants + routing table
+    schema.md             Schema specialist
+    web.md                Web specialist
+    agent.md              Agent specialist
+    engine.md             Engine specialist
+    infra.md              Infra specialist
+    testing.md            Testing specialist
+  infra/                  OpenTofu / Terraform IaC (one dir per stack)
+    aws-agent-isolation/  Broker, agent ECS, ALB, reaper, route table
+    aws-autostop/         TiTiler box autostop + CORS
+    aws-batch/            Queue, compute environments, job definitions
+    aws-codebuild/        Agent + worker build pipelines
+    aws-ops-watchdog/     EventBridge Lambda watchdog
+    aws-titiler/          TiTiler EC2 + CloudFront origins
+  services/
+    agent/                Agent process (asyncio, tools, Bedrock adapter)
+      src/grace2_agent/   Python package
+        server.py         Main WS server + protocol dispatch
+        bedrock_adapter.py  Bedrock LLM adapter
+        tools/            Tool registry (~160 tools)
+          solver.py       Batch submit + poll
+        dynamo_backend.py DynamoDB persistence
+        publish_layer.py  Layer publication + TiTiler URL resolution
+    workers/              Batch worker containers (one dir per engine)
+      _raster_postprocess/  Shared rasterio + manifest helpers
+      sfincs/             SFINCS v2.3.3
+      sfincs_deckbuilder/ SFINCS coastal quadtree
+      _sfincs_build/      SFINCS pluvial build
+      modflow/            MODFLOW 6
+      _modflow_build/     MODFLOW build + postprocess
+      geoclaw/            GeoClaw 5.14.0
+      openquake/          OpenQuake Engine
+      landlab/            Landlab
+      swan/               SWAN wave
+      swmm/               PySWMM
+      canopy/             Canopy ML
+  web/                    React + MapLibre GL JS SPA
+    src/
+      ws.ts               WebSocket client
+  scripts/
+    deploy_agent_bundle.sh  Agent deploy step 1 (bundle + upload)
+    ops_health_check.sh     Ops 7-probe health check
+  reports/
+    PROJECT_STATE.md      Current truth (stack, contracts, environment facts)
+    PROJECT_LOG.md        Append-only change log
+    inflight/             Active jobs (work queue)
+    complete/             Immutable completed jobs
+    design/               Design documents
+    sprints/              Sprint manifests
+</code></pre></div>
+<hr />
+<h2 id="the-job-system-orchestrator-specialists">The job system (orchestrator / specialists)<a class="headerlink" href="#the-job-system-orchestrator-specialists" title="Permanent link">&para;</a></h2>
+<p>All engineering work flows through a structured job system. Understand this before submitting
+changes.</p>
+<h3 id="agents-and-routing">Agents and routing<a class="headerlink" href="#agents-and-routing" title="Permanent link">&para;</a></h3>
+<p>The <strong>orchestrator</strong> (<code>agents/orchestrator.md</code>) never writes application code. It routes work to
+<strong>6 specialists</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Specialist</th>
+<th>Domain</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>schema</code></td>
+<td>Contracts, WebSocket protocol, shared types (grace2_contracts)</td>
+</tr>
+<tr>
+<td><code>web</code></td>
+<td>React + MapLibre GL JS client</td>
+</tr>
+<tr>
+<td><code>agent</code></td>
+<td>Agent service, tool registry, WS server, MCP</td>
+</tr>
+<tr>
+<td><code>engine</code></td>
+<td>Hazard engines, workers, composers, solvers</td>
+</tr>
+<tr>
+<td><code>infra</code></td>
+<td>AWS IaC (OpenTofu), ECR, CI</td>
+</tr>
+<tr>
+<td><code>testing</code></td>
+<td>Test harnesses, acceptance criteria, NFR verification</td>
+</tr>
+</tbody>
+</table>
+<h3 id="job-lifecycle">Job lifecycle<a class="headerlink" href="#job-lifecycle" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>orchestrator creates job
+    |
+    v
+reports/inflight/&lt;job-id&gt;/
+  audit.md          Frozen kickoff (immutable once handed to specialist)
+  STATE             Current state: created | in-progress | ready-for-audit | auditing | approved | needs-revision
+  report.md         Specialist&#39;s completion report
+  .history/         Version history
+
+    |
+    v (specialist runner executes)
+    |
+    v (adversarial reviewer gates at every dependency edge)
+    |
+    v
+orchestrator audits -&gt; approved
+    |
+    v
+reports/complete/&lt;job-id&gt;/   (immutable; never edit)
+PROJECT_LOG.md (append-only)
+</code></pre></div>
+<p><strong>Job ID format:</strong> <code>job-NNNN-&lt;specialist&gt;-YYYYMMDD</code></p>
+<p><strong>Kickoffs are frozen</strong> once handed to a specialist. New directives go in the next job. You cannot
+amend a kickoff while it is in-flight.</p>
+<h3 id="state-machine">State machine<a class="headerlink" href="#state-machine" title="Permanent link">&para;</a></h3>
+<pre class="mermaid"><code>stateDiagram-v2
+    [*] --&gt; created: orchestrator creates job
+    created --&gt; in_progress: specialist picks up
+    in_progress --&gt; ready_for_audit: specialist reports done
+    ready_for_audit --&gt; auditing: reviewer picks up
+    auditing --&gt; approved: reviewer accepts
+    auditing --&gt; needs_revision: reviewer finds issues
+    needs_revision --&gt; in_progress: specialist revises
+    approved --&gt; [*]: moved to reports/complete/</code></pre>
+<hr />
+<h2 id="how-to-add-a-tool">How to add a tool<a class="headerlink" href="#how-to-add-a-tool" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Create a new <code>.py</code> file in <code>services/agent/src/grace2_agent/tools/</code>.</li>
+<li>Decorate with <code>@register_tool</code>:
+   <div class="highlight"><pre><span></span><code><span class="nd">@register_tool</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;my_tool&quot;</span><span class="p">,</span>
+    <span class="n">description</span><span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+    <span class="n">schema</span><span class="o">=</span><span class="p">{</span><span class="o">...</span><span class="p">},</span>           <span class="c1"># JSON Schema for the tool&#39;s parameters</span>
+    <span class="n">cacheable</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">ttl_class</span><span class="o">=</span><span class="s2">&quot;short&quot;</span><span class="p">,</span>
+    <span class="n">source_class</span><span class="o">=</span><span class="s2">&quot;data_fetch&quot;</span><span class="p">,</span>
+    <span class="n">primary_category</span><span class="o">=</span><span class="s2">&quot;data_fetch&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">my_tool</span><span class="p">(</span><span class="n">param</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="o">...</span>
+</code></pre></div></li>
+<li>Heavy sync operations (rasterio, network, boto3): use <code>asyncio.to_thread</code> or add the tool
+   to <code>_ALWAYS_OFFLOAD_SYNC_TOOLS</code> in <code>server.py</code>.</li>
+<li>If the tool triggers a confirmation gate: add it to <code>SOLVER_CONFIRM_TOOLS</code> or
+   <code>FETCH_CONFIRM_TOOLS</code> in <code>server.py</code>.</li>
+<li>Redeploy the agent bundle and run a live smoke test.</li>
+</ol>
+<hr />
+<h2 id="how-to-add-an-engine">How to add an engine<a class="headerlink" href="#how-to-add-an-engine" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Worker container:</strong> create <code>services/workers/&lt;engine&gt;/</code> with:</li>
+<li><code>Dockerfile</code> (minimal base, multi-stage if needed)</li>
+<li><code>entrypoint.py</code> or <code>entrypoint.sh</code> that reads <code>job_spec.json</code> from S3, runs
+     build + solve + postprocess, and writes <code>publish_manifest.json</code> (BEFORE <code>completion.json</code>)
+     and <code>completion.json</code> to <code>s3://grace2-hazard-runs-226996537797/runs/&lt;run_id&gt;/</code>.</li>
+<li>
+<p>Follow the <a href="../reference/worker-contract/">Worker Contract</a> exactly.</p>
+</li>
+<li>
+<p><strong>Batch job definition:</strong> add to <code>infra/aws-batch/</code> and reference the new ECR repo.</p>
+</li>
+<li>
+<p><strong>Solver key:</strong> add to <code>SOLVER_WORKFLOW_REGISTRY</code> in
+   <code>services/agent/src/grace2_agent/tools/solver.py</code>.</p>
+</li>
+<li>
+<p><strong>Job def env var:</strong> set <code>GRACE2_AWS_BATCH_JOB_DEF_&lt;SOLVER&gt;</code> or use the in-code registry.</p>
+</li>
+<li>
+<p><strong>Composer tool:</strong> register a tool in the agent (see above) that:</p>
+</li>
+<li>Validates inputs (AOI bbox, forcing parameters)</li>
+<li>Composes and stages <code>job_spec.json</code> to S3</li>
+<li>Calls <code>run_solver(solver_key, job_spec, compute_class)</code></li>
+<li>
+<p>Polls via the solver poll loop</p>
+</li>
+<li>
+<p><strong>Live E2E test:</strong> drive the new engine with <strong>Haiku</strong> on a <strong>small AOI</strong> before deploying to
+   production. Confirm <code>publish_manifest.json</code> presence and tile rendering.</p>
+</li>
+</ol>
+<hr />
+<h2 id="10-architectural-invariants">10 Architectural Invariants<a class="headerlink" href="#10-architectural-invariants" title="Permanent link">&para;</a></h2>
+<p>From <code>agents/orchestrator.md</code>:</p>
+<ol>
+<li><strong>Determinism boundary</strong> -- the LLM never produces numerical output; it only selects and
+   parameterizes tools.</li>
+<li><strong>Deterministic workflows</strong> -- engine workflows are Python functions; no intent-classification
+   phase inside a workflow.</li>
+<li><strong>Engine registration, not modification</strong> -- all engines share the interface
+   <code>(location, forcing) -&gt; AssessmentEnvelope</code>.</li>
+<li><strong>Rendering through QGIS Server</strong> -- <code>.qgs</code> + QML via WMS/WMTS/WFS (target state for vector
+   layers; rasters via TiTiler today).</li>
+<li><strong>Tier separation</strong> -- basemap data from public providers; model outputs via QGIS Server / TiTiler
+   only.</li>
+<li><strong>Metadata-payload pattern</strong> -- DynamoDB for discovery; S3 for large payloads.</li>
+<li><strong>Claims carry provenance</strong> -- <code>NumericClaim</code> in <code>ClaimSet</code> with consensus.</li>
+<li><strong>Cancellation is first-class</strong> -- end-to-end within 30 s.</li>
+<li><strong>Confirmation before consequence</strong> -- no cost theater; all high-consequence tools gate.</li>
+<li><strong>Minimal parameter surface</strong> -- fetch everything with an authoritative source; never ask the
+    user for something the system can derive.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
