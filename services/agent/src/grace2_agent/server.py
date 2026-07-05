@@ -12129,6 +12129,31 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     # strong ref so the task is not GC'd.
     global _IDLE_EXIT_TASK
     _IDLE_EXIT_TASK = asyncio.create_task(_run_idle_exit_monitor())
+
+    # TOOL-RETRIEVAL INDEX WARM-AT-STARTUP: when retrieval is enabled
+    # (shadow/enforce), build the discover index off-loop NOW instead of
+    # lazily on the first discover_dataset tool call. Without this every
+    # turn's _discover_topk sees a COLD index and FAIL-OPENS to the full
+    # ~176-tool registry -- harmless for 200k-context cloud models, but a
+    # SMALL-CONTEXT local model (offline build, e.g. 16k Ollama) gets its
+    # request silently truncated, so it cannot see tool schemas and guesses
+    # argument names. Fire-and-forget: a failed warm just leaves the
+    # documented fail-open behavior in place; never delays serving.
+    if _tool_retrieval_mode() != "off":
+        async def _warm_discover_index() -> None:
+            try:
+                from .tools import discover_dataset as _dd_warm
+                await asyncio.to_thread(_dd_warm._get_index)
+                logger.info("tool_retrieval: discover index warmed at startup")
+            except Exception:  # noqa: BLE001 -- warm is best-effort
+                logger.warning(
+                    "tool_retrieval: startup index warm failed; fail-open stays",
+                    exc_info=True,
+                )
+        _warm_task = asyncio.create_task(_warm_discover_index())
+        _BG_SNAPSHOT_TASKS.add(_warm_task)
+        _warm_task.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+
     handler = _make_handler(settings)
 
     # Wave 4.10 C1: best-effort mount of the catalog HTTP listener.
