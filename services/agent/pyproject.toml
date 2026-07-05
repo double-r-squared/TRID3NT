@@ -218,6 +218,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# local-engines: pip-only solver runtimes for the TRID3NT offline / local build.
+# Install with: pip install -e "services/agent[local-engines]"
+# pyswmm + swmm-api are ALSO in core deps (always-on on the box); the extras pin
+# here are for the offline venv where the full agent is NOT installed.
+local-engines = [
+    "pyswmm>=2.1,<3",
+    "swmm-api>=0.4,<1",
+    "landlab>=2.6,<3",
+    "openquake.engine>=3.19",
+]
 
 [project.scripts]
 grace2-agent = "grace2_agent.main:run"
