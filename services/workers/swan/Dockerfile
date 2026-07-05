@@ -83,7 +83,9 @@ RUN apt-get update \
 # GATED-BUILD PLACEHOLDER: replace SWAN_SRC_SHA256 + SWAN_SRC_URL with the real
 # pinned values at the first build (the sha256sum -c gate fails until then -- the
 # intended interlock so an unverified binary never ships).
-ENV SWAN_SRC_SHA256=5e30107af500cadf9d6d1b6076403cc85793fd4db113d6a487fede5f74f41f77 \
+# sha256 updated 2026-07-05: SourceForge tarball bytes drifted (same URL/version);
+# verified VERNUM=41.51 in swanmain.ftn + Makefile present + 79 Fortran sources / 95 entries.
+ENV SWAN_SRC_SHA256=2e27367dd8c6e8316ce4f446ffad790e1cfca0a6649f7bc2291a81899ac0c4d0 \
     SWAN_SRC_URL=https://swanmodel.sourceforge.io/download/zip/swan4151.tar.gz
 RUN mkdir -p "$SWAN_HOME/src" \
     && curl -fsSL -o /tmp/swan-src.tar.gz "$SWAN_SRC_URL" \
