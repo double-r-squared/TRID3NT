@@ -207,6 +207,12 @@ resource "aws_ecs_task_definition" "agent" {
         # 5-engine postprocess offload (GeoClaw/SWMM/OpenQuake/SWAN/Landlab) needs
         # no flag -- it is manifest-presence-gated + falls back to in-agent. (2026-07-03)
         { name = "GRACE2_MODFLOW_ARCHETYPE_OFFLOAD", value = "1" },
+        # Phase-1 scale-to-zero: the agent writes hb_* heartbeat fields to its
+        # own route row every 60s (busy/active_connections/inflight_batch) so
+        # the reaper can health-check via DynamoDB instead of an in-VPC HTTP
+        # probe. The route KEY (user_ulid/session_id) is injected per-task by
+        # the broker's RunTask overrides. 0/unset = writer disabled. (2026-07-06)
+        { name = "GRACE2_ROUTE_HEARTBEAT_SECONDS", value = "60" },
       ]
 
       logConfiguration = {
