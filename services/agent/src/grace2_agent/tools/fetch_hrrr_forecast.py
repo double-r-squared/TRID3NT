@@ -481,8 +481,8 @@ def _open_component_4326(
 
     try:
         from ._public_s3 import public_s3fs_kwargs
-        outer_mapper = fsspec.get_mapper(outer_path, **public_s3fs_kwargs())
-        inner_mapper = fsspec.get_mapper(inner_path, **public_s3fs_kwargs())
+        outer_mapper = fsspec.get_mapper(outer_path, **public_s3fs_kwargs("us-west-1"))
+        inner_mapper = fsspec.get_mapper(inner_path, **public_s3fs_kwargs("us-west-1"))
         ds_outer = xr.open_zarr(outer_mapper, consolidated=False)
         ds_inner = xr.open_zarr(inner_mapper, consolidated=False)
     except Exception as exc:  # noqa: BLE001
@@ -878,7 +878,7 @@ def fetch_hrrr_forecast(
 
     try:
         from ._public_s3 import public_s3fs_kwargs
-        fs = fsspec.filesystem("s3", **public_s3fs_kwargs())
+        fs = fsspec.filesystem("s3", **public_s3fs_kwargs("us-west-1"))
     except Exception as exc:  # noqa: BLE001
         raise HRRRForecastUpstreamError(
             f"s3 filesystem init failed (is s3fs installed?): {exc}"
