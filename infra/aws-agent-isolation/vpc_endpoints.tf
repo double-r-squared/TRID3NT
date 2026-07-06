@@ -62,6 +62,19 @@ resource "aws_vpc_endpoint" "dynamodb" {
   tags              = { Name = "grace2-agent-isolation-dynamodb" }
 }
 
+# scale-to-zero Phase 0 (2026-07-06): FREE S3 Gateway endpoint. TiTiler's
+# continuous /vsis3 COG range reads + agent/worker S3 traffic previously
+# exited via the IGW; the gateway endpoint keeps it on the AWS backbone at
+# zero cost (same pattern as the DynamoDB endpoint above). Transparent --
+# default full-access policy, no DNS change, no SG coupling.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = var.vpc_id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = data.aws_route_tables.vpc.ids
+  tags              = { Name = "grace2-agent-isolation-s3" }
+}
+
 resource "aws_vpc_endpoint" "ecs" {
   vpc_id              = var.vpc_id
   service_name        = "com.amazonaws.${var.region}.ecs"
