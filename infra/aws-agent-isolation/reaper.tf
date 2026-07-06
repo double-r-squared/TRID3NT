@@ -2,13 +2,15 @@
 # single-box idle_check from ec2:StopInstances to ecs:StopTask, per session).
 #
 # Runs on an EventBridge schedule; for each live route in grace2_session_routes
-# it probes that task's /api/health and StopTasks (+ deletes the route) after
-# IDLE_THRESHOLD_CHECKS consecutive not-busy ticks, keeping the G3 Batch guard
-# and the Stage-3 idle-open-tab rule. See lambda/task_reaper/handler.py.
+# it reads the agent's self-reported hb_* heartbeat fields (REAPER_HEALTH_MODE=
+# heartbeat, Phase 1 2026-07-06) and StopTasks (+ deletes the route) after
+# IDLE_THRESHOLD_CHECKS consecutive not-busy ticks, keeping the per-session
+# Batch guard and the Stage-3 idle-open-tab rule. See lambda/task_reaper/handler.py.
 #
-# VPC: the agent tasks have NO public IP, so the reaper runs IN the task subnets
-# with a SG allowed to reach the agent SG on 8766 (the one networking difference
-# from the EC2 reaper).
+# VPC: NONE. Heartbeat mode needs only DynamoDB + the public ECS/Batch APIs, so
+# the Lambda runs outside the VPC (which let Phase 1 delete the ~$29/mo ECS+Batch
+# interface endpoints). Probe mode (in-VPC /api/health on private ENI IPs) is the
+# documented rollback -- see the commented vpc_config block below.
 
 # --------------------------------------------------------------------------- #
 # Package the handler (no third-party deps -- boto3 + urllib are in the runtime).
@@ -20,35 +22,12 @@ data "archive_file" "reaper_zip" {
   excludes    = ["tests", "tests/*", "__pycache__", "__pycache__/*"]
 }
 
-# --------------------------------------------------------------------------- #
-# Reaper SG: egress to the agent SG on 8766 (health probe) + the AWS APIs.
-# --------------------------------------------------------------------------- #
-resource "aws_security_group" "reaper" {
-  name        = "grace2-agent-task-reaper"
-  description = "Per-task idle reaper Lambda. Egress to agent tasks (8766) + AWS APIs."
-  vpc_id      = var.vpc_id
-
-  egress {
-    description = "ECS/DynamoDB/Batch APIs + the per-task health probe."
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "grace2-agent-task-reaper" }
-}
-
-# Allow the reaper SG to reach the agent task SG on 8766.
-resource "aws_security_group_rule" "agent_ingress_health_from_reaper" {
-  type                     = "ingress"
-  from_port                = 8766
-  to_port                  = 8766
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.agent_task.id
-  source_security_group_id = aws_security_group.reaper.id
-  description              = "/api/health from the per-task idle reaper Lambda."
-}
+# aws_security_group.reaper + aws_security_group_rule.agent_ingress_health_from_reaper:
+# DESTROYED 2026-07-06 (Phase 1). The reaper is heartbeat-mode and non-VPC -- it
+# never probes 8766, so both the Lambda SG and the agent-SG ingress allow are dead.
+# Removed from code so an apply cannot recreate them. Rollback to probe mode
+# requires: interface endpoints (vpc_endpoints.tf) + these two resources +
+# vpc_config below -- all in git history at c776178^..HEAD.
 
 # --------------------------------------------------------------------------- #
 # Reaper IAM: ecs:DescribeTasks/StopTask/ListTasks, dynamodb on the routes table,
@@ -128,10 +107,15 @@ resource "aws_lambda_function" "reaper" {
   filename         = data.archive_file.reaper_zip.output_path
   source_code_hash = data.archive_file.reaper_zip.output_base64sha256
 
-  vpc_config {
-    subnet_ids         = var.task_subnet_ids
-    security_group_ids = [aws_security_group.reaper.id]
-  }
+  # Phase-1 scale-to-zero (2026-07-06): vpc_config REMOVED. The reaper now runs
+  # heartbeat mode (REAPER_HEALTH_MODE=heartbeat) reading hb_* route-row fields
+  # from DynamoDB, so it no longer probes agent private IPs and needs no VPC
+  # attachment; ECS/Batch calls reach the public API endpoints from the Lambda
+  # service network. Rollback: restore this block + reaper_health_mode=probe.
+  #   vpc_config {
+  #     subnet_ids         = var.task_subnet_ids
+  #     security_group_ids = [aws_security_group.reaper.id]
+  #   }
 
   environment {
     variables = {

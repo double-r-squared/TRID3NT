@@ -18,41 +18,13 @@ data "aws_route_tables" "vpc" {
   }
 }
 
-# SG for the Interface endpoints: accept 443 only from the reaper Lambda's ENIs.
-resource "aws_security_group" "vpce" {
-  name        = "grace2-agent-isolation-vpce"
-  description = "GRACE-2 isolation interface VPC endpoints. 443 from in-VPC ECS/Batch consumers: reaper + broker + agents + box."
-  vpc_id      = var.vpc_id
-
-  # Private DNS makes these ECS/Batch interface endpoints AUTHORITATIVE for the
-  # whole VPC, so EVERY in-VPC consumer of the ECS/Batch control plane must be
-  # allowed on 443 -- not just the reaper. A reaper-only rule (the original)
-  # blackholed the broker's RunTask AND every agent/box Batch submit_job, which
-  # silently broke per-session provisioning + all flood dispatch (2026-06-30).
-  ingress {
-    description = "HTTPS 443 from every in-VPC ECS/Batch control-plane consumer."
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    security_groups = [
-      aws_security_group.reaper.id,     # reaper Lambda -> DynamoDB/ECS/Batch
-      aws_security_group.broker.id,     # broker -> ECS RunTask (provision agents)
-      aws_security_group.agent_task.id, # per-session agents -> Batch submit_job
-      "sg-0d15f32310c874a6e",           # EC2 rollback box agent -> Batch submit_job
-      "sg-0c7dc540171538e99",           # grace2-batch-sg: Batch compute EC2 -> ECS register (else jobs stick RUNNABLE)
-    ]
-  }
-
-  egress {
-    description = "Return traffic."
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "grace2-agent-isolation-vpce" }
-}
+# aws_security_group.vpce: DESTROYED 2026-07-06 (Phase 1). It existed only to
+# gate 443 into the ECS/Batch Interface endpoints below, which are gone -- all
+# in-VPC consumers now reach the public ECS/Batch APIs via the IGW. Removed from
+# code so an apply cannot recreate it. (Historical gotcha preserved: when the
+# interface endpoints DID exist, private DNS made them authoritative for the
+# whole VPC, so the SG had to allow reaper + broker + agents + box + batch-sg
+# on 443 -- a reaper-only rule blackholed all flood dispatch, 2026-06-30.)
 
 resource "aws_vpc_endpoint" "dynamodb" {
   vpc_id            = var.vpc_id
@@ -95,22 +67,6 @@ resource "aws_vpc_endpoint" "s3" {
 #   4. The reaper SG (aws_security_group.reaper) can also be deleted.
 #   Savings: ~$29/mo (two Interface endpoints at ~$14.40/mo each in us-west-2).
 
-resource "aws_vpc_endpoint" "ecs" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.region}.ecs"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = var.task_subnet_ids
-  security_group_ids  = [aws_security_group.vpce.id]
-  private_dns_enabled = true
-  tags                = { Name = "grace2-agent-isolation-ecs" }
-}
+# aws_vpc_endpoint.ecs: DESTROYED 2026-07-06 (Phase 1 -- heartbeat reaper needs no VPC attachment; in-VPC consumers use the public API via IGW). Deliberately removed from code so an apply cannot recreate it.
 
-resource "aws_vpc_endpoint" "batch" {
-  vpc_id              = var.vpc_id
-  service_name        = "com.amazonaws.${var.region}.batch"
-  vpc_endpoint_type   = "Interface"
-  subnet_ids          = var.task_subnet_ids
-  security_group_ids  = [aws_security_group.vpce.id]
-  private_dns_enabled = true
-  tags                = { Name = "grace2-agent-isolation-batch" }
-}
+# aws_vpc_endpoint.batch: DESTROYED 2026-07-06 (Phase 1 -- heartbeat reaper needs no VPC attachment; in-VPC consumers use the public API via IGW). Deliberately removed from code so an apply cannot recreate it.
