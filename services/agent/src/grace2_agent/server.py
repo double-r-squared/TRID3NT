@@ -2006,6 +2006,29 @@ async def _run_idle_exit_monitor(
             _hb_ticks_since_write += 1
             if _hb_ticks_since_write >= _hb_ticks_per_write:
                 _hb_ticks_since_write = 0
+                # Phase-4 sizing evidence (blueprint 2.4): log peak/current RSS
+                # each heartbeat so CloudWatch Logs carries the live memory
+                # profile that gates the 8GB->4GB task-def shrink. ru_maxrss is
+                # KB on Linux; VmRSS is the instantaneous figure.
+                try:
+                    import resource as _resource
+
+                    _peak_mb = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss // 1024
+                    _cur_mb = 0
+                    with open("/proc/self/status", encoding="ascii") as _f:
+                        for _line in _f:
+                            if _line.startswith("VmRSS:"):
+                                _cur_mb = int(_line.split()[1]) // 1024
+                                break
+                    logger.info(
+                        "hb-rss peak_mb=%d cur_mb=%d busy=%s conns=%d",
+                        _peak_mb,
+                        _cur_mb,
+                        busy,
+                        conns,
+                    )
+                except Exception:  # noqa: BLE001 -- telemetry only
+                    pass
                 # Off-loop: boto3 is synchronous; never block the asyncio loop.
                 asyncio.ensure_future(
                     asyncio.to_thread(
