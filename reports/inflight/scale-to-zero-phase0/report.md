@@ -49,3 +49,4 @@ grace2_* orphans -- zero fixed cost, no reward for deletion risk), trid3nt-local
 - S3 egress via free gateway endpoint
 
 ## Next: Phase 1 (heartbeat reaper -> delete ECS+Batch interface endpoints, ~$29/mo)
+- Post-change flood smoke: PASS -- run 01KWVDTZAB8AHZKMW0C8KQS76S, manifest offloaded, 252.2s wall (faster than baseline).
