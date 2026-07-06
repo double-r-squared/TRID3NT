@@ -242,3 +242,45 @@ variable "reaper_max_age_seconds" {
   description = "A RUNNING agent-session task older than this (seconds) is reaped regardless of route -- the ultimate backstop against a leaked task. A legitimate solve runs Batch-side (wait_for_completion caps at 1800s), so no genuine session should keep a task alive this long. A route-backed task that is INDIVIDUALLY busy right now is spared for that tick. 5400 = 90 min."
   default     = 5400
 }
+
+# --------------------------------------------------------------------------- #
+# Phase-1 scale-to-zero: heartbeat mode (design 2.3)
+# --------------------------------------------------------------------------- #
+
+variable "reaper_health_mode" {
+  type        = string
+  description = <<-EOT
+    Health-check strategy for the per-task idle reaper (REAPER_HEALTH_MODE).
+    probe     - (default) HTTP-probe each task's /api/health on its private ENI IP.
+                Requires the reaper Lambda to run in the VPC + the ECS + Batch
+                interface endpoints (~$29/mo).
+    heartbeat - Read hb_last_seen/hb_busy/hb_inflight_batch from the route row
+                (written by the agent every GRACE2_ROUTE_HEARTBEAT_SECONDS).
+                No VPC attachment needed; no interface endpoints needed.
+                The global Batch ListJobs call is replaced by per-session
+                hb_inflight_batch (eliminates the G3 global-pin defect).
+    both      - Run probe AND heartbeat; log agreement/disagreement; act on probe
+                result. Use this for parallel validation before cutting over to
+                heartbeat mode and destroying the interface endpoints.
+    OPERATOR: start at "both" after deploying the agent heartbeat writer, validate
+    over >=2 reaper cycles in CloudWatch Logs, then flip to "heartbeat" and follow
+    the cut-over steps in reaper.tf + vpc_endpoints.tf.
+  EOT
+  default     = "probe"
+
+  validation {
+    condition     = contains(["probe", "heartbeat", "both"], var.reaper_health_mode)
+    error_message = "reaper_health_mode must be one of: probe, heartbeat, both."
+  }
+}
+
+variable "reaper_heartbeat_stale_seconds" {
+  type        = number
+  description = <<-EOT
+    Heartbeat staleness threshold (seconds). A route row whose hb_last_seen is
+    older than this is treated as not-responding (fail-safe busy: the task is
+    never stopped on a missed heartbeat). Should be at least 2-3x the agent's
+    GRACE2_ROUTE_HEARTBEAT_SECONDS (default 60s). Default 180s = 3 missed beats.
+  EOT
+  default     = 180
+}

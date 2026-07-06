@@ -356,12 +356,29 @@ def _run_task(ecs_client, cfg: RoutingConfig, user_ulid: str, session_id: str) -
                 }
             },
             # Tag the task with the owning session so the reaper / ops can
-            # attribute it; also lets a future per-session Batch guard correlate.
+            # attribute it; also lets the per-session Batch guard correlate.
             tags=[
                 {"key": "grace2:user_ulid", "value": user_ulid},
                 {"key": "grace2:session_id", "value": session_id},
             ],
             propagateTags="TASK_DEFINITION",
+            # Phase-1 scale-to-zero (design 2.3): inject the route identity as
+            # env vars so the agent can write its own heartbeat to the route row
+            # without having to discover these from ECS task metadata at runtime.
+            # GRACE2_ROUTE_HEARTBEAT_SECONDS arms the writer (0 = disabled by
+            # default, non-zero value comes from the task definition baseline and
+            # is preserved here; the override ONLY sets the identity vars).
+            overrides={
+                "containerOverrides": [
+                    {
+                        "name": cfg.agent_container_name,
+                        "environment": [
+                            {"name": "GRACE2_ROUTE_USER_ULID", "value": user_ulid},
+                            {"name": "GRACE2_ROUTE_SESSION_ID", "value": session_id},
+                        ],
+                    }
+                ]
+            },
         )
         tasks = resp.get("tasks") or []
         failures = resp.get("failures") or []

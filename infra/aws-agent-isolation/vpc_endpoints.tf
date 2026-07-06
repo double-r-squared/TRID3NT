@@ -75,6 +75,26 @@ resource "aws_vpc_endpoint" "s3" {
   tags              = { Name = "grace2-agent-isolation-s3" }
 }
 
+# Phase-1 scale-to-zero (design 2.3): ECS + Batch Interface endpoints.
+#
+# These are the ~$29/mo cost drivers that forced the reaper Lambda into the VPC.
+# They are STILL REQUIRED while REAPER_HEALTH_MODE=probe or =both (the reaper
+# uses the ECS API for PASS-2 orphan enumeration AND the Batch API for G3).
+#
+# NOTE: ECS DescribeTasks/ListTasks/StopTask (PASS-2 orphan reaping) is called
+# from the Lambda regardless of health mode. However, from a Lambda NOT in the
+# VPC these ECS calls reach the PUBLIC ECS API endpoint (no VPC endpoint needed)
+# -- the private endpoint is only required for in-VPC access. So once the reaper
+# is detached from the VPC (heartbeat-only mode + vpc_config removed), these
+# interface endpoints can be destroyed.
+#
+# TODO(operator): once REAPER_HEALTH_MODE="heartbeat" is confirmed stable:
+#   1. Remove the vpc_config block from aws_lambda_function.reaper in reaper.tf.
+#   2. Destroy aws_vpc_endpoint.ecs and aws_vpc_endpoint.batch here.
+#   3. Remove the aws_security_group_rule.agent_ingress_health_from_reaper rule.
+#   4. The reaper SG (aws_security_group.reaper) can also be deleted.
+#   Savings: ~$29/mo (two Interface endpoints at ~$14.40/mo each in us-west-2).
+
 resource "aws_vpc_endpoint" "ecs" {
   vpc_id              = var.vpc_id
   service_name        = "com.amazonaws.${var.region}.ecs"

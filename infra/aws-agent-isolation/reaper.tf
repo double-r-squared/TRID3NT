@@ -150,8 +150,31 @@ resource "aws_lambda_function" "reaper" {
       AGENT_TASK_FAMILY    = aws_ecs_task_definition.agent.family
       ORPHAN_GRACE_SECONDS = tostring(var.reaper_orphan_grace_seconds)
       MAX_AGE_SECONDS      = tostring(var.reaper_max_age_seconds)
+      # Phase-1 scale-to-zero (design 2.3): heartbeat mode.
+      # "probe" (default) = today's VPC-attached HTTP-probe behavior (no change).
+      # "heartbeat" = read hb_* from route row; no VPC probe; per-session Batch guard.
+      # "both" = run probe + heartbeat; log agreement; act on probe (safe migration).
+      REAPER_HEALTH_MODE      = var.reaper_health_mode
+      HEARTBEAT_STALE_SECONDS = tostring(var.reaper_heartbeat_stale_seconds)
     }
   }
+
+  # Phase-1 scale-to-zero (design 2.3): VPC attachment.
+  #
+  # In probe/both mode the vpc_config below is REQUIRED (the reaper must reach
+  # each task's private :8766). In heartbeat-ONLY mode it is unnecessary --
+  # the reaper reads only DynamoDB (a free Gateway endpoint) and the ECS/Batch
+  # control-plane APIs (reachable from the public internet or via the existing
+  # Gateway endpoint if one is added for S3, but NOT requiring the expensive
+  # ECS + Batch Interface endpoints).
+  #
+  # OPERATOR CUT-OVER SEQUENCE (after validating "both" mode agrees):
+  #   1. Set var.reaper_health_mode = "heartbeat" -> tofu apply.
+  #   2. Remove the vpc_config block below (or set to empty) -> tofu apply.
+  #   3. Destroy aws_vpc_endpoint.ecs + aws_vpc_endpoint.batch in vpc_endpoints.tf.
+  #   4. Remove the reaper SG egress rule to agent tasks on 8766 (no longer needed).
+  #   TODO(operator): flip var.reaper_health_mode and remove this vpc_config once
+  #   "both" mode shows consistent agreement over >=2 reaper cycles in CloudWatch.
 
   tags = { Name = "grace2-agent-task-reaper" }
 }

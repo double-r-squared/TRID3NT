@@ -14,20 +14,21 @@ Runs on an EventBridge schedule (default every 5 minutes). For EACH live route i
 construction (any failed guard => leave the task up):
 
   G1. The task is RUNNING (never act on a task already stopping/stopped/pending).
-  G2. The health probe SUCCEEDS and reports the task NOT busy (``busy == false``).
+  G2. The health check SUCCEEDS and reports the task NOT busy (``busy == false``).
+      PROBE mode: GET /api/health on the private ENI IP (requires VPC attachment).
+      HEARTBEAT mode: read hb_last_seen/hb_busy from the route row (no VPC probe).
+      BOTH mode: run probe AND heartbeat; LOG agreement/disagreement; ACT on probe
+      result (safe parallel-validation mode).
       STAGE 3: a merely-open idle viewer connection does NOT count as busy
       (``active_connections`` is logged only). A running turn/solve pins the task
       because the agent's ``busy`` ORs detached in-flight turns + in-flight solver
       dispatches (both survive a socket drop). A probe failure / malformed body /
       ``busy == true`` all RESET that session's idle streak (fail-safe busy).
-  G3. No AWS Batch solve is in flight on the configured queue(s). Heavy compute
-      (SFINCS/MODFLOW/SWMM) runs on Batch and the per-session task stages/polls
-      it; stopping the task mid-solve would orphan the run. ANY SUBMITTED..RUNNING
-      job keeps the task up. (Conservative: the Batch guard is GLOBAL, not yet
-      attributed to a session_id -- so a single in-flight solve keeps ALL idle
-      tasks up. This is the SAFE direction. TODO(canary): tag Batch jobs with the
-      owning session_id and gate per-session so an unrelated session's solve does
-      not pin every task.)
+  G3. No AWS Batch solve is in flight.
+      PROBE/BOTH mode: GLOBAL guard (any in-flight solve on any queue keeps all
+      idle tasks up -- conservative / safe direction).
+      HEARTBEAT mode: PER-SESSION guard using hb_inflight_batch from the route row
+      (an unrelated user's solve no longer pins every idle task).
   G4. The session's task has been idle for ``IDLE_THRESHOLD_CHECKS`` CONSECUTIVE
       polls. The per-session streak counter lives in the routes table item (or a
       sibling state table) so it survives Lambda cold starts; it RESETS on any
@@ -37,13 +38,29 @@ This module has NO third-party deps beyond boto3 + urllib (both in the Lambda
 runtime). It is unit-tested in tests/test_task_reaper.py with boto3 / urllib
 fully mocked -- no live AWS or network calls.
 
-NETWORKING NOTE (the one real difference from the EC2 reaper): the per-session
-agent task has NO public IP; its ``/api/health`` is reachable only on its private
-ENI IP inside the VPC. So the reaper Lambda MUST run IN THE VPC (the task subnets
-+ a SG allowed to reach the agent SG on 8766) to probe health. reaper.tf wires the
-Lambda's vpc_config accordingly. (Alternatively the task could SELF-report idle
-to the routes table and the reaper would skip the probe -- a documented LATER
-option to drop the VPC requirement.)
+HEALTH MODES (REAPER_HEALTH_MODE env, default "probe"):
+  probe     - today's behavior (VPC-attached Lambda, HTTP probe). Fully backward
+              compatible; no change to any existing deployment.
+  heartbeat - the agent writes hb_last_seen/hb_busy/hb_inflight_batch to its
+              route row every ~60s (GRACE2_ROUTE_HEARTBEAT_SECONDS). The reaper
+              reads ONLY DynamoDB -- no VPC attachment needed, no ECS/Batch
+              interface endpoints needed. G2 becomes: hb_last_seen older than
+              HEARTBEAT_STALE_SECONDS (default 180) => treat as not-responding
+              (fail-safe busy); else busy = hb_busy OR hb_inflight_batch > 0.
+              G3 becomes per-session (hb_inflight_batch only, no ListJobs).
+  both      - run probe AND heartbeat; log agreement/disagreement per route;
+              ACT on probe result (safe migration/validation mode). Use this
+              to validate heartbeat correctness against probe ground-truth before
+              switching to heartbeat mode and deleting the VPC configuration.
+
+NETWORKING NOTE: in probe/both mode the reaper must run inside the VPC (the task
+subnets + a SG allowed to reach the agent SG on 8766). reaper.tf wires the
+Lambda's vpc_config accordingly. In heartbeat-only mode the Lambda needs NO VPC
+attachment -- the operator removes the vpc_config block and the ECS + Batch
+interface endpoints (see the TODO markers in reaper.tf and vpc_endpoints.tf).
+PASS 2 (orphan/max-age enumeration via ECS ListTasks/DescribeTasks) works fine
+from a non-VPC Lambda because it uses ECS control-plane APIs, not private-IP
+probes.
 """
 
 from __future__ import annotations
@@ -83,6 +100,29 @@ HEALTH_TIMEOUT_S = float(os.environ.get("HEALTH_TIMEOUT_S", "5"))
 ROUTE_TTL_SECONDS = int(os.environ.get("ROUTE_TTL_SECONDS", "86400"))
 #: Set DRY_RUN=true to log the StopTask decision WITHOUT calling StopTask.
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("1", "true", "yes")
+
+# --------------------------------------------------------------------------- #
+# Phase-1 scale-to-zero: HEALTH MODE (REAPER_HEALTH_MODE env).
+#
+# "probe"     (default) -- HTTP-probe :8766; requires VPC attachment + interface
+#             endpoints. Fully backward compatible.
+# "heartbeat" -- read hb_* fields from the route row written by the agent every
+#             GRACE2_ROUTE_HEARTBEAT_SECONDS. No VPC attachment required.
+# "both"      -- run both; log agreement/disagreement; act on probe result
+#             (safe parallel validation before cutting over to heartbeat).
+# --------------------------------------------------------------------------- #
+HEALTH_MODE = os.environ.get("REAPER_HEALTH_MODE", "probe").lower().strip()
+if HEALTH_MODE not in ("probe", "heartbeat", "both"):
+    logger.warning(
+        "REAPER_HEALTH_MODE=%r not recognised; defaulting to 'probe'", HEALTH_MODE
+    )
+    HEALTH_MODE = "probe"
+
+#: A heartbeat is considered STALE (=> treat as not-responding, fail-safe busy)
+#: when hb_last_seen is older than this many seconds. Should be at least
+#: 2-3x the agent's GRACE2_ROUTE_HEARTBEAT_SECONDS (default 60s) to tolerate
+#: a missed write without triggering a false-busy. Default 180s = 3 missed beats.
+HEARTBEAT_STALE_SECONDS = int(os.environ.get("HEARTBEAT_STALE_SECONDS", "180"))
 
 # --------------------------------------------------------------------------- #
 # ORPHAN + MAX-AGE reaping (the outage fix).
@@ -212,9 +252,10 @@ def _probe_health(private_ip: str) -> dict:
 def _batch_solve_in_flight() -> bool:
     """True if ANY configured Batch queue has a non-terminal job (G3).
 
-    Conservative + GLOBAL (not yet per-session): any in-flight solve keeps every
-    idle task up. Fail-safe busy on any Batch API error. TODO(canary): attribute
-    jobs to session_id and gate per-session.
+    Conservative + GLOBAL (used in probe/both modes): any in-flight solve keeps
+    every idle task up. Fail-safe busy on any Batch API error.
+    In heartbeat mode, the per-session hb_inflight_batch field is used instead
+    (see _heartbeat_busy) -- ListJobs is NOT called.
     """
     if not BATCH_QUEUES:
         return False
@@ -229,6 +270,50 @@ def _batch_solve_in_flight() -> bool:
     except Exception:  # noqa: BLE001
         logger.exception("list_jobs failed; treating Batch as in-flight (busy)")
         return True
+
+
+def _heartbeat_busy(route: dict) -> dict:
+    """Evaluate G2+G3 for ONE session using the route row's hb_* heartbeat fields.
+
+    Returns a dict with the same shape as ``_probe_health`` plus extra fields
+    so the caller can log/compare:
+      {
+        "reachable": bool,   # True if hb_last_seen is fresh enough
+        "busy": bool,        # hb_busy OR hb_inflight_batch > 0 (or stale)
+        "active_connections": int,
+        "hb_last_seen": int,  # epoch seconds (0 if absent)
+        "hb_inflight_batch": int,
+        "stale": bool,        # True when hb_last_seen is too old
+      }
+
+    Fail-safe: if hb_last_seen is absent OR older than HEARTBEAT_STALE_SECONDS
+    the result is busy=True (treat missing/stale heartbeat as not-responding,
+    the same contract as a failed HTTP probe).
+    """
+    now_epoch = int(time.time())
+    hb_last_seen = int(route.get("hb_last_seen", 0))
+    hb_busy_flag = bool(route.get("hb_busy", True))
+    hb_active = int(route.get("hb_active_connections", 0))
+    hb_inflight = int(route.get("hb_inflight_batch", 0))
+
+    stale = (now_epoch - hb_last_seen) >= HEARTBEAT_STALE_SECONDS
+    if stale:
+        logger.warning(
+            "heartbeat stale for session %s: hb_last_seen=%d age=%ds >= threshold=%d; busy",
+            route.get("session_id", "?"),
+            hb_last_seen,
+            now_epoch - hb_last_seen,
+            HEARTBEAT_STALE_SECONDS,
+        )
+    busy = stale or hb_busy_flag or hb_inflight > 0
+    return {
+        "reachable": not stale,
+        "busy": busy,
+        "active_connections": hb_active,
+        "hb_last_seen": hb_last_seen,
+        "hb_inflight_batch": hb_inflight,
+        "stale": stale,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -284,6 +369,13 @@ def _reap_one(route: dict, batch_busy: bool) -> dict:
 
     Mirrors the EC2 idle_check handler body, retargeted to a single task.
     ``batch_busy`` is computed ONCE per tick (global) and passed in.
+
+    Behaviour varies by HEALTH_MODE:
+      probe     - original behaviour (HTTP probe + global Batch guard).
+      heartbeat - read hb_* from the route row; per-session Batch guard from
+                  hb_inflight_batch; no HTTP probe; ``batch_busy`` is IGNORED.
+      both      - run probe AND heartbeat; log agreement/disagreement; act on
+                  probe result so the migration is safe.
     """
     user_ulid = route.get("user_ulid", "")
     session_id = route.get("session_id", "")
@@ -298,22 +390,61 @@ def _reap_one(route: dict, batch_busy: bool) -> dict:
         _delete_route(user_ulid, session_id)
         return {"session_id": session_id, "action": "route_dropped", "reason": f"task_state={state}"}
 
-    # G2/G3: busy = health busy OR an in-flight Batch solve.
-    health = _probe_health(private_ip) if private_ip else {"reachable": False, "busy": True, "active_connections": -1}
-    busy = health["busy"] or batch_busy
+    # G2/G3: resolve busy according to the active health mode.
+    hb = _heartbeat_busy(route)  # always computed; used in heartbeat/both modes
+
+    if HEALTH_MODE == "heartbeat":
+        # Heartbeat mode: no HTTP probe, no global Batch ListJobs.
+        # hb_inflight_batch provides the per-session Batch guard.
+        busy = hb["busy"]
+        health = hb  # unify the shape for the response dict below
+    elif HEALTH_MODE == "both":
+        # Both mode: run the HTTP probe AND heartbeat; log agreement;
+        # act on the probe result (safe migration/validation).
+        health = _probe_health(private_ip) if private_ip else {
+            "reachable": False, "busy": True, "active_connections": -1
+        }
+        probe_busy = health["busy"] or batch_busy
+        hb_busy_result = hb["busy"]
+        agree = probe_busy == hb_busy_result
+        if not agree:
+            logger.warning(
+                "health-mode=both DISAGREE for session %s: probe_busy=%s hb_busy=%s "
+                "hb_stale=%s hb_inflight_batch=%d",
+                session_id,
+                probe_busy,
+                hb_busy_result,
+                hb.get("stale"),
+                hb.get("hb_inflight_batch", 0),
+            )
+        else:
+            logger.info(
+                "health-mode=both AGREE for session %s: busy=%s",
+                session_id,
+                probe_busy,
+            )
+        busy = probe_busy  # act on probe (the source of truth in both mode)
+    else:
+        # probe mode (default): original behavior unchanged.
+        health = _probe_health(private_ip) if private_ip else {
+            "reachable": False, "busy": True, "active_connections": -1
+        }
+        busy = health["busy"] or batch_busy
 
     if busy:
         _write_streak(user_ulid, session_id, 0)
-        return {
+        result: dict = {
             "session_id": session_id,
             "action": "noop",
             "reason": "busy",
-            "reachable": health["reachable"],
-            "active_connections": health["active_connections"],
-            "health_busy": health["busy"],
-            "batch_in_flight": batch_busy,
+            "reachable": health.get("reachable", True),
+            "active_connections": health.get("active_connections", -1),
+            "health_busy": health.get("busy"),
+            "batch_in_flight": batch_busy if HEALTH_MODE != "heartbeat" else hb.get("hb_inflight_batch", 0) > 0,
             "idle_streak": 0,
+            "health_mode": HEALTH_MODE,
         }
+        return result
 
     # Confirmed idle -> advance this session's streak.
     streak = int(route.get("idle_streak", 0)) + 1
@@ -329,9 +460,10 @@ def _reap_one(route: dict, batch_busy: bool) -> dict:
             "session_id": session_id,
             "action": "stop" if not DRY_RUN else "stop_dryrun",
             "reason": "idle_threshold_reached",
-            "active_connections": health["active_connections"],
+            "active_connections": health.get("active_connections", -1),
             "idle_streak": streak,
             "threshold": IDLE_THRESHOLD_CHECKS,
+            "health_mode": HEALTH_MODE,
         }
 
     _write_streak(user_ulid, session_id, streak)
@@ -339,9 +471,10 @@ def _reap_one(route: dict, batch_busy: bool) -> dict:
         "session_id": session_id,
         "action": "noop",
         "reason": "idle_below_threshold",
-        "active_connections": health["active_connections"],
+        "active_connections": health.get("active_connections", -1),
         "idle_streak": streak,
         "threshold": IDLE_THRESHOLD_CHECKS,
+        "health_mode": HEALTH_MODE,
     }
 
 
@@ -529,8 +662,10 @@ def handler(event, context):  # noqa: ANN001, ARG001
     """EventBridge-scheduled per-task idle reaper. Returns the per-session
     decisions (JSON-serialisable)."""
     routes = _scan_routes()
-    # G3 computed ONCE per tick (global Batch guard -- the conservative direction).
-    batch_busy = _batch_solve_in_flight()
+    # G3 global Batch guard: computed ONCE per tick in probe/both modes.
+    # In heartbeat mode the per-session hb_inflight_batch field is used instead
+    # (no ListJobs call -> no Batch interface endpoint needed).
+    batch_busy = _batch_solve_in_flight() if HEALTH_MODE != "heartbeat" else False
 
     # Map task_arn -> (user_ulid, session_id) for every LIVE route BEFORE the
     # route-correlated pass mutates rows, so the orphan pass classifies against a
@@ -570,6 +705,7 @@ def handler(event, context):  # noqa: ANN001, ARG001
         "orphans_stopped": orphans_stopped,
         "max_age_stopped": max_age_stopped,
         "dry_run": DRY_RUN,
+        "health_mode": HEALTH_MODE,
         "decisions": decisions,
         "orphan_decisions": orphan_decisions,
     }
