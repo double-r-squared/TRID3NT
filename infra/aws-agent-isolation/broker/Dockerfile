@@ -62,6 +62,7 @@ RUN uv pip install --no-cache /build/packages/contracts
 COPY services/agent/pyproject.toml /build/services/agent/pyproject.toml
 COPY services/agent/README.md /build/services/agent/README.md
 COPY services/agent/src /build/services/agent/src
+COPY services/agent/vendor /build/services/agent/vendor
 RUN uv pip install --no-cache --find-links /build/services/agent/vendor /build/services/agent "websockets>=13,<16"
 
 RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
