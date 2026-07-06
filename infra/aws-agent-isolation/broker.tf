@@ -18,29 +18,9 @@
 # JWKS, DynamoDB, ecs:RunTask/Describe via the AWS API, and the proxied WSS to
 # each agent task's private IP:8765).
 # --------------------------------------------------------------------------- #
-resource "aws_security_group" "broker" {
-  name        = "grace2-agent-broker-task"
-  description = "GRACE-2 session broker tasks. 8080 from the ALB; egress to agent tasks + AWS APIs."
-  vpc_id      = var.vpc_id
-
-  ingress {
-    description     = "Broker port from the ALB."
-    from_port       = 8080
-    to_port         = 8080
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    description = "Cognito JWKS, DynamoDB, ECS API, and the proxied WSS to agent tasks."
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "grace2-agent-broker-task" }
-}
+# aws_security_group.broker: DESTROYED 2026-07-06 (Phase 2 -- the Fargate broker
+# service is retired; the box-hosted broker uses aws_security_group.broker_box in
+# broker_on_box.tf). Removed from code so an apply cannot recreate it.
 
 resource "aws_cloudwatch_log_group" "broker" {
   name              = "/grace2/agent-isolation/broker"
@@ -120,32 +100,6 @@ resource "aws_ecs_task_definition" "broker" {
   tags = { Name = "grace2-agent-broker" }
 }
 
-resource "aws_ecs_service" "broker" {
-  name            = "grace2-agent-broker"
-  cluster         = aws_ecs_cluster.agents.id
-  task_definition = aws_ecs_task_definition.broker.arn
-  desired_count   = var.broker_desired_count
-  launch_type     = "FARGATE"
-
-  network_configuration {
-    subnets          = var.task_subnet_ids
-    security_groups  = [aws_security_group.broker.id]
-    assign_public_ip = true
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.broker.arn
-    container_name   = "broker"
-    container_port   = 8080
-  }
-
-  # Long WS connections: let in-flight ones drain on a deploy.
-  deployment_minimum_healthy_percent = 100
-  deployment_maximum_percent         = 200
-
-  # The always-present HTTP listener is the live origin (CloudFront terminates
-  # TLS at the edge); the HTTPS listener is optional/conditional on a cert.
-  depends_on = [aws_lb_listener.broker_http]
-
-  tags = { Name = "grace2-agent-broker" }
-}
+# aws_ecs_service.broker: DESTROYED 2026-07-06 (Phase 2). The broker now runs on
+# the TiTiler box (broker_on_box.tf); the task DEFINITION above is kept as the
+# tested rollback artifact (free), the service + ALB wiring are gone.

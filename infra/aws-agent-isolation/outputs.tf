@@ -1,14 +1,6 @@
 # outputs.tf -- the handles the migration runbook + the CloudFront cutover need.
 
-output "alb_dns_name" {
-  description = "The broker ALB DNS name. The canary hits this on a separate hostname; the CloudFront /ws origin is later repointed here (RUNBOOK step 7)."
-  value       = aws_lb.broker.dns_name
-}
 
-output "alb_arn" {
-  description = "The broker ALB ARN."
-  value       = aws_lb.broker.arn
-}
 
 output "ecs_cluster_name" {
   description = "The ECS cluster the per-session agent tasks + the broker run in."
@@ -20,10 +12,6 @@ output "agent_task_definition_family" {
   value       = aws_ecs_task_definition.agent.family
 }
 
-output "broker_service_name" {
-  description = "The broker ECS service name."
-  value       = aws_ecs_service.broker.name
-}
 
 output "routes_table_name" {
   description = "The session-route DynamoDB table the broker reads/writes."

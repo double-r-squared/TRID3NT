@@ -71,29 +71,9 @@ resource "aws_security_group" "agent_task" {
   tags = { Name = "grace2-agent-task" }
 }
 
-# WS 8765 from the broker.
-resource "aws_security_group_rule" "agent_ingress_ws_from_broker" {
-  type                     = "ingress"
-  from_port                = 8765
-  to_port                  = 8765
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.agent_task.id
-  source_security_group_id = aws_security_group.broker.id
-  description              = "WS from the broker proxy."
-}
-
-# Health 8766 from the broker (and the broker host is also where the reaper's
-# probe egress lands if the reaper runs in-VPC; the reaper Lambda variant probes
-# via the same SG path -- see reaper.tf for the VPC note).
-resource "aws_security_group_rule" "agent_ingress_health_from_broker" {
-  type                     = "ingress"
-  from_port                = 8766
-  to_port                  = 8766
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.agent_task.id
-  source_security_group_id = aws_security_group.broker.id
-  description              = "/api/health from the broker / in-VPC reaper."
-}
+# agent_ingress_ws_from_broker + agent_ingress_health_from_broker: DESTROYED
+# 2026-07-06 (Phase 2) with aws_security_group.broker. The box-hosted broker's
+# equivalents live in broker_on_box.tf (source = the titiler SG).
 
 # --------------------------------------------------------------------------- #
 # The per-session AGENT task definition. The container env mirrors the live

@@ -142,3 +142,17 @@ This is the cost of keeping the map alive 24/7. It is **offset** by re-arming
 auto-stop on the t3.large agent box (~$60/mo if it ran 24/7) — the agent now
 scales to zero when idle. `t3.micro` (~$7.6/mo, `--workers 1`) is a cheaper
 option if the always-on tile load proves light; `t3.small` is the safe default.
+
+---
+
+## 2026-07-06 — the box is now DUAL-ROLE (TiTiler + session broker)
+
+Scale-to-zero Phase 2 put the session broker on this box as a docker/systemd
+unit (`grace2-broker.service`, `:8081`, image `grace2-broker:latest` from ECR),
+replacing the ALB + Fargate broker service. Grants live in
+`infra/aws-agent-isolation/broker_on_box.tf` (cross-root: broker IAM policy +
+ECR read on `grace2-titiler-ec2-role`; `grace2-broker-box` SG attached to the
+box ENI for `:8081` from CloudFront). A future `tofu apply` in THIS root will
+show the extra SG as drift on `vpc_security_group_ids` — KEEP IT. The box also
+gained docker, a 2G swapfile, and `/etc/grace2/broker.env`. Broker deploys =
+push image, then SSM: `docker pull ... && systemctl restart grace2-broker`.
