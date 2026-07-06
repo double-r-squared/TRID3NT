@@ -143,8 +143,14 @@ variable "agent_task_memory" {
   # still gives the manifest-fallback path headroom so it cannot OOM). Target is
   # ~4096 once every engine's offload is confirmed by real usage. 2 vCPU pairs
   # with 4096-16384 MiB on the Fargate matrix, so 8192 is valid.
-  description = "Fargate task memory (MiB) for the per-session agent task. 8192 = 8 GB (post heavy-compute offload; was 16384). Target 4096 after offload is usage-confirmed."
-  default     = "8192"
+  # 2026-07-06 scale-to-zero Phase 4: live hb-rss telemetry on a full flood turn
+  # (offloaded SFINCS solve + in-agent deck/postprocess fallback path) measured
+  # peak RSS 1919 MB, idle ~1745 MB. Shrunk 8192 -> 6144 (3.2x observed peak).
+  # 4096 waits until the heavy-compute-offload track confirms every engine's
+  # postprocess off-agent -- at 1.9 GB peak on the SMALLEST case, 4 GB risks
+  # OOM-killing a large-AOI demo mid-turn.
+  description = "Fargate task memory (MiB) for the per-session agent task. 6144 = 6 GB (hb-rss evidence 2026-07-06; was 8192/16384). Target 4096 after offload is usage-confirmed."
+  default     = "6144"
 }
 
 variable "agent_log_retention_days" {
