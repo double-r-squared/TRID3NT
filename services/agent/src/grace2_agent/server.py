@@ -143,6 +143,12 @@ from .credential_registry import (
     provider_for_tool,
 )
 from .layer_uri_emit import emit_layer_uri
+from .lessons import (
+    lessons_appendix,
+    lessons_enabled,
+    observe_turn as observe_lessons_turn,
+    register_lesson,
+)
 from .mode2_classifier import (
     Mode2CandidateEnvelope,
     classify_for_mode2,
@@ -2889,6 +2895,24 @@ async def _stream_gemini_reply(
             _retrieval_registry = TOOL_REGISTRY
     tool_decls = build_tool_declarations(_retrieval_registry)
 
+    # LESSONS LOOP v1 READ SEAM (track 4, GRACE2_LESSONS gate -- dark by
+    # default). Same layer the retrieval-visible-tools selection runs at: once
+    # per turn, score the stored failed-then-corrected lessons against
+    # ``user_text`` (BM25, ~200-token budget, top 2) and append the advisory
+    # "Past corrections" appendix to the system prompt for THIS turn only.
+    # Advisory text only; any fault falls back to the plain SYSTEM_PROMPT.
+    # NOTE: a non-empty appendix varies the system prompt across turns, which
+    # can reduce Bedrock cachePoint prefix hits -- acceptable while the gate
+    # is dark/off by default; benchmark before arming (A/B via the sweep).
+    _turn_system_prompt = SYSTEM_PROMPT
+    if lessons_enabled():
+        try:
+            _lessons_text = await asyncio.to_thread(lessons_appendix, user_text)
+            if _lessons_text:
+                _turn_system_prompt = SYSTEM_PROMPT + "\n\n" + _lessons_text
+        except Exception:  # noqa: BLE001 -- advisory, never blocks the turn
+            logger.warning("lessons: read-side appendix failed", exc_info=True)
+
     # GCP decommissioned: the agent runs on Bedrock, whose prompt caching is
     # its own ``cachePoint`` mechanism (bedrock_adapter). The Vertex-only
     # ``CachedContent`` fast-path (``gemini_cache.py``) is REMOVED, so this is
@@ -2975,6 +2999,12 @@ async def _stream_gemini_reply(
     _post_deliverable_idle = 0
     _crisp_concluded = False
 
+    # LESSONS LOOP v1 WRITE SEAM (part 1/3): per-turn dispatch record. Every
+    # tool call this turn appends {tool, args, success, error_code} (stamped at
+    # the telemetry chokepoint below); the end-of-turn observe distills any
+    # failed-then-corrected pair into the lessons store (GRACE2_LESSONS gate).
+    _lessons_turn_calls: list[dict] = []
+
     iterations = 0
     try:
         while iterations < _step_cap:
@@ -2996,7 +3026,10 @@ async def _stream_gemini_reply(
                 settings.model,
                 contents,
                 tool_declarations=tool_decls,
-                system_prompt=SYSTEM_PROMPT,
+                # LESSONS LOOP v1: SYSTEM_PROMPT plus the per-turn advisory
+                # lessons appendix (identical to SYSTEM_PROMPT when the
+                # GRACE2_LESSONS gate is off -- the default).
+                system_prompt=_turn_system_prompt,
                 cached_content_name=state.gemini_cache_name,
                 bedrock_model=bedrock_model,
             ):
@@ -3511,6 +3544,18 @@ async def _stream_gemini_reply(
                     # recall@k join key against this turn's shadow-selection row.
                     turn_id=pipeline_id,
                 )
+                # LESSONS LOOP v1 WRITE SEAM (part 2/3): record this dispatch
+                # for the end-of-turn distillation, reusing the telemetry
+                # success/error_code verdict computed just above (so a
+                # returned-failure envelope counts as a typed failure too).
+                _lessons_turn_calls.append(
+                    {
+                        "tool": call.name,
+                        "args": call.args or {},
+                        "success": _tel_success,
+                        "error_code": _tel_error_code,
+                    }
+                )
                 # job-B10: pass the thought_signature harvested off the
                 # function_call Part through to the replayed model turn.
                 # Gemini 3 requires the same opaque byte-blob on the replayed
@@ -3782,6 +3827,19 @@ async def _stream_gemini_reply(
                 PipelineStatePayload(pipeline_id=pipeline_id, steps=[thinking_step]),
             )
         )
+        # LESSONS LOOP v1 WRITE SEAM (part 3/3): end-of-turn distillation. If a
+        # typed tool failure was later corrected in THIS turn (same tool with
+        # changed args, or an intent-matched tool swap), observe_turn distills
+        # it into the lessons store. Never-raise + off-loop (asyncio.to_thread
+        # for the file write); a no-op when GRACE2_LESSONS is off (default).
+        if lessons_enabled() and _lessons_turn_calls:
+            try:
+                await asyncio.to_thread(
+                    observe_lessons_turn, user_text, _lessons_turn_calls
+                )
+            except Exception:  # noqa: BLE001 -- advisory, never breaks the turn
+                logger.warning("lessons: end-of-turn observe failed", exc_info=True)
+
         # job-0269: append to the entry-captured list — after a mid-stream
         # case switch this turn's text must not leak into the NEW Case's
         # LLM context (the carryover class, 74fc0d6).
@@ -11079,6 +11137,65 @@ async def _emit_secrets_list(
     )
 
 
+async def _handle_lesson_add(
+    websocket: ServerConnection,
+    state: SessionState,
+    payload_dict: Any,
+) -> None:
+    """LESSONS LOOP v1 (track 4): the thumbs-down stub's server half.
+
+    Consumes a loosely-shaped ``lesson-add`` payload -- ``{text, trigger_text?}``
+    (kept untyped like ``layer-delete`` for forward-compat; the web thumbs-down
+    UI is out of scope here) -- and writes a user-authored lesson row via
+    ``lessons.register_lesson``. Replies with a ``lesson-added`` ack carrying
+    the stored row's id + normalized text; malformed payloads surface a typed
+    ``TOOL_PARAMS_INVALID``. The write runs off-loop (asyncio.to_thread). The
+    ack is a raw-JSON envelope (the ``turn-complete`` / ``_send_loop_exhausted``
+    pattern) because the typed ``Envelope.payload`` forbids extra keys and the
+    lesson-added payload has no ``grace2_contracts`` model yet.
+    """
+    text = payload_dict.get("text") if isinstance(payload_dict, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        await _send_error(
+            websocket,
+            state.session_id,
+            "TOOL_PARAMS_INVALID",
+            "lesson-add requires a non-empty 'text' field.",
+        )
+        return
+    trigger = payload_dict.get("trigger_text")
+    trigger = trigger if isinstance(trigger, str) else ""
+    try:
+        row = await asyncio.to_thread(register_lesson, text, trigger)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("lesson-add failed session=%s", state.session_id)
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"lesson-add failed: {exc}",
+        )
+        return
+    import json as _json  # matches the raw-JSON envelope pattern above
+
+    await websocket.send(
+        _json.dumps(
+            {
+                "type": "lesson-added",
+                "id": new_ulid(),
+                "ts": now_utc().isoformat().replace("+00:00", "Z"),
+                "session_id": state.session_id,
+                "case_id": current_turn_case(),
+                "payload": {
+                    "envelope_type": "lesson-added",
+                    "lesson_id": row.get("id"),
+                    "lesson": row.get("lesson"),
+                },
+            }
+        )
+    )
+
+
 async def _handle_secret_add(
     websocket: ServerConnection,
     state: SessionState,
@@ -11857,6 +11974,13 @@ def _make_handler(settings: GeminiSettings):
                         )
                         await _handle_secret_add(websocket, state, sa)
 
+                    elif msg_type == "lesson-add":
+                        # LESSONS LOOP v1 (track 4): thumbs-down stub. The
+                        # payload is loosely-shaped ({text, trigger_text?});
+                        # the handler validates inline and writes via
+                        # lessons.register_lesson. UI lands separately.
+                        await _handle_lesson_add(websocket, state, payload_dict)
+
                     elif msg_type == "secret-revoke":
                         # job-0124: soft-revoke a per-Case secret.
                         secret_revoke = SecretRevokeEnvelopePayload.model_validate(
@@ -12438,6 +12562,8 @@ __all__ = [
     "_emit_secrets_list",
     "_handle_secret_add",
     "_handle_secret_revoke",
+    # LESSONS LOOP v1 (track 4): thumbs-down stub envelope handler.
+    "_handle_lesson_add",
     # job VAULT-READ: credential pipeline (secret_ref injection + JIT prompt).
     "_inject_secret_ref",
     "_resolve_active_secret_ref",
