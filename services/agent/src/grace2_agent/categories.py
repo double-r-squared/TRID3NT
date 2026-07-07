@@ -278,6 +278,12 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # run_seismic_hazard_psha (there is no dedicated geophysics data category).
     "fetch_fault_sources": "hazard_modeling",
     "run_landlab_susceptibility": "hazard_modeling",
+    # USGS post-fire debris-flow hazard composer (pfdf: Staley 2017 M1
+    # likelihood + Gartner 2014 emergency volume + Cannon 2010 combined class
+    # over a delineated stream-segment network). Filed as a hazard engine;
+    # cross-listed to fire below (reached from the wildfire lane next to
+    # MTBS / NIFC / FIRMS).
+    "model_debris_flow": "hazard_modeling",
     # sprint-18 MODFLOW GWF-only archetype composers (Wave-1 + Wave-2): each is a
     # run_model_* groundwater-flow composer that dispatches the shared MODFLOW
     # solver via run_modflow_archetype_job. Filed alongside the other MODFLOW
@@ -607,6 +613,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # weather_atmosphere lane too -- it is the cosmetic finishing pass a user
     # most often reaches for on a GOES/satellite true-color frame.
     "enhance_satellite_image": ("weather_atmosphere",),
+    # The post-fire debris-flow composer is PRIMARY hazard_modeling (a modeling
+    # engine) and materially belongs to fire (post-wildfire hazard, reached from
+    # the MTBS / NIFC / FIRMS lane).
+    "model_debris_flow": ("fire",),
     # The satellite fire-animation composer spans hazard_modeling (it composes a
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).
