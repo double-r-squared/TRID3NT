@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../engines/">
+        <link rel="prev" href="../models/">
       
       
-        <link rel="next" href="../../operations/deploy/">
+        <link rel="next" href="../tool-support/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>Data Stores - TRID3NT (GRACE-2) Developer Documentation</title>
+        <title>Engines - TRID3NT (GRACE-2) Developer Documentation</title>
       
     
     
@@ -66,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#data-stores" class="md-skip">
+        <a href="#trid3nt-local-engines" class="md-skip">
           Skip to content
         </a>
       
@@ -102,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Data Stores
+              Engines
             
           </span>
         </div>
@@ -423,8 +423,6 @@
       
   
   
-    
-  
   
   
     
@@ -437,11 +435,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -462,7 +460,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -480,7 +478,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ws-protocol/" class="md-nav__link">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
         
   
   
@@ -508,7 +506,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../worker-contract/" class="md-nav__link">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
         
   
   
@@ -536,7 +534,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../engines/" class="md-nav__link">
+      <a href="../../reference/engines/" class="md-nav__link">
         
   
   
@@ -561,37 +559,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Data Stores
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
         
   
   
@@ -607,137 +578,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB tables
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="DynamoDB tables">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Live prefix: trid3nt_
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        S3 buckets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="S3 buckets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        grace2-hazard-runs-226996537797 key layout
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CORS configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Terraform state backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy GCP storage (decommissioned)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -897,8 +737,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -909,11 +751,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -934,7 +776,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -952,7 +794,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/overview/" class="md-nav__link">
+      <a href="../overview/" class="md-nav__link">
         
   
   
@@ -980,7 +822,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/install/" class="md-nav__link">
+      <a href="../install/" class="md-nav__link">
         
   
   
@@ -1008,7 +850,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/configuration/" class="md-nav__link">
+      <a href="../configuration/" class="md-nav__link">
         
   
   
@@ -1036,7 +878,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/models/" class="md-nav__link">
+      <a href="../models/" class="md-nav__link">
         
   
   
@@ -1061,10 +903,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../local/engines/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1080,6 +949,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#engine-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-swmm-slow-local-caveat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The SWMM slow-local caveat
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physics-caveats-carried-over-from-the-proofs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physics caveats carried over from the proofs
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1092,7 +1014,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/tool-support/" class="md-nav__link">
+      <a href="../tool-support/" class="md-nav__link">
         
   
   
@@ -1120,7 +1042,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/troubleshooting/" class="md-nav__link">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -1202,88 +1124,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
+  <a href="#engine-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DynamoDB tables
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="DynamoDB tables">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Live prefix: trid3nt_
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        S3 buckets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="S3 buckets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        grace2-hazard-runs-226996537797 key layout
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CORS configuration
+        Engine matrix
       
     </span>
   </a>
@@ -1291,10 +1135,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
+  <a href="#the-swmm-slow-local-caveat" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Terraform state backend
+        The SWMM slow-local caveat
       
     </span>
   </a>
@@ -1302,10 +1146,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
+  <a href="#physics-caveats-carried-over-from-the-proofs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Legacy GCP storage (decommissioned)
+        Physics caveats carried over from the proofs
       
     </span>
   </a>
@@ -1329,214 +1173,129 @@
 
 
 
-<h1 id="data-stores">Data Stores<a class="headerlink" href="#data-stores" title="Permanent link">&para;</a></h1>
-<hr />
-<h2 id="dynamodb-tables">DynamoDB tables<a class="headerlink" href="#dynamodb-tables" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>. All application tables use <code>PAY_PER_REQUEST</code> billing.</p>
-<h3 id="live-prefix-trid3nt_">Live prefix: <code>trid3nt_</code><a class="headerlink" href="#live-prefix-trid3nt_" title="Permanent link">&para;</a></h3>
-<p>The live Fargate agents have env var <code>GRACE2_DYNAMO_TABLE_PREFIX=trid3nt_</code> (set in
-<code>infra/aws-agent-isolation/ecs.tf</code>). The default in code is <code>grace2_</code> -- local dev uses the
-default, production agents use <code>trid3nt_</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>GSIs</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>trid3nt_cases</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code>, <code>session_id-index</code></td>
-<td>Case metadata; user_id is Cognito sub</td>
-</tr>
-<tr>
-<td><code>trid3nt_chat</code></td>
-<td><code>case_id</code> (String)</td>
-<td><code>msg_id</code> (String)</td>
-<td>--</td>
-<td>Per-case chat history</td>
-</tr>
-<tr>
-<td><code>trid3nt_sessions</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Session -&gt; user mappings</td>
-</tr>
-<tr>
-<td><code>trid3nt_users</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>firebase_uid-index</code> (legacy name)</td>
-<td>User profiles</td>
-</tr>
-<tr>
-<td><code>trid3nt_secrets</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Per-user soft-revokable credentials vault</td>
-</tr>
-<tr>
-<td><code>trid3nt_telemetry</code></td>
-<td>(per-invocation)</td>
-<td>--</td>
-<td>--</td>
-<td>Per-tool invocation records</td>
-</tr>
-</tbody>
-</table>
-<h3 id="special-purpose-tables-not-prefixed">Special-purpose tables (not prefixed)<a class="headerlink" href="#special-purpose-tables-not-prefixed" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_session_routes</code></td>
-<td><code>user_ulid</code> (String)</td>
-<td><code>session_id</code> (String)</td>
-<td>Broker route table; TTL 24 h; PITR on; <code>PAY_PER_REQUEST</code></td>
-</tr>
-<tr>
-<td><code>grace2-autostop-state</code></td>
-<td>(per-task)</td>
-<td>--</td>
-<td>Reaper idle-streak counters</td>
-</tr>
-</tbody>
-</table>
-<h3 id="legacy-tables-pre-rename-zero-cost-dead-data">Legacy tables (pre-rename, zero cost, dead data)<a class="headerlink" href="#legacy-tables-pre-rename-zero-cost-dead-data" title="Permanent link">&para;</a></h3>
-<p>The following tables predate the <code>trid3nt_</code> rename and contain only historical data. They are
-candidates for archival/deletion (Phase 0 migration):</p>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>Approx items</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_chat</code></td>
-<td>1735</td>
-</tr>
-<tr>
-<td><code>grace2_cases</code></td>
-<td>167</td>
-</tr>
-<tr>
-<td><code>grace2_users</code></td>
-<td>209</td>
-</tr>
-<tr>
-<td><code>grace2_sessions</code></td>
-<td>182</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="s3-buckets">S3 buckets<a class="headerlink" href="#s3-buckets" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>, account <code>226996537797</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Bucket</th>
-<th>BPA</th>
-<th>Purpose</th>
-<th>Key layout</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2-hazard-runs-226996537797</code></td>
-<td>On (signer only)</td>
-<td>Run outputs, case views, manifests, Terraform state</td>
-<td>See layout below</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-cog</code></td>
-<td>On</td>
-<td>Published COG rasters (TiTiler source)</td>
-<td><code>/cog/</code> prefix; per-run subdirs</td>
-</tr>
-<tr>
-<td><code>grace2-hazard-web-226996537797</code></td>
-<td>Off (cold catalog public-read)</td>
-<td>SPA static assets + cold tool catalog</td>
-<td><code>catalog/tool-catalog.json</code></td>
-</tr>
-<tr>
-<td><code>grace2-hazard-cache-226996537797</code></td>
-<td>On</td>
-<td>Agent tool cache (rasterio outputs, etc.)</td>
-<td>keyed by tool+args hash</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-qgs</code></td>
-<td>On</td>
-<td>QGIS project files (.qgs) per case</td>
-<td>per-case key</td>
-</tr>
-<tr>
-<td><code>grace2-agent-bundle-226996537797</code></td>
-<td>On</td>
-<td>Agent deploy bundle</td>
-<td><code>engine-build/agent_deploy_src.tgz</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="grace2-hazard-runs-226996537797-key-layout"><code>grace2-hazard-runs-226996537797</code> key layout<a class="headerlink" href="#grace2-hazard-runs-226996537797-key-layout" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code>runs/
-  &lt;run_id&gt;/                      ULID per engine run
-    job_spec.json                Input parameters (written by agent at submit)
-    publish_manifest.json        Layer refs (written by worker BEFORE completion)
-    completion.json              Final status (written by worker LAST)
-    &lt;engine_outputs&gt;/            COGs, NetCDF, logs
-
-case-views/
-  &lt;case_id&gt;/
-    snapshot.json                Cold-view snapshot (layer refs, no live agent needed)
-
-case-manifests/
-  &lt;case_id&gt;/
-    latest.json                  Most recent published manifest for the case
-
-catalog/
-  tool-catalog.json              (also mirrored to web bucket with public-read)
-</code></pre></div>
-<hr />
-<h2 id="cors-configuration">CORS configuration<a class="headerlink" href="#cors-configuration" title="Permanent link">&para;</a></h2>
-<p>The runs bucket has a scoped CORS policy (applied in <code>infra/aws-autostop/cors.tf</code>). This was added
-to fix the "box-off, no layers" bug (S3 CORS blocked browser cross-origin presigned URL fetches).</p>
-<p>The web bucket has no CORS restriction (public-read cold catalog).</p>
-<hr />
-<h2 id="terraform-state-backend">Terraform state backend<a class="headerlink" href="#terraform-state-backend" title="Permanent link">&para;</a></h2>
-<p>Terraform/OpenTofu state files for all <code>infra/</code> stacks are stored in the runs bucket:</p>
-<div class="highlight"><pre><span></span><code>s3://grace2-hazard-runs-226996537797/terraform/
-  &lt;stack-name&gt;/
-    terraform.tfstate
-</code></pre></div>
-<hr />
-<h2 id="legacy-gcp-storage-decommissioned">Legacy GCP storage (decommissioned)<a class="headerlink" href="#legacy-gcp-storage-decommissioned" title="Permanent link">&para;</a></h2>
-<p>The following GCS buckets were used pre-AWS migration. They are defined in <code>infra/buckets.tf</code>
-(legacy GCP IaC) and are no longer used by the live system:</p>
+<h1 id="trid3nt-local-engines">TRID3NT Local -- Engines<a class="headerlink" href="#trid3nt-local-engines" title="Permanent link">&para;</a></h1>
+<p>All eight engines run locally. Three execution mechanisms are in play, all behind the same
+<code>run_solver</code> / local-supervisor seam the cloud build uses (the supervisor stages deck inputs
+into <code>$GRACE2_RUNS_DIR/&lt;run_id&gt;/</code>, launches the engine, uploads outputs to MinIO, and writes
+<code>completion.json</code> -- identical contract to the AWS Batch workers):</p>
 <ul>
-<li><code>grace-2-hazard-prod-cog</code> (GCS)</li>
-<li><code>grace-2-hazard-prod-fgb</code> (GCS, FlatGeobuf vectors)</li>
-<li><code>grace-2-hazard-prod-qgs</code> (GCS, QGIS projects)</li>
-<li><code>grace-2-hazard-prod-runs</code> (GCS, solver outputs)</li>
+<li><strong>binary subprocess</strong> -- a static binary invoked directly (MODFLOW)</li>
+<li><strong>docker (<code>local-docker</code>)</strong> -- a container with the rundir mounted at <code>/data</code> (SFINCS) or
+  pulling its deck from MinIO via <code>--network host</code> (GeoClaw, SWAN)</li>
+<li><strong>in-process / pip subprocess</strong> -- pure-Python engines from the agent venv (SWMM in-process;
+  Landlab and OpenQuake as <code>exec</code> subprocesses)</li>
+</ul>
+<p>Every engine below has been proven end-to-end locally BOTH tool-direct (a
+<code>scripts/run_*_direct.py</code> harness) and LLM-driven (<code>qwen3:8b-16k</code> called the composer on turn 1
+with 0 nudges) -- evidence in <code>docs/proof/README.md</code> of the <code>trid3nt-local</code> repo.</p>
+<p>Runtimes are from the reference consumer box (8-GB-GPU desktop; solves are CPU-bound) at the
+small/coarse AOIs used in the proofs -- they scale with AOI and resolution.</p>
+<hr />
+<h2 id="engine-matrix">Engine matrix<a class="headerlink" href="#engine-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Engine</th>
+<th>Domain</th>
+<th>Mechanism</th>
+<th>Env gates</th>
+<th>Rough local runtime</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>MODFLOW 6</strong></td>
+<td>groundwater (17 archetype composers)</td>
+<td><code>bin/mf6</code> binary subprocess (USGS 6.5.0 static, no runtime deps)</td>
+<td><code>GRACE2_MODFLOW_LOCAL=1</code>, <code>GRACE2_MF6_BIN</code></td>
+<td>solve itself sub-second (~0.07-0.3 s for an archetype deck); the turn is dominated by LLM inference</td>
+</tr>
+<tr>
+<td><strong>SFINCS</strong></td>
+<td>coastal/pluvial flood</td>
+<td>docker <code>deltares/sfincs-cpu:sfincs-v2.3.3</code>, rundir mounted at <code>/data</code></td>
+<td><code>GRACE2_SOLVER_BACKEND=local-docker</code>, <code>GRACE2_SFINCS_IMAGE</code>, <code>GRACE2_RUNS_DIR</code></td>
+<td>~40 s for a small pluvial AOI (~23k active cells) incl. hydromt build; minutes end-to-end with fetch + postprocess</td>
+</tr>
+<tr>
+<td><strong>SWMM (PySWMM)</strong></td>
+<td>urban stormwater</td>
+<td><strong>in-process</strong> pyswmm (<code>run_swmm_local</code>, the dev primary path; a <code>LocalSolverSpec</code> also exists for an out-of-process lane)</td>
+<td>none beyond the defaults (pyswmm 2.1.0 in the agent venv)</td>
+<td>~2 min for a 3-block box / 10-yr 1-hr storm -- <strong>see the slow-local caveat below</strong></td>
+</tr>
+<tr>
+<td><strong>Landlab</strong></td>
+<td>landslide susceptibility</td>
+<td>subprocess <code>run_chain.py</code> (exec_kind=exec, pip-only)</td>
+<td>none beyond the defaults</td>
+<td>~42 s (4 km box, 30 m grid, 25 Monte Carlo iterations)</td>
+</tr>
+<tr>
+<td><strong>OpenQuake</strong></td>
+<td>seismic hazard (PSHA)</td>
+<td>subprocess <code>run_oq.py</code> -&gt; <code>oq engine</code> (exec_kind=exec)</td>
+<td><code>GRACE2_OQ_BIN</code> (venv <code>oq</code>); one-time <code>oq engine --upgrade-db</code> on first run</td>
+<td>~41 s (SF Bay PGA, 475-yr return, 20 km grid, real-fault sources)</td>
+</tr>
+<tr>
+<td><strong>GeoClaw</strong></td>
+<td>tsunami / dam-break inundation</td>
+<td>docker <code>trid3nt-local/geoclaw:latest</code> (locally built; Clawpack 5.14 Fortran compiled into the image), <code>--network host</code>, deck pulled from MinIO via <code>--manifest-uri</code></td>
+<td><code>GRACE2_GEOCLAW_IMAGE</code></td>
+<td>~40 s solve for a 30-min tsunami window, 2 AMR levels, 6 frames (the Fortran compile is baked into the image, not per-run)</td>
+</tr>
+<tr>
+<td><strong>SWAN</strong></td>
+<td>spectral waves</td>
+<td>docker <code>trid3nt-local/swan:latest</code> (locally built), same manifest pattern as GeoClaw</td>
+<td><code>GRACE2_SWAN_IMAGE</code></td>
+<td>~2.5 min for a stationary 101x101 wave field</td>
+</tr>
+<tr>
+<td><strong>pfdf debris flow</strong></td>
+<td>post-fire debris-flow hazard</td>
+<td><strong>in-process</strong> <code>model_debris_flow</code> composer over the vendored <code>pfdf</code> 3.0.4 wheel (USGS Staley 2017 likelihood + Gartner 2014 volume + Cannon 2010 hazard class)</td>
+<td>none (pfdf ships in the agent venv)</td>
+<td>fast -- the AOI is clamped to &lt;= 0.15 deg per side (<code>AoiTooLargeError</code>), keeping the 30 m watershed analysis to a few-hundred-pixel grid</td>
+</tr>
+</tbody>
+</table>
+<p>Notes:</p>
+<ul>
+<li><code>GRACE2_SOLVER_BACKEND=local-docker</code> and <code>GRACE2_MODFLOW_LOCAL=1</code> are <strong>independent gates</strong>:
+  MODFLOW checks its own flag first, so flipping the solver backend never affects it.</li>
+<li>GeoClaw and SWAN containers reach MinIO at <code>127.0.0.1:9000</code> via <code>--network host</code>; their
+  <code>build_argv</code> closure rewrites the staged <code>--run-id</code> to the launcher's ULID so container,
+  supervisor, and <code>wait_for_completion</code> all poll the same S3 prefix.</li>
+<li>The agent must run <strong>inside the docker group</strong> (<code>sg docker -c 'bash scripts/start_agent.sh'</code>)
+  for the three container engines to dispatch.</li>
+<li>Cancellation works locally: the cancel chain kills the detached process group (<code>local-exec</code>)
+  or the named container (<code>local-docker</code>).</li>
+</ul>
+<hr />
+<h2 id="the-swmm-slow-local-caveat">The SWMM slow-local caveat<a class="headerlink" href="#the-swmm-slow-local-caveat" title="Permanent link">&para;</a></h2>
+<p>SWMM is the one engine where "runs locally" and "runs quickly locally" diverge. The quasi-2D
+node-link mesh that the composer builds is CPU-heavy in pyswmm, and it runs <strong>in-process</strong> in
+the agent. The measured spread:</p>
+<ul>
+<li>Small scenario (downtown 3-block box, 10-yr design storm, coarsest resolution): ~2 minutes,
+  LLM-driven e2e PASS.</li>
+<li>The direct tool sweep's default-argument invocation of <code>run_swmm_urban_flood</code> <strong>timed out at
+  1500 s</strong> -- a default-sized AOI at default resolution is not a practical local run.</li>
+</ul>
+<p>Keep SWMM AOIs to a few blocks and take the coarsest resolution the granularity gate offers.
+The resolution-picker card is the lever: it shows the autoscaler's suggestion and lets you
+coarsen before the solve starts.</p>
+<h2 id="physics-caveats-carried-over-from-the-proofs">Physics caveats carried over from the proofs<a class="headerlink" href="#physics-caveats-carried-over-from-the-proofs" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>GeoClaw</strong>: with ETOPO-fallback bathymetry (no CUDEM coverage) a small tsunami scenario can
+  complete with <code>max_depth_m=0.0</code> overland -- the wave crosses the domain but the
+  overland-mask postprocess yields zero inundation. The layer still publishes (honesty floor
+  passes: a valid COG was emitted). Real inundation needs better nearshore bathymetry.</li>
+<li><strong>SWAN</strong>: the demo boundary synthesizer picks the wave side heuristically (W for west-coast
+  AOIs); a wrong side produces an all-zeros wave field that surfaces as a typed
+  <code>PostprocessSwanError</code> rather than a fake layer -- expected honest behavior.</li>
 </ul>
 
 

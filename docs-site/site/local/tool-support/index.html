@@ -1,0 +1,2411 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Comprehensive developer reference for the TRID3NT multi-hazard geospatial AI workbench (internal codename GRACE-2). Architecture, protocols, engines, operations, and contributing guides.">
+      
+      
+      
+      
+        <link rel="prev" href="../engines/">
+      
+      
+        <link rel="next" href="../troubleshooting/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Tool Support Matrix - TRID3NT (GRACE-2) Developer Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#trid3nt-local-tool-support-matrix" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-header__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            TRID3NT (GRACE-2) Developer Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Tool Support Matrix
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="TRID3NT (GRACE-2) Developer Documentation" class="md-nav__button md-logo" aria-label="TRID3NT (GRACE-2) Developer Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    TRID3NT (GRACE-2) Developer Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/edge-and-web/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Edge and Web
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/session-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Session Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Process
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/compute-tier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compute Tier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WebSocket Protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Contract
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Stores
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/deploy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deploy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TRID3NT Local
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    TRID3NT Local
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../engines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Support Matrix
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Support Matrix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#status-legend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status legend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-earmarked-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        KEY-earmarked tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#status-legend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status legend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#key-earmarked-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        KEY-earmarked tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#full-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+
+<h1 id="trid3nt-local-tool-support-matrix">TRID3NT Local -- Tool Support Matrix<a class="headerlink" href="#trid3nt-local-tool-support-matrix" title="Permanent link">&para;</a></h1>
+<div class="admonition note">
+<p class="admonition-title">Generated page</p>
+<p>Generated by <code>scripts/gen_tool_support_page.py</code> in the <code>trid3nt-local</code> repo from
+<code>docs/reports/tool-sweep-results.jsonl</code> (the 3-pass direct-execution tool sweep,
+latest entry 2026-07-06T17:35:00). Do not edit by hand -- re-run the generator.</p>
+</div>
+<p>Every registered tool was executed directly against the local stack (MinIO + TiTiler + local solvers, ~3 km downtown-Tampa AOI, curated arguments; layer-consuming tools chained onto real fetched layers). <strong>176 tools</strong>: PASS 138 | KEY 6 | FAIL 18 | TIMEOUT 2 | SKIP-ARGS 12.</p>
+<h2 id="status-legend">Status legend<a class="headerlink" href="#status-legend" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PASS</code></td>
+<td>executed successfully against the local stack (Tampa AOI, curated args)</td>
+</tr>
+<tr>
+<td><code>KEY</code></td>
+<td>needs an API key / registration -- earmarked, see the table below</td>
+</tr>
+<tr>
+<td><code>FAIL</code></td>
+<td>raised an error in the sweep (see note; several are harness-args or upstream-data artifacts, not code bugs)</td>
+</tr>
+<tr>
+<td><code>TIMEOUT</code></td>
+<td>exceeded the sweep's wall-clock cap (thread abandoned)</td>
+</tr>
+<tr>
+<td><code>SKIP-ARGS</code></td>
+<td>not directly executable by the harness -- required params (layer URIs, species ids, confirmation handles...) cannot be fabricated; these tools are exercised through chained LLM turns instead</td>
+</tr>
+</tbody>
+</table>
+<h2 id="key-earmarked-tools">KEY-earmarked tools<a class="headerlink" href="#key-earmarked-tools" title="Permanent link">&para;</a></h2>
+<p><code>KEY</code> tools work locally once the credential is provided -- each fetcher resolves its key from a per-call <code>api_key</code>/<code>secret_ref</code> argument or the env var below (set it in <code>.env.local</code>). They fail with a typed missing-key error, never a silent empty result.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Env var</th>
+<th>Where to get it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fetch_airnow_air_quality</code></td>
+<td><code>GRACE2_AIRNOW_API_KEY</code></td>
+<td>free key from docs.airnowapi.org; also accepted per-call as <code>api_key</code>/<code>secret_ref</code></td>
+</tr>
+<tr>
+<td><code>fetch_cama_flood_discharge</code></td>
+<td><code>GRACE2_CAMA_FLOOD_BASE_URL</code></td>
+<td>upstream became registration-gated (U-Tokyo Google Form issues a password); point this at the credentialed mirror URL</td>
+</tr>
+<tr>
+<td><code>fetch_ebird_observations</code></td>
+<td><code>GRACE2_EBIRD_API_KEY</code></td>
+<td>free key from ebird.org/api/keygen</td>
+</tr>
+<tr>
+<td><code>fetch_era5_reanalysis</code></td>
+<td><code>GRACE2_COPERNICUS_CDS_API_KEY</code></td>
+<td>Copernicus CDS credentials (a <code>~/.cdsapirc</code> file also works via cdsapi)</td>
+</tr>
+<tr>
+<td><code>fetch_iucn_red_list_range</code></td>
+<td><code>GRACE2_IUCN_RED_LIST_API_KEY</code></td>
+<td>IUCN Red List API token (apiv3.iucnredlist.org)</td>
+</tr>
+<tr>
+<td><code>fetch_openaq_measurements</code></td>
+<td><code>GRACE2_OPENAQ_API_KEY</code></td>
+<td>free key from explore.openaq.org</td>
+</tr>
+</tbody>
+</table>
+<p>Two more tools are key-gated but surface it as a sweep <code>FAIL</code> further downstream:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Env var</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fetch_firms_active_fire</code></td>
+<td><code>GRACE2_FIRMS_MAP_KEY</code></td>
+<td>sweep FAIL: the literal 'demo' MAP_KEY fallback was rejected by FIRMS; get a free MAP_KEY from firms.modaps.eosdis.nasa.gov</td>
+</tr>
+<tr>
+<td><code>fetch_gtsm_tide_surge</code></td>
+<td><code>GRACE2_COPERNICUS_CDS_API_KEY</code></td>
+<td>sweep FAIL: CDS retrieve failed on missing Copernicus credentials (same CDS setup as fetch_era5_reanalysis)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="full-matrix">Full matrix<a class="headerlink" href="#full-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Status</th>
+<th>Time (s)</th>
+<th>Note</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>aggregate_claims_across_sources</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['sources', 'claim_targets']</td>
+</tr>
+<tr>
+<td><code>aggregate_property_within_zone</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['value_layer_uri']</td>
+</tr>
+<tr>
+<td><code>analyze_affected_fields</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['plume_layer_uri']</td>
+</tr>
+<tr>
+<td><code>catalog_fetch</code></td>
+<td>FAIL</td>
+<td>8</td>
+<td>OGCAdapterError: OGC ARCGIS_REST GET failed for url=https://hazards.fema.gov/arcgis/rest/s</td>
+</tr>
+<tr>
+<td><code>catalog_search</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>clip_raster_to_bbox</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>clip_raster_to_polygon</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>clip_vector_to_polygon</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>code_exec_request</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>CodeExecConfirmationRequired: code_exec_request requires user confirmation before running:</td>
+</tr>
+<tr>
+<td><code>compute_aspect</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_blended_composite</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_building_density</code></td>
+<td>PASS</td>
+<td>66</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_canopy_height</code></td>
+<td>PASS</td>
+<td>40</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_colored_relief</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_contours</code></td>
+<td>PASS</td>
+<td>13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_cross_section</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_hillshade</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_home_range_kde</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_impact_envelope</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['flood_layer_uri']</td>
+</tr>
+<tr>
+<td><code>compute_impervious_surface</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_layer_bounds</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_movement_trajectory</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>MovementTrajectoryError: points layer 's3://trid3nt-cache/cache/dynamic-1h/usgs_earthquake</td>
+</tr>
+<tr>
+<td><code>compute_ndvi</code></td>
+<td>PASS</td>
+<td>8</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_overtopping</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_slope</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_terrain_profile</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_wave_nomograph</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>compute_zonal_statistics</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>count_features_above_threshold</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>cut_features_with_polygon</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>CutFeaturesError: the cutter polygon fully consumed every target feature and delete_emptie</td>
+</tr>
+<tr>
+<td><code>describe_qgis_algorithm</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>RuntimeError: QGIS discovery tool invoked but worker submitter is not bound; agent service</td>
+</tr>
+<tr>
+<td><code>digitize_water_body</code></td>
+<td>PASS</td>
+<td>13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>discover_dataset</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>enhance_satellite_image</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>EnhanceSatelliteImageError: input has 1 band(s); enhance_satellite_image polishes 3(+)-ban</td>
+</tr>
+<tr>
+<td><code>extract_landcover_class</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_3dep_extra</code></td>
+<td>PASS</td>
+<td>9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_administrative_boundaries</code></td>
+<td>PASS</td>
+<td>36</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_airnow_air_quality</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>AirNowMissingKeyError: no AirNow API key available: pass api_key=..., secret_ref=..., or s</td>
+</tr>
+<tr>
+<td><code>fetch_asos_metar</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_buildings</code></td>
+<td>PASS</td>
+<td>7</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_cama_flood_discharge</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>upstream became REGISTRATION-GATED (U-Tokyo Google Form -&gt; issued password); set GRACE2_CA</td>
+</tr>
+<tr>
+<td><code>fetch_cdc_svi</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_census_acs</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_chirps_precipitation</code></td>
+<td>PASS</td>
+<td>5</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_climate_normals</code></td>
+<td>TIMEOUT</td>
+<td>420</td>
+<td>exceeded 420s (thread abandoned)</td>
+</tr>
+<tr>
+<td><code>fetch_copernicus_dem</code></td>
+<td>PASS</td>
+<td>6</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_dem</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_ebird_observations</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>EBirdMissingKeyError: no eBird API key available: pass api_key=..., secret_ref=..., or set</td>
+</tr>
+<tr>
+<td><code>fetch_epa_ejscreen</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_epa_frs_facilities</code></td>
+<td>PASS</td>
+<td>5</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_era5_reanalysis</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>ERA5MissingKeyError: No Copernicus CDS API key is configured (cdsapi: Missing/incomplete c</td>
+</tr>
+<tr>
+<td><code>fetch_esri_landcover_10m</code></td>
+<td>PASS</td>
+<td>6</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_fault_sources</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_fema_nfhl_zones</code></td>
+<td>PASS</td>
+<td>4</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_field_boundaries</code></td>
+<td>PASS</td>
+<td>34</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_firms_active_fire</code></td>
+<td>FAIL</td>
+<td>1</td>
+<td>FirmsAuthError: FIRMS rejected the MAP_KEY. Set GRACE2_FIRMS_MAP_KEY to a valid key from h</td>
+</tr>
+<tr>
+<td><code>fetch_gbif_occurrences</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['species_key']</td>
+</tr>
+<tr>
+<td><code>fetch_gcn250_curve_numbers</code></td>
+<td>PASS</td>
+<td>11</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_ghsl_population</code></td>
+<td>PASS</td>
+<td>13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_glm_lightning</code></td>
+<td>PASS</td>
+<td>31</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_goes_active_fire</code></td>
+<td>PASS</td>
+<td>56</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_goes_animation</code></td>
+<td>PASS</td>
+<td>118</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_goes_archive_animation</code></td>
+<td>PASS</td>
+<td>107</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_goes_blend_animation</code></td>
+<td>FAIL</td>
+<td>1</td>
+<td>GOESAnimEmptyError: no SLIDER geocolor frames for goes-18/conus in window 2026-07-05T18:00</td>
+</tr>
+<tr>
+<td><code>fetch_goes_satellite</code></td>
+<td>PASS</td>
+<td>45</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_gridmet</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_gtsm_tide_surge</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>GTSMUpstreamError: CDS retrieve failed: Missing/incomplete configuration file: /home/nate/</td>
+</tr>
+<tr>
+<td><code>fetch_hifld_critical_infrastructure</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_hifld_transmission_lines</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_hrrr_forecast</code></td>
+<td>PASS</td>
+<td>25</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_hrrr_smoke</code></td>
+<td>PASS</td>
+<td>54</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_hrsl_population</code></td>
+<td>PASS</td>
+<td>13</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_inaturalist_observations</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_iucn_red_list_range</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>IUCNAuthError: no IUCN Red List API key resolved; pass api_key=, secret_ref=, or set $GRAC</td>
+</tr>
+<tr>
+<td><code>fetch_jrc_global_surface_water</code></td>
+<td>PASS</td>
+<td>16</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_landcover</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_landfire_fuels</code></td>
+<td>PASS</td>
+<td>24</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_landsat_imagery</code></td>
+<td>PASS</td>
+<td>9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_lehd_jobs</code></td>
+<td>PASS</td>
+<td>20</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_mobi</code></td>
+<td>PASS</td>
+<td>9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_modis_lst</code></td>
+<td>PASS</td>
+<td>5</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_movebank_tracks</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['study_id']</td>
+</tr>
+<tr>
+<td><code>fetch_mrms_qpe</code></td>
+<td>PASS</td>
+<td>18</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_mtbs_burn_severity</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_naip</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nexrad_reflectivity</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nhdplus_nldi_navigate</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nifc_fire_perimeters</code></td>
+<td>PASS</td>
+<td>6</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_coops_currents</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_coops_tides</code></td>
+<td>PASS</td>
+<td>4</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_nwm_streamflow</code></td>
+<td>PASS</td>
+<td>44</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_slr_confidence</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_slr_marsh</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_slr_scenarios</code></td>
+<td>PASS</td>
+<td>23</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_noaa_sst</code></td>
+<td>PASS</td>
+<td>92</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nws_alerts_conus</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nws_event</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_nws_river_forecast</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_openaq_measurements</code></td>
+<td>KEY</td>
+<td>0</td>
+<td>OpenAQMissingKeyError: no OpenAQ API key available: pass api_key=..., secret_ref=..., or s</td>
+</tr>
+<tr>
+<td><code>fetch_openfema_disasters</code></td>
+<td>PASS</td>
+<td>74</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_overpass_pois</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_population</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_raws_weather</code></td>
+<td>PASS</td>
+<td>26</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_river_geometry</code></td>
+<td>PASS</td>
+<td>144</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_roads_osm</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_sentinel1_sar</code></td>
+<td>PASS</td>
+<td>7</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_sentinel2_truecolor</code></td>
+<td>PASS</td>
+<td>8</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_snotel_snow</code></td>
+<td>PASS</td>
+<td>12</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_soilgrids</code></td>
+<td>PASS</td>
+<td>38</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_statsgo_soils</code></td>
+<td>PASS</td>
+<td>5</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_storm_events_db</code></td>
+<td>TIMEOUT</td>
+<td>420</td>
+<td>exceeded 420s (thread abandoned)</td>
+</tr>
+<tr>
+<td><code>fetch_topobathy</code></td>
+<td>PASS</td>
+<td>170</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_tsunami_events</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_us_drought_monitor</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usace_dams</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usace_levees</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usace_nsi</code></td>
+<td>PASS</td>
+<td>4</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usfs_canopy_fuels</code></td>
+<td>PASS</td>
+<td>23</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usgs_earthquakes</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usgs_groundwater_levels</code></td>
+<td>PASS</td>
+<td>9</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usgs_nwis_gauges</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usgs_volcano_alerts</code></td>
+<td>PASS</td>
+<td>64</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_usgs_water_quality</code></td>
+<td>PASS</td>
+<td>8</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_viirs_day_fire</code></td>
+<td>PASS</td>
+<td>114</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_wdpa_protected_areas</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fetch_wfigs_incident</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>fill_gaps</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>FillGapsError: no enclosed gaps (interior rings) were found in the union of the supplied p</td>
+</tr>
+<tr>
+<td><code>generate_choropleth_legend</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>generate_damage_distribution</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['damage_layer_uri']</td>
+</tr>
+<tr>
+<td><code>generate_histogram</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>generate_time_series</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>ChartToolError: This raster has no time dimension (single band or no time tags). Use gener</td>
+</tr>
+<tr>
+<td><code>geocode_location</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>list_categories</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>list_qgis_algorithms</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>RuntimeError: QGIS discovery tool invoked but worker submitter is not bound; agent service</td>
+</tr>
+<tr>
+<td><code>list_run_frames</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>list_tools_in_category</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>lookup_precip_return_period</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>merge_features</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>postprocess_pelicun</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['damage_layer_uri']</td>
+</tr>
+<tr>
+<td><code>publish_layer</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>qgis_process</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>request_spatial_input</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_geoclaw_inundation</code></td>
+<td>PASS</td>
+<td>40</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_landlab_susceptibility</code></td>
+<td>PASS</td>
+<td>42</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_asr_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_capture_zone_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_conservation_priority</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_contamination_affected_fields</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>ContaminationAffectedFieldsConfirmationDeniedError: MODFLOW run not started: the parameter</td>
+</tr>
+<tr>
+<td><code>run_model_flood_habitat_scenario</code></td>
+<td>PASS</td>
+<td>50</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_flood_scenario</code></td>
+<td>PASS</td>
+<td>42</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_glm_lightning_animation</code></td>
+<td>PASS</td>
+<td>702</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_goes_fire_animation</code></td>
+<td>FAIL</td>
+<td>191</td>
+<td>GOESFireAnimEmptyError: GOES SLIDER frames were available for goes-18/conus over 2026-07-0</td>
+</tr>
+<tr>
+<td><code>run_model_groundwater_contamination_scenario</code></td>
+<td>FAIL</td>
+<td>1</td>
+<td>ConfirmationDeniedError: MODFLOW run not started: the parameter-confirmation gate was not</td>
+</tr>
+<tr>
+<td><code>run_model_mar_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_mine_dewatering_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_multi_species_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_news_event_ingest</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['sources']</td>
+</tr>
+<tr>
+<td><code>run_model_nws_flood_event_scenario</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_regional_water_budget_scenario</code></td>
+<td>PASS</td>
+<td>2</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_river_seepage_scenario</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_saltwater_intrusion_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_satellite_fire_animation</code></td>
+<td>PASS</td>
+<td>3</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_sustainable_yield_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_wellhead_protection_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_model_wetland_hydroperiod_scenario</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_modflow_job</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_pelicun_damage_assessment</code></td>
+<td>FAIL</td>
+<td>33</td>
+<td>PelicunNoAssetsError: No assets intersect the hazard raster footprint. Check that the asse</td>
+</tr>
+<tr>
+<td><code>run_pelicun_with_buildings</code></td>
+<td>FAIL</td>
+<td>0</td>
+<td>PelicunWithBuildingsError: pelicun_damage_with_buildings: density-&gt;points conversion failed</td>
+</tr>
+<tr>
+<td><code>run_river_seepage_job</code></td>
+<td>PASS</td>
+<td>0</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_seismic_hazard_psha</code></td>
+<td>PASS</td>
+<td>41</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_solver</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['solver', 'model_setup_uri']</td>
+</tr>
+<tr>
+<td><code>run_swan_waves</code></td>
+<td>PASS</td>
+<td>41</td>
+<td></td>
+</tr>
+<tr>
+<td><code>run_swmm_urban_flood</code></td>
+<td>FAIL</td>
+<td>1500</td>
+<td></td>
+</tr>
+<tr>
+<td><code>summarize_layer_statistics</code></td>
+<td>PASS</td>
+<td>1</td>
+<td></td>
+</tr>
+<tr>
+<td><code>wait_for_completion</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['handle']</td>
+</tr>
+<tr>
+<td><code>web_fetch</code></td>
+<td>SKIP-ARGS</td>
+<td>0</td>
+<td>required params not fabricatable: ['url']</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "search.suggest"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

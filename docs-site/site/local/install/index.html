@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../engines/">
+        <link rel="prev" href="../overview/">
       
       
-        <link rel="next" href="../../operations/deploy/">
+        <link rel="next" href="../configuration/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>Data Stores - TRID3NT (GRACE-2) Developer Documentation</title>
+        <title>Install - TRID3NT (GRACE-2) Developer Documentation</title>
       
     
     
@@ -66,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#data-stores" class="md-skip">
+        <a href="#trid3nt-local-install" class="md-skip">
           Skip to content
         </a>
       
@@ -102,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Data Stores
+              Install
             
           </span>
         </div>
@@ -423,8 +423,6 @@
       
   
   
-    
-  
   
   
     
@@ -437,11 +435,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -462,7 +460,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -480,7 +478,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ws-protocol/" class="md-nav__link">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
         
   
   
@@ -508,7 +506,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../worker-contract/" class="md-nav__link">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
         
   
   
@@ -536,7 +534,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../engines/" class="md-nav__link">
+      <a href="../../reference/engines/" class="md-nav__link">
         
   
   
@@ -561,37 +559,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Data Stores
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
         
   
   
@@ -607,137 +578,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB tables
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="DynamoDB tables">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Live prefix: trid3nt_
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        S3 buckets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="S3 buckets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        grace2-hazard-runs-226996537797 key layout
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CORS configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Terraform state backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy GCP storage (decommissioned)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -897,8 +737,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -909,11 +751,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -934,7 +776,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -952,7 +794,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/overview/" class="md-nav__link">
+      <a href="../overview/" class="md-nav__link">
         
   
   
@@ -977,10 +819,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../local/install/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -996,6 +865,147 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-binaries-mf6-minio-mc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Binaries (mf6, minio, mc)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-python-venvs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Python venvs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-web-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Web dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-docker-images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Docker images
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-minio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. MinIO
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-ollama-the-default-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Ollama + the default model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configure-the-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configure the environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-start-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Start services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-directories-gitignored" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data directories (gitignored)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1008,7 +1018,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/configuration/" class="md-nav__link">
+      <a href="../configuration/" class="md-nav__link">
         
   
   
@@ -1036,7 +1046,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/models/" class="md-nav__link">
+      <a href="../models/" class="md-nav__link">
         
   
   
@@ -1064,7 +1074,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/engines/" class="md-nav__link">
+      <a href="../engines/" class="md-nav__link">
         
   
   
@@ -1092,7 +1102,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/tool-support/" class="md-nav__link">
+      <a href="../tool-support/" class="md-nav__link">
         
   
   
@@ -1120,7 +1130,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/troubleshooting/" class="md-nav__link">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -1202,88 +1212,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
+  <a href="#prerequisites" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DynamoDB tables
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="DynamoDB tables">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Live prefix: trid3nt_
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        S3 buckets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="S3 buckets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        grace2-hazard-runs-226996537797 key layout
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CORS configuration
+        Prerequisites
       
     </span>
   </a>
@@ -1291,10 +1223,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
+  <a href="#1-binaries-mf6-minio-mc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Terraform state backend
+        1. Binaries (mf6, minio, mc)
       
     </span>
   </a>
@@ -1302,10 +1234,98 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
+  <a href="#2-python-venvs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Legacy GCP storage (decommissioned)
+        2. Python venvs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-web-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Web dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-docker-images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Docker images
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-minio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. MinIO
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-ollama-the-default-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Ollama + the default model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-configure-the-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Configure the environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-start-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Start services
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-directories-gitignored" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data directories (gitignored)
       
     </span>
   </a>
@@ -1329,214 +1349,176 @@
 
 
 
-<h1 id="data-stores">Data Stores<a class="headerlink" href="#data-stores" title="Permanent link">&para;</a></h1>
-<hr />
-<h2 id="dynamodb-tables">DynamoDB tables<a class="headerlink" href="#dynamodb-tables" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>. All application tables use <code>PAY_PER_REQUEST</code> billing.</p>
-<h3 id="live-prefix-trid3nt_">Live prefix: <code>trid3nt_</code><a class="headerlink" href="#live-prefix-trid3nt_" title="Permanent link">&para;</a></h3>
-<p>The live Fargate agents have env var <code>GRACE2_DYNAMO_TABLE_PREFIX=trid3nt_</code> (set in
-<code>infra/aws-agent-isolation/ecs.tf</code>). The default in code is <code>grace2_</code> -- local dev uses the
-default, production agents use <code>trid3nt_</code>.</p>
+<h1 id="trid3nt-local-install">TRID3NT Local -- Install<a class="headerlink" href="#trid3nt-local-install" title="Permanent link">&para;</a></h1>
+<p>From-scratch setup on a clean Linux box. Everything lands inside the repo directory
+(<code>bin/</code>, <code>venvs/</code>, <code>data/</code>, <code>logs/</code>, <code>run/</code> are gitignored); nothing is installed system-wide
+except Docker and Ollama.</p>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>GSIs</th>
-<th>Notes</th>
+<th>Requirement</th>
+<th>Why</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>trid3nt_cases</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code>, <code>session_id-index</code></td>
-<td>Case metadata; user_id is Cognito sub</td>
+<td>Linux x86_64</td>
+<td>binaries (mf6, MinIO) and docker images are linux-amd64</td>
 </tr>
 <tr>
-<td><code>trid3nt_chat</code></td>
-<td><code>case_id</code> (String)</td>
-<td><code>msg_id</code> (String)</td>
-<td>--</td>
-<td>Per-case chat history</td>
+<td>Python 3.12</td>
+<td>agent + TiTiler venvs (managed by <code>uv</code>)</td>
 </tr>
 <tr>
-<td><code>trid3nt_sessions</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Session -&gt; user mappings</td>
+<td>Node 20+</td>
+<td>Vite dev server for the web UI</td>
 </tr>
 <tr>
-<td><code>trid3nt_users</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>firebase_uid-index</code> (legacy name)</td>
-<td>User profiles</td>
+<td><a href="https://astral.sh/uv">uv</a></td>
+<td>venv + dependency management (<code>make venv</code> assumes <code>~/.local/bin/uv</code>)</td>
 </tr>
 <tr>
-<td><code>trid3nt_secrets</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Per-user soft-revokable credentials vault</td>
+<td>Docker</td>
+<td>SFINCS, GeoClaw, and SWAN engines run in containers</td>
 </tr>
 <tr>
-<td><code>trid3nt_telemetry</code></td>
-<td>(per-invocation)</td>
-<td>--</td>
-<td>--</td>
-<td>Per-tool invocation records</td>
+<td><a href="https://ollama.com">Ollama</a></td>
+<td>local LLM serving (any OpenAI-compatible endpoint also works)</td>
 </tr>
 </tbody>
 </table>
-<h3 id="special-purpose-tables-not-prefixed">Special-purpose tables (not prefixed)<a class="headerlink" href="#special-purpose-tables-not-prefixed" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_session_routes</code></td>
-<td><code>user_ulid</code> (String)</td>
-<td><code>session_id</code> (String)</td>
-<td>Broker route table; TTL 24 h; PITR on; <code>PAY_PER_REQUEST</code></td>
-</tr>
-<tr>
-<td><code>grace2-autostop-state</code></td>
-<td>(per-task)</td>
-<td>--</td>
-<td>Reaper idle-streak counters</td>
-</tr>
-</tbody>
-</table>
-<h3 id="legacy-tables-pre-rename-zero-cost-dead-data">Legacy tables (pre-rename, zero cost, dead data)<a class="headerlink" href="#legacy-tables-pre-rename-zero-cost-dead-data" title="Permanent link">&para;</a></h3>
-<p>The following tables predate the <code>trid3nt_</code> rename and contain only historical data. They are
-candidates for archival/deletion (Phase 0 migration):</p>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>Approx items</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_chat</code></td>
-<td>1735</td>
-</tr>
-<tr>
-<td><code>grace2_cases</code></td>
-<td>167</td>
-</tr>
-<tr>
-<td><code>grace2_users</code></td>
-<td>209</td>
-</tr>
-<tr>
-<td><code>grace2_sessions</code></td>
-<td>182</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="s3-buckets">S3 buckets<a class="headerlink" href="#s3-buckets" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>, account <code>226996537797</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Bucket</th>
-<th>BPA</th>
-<th>Purpose</th>
-<th>Key layout</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2-hazard-runs-226996537797</code></td>
-<td>On (signer only)</td>
-<td>Run outputs, case views, manifests, Terraform state</td>
-<td>See layout below</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-cog</code></td>
-<td>On</td>
-<td>Published COG rasters (TiTiler source)</td>
-<td><code>/cog/</code> prefix; per-run subdirs</td>
-</tr>
-<tr>
-<td><code>grace2-hazard-web-226996537797</code></td>
-<td>Off (cold catalog public-read)</td>
-<td>SPA static assets + cold tool catalog</td>
-<td><code>catalog/tool-catalog.json</code></td>
-</tr>
-<tr>
-<td><code>grace2-hazard-cache-226996537797</code></td>
-<td>On</td>
-<td>Agent tool cache (rasterio outputs, etc.)</td>
-<td>keyed by tool+args hash</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-qgs</code></td>
-<td>On</td>
-<td>QGIS project files (.qgs) per case</td>
-<td>per-case key</td>
-</tr>
-<tr>
-<td><code>grace2-agent-bundle-226996537797</code></td>
-<td>On</td>
-<td>Agent deploy bundle</td>
-<td><code>engine-build/agent_deploy_src.tgz</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="grace2-hazard-runs-226996537797-key-layout"><code>grace2-hazard-runs-226996537797</code> key layout<a class="headerlink" href="#grace2-hazard-runs-226996537797-key-layout" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code>runs/
-  &lt;run_id&gt;/                      ULID per engine run
-    job_spec.json                Input parameters (written by agent at submit)
-    publish_manifest.json        Layer refs (written by worker BEFORE completion)
-    completion.json              Final status (written by worker LAST)
-    &lt;engine_outputs&gt;/            COGs, NetCDF, logs
-
-case-views/
-  &lt;case_id&gt;/
-    snapshot.json                Cold-view snapshot (layer refs, no live agent needed)
-
-case-manifests/
-  &lt;case_id&gt;/
-    latest.json                  Most recent published manifest for the case
-
-catalog/
-  tool-catalog.json              (also mirrored to web bucket with public-read)
+<div class="admonition warning">
+<p class="admonition-title">Docker group</p>
+<p>Your user must be in the <code>docker</code> group. If you were <strong>just</strong> added, the running shell has
+not picked up the group -- either log out/in or wrap every docker-touching command
+(including the agent start) in <code>sg docker -c '...'</code>. See
+<a href="../troubleshooting/#docker-permission-denied">Troubleshooting</a>.</p>
+</div>
+<h2 id="1-binaries-mf6-minio-mc">1. Binaries (mf6, minio, mc)<a class="headerlink" href="#1-binaries-mf6-minio-mc" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>make<span class="w"> </span>binaries<span class="w">          </span><span class="c1"># or: bash scripts/fetch_binaries.sh</span>
 </code></pre></div>
-<hr />
-<h2 id="cors-configuration">CORS configuration<a class="headerlink" href="#cors-configuration" title="Permanent link">&para;</a></h2>
-<p>The runs bucket has a scoped CORS policy (applied in <code>infra/aws-autostop/cors.tf</code>). This was added
-to fix the "box-off, no layers" bug (S3 CORS blocked browser cross-origin presigned URL fetches).</p>
-<p>The web bucket has no CORS restriction (public-read cold catalog).</p>
-<hr />
-<h2 id="terraform-state-backend">Terraform state backend<a class="headerlink" href="#terraform-state-backend" title="Permanent link">&para;</a></h2>
-<p>Terraform/OpenTofu state files for all <code>infra/</code> stacks are stored in the runs bucket:</p>
-<div class="highlight"><pre><span></span><code>s3://grace2-hazard-runs-226996537797/terraform/
-  &lt;stack-name&gt;/
-    terraform.tfstate
-</code></pre></div>
-<hr />
-<h2 id="legacy-gcp-storage-decommissioned">Legacy GCP storage (decommissioned)<a class="headerlink" href="#legacy-gcp-storage-decommissioned" title="Permanent link">&para;</a></h2>
-<p>The following GCS buckets were used pre-AWS migration. They are defined in <code>infra/buckets.tf</code>
-(legacy GCP IaC) and are no longer used by the live system:</p>
+<p>Idempotent downloader. Installs:</p>
 <ul>
-<li><code>grace-2-hazard-prod-cog</code> (GCS)</li>
-<li><code>grace-2-hazard-prod-fgb</code> (GCS, FlatGeobuf vectors)</li>
-<li><code>grace-2-hazard-prod-qgs</code> (GCS, QGIS projects)</li>
-<li><code>grace-2-hazard-prod-runs</code> (GCS, solver outputs)</li>
+<li><strong>MODFLOW 6.5.0</strong> static linux binary -&gt; <code>bin/mf6</code> (from the MODFLOW-USGS GitHub release; no
+  runtime deps)</li>
+<li><strong>MinIO server</strong> -&gt; <code>bin/minio</code> and <strong>mc client</strong> -&gt; <code>bin/mc</code> (from dl.min.io)</li>
+</ul>
+<p>Each binary is version-verified after download.</p>
+<h2 id="2-python-venvs">2. Python venvs<a class="headerlink" href="#2-python-venvs" title="Permanent link">&para;</a></h2>
+<p>Agent venv (installs the vendored contracts + agent packages editable):</p>
+<div class="highlight"><pre><span></span><code>make<span class="w"> </span>venv<span class="w">              </span><span class="c1"># uv venv venvs/agent + uv pip install -e vendor/packages/contracts -e vendor/services/agent</span>
+</code></pre></div>
+<p>TiTiler venv:</p>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>venv<span class="w"> </span>--python<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>venvs/titiler
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--python<span class="w"> </span>venvs/titiler/bin/python<span class="w"> </span><span class="s2">&quot;titiler.application==2.0.4&quot;</span><span class="w"> </span>uvicorn<span class="w"> </span>httpx
+</code></pre></div>
+<h2 id="3-web-dependencies">3. Web dependencies<a class="headerlink" href="#3-web-dependencies" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="nb">cd</span><span class="w"> </span>vendor/web<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>npm<span class="w"> </span>install
+</code></pre></div>
+<p>(<code>make web</code> runs <code>vendor/web/node_modules/.bin/vite</code> directly, so the install must happen once.)</p>
+<h2 id="4-docker-images">4. Docker images<a class="headerlink" href="#4-docker-images" title="Permanent link">&para;</a></h2>
+<p><strong>SFINCS</strong> -- pulled from Docker Hub:</p>
+<div class="highlight"><pre><span></span><code>sg<span class="w"> </span>docker<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;docker pull deltares/sfincs-cpu:sfincs-v2.3.3&#39;</span>
+</code></pre></div>
+<p><strong>GeoClaw and SWAN</strong> -- built locally from the vendored worker Dockerfiles (both compile
+Fortran solvers into the image; the build is one-time and cached):</p>
+<div class="highlight"><pre><span></span><code>sg<span class="w"> </span>docker<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;docker build -t trid3nt-local/geoclaw:latest vendor/services/workers/geoclaw/&#39;</span>
+sg<span class="w"> </span>docker<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;docker build -t trid3nt-local/swan:latest vendor/services/workers/swan/&#39;</span>
+</code></pre></div>
+<p>These three image names are what <code>.env.local</code> points at (<code>GRACE2_SFINCS_IMAGE</code>,
+<code>GRACE2_GEOCLAW_IMAGE</code>, <code>GRACE2_SWAN_IMAGE</code>).</p>
+<h2 id="5-minio">5. MinIO<a class="headerlink" href="#5-minio" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>make<span class="w"> </span>minio
+</code></pre></div>
+<p>Starts the MinIO server on <code>:9000</code> (web console on <code>:9001</code>, user <code>trid3nt</code>) with data under
+<code>data/minio/</code>, then runs <code>scripts/init_minio.sh</code> to create the two buckets the agent expects:
+<code>trid3nt-runs</code> and <code>trid3nt-cache</code>. Idempotent.</p>
+<h2 id="6-ollama-the-default-model">6. Ollama + the default model<a class="headerlink" href="#6-ollama-the-default-model" title="Permanent link">&para;</a></h2>
+<p>Install Ollama, then pull the base model and create the 16k-context variant the agent uses by
+default:</p>
+<div class="highlight"><pre><span></span><code>ollama<span class="w"> </span>pull<span class="w"> </span>qwen3:8b
+<span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;FROM qwen3:8b\nPARAMETER num_ctx 16384\n&#39;</span><span class="w"> </span>&gt;<span class="w"> </span>/tmp/Modelfile.qwen3-16k
+ollama<span class="w"> </span>create<span class="w"> </span>qwen3:8b-16k<span class="w"> </span>-f<span class="w"> </span>/tmp/Modelfile.qwen3-16k
+</code></pre></div>
+<p>Why the custom variant and the <code>/no_think</code> requirement:</p>
+<ul>
+<li>Ollama's default <code>num_ctx</code> (4096) is too small for the system prompt + tool schemas + case
+  context; 16384 fits comfortably. See <a href="../models/">Models</a> for the full rationale.</li>
+<li>Qwen3's default <strong>thinking mode</strong> routes all tokens to the reasoning channel, so the
+  OpenAI-compatible content deltas arrive <strong>empty</strong> and turns render no text. <code>.env.local</code>
+  ships <code>GRACE2_OPENAI_EXTRA_SYSTEM=/no_think</code>, which appends <code>/no_think</code> to the system prompt
+  and disables thinking mode. Do not remove it while running a Qwen3-family model.</li>
+</ul>
+<h2 id="7-configure-the-environment">7. Configure the environment<a class="headerlink" href="#7-configure-the-environment" title="Permanent link">&para;</a></h2>
+<p><code>.env.local</code> at the repo root is the single configuration surface (loaded by
+<code>scripts/start_agent.sh</code>). The defaults point at Ollama on <code>:11434</code>, MinIO on <code>:9000</code>, TiTiler
+on <code>:8080</code>. See <a href="../configuration/">Configuration</a> for every variable.</p>
+<h2 id="8-start-services">8. Start services<a class="headerlink" href="#8-start-services" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>make<span class="w"> </span>minio<span class="w">                                   </span><span class="c1"># MinIO + bucket init (if not already up)</span>
+make<span class="w"> </span>titiler<span class="w">                                 </span><span class="c1"># TiTiler on :8080 backed by MinIO</span>
+sg<span class="w"> </span>docker<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;bash scripts/start_agent.sh&#39;</span><span class="w">   </span><span class="c1"># agent (WS :8765, HTTP :8766) -- inside the docker group</span>
+make<span class="w"> </span>web<span class="w">                                     </span><span class="c1"># Vite dev server on :5173</span>
+</code></pre></div>
+<p>Each start script is stop-then-start (kills a prior instance via its pidfile), writes a PID to
+<code>run/*.pid</code>, and logs to <code>logs/*.log</code>. <code>make agent</code> also works but does not enter the docker
+group -- use the <code>sg docker -c</code> form so the agent can reach the docker socket for the
+container-backed engines.</p>
+<p>Check and stop:</p>
+<div class="highlight"><pre><span></span><code>make<span class="w"> </span>status<span class="w">    </span><span class="c1"># minio (9000) / titiler (8080) / ollama (11434) health</span>
+make<span class="w"> </span>stop<span class="w">      </span><span class="c1"># stops minio, titiler, agent via pidfiles</span>
+</code></pre></div>
+<h2 id="ports">Ports<a class="headerlink" href="#ports" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Service</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5173</td>
+<td>Web UI (Vite dev server)</td>
+<td><code>http://localhost:5173</code></td>
+</tr>
+<tr>
+<td>8765</td>
+<td>Agent WebSocket</td>
+<td>chat protocol (<code>GRACE2_AGENT_PORT</code>)</td>
+</tr>
+<tr>
+<td>8766</td>
+<td>Agent HTTP</td>
+<td>tool catalog + stats endpoints (<code>GRACE2_AGENT_HTTP_PORT</code>)</td>
+</tr>
+<tr>
+<td>9000</td>
+<td>MinIO S3 API</td>
+<td><code>AWS_ENDPOINT_URL</code> target; console on 9001</td>
+</tr>
+<tr>
+<td>8080</td>
+<td>TiTiler</td>
+<td>raster tiles; health at <code>/healthz</code></td>
+</tr>
+<tr>
+<td>11434</td>
+<td>Ollama</td>
+<td>OpenAI-compatible endpoint at <code>/v1</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-directories-gitignored">Data directories (gitignored)<a class="headerlink" href="#data-directories-gitignored" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>bin/</code> -- downloaded binaries (mf6, minio, mc)</li>
+<li><code>venvs/</code> -- Python virtual environments (agent, titiler)</li>
+<li><code>data/minio/</code> -- MinIO object storage</li>
+<li><code>data/persistence/</code> -- agent FilePersistence store (cases, layers)</li>
+<li><code>data/runs/</code> -- solver rundirs mounted into containers (<code>GRACE2_RUNS_DIR</code>)</li>
+<li><code>data/telemetry/</code> -- tool-call telemetry JSONL</li>
+<li><code>logs/</code>, <code>run/</code> -- service logs and PID files</li>
 </ul>
 
 

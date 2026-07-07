@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../engines/">
+        <link rel="prev" href="../configuration/">
       
       
-        <link rel="next" href="../../operations/deploy/">
+        <link rel="next" href="../engines/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>Data Stores - TRID3NT (GRACE-2) Developer Documentation</title>
+        <title>Models - TRID3NT (GRACE-2) Developer Documentation</title>
       
     
     
@@ -66,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#data-stores" class="md-skip">
+        <a href="#trid3nt-local-models" class="md-skip">
           Skip to content
         </a>
       
@@ -102,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Data Stores
+              Models
             
           </span>
         </div>
@@ -423,8 +423,6 @@
       
   
   
-    
-  
   
   
     
@@ -437,11 +435,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
         
           
           <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
@@ -462,7 +460,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -480,7 +478,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../ws-protocol/" class="md-nav__link">
+      <a href="../../reference/ws-protocol/" class="md-nav__link">
         
   
   
@@ -508,7 +506,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../worker-contract/" class="md-nav__link">
+      <a href="../../reference/worker-contract/" class="md-nav__link">
         
   
   
@@ -536,7 +534,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../engines/" class="md-nav__link">
+      <a href="../../reference/engines/" class="md-nav__link">
         
   
   
@@ -561,37 +559,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Data Stores
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../reference/data-stores/" class="md-nav__link">
         
   
   
@@ -607,137 +578,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DynamoDB tables
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="DynamoDB tables">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Live prefix: trid3nt_
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        S3 buckets
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="S3 buckets">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        grace2-hazard-runs-226996537797 key layout
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CORS configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Terraform state backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy GCP storage (decommissioned)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -897,8 +737,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -909,11 +751,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
         
           
           <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
@@ -934,7 +776,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -952,7 +794,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/overview/" class="md-nav__link">
+      <a href="../overview/" class="md-nav__link">
         
   
   
@@ -980,7 +822,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/install/" class="md-nav__link">
+      <a href="../install/" class="md-nav__link">
         
   
   
@@ -1008,7 +850,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/configuration/" class="md-nav__link">
+      <a href="../configuration/" class="md-nav__link">
         
   
   
@@ -1033,10 +875,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../local/models/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1052,6 +921,137 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-local-model-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The local model matrix
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The local model matrix">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-qwen38b-16k-the-16k-part" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why qwen3:8b-16k (the 16k part)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-no_think-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The /no_think requirement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tool-retrieval-top-k" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool retrieval (top-K)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark history
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Benchmark history">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#15-prompt-breadth-bench-cold-vs-warm-index" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15-prompt breadth bench (cold vs warm index)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pass-3-per-tool-routing-sweep" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass-3 per-tool routing sweep
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-retrieval-vs-model-split-the-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The retrieval-vs-model split (the verdict)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#trying-bigger-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trying bigger models
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1064,7 +1064,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/engines/" class="md-nav__link">
+      <a href="../engines/" class="md-nav__link">
         
   
   
@@ -1092,7 +1092,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/tool-support/" class="md-nav__link">
+      <a href="../tool-support/" class="md-nav__link">
         
   
   
@@ -1120,7 +1120,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../local/troubleshooting/" class="md-nav__link">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -1202,22 +1202,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#dynamodb-tables" class="md-nav__link">
+  <a href="#the-local-model-matrix" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DynamoDB tables
+        The local model matrix
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="DynamoDB tables">
+    <nav class="md-nav" aria-label="The local model matrix">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#live-prefix-trid3nt_" class="md-nav__link">
+  <a href="#why-qwen38b-16k-the-16k-part" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Live prefix: trid3nt_
+        Why qwen3:8b-16k (the 16k part)
       
     </span>
   </a>
@@ -1225,21 +1225,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#special-purpose-tables-not-prefixed" class="md-nav__link">
+  <a href="#the-no_think-requirement" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Special-purpose tables (not prefixed)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#legacy-tables-pre-rename-zero-cost-dead-data" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy tables (pre-rename, zero cost, dead data)
+        The /no_think requirement
       
     </span>
   </a>
@@ -1252,22 +1241,55 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#s3-buckets" class="md-nav__link">
+  <a href="#tool-retrieval-top-k" class="md-nav__link">
     <span class="md-ellipsis">
       
-        S3 buckets
+        Tool retrieval (top-K)
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="S3 buckets">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark history
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Benchmark history">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#grace2-hazard-runs-226996537797-key-layout" class="md-nav__link">
+  <a href="#15-prompt-breadth-bench-cold-vs-warm-index" class="md-nav__link">
     <span class="md-ellipsis">
       
-        grace2-hazard-runs-226996537797 key layout
+        15-prompt breadth bench (cold vs warm index)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pass-3-per-tool-routing-sweep" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass-3 per-tool routing sweep
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-retrieval-vs-model-split-the-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The retrieval-vs-model split (the verdict)
       
     </span>
   </a>
@@ -1280,32 +1302,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cors-configuration" class="md-nav__link">
+  <a href="#trying-bigger-models" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CORS configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#terraform-state-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Terraform state backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#legacy-gcp-storage-decommissioned" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Legacy GCP storage (decommissioned)
+        Trying bigger models
       
     </span>
   </a>
@@ -1329,215 +1329,168 @@
 
 
 
-<h1 id="data-stores">Data Stores<a class="headerlink" href="#data-stores" title="Permanent link">&para;</a></h1>
+<h1 id="trid3nt-local-models">TRID3NT Local -- Models<a class="headerlink" href="#trid3nt-local-models" title="Permanent link">&para;</a></h1>
+<p>The LLM is pluggable through the OpenAI-compatible seam (<code>MODEL_PROVIDER=openai</code> +
+<code>GRACE2_OPENAI_BASE_URL</code>). This page records what has actually been measured locally: which
+models can drive the ~176-tool agent, why the default is what it is, and what the routing
+benchmarks say.</p>
+<p>Reference box for all numbers below: consumer desktop with an NVIDIA RTX 2060 SUPER (8 GB
+VRAM), models served by Ollama with Q4 quantization.</p>
 <hr />
-<h2 id="dynamodb-tables">DynamoDB tables<a class="headerlink" href="#dynamodb-tables" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>. All application tables use <code>PAY_PER_REQUEST</code> billing.</p>
-<h3 id="live-prefix-trid3nt_">Live prefix: <code>trid3nt_</code><a class="headerlink" href="#live-prefix-trid3nt_" title="Permanent link">&para;</a></h3>
-<p>The live Fargate agents have env var <code>GRACE2_DYNAMO_TABLE_PREFIX=trid3nt_</code> (set in
-<code>infra/aws-agent-isolation/ecs.tf</code>). The default in code is <code>grace2_</code> -- local dev uses the
-default, production agents use <code>trid3nt_</code>.</p>
+<h2 id="the-local-model-matrix">The local model matrix<a class="headerlink" href="#the-local-model-matrix" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>GSIs</th>
-<th>Notes</th>
+<th>Model</th>
+<th>Size (Q4)</th>
+<th>Verdict</th>
+<th>Detail</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>trid3nt_cases</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code>, <code>session_id-index</code></td>
-<td>Case metadata; user_id is Cognito sub</td>
+<td><code>llama3.2:3b</code> (+ <code>3b-32k</code>)</td>
+<td>2.0 GB</td>
+<td><strong>Narrates, cannot call</strong></td>
+<td>Fine for plain conversational responses; never emitted a valid composer tool call in the original proof run (the MODFLOW e2e had to fall back to direct tool invocation). Do not use it to drive tools.</td>
 </tr>
 <tr>
-<td><code>trid3nt_chat</code></td>
-<td><code>case_id</code> (String)</td>
-<td><code>msg_id</code> (String)</td>
-<td>--</td>
-<td>Per-case chat history</td>
+<td><code>qwen3.5:9b</code> (+ <code>9b-8k</code>)</td>
+<td>6.6 GB</td>
+<td><strong>Tools, but slow</strong></td>
+<td>Produces structured tool calls, but the 6.6 GB weights plus KV cache spill past the 8 GB VRAM budget, so layers offload to CPU and turns crawl. Usable only if you have more VRAM.</td>
 </tr>
 <tr>
-<td><code>trid3nt_sessions</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Session -&gt; user mappings</td>
-</tr>
-<tr>
-<td><code>trid3nt_users</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>firebase_uid-index</code> (legacy name)</td>
-<td>User profiles</td>
-</tr>
-<tr>
-<td><code>trid3nt_secrets</code></td>
-<td><code>_id</code> (String)</td>
-<td>--</td>
-<td><code>user_id-index</code></td>
-<td>Per-user soft-revokable credentials vault</td>
-</tr>
-<tr>
-<td><code>trid3nt_telemetry</code></td>
-<td>(per-invocation)</td>
-<td>--</td>
-<td>--</td>
-<td>Per-tool invocation records</td>
+<td><code>qwen3:8b-16k</code></td>
+<td>5.2 GB</td>
+<td><strong>DEFAULT -- tools + fast</strong></td>
+<td>Structured tool calls proven through the full agent stack (every engine's LLM-driven e2e called the right composer on turn 1 with 0 nudges). Fits in VRAM with a 16k context.</td>
 </tr>
 </tbody>
 </table>
-<h3 id="special-purpose-tables-not-prefixed">Special-purpose tables (not prefixed)<a class="headerlink" href="#special-purpose-tables-not-prefixed" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>PK</th>
-<th>SK</th>
-<th>Notes</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_session_routes</code></td>
-<td><code>user_ulid</code> (String)</td>
-<td><code>session_id</code> (String)</td>
-<td>Broker route table; TTL 24 h; PITR on; <code>PAY_PER_REQUEST</code></td>
-</tr>
-<tr>
-<td><code>grace2-autostop-state</code></td>
-<td>(per-task)</td>
-<td>--</td>
-<td>Reaper idle-streak counters</td>
-</tr>
-</tbody>
-</table>
-<h3 id="legacy-tables-pre-rename-zero-cost-dead-data">Legacy tables (pre-rename, zero cost, dead data)<a class="headerlink" href="#legacy-tables-pre-rename-zero-cost-dead-data" title="Permanent link">&para;</a></h3>
-<p>The following tables predate the <code>trid3nt_</code> rename and contain only historical data. They are
-candidates for archival/deletion (Phase 0 migration):</p>
-<table>
-<thead>
-<tr>
-<th>Table</th>
-<th>Approx items</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2_chat</code></td>
-<td>1735</td>
-</tr>
-<tr>
-<td><code>grace2_cases</code></td>
-<td>167</td>
-</tr>
-<tr>
-<td><code>grace2_users</code></td>
-<td>209</td>
-</tr>
-<tr>
-<td><code>grace2_sessions</code></td>
-<td>182</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2 id="s3-buckets">S3 buckets<a class="headerlink" href="#s3-buckets" title="Permanent link">&para;</a></h2>
-<p>AWS region: <code>us-west-2</code>, account <code>226996537797</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Bucket</th>
-<th>BPA</th>
-<th>Purpose</th>
-<th>Key layout</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>grace2-hazard-runs-226996537797</code></td>
-<td>On (signer only)</td>
-<td>Run outputs, case views, manifests, Terraform state</td>
-<td>See layout below</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-cog</code></td>
-<td>On</td>
-<td>Published COG rasters (TiTiler source)</td>
-<td><code>/cog/</code> prefix; per-run subdirs</td>
-</tr>
-<tr>
-<td><code>grace2-hazard-web-226996537797</code></td>
-<td>Off (cold catalog public-read)</td>
-<td>SPA static assets + cold tool catalog</td>
-<td><code>catalog/tool-catalog.json</code></td>
-</tr>
-<tr>
-<td><code>grace2-hazard-cache-226996537797</code></td>
-<td>On</td>
-<td>Agent tool cache (rasterio outputs, etc.)</td>
-<td>keyed by tool+args hash</td>
-</tr>
-<tr>
-<td><code>grace-2-hazard-prod-qgs</code></td>
-<td>On</td>
-<td>QGIS project files (.qgs) per case</td>
-<td>per-case key</td>
-</tr>
-<tr>
-<td><code>grace2-agent-bundle-226996537797</code></td>
-<td>On</td>
-<td>Agent deploy bundle</td>
-<td><code>engine-build/agent_deploy_src.tgz</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="grace2-hazard-runs-226996537797-key-layout"><code>grace2-hazard-runs-226996537797</code> key layout<a class="headerlink" href="#grace2-hazard-runs-226996537797-key-layout" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code>runs/
-  &lt;run_id&gt;/                      ULID per engine run
-    job_spec.json                Input parameters (written by agent at submit)
-    publish_manifest.json        Layer refs (written by worker BEFORE completion)
-    completion.json              Final status (written by worker LAST)
-    &lt;engine_outputs&gt;/            COGs, NetCDF, logs
-
-case-views/
-  &lt;case_id&gt;/
-    snapshot.json                Cold-view snapshot (layer refs, no live agent needed)
-
-case-manifests/
-  &lt;case_id&gt;/
-    latest.json                  Most recent published manifest for the case
-
-catalog/
-  tool-catalog.json              (also mirrored to web bucket with public-read)
+<p>The one-line reliability matrix from the commit that set the default:
+<code>3b = no tools, 9b = tools-but-slow, 8b = tools+fast</code>.</p>
+<h3 id="why-qwen38b-16k-the-16k-part">Why <code>qwen3:8b-16k</code> (the 16k part)<a class="headerlink" href="#why-qwen38b-16k-the-16k-part" title="Permanent link">&para;</a></h3>
+<p><code>qwen3:8b-16k</code> is not a Docker Hub model -- it is a locally-created Ollama variant:</p>
+<div class="highlight"><pre><span></span><code>FROM qwen3:8b
+PARAMETER num_ctx 16384
 </code></pre></div>
+<p>Ollama serves models with <code>num_ctx 4096</code> by default, which is too small for the agent's system
+prompt + tool declarations + case context; 16384 gives comfortable headroom (and affords
+extras like retrieval-trimmed tool schemas and future lesson injection) while keeping the KV
+cache small enough to stay resident on an 8 GB card. The base model's native window is 40960,
+so there is room to go higher if you have the VRAM.</p>
+<h3 id="the-no_think-requirement">The <code>/no_think</code> requirement<a class="headerlink" href="#the-no_think-requirement" title="Permanent link">&para;</a></h3>
+<p>Qwen3-family models default to <strong>thinking mode</strong>: all tokens stream to the reasoning channel,
+the OpenAI-compat content deltas arrive empty, and the turn renders no text in the chat.
+<code>.env.local</code> ships <code>GRACE2_OPENAI_EXTRA_SYSTEM=/no_think</code>, which the adapter appends to the
+system prompt to disable thinking. Keep it set for any Qwen3 model (it is a generic
+system-suffix seam -- harmless for models that ignore it).</p>
 <hr />
-<h2 id="cors-configuration">CORS configuration<a class="headerlink" href="#cors-configuration" title="Permanent link">&para;</a></h2>
-<p>The runs bucket has a scoped CORS policy (applied in <code>infra/aws-autostop/cors.tf</code>). This was added
-to fix the "box-off, no layers" bug (S3 CORS blocked browser cross-origin presigned URL fetches).</p>
-<p>The web bucket has no CORS restriction (public-read cold catalog).</p>
-<hr />
-<h2 id="terraform-state-backend">Terraform state backend<a class="headerlink" href="#terraform-state-backend" title="Permanent link">&para;</a></h2>
-<p>Terraform/OpenTofu state files for all <code>infra/</code> stacks are stored in the runs bucket:</p>
-<div class="highlight"><pre><span></span><code>s3://grace2-hazard-runs-226996537797/terraform/
-  &lt;stack-name&gt;/
-    terraform.tfstate
-</code></pre></div>
-<hr />
-<h2 id="legacy-gcp-storage-decommissioned">Legacy GCP storage (decommissioned)<a class="headerlink" href="#legacy-gcp-storage-decommissioned" title="Permanent link">&para;</a></h2>
-<p>The following GCS buckets were used pre-AWS migration. They are defined in <code>infra/buckets.tf</code>
-(legacy GCP IaC) and are no longer used by the live system:</p>
+<h2 id="tool-retrieval-top-k">Tool retrieval (top-K)<a class="headerlink" href="#tool-retrieval-top-k" title="Permanent link">&para;</a></h2>
+<p>An 8B model cannot reliably pick the right tool out of a 176-tool catalog (measured below), so
+the local build runs the retrieval layer in <strong>enforce</strong> mode: each turn, the user text is
+ranked against the tool corpus (BM25 + name-substring + local dense embeddings, fused with
+RRF, reusing <code>discover_dataset</code>'s cached index) and only the top-K tools (plus a hot-set floor,
+union-ed monotonically per Case) are declared to the model.</p>
 <ul>
-<li><code>grace-2-hazard-prod-cog</code> (GCS)</li>
-<li><code>grace-2-hazard-prod-fgb</code> (GCS, FlatGeobuf vectors)</li>
-<li><code>grace-2-hazard-prod-qgs</code> (GCS, QGIS projects)</li>
-<li><code>grace-2-hazard-prod-runs</code> (GCS, solver outputs)</li>
+<li><code>GRACE2_TOOL_RETRIEVAL=enforce</code>, <code>GRACE2_TOOL_RETRIEVAL_K=8</code> locally (code default K=25).</li>
+<li><strong>Fail-open</strong>: a cold index, an error, or an empty ranking shows the full registry -- the
+  layer can never hide every tool.</li>
+<li>The index is warmed at startup (<code>asyncio.to_thread</code>); until the warm completes, retrieval
+  logs <code>discover index COLD; FAIL-OPEN to full registry</code> and the model faces all 176 tools --
+  which measurably hurts routing (below).</li>
 </ul>
+<h2 id="benchmark-history">Benchmark history<a class="headerlink" href="#benchmark-history" title="Permanent link">&para;</a></h2>
+<h3 id="15-prompt-breadth-bench-cold-vs-warm-index">15-prompt breadth bench (cold vs warm index)<a class="headerlink" href="#15-prompt-breadth-bench-cold-vs-warm-index" title="Permanent link">&para;</a></h3>
+<p>Same 15 prompts (fetchers, terrain chains, 5 solver composers, 1 no-tool control) on
+<code>qwen3:8b-16k</code> + <code>/no_think</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Run</th>
+<th>Selection accuracy</th>
+<th>Failure clusters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>BEFORE (cold index -&gt; fail-open, all 176 tools in context)</td>
+<td><strong>35.7%</strong> (5/14)</td>
+<td><code>web_fetch</code> attractor (3 fetch prompts collapsed onto the generic web tool); no-call cluster (3 prose answers with zero dispatch); near-neighbor confusion (hillshade vs colored-relief, SFINCS vs SWMM, tsunami vs saltwater-intrusion)</td>
+</tr>
+<tr>
+<td>AFTER (warm index, true top-K enforcement)</td>
+<td><strong>57.1%</strong> (8/14)</td>
+<td>attractor + no-call clusters eliminated; residual misses were chain-depth vs the 4-minute cap, not selection</td>
+</tr>
+</tbody>
+</table>
+<p>Args were valid 15/15 in both runs, and the no-tool control never fired a tool -- <strong>selection,
+not schema-filling, is the bottleneck</strong>. Distinctively-named composers (MODFLOW sustainable
+yield, SWMM, OpenQuake PSHA) routed exactly even cold.</p>
+<h3 id="pass-3-per-tool-routing-sweep">Pass-3 per-tool routing sweep<a class="headerlink" href="#pass-3-per-tool-routing-sweep" title="Permanent link">&para;</a></h3>
+<p>One docstring-derived prompt per registered tool (174 scored), case-seeded (a DEM layer
+pre-loaded so layer-consuming tools have a real target), K=8:</p>
+<table>
+<thead>
+<tr>
+<th>Outcome</th>
+<th>Count</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HIT</td>
+<td>45</td>
+<td>expected tool fired</td>
+</tr>
+<tr>
+<td>MISS</td>
+<td>73</td>
+<td>a different tool fired first (most common wrong first call: <code>geocode_location</code>)</td>
+</tr>
+<tr>
+<td>NO_CALL</td>
+<td>55</td>
+<td>prose answer, no dispatch</td>
+</tr>
+<tr>
+<td>ERROR</td>
+<td>1</td>
+<td>WS connection error</td>
+</tr>
+</tbody>
+</table>
+<p>Full table: <code>docs/reports/tool-routing-report.md</code> in the <code>trid3nt-local</code> repo.</p>
+<h3 id="the-retrieval-vs-model-split-the-verdict">The retrieval-vs-model split (the verdict)<a class="headerlink" href="#the-retrieval-vs-model-split-the-verdict" title="Permanent link">&para;</a></h3>
+<p>Every failed prompt was replayed through <code>retrieve_visible_tools</code> (K=8) and classified:</p>
+<ul>
+<li><strong>RETRIEVAL-MISS</strong> (expected tool absent from the shortlist -- the model never saw it): <strong>0</strong></li>
+<li><strong>MODEL-MISS</strong> (tool was on the menu; the model chose otherwise): <strong>127</strong> (all scored failures)</li>
+</ul>
+<p>At K=8 the retrieval layer put the expected tool in front of the model every single time.
+The residual routing gap is a <strong>model-capability limit of the 8B class</strong>, not a retrieval
+tuning problem -- raising K, re-weighting the corpus, or adding retrieval features will not
+close it. The lever is a stronger model. Full split:
+<code>docs/reports/tool-routing-failure-split.md</code>.</p>
+<hr />
+<h2 id="trying-bigger-models">Trying bigger models<a class="headerlink" href="#trying-bigger-models" title="Permanent link">&para;</a></h2>
+<p>The seam makes experiments cheap:</p>
+<ol>
+<li><code>ollama pull &lt;model&gt;</code>; if it is tool-capable, create a <code>num_ctx</code> variant (16384 minimum
+   recommended) exactly as for qwen3.</li>
+<li>Set <code>GRACE2_OPENAI_MODEL</code> in <code>.env.local</code> and restart the agent.</li>
+<li>Watch VRAM: on an 8 GB card, ~5 GB of Q4 weights + a 16k KV cache is about the ceiling
+   (this is precisely why qwen3.5:9b at 6.6 GB failed the "fast" bar). Spill to CPU shows up
+   as multi-minute turns, not errors.</li>
+<li>Re-run the harnesses to get numbers, not vibes: <code>scripts/tool_routing_bench.py</code>
+   (15-prompt bench) and <code>scripts/tool_routing_sweep.py</code> (per-tool sweep, resumable), then
+   <code>scripts/routing_failure_split.py</code> for the retrieval-vs-model split.</li>
+<li>Escape hatch: point <code>GRACE2_OPENAI_BASE_URL</code> + <code>GRACE2_OPENAI_API_KEY</code> at any cloud
+   OpenAI-compatible API when a local model is not cutting it. Same agent, same tools.</li>
+</ol>
 
 
 

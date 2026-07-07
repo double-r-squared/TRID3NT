@@ -43,4 +43,12 @@ nav:
     - Deploy: operations/deploy.md
     - Runbook: operations/runbook.md
     - Verification: operations/verification.md
+  - TRID3NT Local:
+    - Overview: local/overview.md
+    - Install: local/install.md
+    - Configuration: local/configuration.md
+    - Models: local/models.md
+    - Engines: local/engines.md
+    - Tool Support Matrix: local/tool-support.md
+    - Troubleshooting: local/troubleshooting.md
   - Contributing: contributing.md
