@@ -8914,6 +8914,10 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         # inventory + samples + writes an FGB in one sync call -- same off-load
         # rationale; emit-free body.
         "compute_flood_depth_damage",
+        # compute_urban_heat_island fetches MODIS LST + the 10 m land-cover COG
+        # + resamples onto the class grid + writes a COG in one sync call --
+        # same off-load rationale; emit-free body.
+        "compute_urban_heat_island",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /

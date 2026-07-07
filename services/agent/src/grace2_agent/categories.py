@@ -569,6 +569,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # compute_flood_depth_damage IS damage assessment (the screening cousin of
     # the Pelicun chain, which is cross-listed here).
     "compute_flood_depth_damage": "damage_assessment",
+    # compute_urban_heat_island: land_cover_development over weather_atmosphere
+    # -- the analysis QUANTIFIES a land-cover/development effect (built-up vs
+    # vegetated thermal delta, LST stratified BY class); the LST input is the
+    # weather-side ingredient, so weather_atmosphere is the cross-list.
+    "compute_urban_heat_island": "land_cover_development",
 }
 
 
@@ -716,6 +721,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # straight from a flood-model run, so it materially belongs to the
     # hazard-modeling lane too.
     "compute_flood_depth_damage": ("hazard_modeling",),
+    # UHI: PRIMARY land_cover_development (quantifies the built-vs-vegetated
+    # development effect); the LST side makes it materially a
+    # weather/extreme-heat surface too.
+    "compute_urban_heat_island": ("weather_atmosphere",),
 }
 
 # ---------------------------------------------------------------------------
