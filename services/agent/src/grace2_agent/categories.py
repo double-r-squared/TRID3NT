@@ -359,6 +359,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "lookup_precip_return_period": "hydrology",
     "fetch_gcn250_curve_numbers": "hydrology",
     "fetch_statsgo_soils": "hydrology",
+    # RUSLE hillslope water-erosion composer (A = R*K*LS*C*P): PRIMARY
+    # hydrology (rainfall-driven soil loss; sits beside its STATSGO / curve-
+    # number inputs), cross-listed to land_cover_development (C-factor is
+    # land-cover-driven) + terrain_elevation (LS from the DEM) below.
+    "compute_sediment_yield": "hydrology",
     # ---- 4. terrain_elevation ---------------------------------------------
     "fetch_dem": "terrain_elevation",
     "fetch_3dep_extra": "terrain_elevation",
@@ -674,6 +679,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "fetch_noaa_coops_currents": ('hydrology', 'geographic_primitives',),
     "fetch_airnow_air_quality": ('news_events', 'damage_assessment', 'fire',),
     "fetch_openaq_measurements": ('conservation_ecology', 'news_events',),
+    # RUSLE soil-loss composer: PRIMARY hydrology; the C-factor comes from land
+    # cover and the LS-factor from the DEM, so it is materially reachable from
+    # both those lanes too.
+    "compute_sediment_yield": ("land_cover_development", "terrain_elevation"),
 }
 
 # ---------------------------------------------------------------------------

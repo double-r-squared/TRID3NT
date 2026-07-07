@@ -635,6 +635,33 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
 _TITILER_SAFE_DEFAULT = "&rescale=0,1&colormap_name=viridis"
 
 
+def _sediment_yield_log_style_params() -> str:
+    """LOG-SCALED interval ``&colormap=`` for ``sediment_yield_t_ha_yr``.
+
+    RUSLE annual soil loss spans orders of magnitude (0.01 .. 1000+ t/ha/yr),
+    so a linear ``&rescale`` would paint everything below the worst gullies as
+    one flat color. Instead we emit a TiTiler/rio-tiler INTERVAL colormap
+    (``[[[min, max], [r, g, b, a]], ...]``) whose class breaks are the
+    log-spaced 1/5/10/50/100/500 t/ha/yr table owned by
+    ``compute_sediment_yield.SEDIMENT_YIELD_LOG_CLASSES`` (single source of
+    truth -- the tool builds its LayerURI ``legend`` from the SAME table, so
+    the key always matches the paint). Lazy import mirrors the
+    ``_published_scenario_tool_names`` pattern (no import-order coupling).
+    ADDITIVE: every existing ``&rescale=..&colormap_name=..`` entry is
+    byte-identical.
+    """
+    import json as _json
+    from urllib.parse import quote
+
+    from .compute_sediment_yield import SEDIMENT_YIELD_LOG_CLASSES, hex_to_rgba
+
+    intervals = [
+        [[lo, hi], hex_to_rgba(color)]
+        for lo, hi, color, _label in SEDIMENT_YIELD_LOG_CLASSES
+    ]
+    return "&colormap=" + quote(_json.dumps(intervals), safe="")
+
+
 def _registry_style_params(preset: str) -> str | None:
     """Return ``&rescale=..&colormap_name=..`` for a known preset, else ``None``.
 
@@ -647,6 +674,10 @@ def _registry_style_params(preset: str) -> str | None:
     key = (preset or "").lower()
     if not key:
         return None
+    # 0. RUSLE soil loss -> LOG-SCALED interval colormap (t/ha/yr spans orders
+    #    of magnitude; see _sediment_yield_log_style_params).
+    if key == "sediment_yield_t_ha_yr":
+        return _sediment_yield_log_style_params()
     # 1. Exact match.
     hit = _TITILER_STYLE_REGISTRY.get(key)
     if hit is not None:
