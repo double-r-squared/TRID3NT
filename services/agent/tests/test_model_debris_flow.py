@@ -11,7 +11,9 @@ Coverage:
 2.  ``test_full_pipeline_synthetic`` -- 60x60 UTM valley DEM + BARC4
     moderate/high burn patch + constant KF -> segments GeoJSON with the three
     required properties (likelihood, volume_m3, hazard_class), consistent
-    counts, and a LayerURI-shaped ``layer`` dict.
+    counts, and a typed ``DebrisFlowLayerURI`` return (a ``LayerURI``
+    subclass, so the emit_tool_call wrap-site persists the hazard layer to
+    the case record -- renders + exports + cold view).
 3.  ``test_dnbr_severity_input`` -- a CONTINUOUS dNBR severity_uri raster is
     auto-detected and classified via pfdf.severity.estimate.
 4.  ``test_aoi_clamp_raises`` -- AOI over 0.15 deg per side ->
@@ -31,10 +33,13 @@ import pytest
 import rasterio
 from rasterio.transform import from_bounds
 
+from grace2_contracts.execution import LayerURI
+
 from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools.model_debris_flow import (
     AoiTooLargeError,
     DebrisFlowInputError,
+    DebrisFlowLayerURI,
     NoBurnDataError,
     model_debris_flow,
 )
@@ -114,24 +119,27 @@ def test_full_pipeline_synthetic(synthetic_inputs, tmp_path) -> None:
         _output_dir=str(out_dir),
     )
 
-    assert result["status"] == "ok"
-    assert result["segment_count"] > 0
-    assert result["rainfall_intensity_mm_h"] == 40.0
-    assert 0.0 < result["burned_fraction"] <= 1.0
-    assert isinstance(result["notes"], list) and result["notes"]
+    # The v2 return type: a typed LayerURI subclass, so the emit_tool_call
+    # add_loaded_layer gate (isinstance(result, LayerURI)) persists the layer
+    # to the case record. A dict return would render live but never persist.
+    assert isinstance(result, DebrisFlowLayerURI)
+    assert isinstance(result, LayerURI)
+    assert result.segment_count > 0
+    assert result.rainfall_intensity_mm_h == 40.0
+    assert 0.0 < result.burned_fraction <= 1.0
+    assert isinstance(result.notes, list) and result.notes
 
-    layer = result["layer"]
-    assert layer["layer_type"] == "vector"
-    assert layer["style_preset"] == "debris_flow_hazard"
-    assert layer["bbox"] == list(BBOX) or tuple(layer["bbox"]) == BBOX
+    assert result.layer_type == "vector"
+    assert result.style_preset == "debris_flow_hazard"
+    assert tuple(result.bbox) == BBOX
 
     # The GeoJSON artifact exists locally (offline write path) and carries the
     # three required per-segment properties.
-    assert os.path.exists(layer["uri"])
-    with open(layer["uri"]) as f:
+    assert os.path.exists(result.uri)
+    with open(result.uri) as f:
         fc = json.load(f)
     feats = fc["features"]
-    assert len(feats) == result["segment_count"]
+    assert len(feats) == result.segment_count
 
     allowed = {"Low", "Moderate", "High", "Unknown"}
     classes = set()
@@ -146,17 +154,17 @@ def test_full_pipeline_synthetic(synthetic_inputs, tmp_path) -> None:
     assert classes & {"Low", "Moderate", "High"}
 
     # Count bookkeeping is consistent with the per-feature classes.
-    assert result["high_hazard_count"] == sum(
+    assert result.high_hazard_count == sum(
         1 for feat in feats if feat["properties"]["hazard_class"] == "High"
     )
     assert (
-        result["high_hazard_count"]
-        + result["moderate_hazard_count"]
-        + result["low_hazard_count"]
-        <= result["segment_count"]
+        result.high_hazard_count
+        + result.moderate_hazard_count
+        + result.low_hazard_count
+        <= result.segment_count
     )
-    assert result["likelihood_max"] is not None
-    assert result["volume_max_m3"] is not None
+    assert result.likelihood_max is not None
+    assert result.volume_max_m3 is not None
 
 
 def test_dnbr_severity_input(synthetic_inputs, tmp_path) -> None:
@@ -177,9 +185,9 @@ def test_dnbr_severity_input(synthetic_inputs, tmp_path) -> None:
         kf_uri=kf_path,
         _output_dir=str(out_dir),
     )
-    assert result["status"] == "ok"
-    assert result["segment_count"] > 0
-    assert any("severity.estimate" in note for note in result["notes"])
+    assert isinstance(result, DebrisFlowLayerURI)
+    assert result.segment_count > 0
+    assert any("severity.estimate" in note for note in result.notes)
 
 
 def test_aoi_clamp_raises() -> None:

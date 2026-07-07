@@ -58,8 +58,14 @@ above that), keeping the 30 m watershed analysis to a few-hundred-pixel grid.
 Output: the stream-segment network as GeoJSON LineStrings (one feature per
 segment) with properties ``likelihood`` (0-1), ``volume_m3``, and
 ``hazard_class`` (Low / Moderate / High per the USGS combined matrix), written
-to the runs bucket (or ``_output_dir`` for offline tests) and returned inside
-a dict alongside honest ``notes`` for every fallback used.
+to the runs bucket (or ``_output_dir`` for offline tests) and returned as a
+``DebrisFlowLayerURI`` -- a ``LayerURI`` subclass (the ``FaultSourcesResult`` /
+``TopobathyResult`` house pattern) carrying the summary counts and honest
+``notes`` for every fallback used as extra fields. Returning the typed
+``LayerURI`` (not a LayerURI-SHAPED dict) matters: the ``emit_tool_call``
+wrap-site fires ``add_loaded_layer`` only on ``isinstance(result, LayerURI)``,
+which is what persists the layer to the case record -- a dict return rendered
+live but was invisible to case export / cold view.
 
 ``cacheable=False`` (``ttl_class="live-no-cache"``): this is a modeling
 composer, not a fetcher -- results depend on the design storm and the freshest
@@ -85,6 +91,7 @@ from . import register_tool
 
 __all__ = [
     "model_debris_flow",
+    "DebrisFlowLayerURI",
     "DebrisFlowError",
     "DebrisFlowInputError",
     "AoiTooLargeError",
@@ -150,6 +157,52 @@ class DebrisFlowUpstreamError(DebrisFlowError):
 
     error_code = "DEBRIS_FLOW_UPSTREAM_ERROR"
     retryable = True
+
+
+# ---------------------------------------------------------------------------
+# Result type -- a renderable stream-segment ``LayerURI`` that ALSO carries the
+# assessment summary (v2 return-type fix).
+#
+# Before this, ``model_debris_flow`` returned a plain dict whose ``layer`` field
+# was LayerURI-SHAPED. The ``emit_tool_call`` ``add_loaded_layer`` gate -- which
+# fires only on an ``isinstance(result, LayerURI)`` return -- is the ONLY path
+# that persists a layer into the case record, so the hazard layer rendered live
+# but was missing from case export and the box-off cold view.
+# ``DebrisFlowLayerURI`` subclasses ``LayerURI`` (mirrors
+# ``fetch_fault_sources.FaultSourcesResult`` / ``fetch_topobathy.
+# TopobathyResult``): the gate persists + renders the vector layer, while the
+# summary scalars and honest ``notes`` ride along as extra fields for the
+# function-response summary the LLM narrates from.
+# ---------------------------------------------------------------------------
+
+
+class DebrisFlowLayerURI(LayerURI):
+    """The debris-flow segment-network ``LayerURI`` plus assessment summary.
+
+    Extra fields beyond ``LayerURI``:
+
+    - ``segment_count`` -- retained stream segments in the network.
+    - ``high_hazard_count`` / ``moderate_hazard_count`` / ``low_hazard_count``
+      -- per-class totals (Cannon 2010 combined matrix); segments with
+      insufficient data are "Unknown" and counted only in ``segment_count``.
+    - ``likelihood_max`` -- max per-segment Staley 2017 M1 likelihood (0-1);
+      None when no segment produced a finite likelihood.
+    - ``volume_max_m3`` -- max per-segment Gartner 2014 volume (m^3); None
+      when no segment produced a finite volume.
+    - ``rainfall_intensity_mm_h`` -- the design storm actually used.
+    - ``burned_fraction`` -- burned fraction of the AOI (0-1).
+    - ``notes`` -- honest provenance + every fallback used.
+    """
+
+    segment_count: int = 0
+    high_hazard_count: int = 0
+    moderate_hazard_count: int = 0
+    low_hazard_count: int = 0
+    likelihood_max: float | None = None
+    volume_max_m3: float | None = None
+    rainfall_intensity_mm_h: float = 24.0
+    burned_fraction: float = 0.0
+    notes: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +648,7 @@ def model_debris_flow(
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
-) -> dict[str, Any]:
+) -> DebrisFlowLayerURI:
     """USGS post-fire debris-flow hazard assessment over a burned AOI (pfdf).
 
     Runs the standard USGS emergency-assessment workflow: DEM -> watershed
@@ -638,17 +691,16 @@ def model_debris_flow(
             below which ``NoBurnDataError`` is raised.
 
     Returns:
-        dict with:
-            - ``status``: "ok"
-            - ``layer``: LayerURI-shaped dict for the stream-segment network
-              (GeoJSON LineStrings; ``style_preset="debris_flow_hazard"``);
-              per-feature properties ``likelihood`` (0-1), ``volume_m3``, and
-              ``hazard_class`` ("Low"/"Moderate"/"High"; "Unknown" for
-              segments with insufficient data).
-            - ``segment_count`` / ``high_hazard_count``: totals.
-            - ``likelihood_max`` / ``volume_max_m3``: headline scalars.
-            - ``rainfall_intensity_mm_h``: the design storm actually used.
-            - ``notes``: honest provenance + every fallback used.
+        ``DebrisFlowLayerURI`` -- the stream-segment network as a vector
+        ``LayerURI`` (GeoJSON LineStrings; ``style_preset="debris_flow_hazard"``;
+        per-feature properties ``likelihood`` (0-1), ``volume_m3``, and
+        ``hazard_class`` "Low"/"Moderate"/"High"; "Unknown" for segments with
+        insufficient data) carrying the assessment summary as extra fields:
+        ``segment_count`` / ``high_hazard_count`` / ``moderate_hazard_count`` /
+        ``low_hazard_count`` (totals), ``likelihood_max`` / ``volume_max_m3``
+        (headline scalars), ``rainfall_intensity_mm_h`` (the design storm
+        actually used), ``burned_fraction``, and ``notes`` (honest provenance
+        + every fallback used).
 
     Errors (FR-AS-11):
         - ``AoiTooLargeError`` (AOI over the 0.15-deg clamp),
@@ -847,20 +899,6 @@ def model_debris_flow(
 
     segment_count = int(segments.size)
     high_hazard_count = int((labels == "High").sum())
-    layer = LayerURI(
-        layer_id=f"debris-flow-{seed}",
-        name=(
-            f"Debris-flow hazard segments ({intensity:g} mm/h design storm) -- "
-            f"bbox ({q_bbox[0]:.2f},{q_bbox[1]:.2f},{q_bbox[2]:.2f},{q_bbox[3]:.2f})"
-        ),
-        layer_type="vector",
-        uri=uri,
-        style_preset="debris_flow_hazard",
-        role="primary",
-        units="likelihood (0-1) / m^3",
-        bbox=q_bbox,
-    )
-
     finite_lik = likelihoods[np.isfinite(likelihoods)]
     finite_vol = volumes[np.isfinite(volumes)]
     logger.info(
@@ -872,16 +910,27 @@ def model_debris_flow(
         high_hazard_count,
         burned_fraction,
     )
-    return {
-        "status": "ok",
-        "layer": layer.model_dump(mode="json"),
-        "segment_count": segment_count,
-        "high_hazard_count": high_hazard_count,
-        "moderate_hazard_count": int((labels == "Moderate").sum()),
-        "low_hazard_count": int((labels == "Low").sum()),
-        "likelihood_max": float(finite_lik.max()) if finite_lik.size else None,
-        "volume_max_m3": float(finite_vol.max()) if finite_vol.size else None,
-        "rainfall_intensity_mm_h": intensity,
-        "burned_fraction": round(burned_fraction, 4),
-        "notes": notes,
-    }
+    # Return the typed LayerURI (NOT a LayerURI-shaped dict): the emit_tool_call
+    # wrap-site persists to the case record only on isinstance(result, LayerURI).
+    return DebrisFlowLayerURI(
+        layer_id=f"debris-flow-{seed}",
+        name=(
+            f"Debris-flow hazard segments ({intensity:g} mm/h design storm) -- "
+            f"bbox ({q_bbox[0]:.2f},{q_bbox[1]:.2f},{q_bbox[2]:.2f},{q_bbox[3]:.2f})"
+        ),
+        layer_type="vector",
+        uri=uri,
+        style_preset="debris_flow_hazard",
+        role="primary",
+        units="likelihood (0-1) / m^3",
+        bbox=q_bbox,
+        segment_count=segment_count,
+        high_hazard_count=high_hazard_count,
+        moderate_hazard_count=int((labels == "Moderate").sum()),
+        low_hazard_count=int((labels == "Low").sum()),
+        likelihood_max=float(finite_lik.max()) if finite_lik.size else None,
+        volume_max_m3=float(finite_vol.max()) if finite_vol.size else None,
+        rainfall_intensity_mm_h=intensity,
+        burned_fraction=round(burned_fraction, 4),
+        notes=notes,
+    )
