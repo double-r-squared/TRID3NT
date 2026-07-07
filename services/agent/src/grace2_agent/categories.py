@@ -364,6 +364,12 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # number inputs), cross-listed to land_cover_development (C-factor is
     # land-cover-driven) + terrain_elevation (LS from the DEM) below.
     "compute_sediment_yield": "hydrology",
+    # Watershed primitives (pysheds D8 over a DEM): the drainage-basin polygon
+    # and the DEM-derived channel network are core hydrology surfaces (they sit
+    # beside the NHDPlus/NLDI navigation + river-geometry fetchers); cross-
+    # listed to terrain_elevation below (pure DEM derivatives).
+    "delineate_watershed": "hydrology",
+    "extract_stream_network": "hydrology",
     # ---- 4. terrain_elevation ---------------------------------------------
     "fetch_dem": "terrain_elevation",
     "fetch_3dep_extra": "terrain_elevation",
@@ -683,6 +689,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # cover and the LS-factor from the DEM, so it is materially reachable from
     # both those lanes too.
     "compute_sediment_yield": ("land_cover_development", "terrain_elevation"),
+    # Watershed primitives: PRIMARY hydrology; both are pure DEM derivatives,
+    # so they materially belong to the terrain lane too.
+    "delineate_watershed": ("terrain_elevation",),
+    "extract_stream_network": ("terrain_elevation",),
 }
 
 # ---------------------------------------------------------------------------
