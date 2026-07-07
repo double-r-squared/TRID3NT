@@ -1568,3 +1568,103 @@ extract_stream_network:
   - "show headwater channels not on the NHD map"
   - "map the natural drainage paths across this terrain"
   - "flow accumulation stream lines for this AOI"
+
+# ---------------------------------------------------------------------------
+# Backfill (2026-07-07): registered tools that were missing corpus entries
+# (test_every_registered_tool_has_corpus_queries was red). 5+ routing
+# queries each so retrieve_visible_tools can recall them.
+# ---------------------------------------------------------------------------
+
+export_case_to_qgis:
+  - "export this case to QGIS"
+  - "download these layers as a QGIS project"
+  - "give me a geopackage of the case layers"
+  - "open these results in QGIS on my desktop"
+  - "export the map layers for offline GIS work"
+  - "save everything as a qgz project file"
+
+fetch_fault_sources:
+  - "show active fault traces near this area"
+  - "GEM global active faults for California"
+  - "fault lines with slip rates around the basin"
+  - "which mapped faults could drive the seismic hazard here"
+  - "fault source inputs for a PSHA run"
+  - "known earthquake faults crossing this AOI"
+
+model_debris_flow:
+  - "post-fire debris flow hazard for this burn scar"
+  - "which drainages could produce debris flows after the fire"
+  - "debris flow likelihood and volume for these basins"
+  - "USGS style emergency debris-flow assessment"
+  - "mudslide risk in the burned watershed after a storm"
+  - "rank stream segments by post-fire debris flow hazard"
+
+run_model_sustainable_yield_scenario:
+  - "how much can this well field pump sustainably"
+  - "drawdown after ten years of pumping"
+  - "sustainable yield of the aquifer here"
+  - "groundwater level decline from a proposed well"
+  - "MODFLOW pumping drawdown scenario for this site"
+
+run_model_mine_dewatering_scenario:
+  - "how much inflow to dewater the open pit"
+  - "mine dewatering drawdown cone extent"
+  - "pit dewatering pumping requirement estimate"
+  - "how far does the dewatering cone of depression reach"
+  - "groundwater inflow to a proposed quarry pit"
+
+run_model_regional_water_budget_scenario:
+  - "water budget for this aquifer"
+  - "zonal groundwater budget for the region"
+  - "where does the recharge go in this basin"
+  - "inflows and outflows of the regional aquifer"
+  - "groundwater balance partition for this area"
+
+run_model_mar_scenario:
+  - "managed aquifer recharge mounding under the spreading basin"
+  - "how high does the water table mound below the infiltration basin"
+  - "MAR recharge basin scenario"
+  - "artificial recharge groundwater mound extent"
+  - "simulate a managed recharge project here"
+
+run_model_asr_scenario:
+  - "aquifer storage and recovery cycle simulation"
+  - "how much injected water can we recover from the ASR well"
+  - "ASR injection storage recovery scenario"
+  - "store treated water in the aquifer and recover it later"
+  - "recovery efficiency of an ASR scheme at this site"
+
+run_model_wetland_hydroperiod_scenario:
+  - "wetland hydroperiod under groundwater pumping"
+  - "how long does the wetland stay wet each year"
+  - "water table at the marsh through the seasons"
+  - "will pumping dry out this wetland"
+  - "wetland inundation duration simulation"
+
+run_model_multi_species_scenario:
+  - "simulate multiple contaminants at once"
+  - "multi species plume transport from one source"
+  - "PCE and TCE plumes from the same spill"
+  - "several solutes in one groundwater flow model"
+  - "compare plumes for two chemicals released together"
+
+run_model_capture_zone_scenario:
+  - "capture zone of this supply well"
+  - "where does the well draw its water from"
+  - "backward particle tracking to the wellhead"
+  - "delineate the capture area for the pumping well"
+  - "time of travel capture zone polygon"
+
+run_model_wellhead_protection_scenario:
+  - "wellhead protection area for this well"
+  - "WHPA delineation around the drinking water well"
+  - "source water protection zone map"
+  - "five year time of travel wellhead zone"
+  - "protection area around the municipal supply well"
+
+run_model_saltwater_intrusion_scenario:
+  - "saltwater intrusion under coastal pumping"
+  - "how far inland does the salt wedge move"
+  - "sea level rise saltwater wedge simulation"
+  - "coastal aquifer salinity intrusion scenario"
+  - "will the supply well turn salty if we keep pumping"
