@@ -8903,6 +8903,13 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "fetch_soilgrids",
         "fetch_esri_landcover_10m",
         "fetch_noaa_sst",
+        # quick-win batch (2026-07-07): compute_change_detection reads TWO
+        # Sentinel-2 scenes (SAS sign + windowed /vsicurl warp-read per band)
+        # + vectorizes + writes an FGB in ONE sync call -- the same shape as
+        # compute_ndvi/digitize_water_body above. Emit-free body (the
+        # emit_tool_call wrapper does the emit), so off-load so it never
+        # stalls the WS heartbeat (feedback_no_sync_blocking_on_asyncio_loop).
+        "compute_change_detection",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /

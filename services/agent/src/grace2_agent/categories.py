@@ -557,6 +557,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_noaa_coops_currents": "coastal",
     "fetch_airnow_air_quality": "weather_atmosphere",
     "fetch_openaq_measurements": "weather_atmosphere",
+    # quick-win batch (2026-07-07)
+    # compute_change_detection differences a CONTINUOUS index (NDVI/NDWI) to
+    # map land-surface change footprints -- it sits in the land-cover/
+    # development-change lane beside digitize_water_body / compute_ndvi.
+    "compute_change_detection": "land_cover_development",
 }
 
 
@@ -693,6 +698,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # so they materially belong to the terrain lane too.
     "delineate_watershed": ("terrain_elevation",),
     "extract_stream_network": ("terrain_elevation",),
+    # quick-win batch (2026-07-07)
+    # Two-date NDVI/NDWI change: PRIMARY land-cover/development; vegetation
+    # gain/loss mapping is materially a conservation surface too.
+    "compute_change_detection": ("conservation_ecology",),
 }
 
 # ---------------------------------------------------------------------------

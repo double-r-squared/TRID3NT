@@ -1668,3 +1668,17 @@ run_model_saltwater_intrusion_scenario:
   - "sea level rise saltwater wedge simulation"
   - "coastal aquifer salinity intrusion scenario"
   - "will the supply well turn salty if we keep pumping"
+
+# ---------------------------------------------------------------------------
+# Quick-win batch (2026-07-07)
+# ---------------------------------------------------------------------------
+
+compute_change_detection:
+  - "what changed here between 2020 and 2024"
+  - "detect deforestation in this area from satellite imagery"
+  - "before and after vegetation change map for this bbox"
+  - "compare NDVI between last summer and this summer"
+  - "where did the reservoir shrink between these two dates"
+  - "map vegetation loss since the fire using two-date imagery"
+  - "change detection polygons for land clearing near the highway"
+  - "show gain and loss areas between two Sentinel-2 dates"

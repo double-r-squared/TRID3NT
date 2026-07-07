@@ -116,7 +116,14 @@ def test_write_tools_are_not_read_only():
 #: KFFACT + Esri/IO land cover when no override URIs are passed, so its
 #: open_world_hint=True is HONEST -- flipping it to False to satisfy the
 #: naming lint would misannotate a real external-API caller.
-_OPEN_WORLD_COMPUTE_EXCEPTIONS = {"compute_sediment_yield"}
+#: Quick-win batch (2026-07-07): compute_change_detection fetches its own
+#: two-date Sentinel-2 inputs (PC STAC) unless both imagery_*_uri overrides
+#: are passed -- the same input-fetching-composer shape as
+#: compute_sediment_yield, so its open_world_hint=True is honest too.
+_OPEN_WORLD_COMPUTE_EXCEPTIONS = {
+    "compute_sediment_yield",
+    "compute_change_detection",
+}
 
 
 def test_open_world_tools_are_fetchers_or_external():
