@@ -284,6 +284,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # cross-listed to fire below (reached from the wildfire lane next to
     # MTBS / NIFC / FIRMS).
     "model_debris_flow": "hazard_modeling",
+    # The QGIS bridge exporter: a case-product utility, not a modeling engine.
+    # geographic_primitives is the general-purpose/utility lane; reached from
+    # "take this into QGIS / export my project".
+    "export_case_to_qgis": "geographic_primitives",
     # sprint-18 MODFLOW GWF-only archetype composers (Wave-1 + Wave-2): each is a
     # run_model_* groundwater-flow composer that dispatches the shared MODFLOW
     # solver via run_modflow_archetype_job. Filed alongside the other MODFLOW
