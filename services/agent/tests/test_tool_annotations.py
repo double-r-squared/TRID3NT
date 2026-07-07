@@ -120,9 +120,12 @@ def test_write_tools_are_not_read_only():
 #: two-date Sentinel-2 inputs (PC STAC) unless both imagery_*_uri overrides
 #: are passed -- the same input-fetching-composer shape as
 #: compute_sediment_yield, so its open_world_hint=True is honest too.
+#: compute_idf_curve hits the external NOAA PFDS API (the same endpoint as
+#: lookup_precip_return_period), so its open_world_hint=True is honest.
 _OPEN_WORLD_COMPUTE_EXCEPTIONS = {
     "compute_sediment_yield",
     "compute_change_detection",
+    "compute_idf_curve",
 }
 
 

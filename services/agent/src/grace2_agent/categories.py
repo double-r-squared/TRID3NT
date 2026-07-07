@@ -562,6 +562,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # map land-surface change footprints -- it sits in the land-cover/
     # development-change lane beside digitize_water_body / compute_ndvi.
     "compute_change_detection": "land_cover_development",
+    # compute_idf_curve is design-storm rainfall frequency -- the chart form of
+    # lookup_precip_return_period, so it files beside it in hydrology (more
+    # accurate than the generic chart tools' geographic_primitives).
+    "compute_idf_curve": "hydrology",
 }
 
 
@@ -702,6 +706,9 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # Two-date NDVI/NDWI change: PRIMARY land-cover/development; vegetation
     # gain/loss mapping is materially a conservation surface too.
     "compute_change_detection": ("conservation_ecology",),
+    # IDF curve: PRIMARY hydrology (design-storm rainfall); materially a
+    # weather/precipitation surface too.
+    "compute_idf_curve": ("weather_atmosphere",),
 }
 
 # ---------------------------------------------------------------------------
