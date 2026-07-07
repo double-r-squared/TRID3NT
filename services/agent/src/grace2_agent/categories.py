@@ -566,6 +566,9 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # lookup_precip_return_period, so it files beside it in hydrology (more
     # accurate than the generic chart tools' geographic_primitives).
     "compute_idf_curve": "hydrology",
+    # compute_flood_depth_damage IS damage assessment (the screening cousin of
+    # the Pelicun chain, which is cross-listed here).
+    "compute_flood_depth_damage": "damage_assessment",
 }
 
 
@@ -709,6 +712,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # IDF curve: PRIMARY hydrology (design-storm rainfall); materially a
     # weather/precipitation surface too.
     "compute_idf_curve": ("weather_atmosphere",),
+    # Depth-damage screening: PRIMARY damage_assessment; a user reaches it
+    # straight from a flood-model run, so it materially belongs to the
+    # hazard-modeling lane too.
+    "compute_flood_depth_damage": ("hazard_modeling",),
 }
 
 # ---------------------------------------------------------------------------

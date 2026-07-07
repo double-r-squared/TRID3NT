@@ -122,10 +122,13 @@ def test_write_tools_are_not_read_only():
 #: compute_sediment_yield, so its open_world_hint=True is honest too.
 #: compute_idf_curve hits the external NOAA PFDS API (the same endpoint as
 #: lookup_precip_return_period), so its open_world_hint=True is honest.
+#: compute_flood_depth_damage fetches the USACE NSI structure inventory
+#: (external API) unless assets_uri is passed, so it is honest too.
 _OPEN_WORLD_COMPUTE_EXCEPTIONS = {
     "compute_sediment_yield",
     "compute_change_detection",
     "compute_idf_curve",
+    "compute_flood_depth_damage",
 }
 
 

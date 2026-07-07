@@ -8910,6 +8910,10 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         # emit_tool_call wrapper does the emit), so off-load so it never
         # stalls the WS heartbeat (feedback_no_sync_blocking_on_asyncio_loop).
         "compute_change_detection",
+        # compute_flood_depth_damage stages an s3 depth COG + fetches the NSI
+        # inventory + samples + writes an FGB in one sync call -- same off-load
+        # rationale; emit-free body.
+        "compute_flood_depth_damage",
     }
 )
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /
