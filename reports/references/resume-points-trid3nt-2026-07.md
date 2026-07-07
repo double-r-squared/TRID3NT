@@ -12,9 +12,9 @@ per application. Everything below is factual to the project as of 2026-07.
 
 ## AI / LLM engineering
 
-- Architected a tool-calling LLM agent with a catalog of 176 registered tools (data fetchers, geoprocessing, simulation composers) behind a single typed registry with per-tool caching, TTL classes, and telemetry.
+- Architected a tool-calling LLM agent with a catalog of 182 registered tools (data fetchers, geoprocessing, simulation composers) behind a single typed registry with per-tool caching, TTL classes, and telemetry.
 - Built a pluggable model-provider seam supporting AWS Bedrock (Claude Sonnet/Haiku, Nova) and any OpenAI-compatible endpoint (Ollama, llama.cpp), enabling the same agent to run against cloud or fully local models.
-- Implemented RAG-style tool retrieval (BM25 + dense embeddings, top-K selection) so an 8B local model with a 16k context can operate a 176-tool catalog that would otherwise exceed its context window by ~2x.
+- Implemented RAG-style tool retrieval (BM25 + dense embeddings, top-K selection) so an 8B local model with a 16k context can operate a 180+-tool catalog that would otherwise exceed its context window by ~2x.
 - Diagnosed and fixed a silent context-overflow failure mode in local LLM tool-calling (lazy retrieval index caused fail-open to all 176 schemas -> silent truncation), raising tool-selection accuracy from 35.7% to 57.1% on a routing benchmark.
 - Ran a systematic 3-pass audit of the full tool catalog: direct execution of all 176 tools, curated-argument retries, and a per-tool LLM routing benchmark with automated retrieval-vs-model failure attribution.
 - Preserved prompt-caching (Bedrock cachePoint) across model swaps as a first-class cost control; built per-model telemetry to A/B cheaper models.
@@ -68,6 +68,17 @@ per application. Everything below is factual to the project as of 2026-07.
 - Proved LLM-driven simulation end-to-end on an 8GB consumer GPU (qwen3:8b, 16k context): the local model itself invoked and parameterized MODFLOW and SFINCS runs with zero nudges, rendering depth animations in the local UI.
 - Benchmarked local model tiers (3B/8B/9B) for structured tool-calling reliability and settled a model matrix (3B narrates but cannot call; 8B calls reliably at 16k with thinking-mode disabled).
 - Found and fixed an environment-level S3 redirect bug: a global AWS_ENDPOINT_URL (MinIO) silently redirected anonymous public NOAA bucket reads, breaking satellite/weather tools with misleading errors; fixed with endpoint-pinned anonymous clients.
+- Swept the full 182-tool catalog against the local stack in three resumable passes (direct execution, curated args, chained layer inputs): 137+ tools proven end-to-end, API-key-gated sources earmarked, every real failure root-caused and fixed rather than skipped.
+- Built an LLM tool-routing benchmark from tool docstrings (172 prompts, case-seeded, verdicts scored by a judge harness) plus a retrieval-vs-model failure splitter that replays failed prompts through the tool-retrieval layer; proved 100% of routing failures were model misses, not retrieval misses, redirecting effort from RAG tuning to a model upgrade.
+- Designed an LLM self-improvement loop: failed-then-corrected tool calls distilled into "lessons" (JSONL store, LRU-capped), retrieved by BM25 into a token-budgeted system-prompt appendix behind a dark-launch flag, then A/B-benchmarked against the dark baseline on the full routing sweep.
+
+## QGIS plugin (TRID3NT for QGIS)
+
+- Built a QGIS plugin that embeds the agent chat dock inside QGIS: streamed agent layers materialize natively (TiTiler XYZ rasters, /vsicurl/ FlatGeobuf vectors), map canvas or selected polygon becomes the area-of-interest, and the pre-run resolution gate renders as real Qt cards.
+- Wrote a dependency-free RFC 6455 WebSocket client in pure stdlib (QGIS's bundled Python ships no WS library): handshake, masking, fragmentation, ping/pong, capped-jitter reconnect with session resume, all unit-tested against a scripted stub server.
+- Caught a shipped Qt crash class with a real-Qt headless test tier (offscreen QgsApplication + fake iface): a pyqtSignal named `event` shadowed the C++ virtual QObject.event(), qFatal-aborting the host app on first connect - invisible to pure-python tests, reproduced on first run of the real-Qt driver.
+- Diagnosed a cross-run test-pollution bug byte-by-byte at the wire level (identical JSON, one client rejected): a stub-server user id persisted into the real QSettings profile and poisoned live handshakes; fixed with a read-side ULID guard plus save/restore hygiene in the test driver.
+- 60+ plugin tests across pure-python and real-Qt tiers; one-command profile install; dual local/remote-cloud modes sharing one client.
 
 ## Reliability, testing, ops
 
@@ -93,4 +104,4 @@ OpenTofu/Terraform, Docker (multi-stage), MinIO, TiTiler, WebSockets,
 Ollama / llama.cpp / OpenAI-compatible APIs, RAG / embeddings / BM25,
 SFINCS, MODFLOW 6, MF6-GWT, PySWMM, GeoClaw (Clawpack), SWAN, OpenQuake,
 Landlab, Pelicun, HydroMT, FloPy, STAC, OGC (WMS/WCS/WFS), ArcGIS REST,
-COG/GeoTIFF, FlatGeobuf, NetCDF, Zarr, QGIS/PyQGIS, Vercel, Git.
+COG/GeoTIFF, FlatGeobuf, NetCDF, Zarr, QGIS/PyQGIS, PyQt/Qt, Vercel, Git.
