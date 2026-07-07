@@ -357,6 +357,7 @@ from . import fetch_climate_normals  # noqa: F401
 from . import fetch_noaa_coops_currents  # noqa: F401
 from . import fetch_airnow_air_quality  # noqa: F401
 from . import fetch_openaq_measurements  # noqa: F401
+from . import export_case_to_qgis  # noqa: E402,F401 - QGIS bridge v1: registers export_case_to_qgis (case layers -> export.gpkg + local GeoTIFF copies + hand-built .qgz project with TiTiler-translated singleband-pseudocolor styling; local-first s3/http/file loader; per-layer skip honesty)
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
