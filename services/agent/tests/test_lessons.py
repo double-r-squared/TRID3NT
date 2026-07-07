@@ -261,6 +261,32 @@ def test_read_side_score_floor_rejects_unrelated(lessons_env):
     assert lessons_appendix("earthquake shaking scenario near Tokyo Japan") is None
 
 
+def test_read_side_location_boilerplate_does_not_qualify(lessons_env):
+    """A/B regression (2026-07-07): with SCORE_FLOOR=0.1 vs raw BM25, lessons
+    whose only link to the prompt was shared location boilerplate ("downtown
+    Tampa, Florida") injected on nearly every sweep turn and biased the small
+    model toward the wrong tool. Once enough lessons share those tokens they
+    are corpus boilerplate -- overlap on them alone must inject NOTHING."""
+    for i, (tool_hint, topic) in enumerate(
+        [
+            ("compute_zonal_statistics", "zonal statistics of parcels"),
+            ("fetch_field_boundaries", "farm field boundaries"),
+            ("run_sfincs", "coastal flood surge depth"),
+            ("compute_slope", "terrain slope steepness"),
+            ("fetch_nexrad", "radar reflectivity mosaic"),
+            ("run_modflow_job", "groundwater drawdown pumping"),
+        ]
+    ):
+        register_lesson(
+            f"When asked about {topic}, call {tool_hint} directly.",
+            f"{topic} for the downtown Tampa, Florida area",
+        )
+    # Prompt shares ONLY the location boilerplate with every trigger.
+    assert lessons_appendix(
+        "Fetch a digital elevation model for downtown Tampa, Florida."
+    ) is None
+
+
 def test_read_side_off_gate_returns_none(lessons_env, monkeypatch):
     observe_turn(USER_TEXT, [FAILED_DEM, FIXED_DEM])
     monkeypatch.setenv("GRACE2_LESSONS", "off")

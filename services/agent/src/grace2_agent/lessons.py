@@ -218,6 +218,28 @@ def _content_tokens(tokens: list[str]) -> set[str]:
     return {t for t in tokens if t not in stop}
 
 
+def _distinctive_query_tokens(user_text: str, rows: list[dict]) -> set[str]:
+    """Query tokens that are NOT boilerplate across the lesson corpus.
+
+    A token appearing in at least half the stored lessons' trigger texts
+    (location stubs, "fetch", "layer"...) carries no routing signal -- overlap
+    on such tokens must not qualify a lesson for injection. Boilerplate needs
+    corpus evidence: below 3 occurrences a token is never boilerplate, so a
+    1-2 row store (where every matching token trivially hits df == n) does
+    not degenerate to rejecting everything.
+    """
+    q = set(_tokenize(user_text))
+    if not q or not rows:
+        return q
+    n = len(rows)
+    df: dict[str, int] = {}
+    for row in rows:
+        for tok in set(_tokenize(row.get("trigger_text", ""))):
+            df[tok] = df.get(tok, 0) + 1
+    boilerplate_at = max(3, n / 2)
+    return {t for t in q if df.get(t, 0) < boilerplate_at}
+
+
 def _score_rows(user_text: str, rows: list[dict]) -> list[float]:
     """Score every row against ``user_text``.
 
@@ -535,10 +557,27 @@ def lessons_appendix(user_text: str, *, top_k: int = MAX_INJECT_LESSONS) -> str 
         ranked = sorted(
             zip(scores, rows), key=lambda p: p[0], reverse=True
         )
+        # Relevance gates (A/B finding 2026-07-07): a raw-BM25 floor of 0.1
+        # injected the top-2 of a tiny store on nearly EVERY turn -- sweep
+        # telemetry showed ~1.5 injections/turn, mostly rows whose only link
+        # to the prompt was location boilerplate ("downtown Tampa, Florida").
+        # Irrelevant "when the user asks X call Y" text actively biases a
+        # small model toward the wrong tool, so weak matches must inject
+        # NOTHING. Two gates:
+        #   1. distinctive-overlap: the row's trigger must share >= 2 query
+        #      tokens that are NOT corpus boilerplate (present in less than
+        #      half the stored lessons);
+        #   2. relative floor: score >= 35% of the turn's best score, so a
+        #      long tail of weak BM25 matches under a strong best is cut.
+        top_score = ranked[0][0] if ranked else 0.0
+        q_distinct = _distinctive_query_tokens(user_text, rows)
         picked: list[dict] = []
         for score, row in ranked:
-            if score <= SCORE_FLOOR:
+            if score <= SCORE_FLOOR or score < 0.35 * top_score:
                 break
+            trigger_tokens = set(_tokenize(row.get("trigger_text", "")))
+            if len(q_distinct & trigger_tokens) < 2:
+                continue
             picked.append(row)
             if len(picked) >= max(1, top_k):
                 break
