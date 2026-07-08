@@ -127,10 +127,13 @@ async def test_export_vector_and_raster_full_bundle(
     assert len(gdf) == 2
     assert set(gdf["name"]) == {"a", "b"}
 
-    # (b) GeoTIFF copied (byte-identical to the source COG).
+    # (b) GeoTIFF copied (byte-identical to the source COG) + its sidecar
+    # .qml style (same stem, listed in the result JSON).
     tif = out_dir / "Water_Depth.tif"
     assert tif.is_file()
     assert tif.read_bytes() == raster_path.read_bytes()
+    assert result["qml_paths"] == [str(out_dir / "Water_Depth.qml")]
+    assert (out_dir / "Water_Depth.qml").is_file()
 
     # (c) .qgz unzips to a parseable .qgs with both maplayers + tree order.
     assert result["qgz_path"].endswith(".qgz")
@@ -205,6 +208,118 @@ async def test_raster_style_params_translate_to_pseudocolor(
     from matplotlib.colors import to_hex
 
     expected = [to_hex(colormaps["Blues"](i / 4)) for i in range(5)]
+    assert [i.get("color") for i in items] == expected
+
+
+@pytest.mark.asyncio
+async def test_qml_sidecar_carries_ramp_and_zero_transparency(
+    tmp_path: Path, raster_path: Path
+) -> None:
+    """Every exported raster gets a sidecar .qml (for the QGIS plugin's
+    standalone-add path) with the SAME pseudocolor ramp the .qgz embeds, plus
+    a 0-value transparency entry when the ramp starts at 0 (flood depth: dry
+    cells transparent, never black)."""
+    out_dir = tmp_path / "qml"
+    result = await export_case_to_qgis(
+        layers=[
+            {
+                "name": "depth",
+                "layer_type": "raster",
+                "uri": f"{raster_path}?rescale=0,3&colormap_name=Blues",
+            }
+        ],
+        output_dir=str(out_dir),
+    )
+    assert result["qml_paths"] == [str(out_dir / "depth.qml")]
+    raw = (out_dir / "depth.qml").read_bytes()
+    body = raw.split(b"\n", 1)[1] if raw.startswith(b"<!DOCTYPE") else raw
+    root = ET.fromstring(body)
+    assert root.tag == "qgis"
+
+    renderer = root.find("./pipe/rasterrenderer")
+    assert renderer is not None
+    assert renderer.get("type") == "singlebandpseudocolor"
+    assert float(renderer.get("classificationMin")) == 0.0
+    assert float(renderer.get("classificationMax")) == 3.0
+    # nodata stays transparent (empty nodataColor = QGIS default transparent).
+    assert renderer.get("nodataColor") == ""
+
+    # The ramp: 5 Blues stops over 0..3, identical to the .qgz translation.
+    items = renderer.findall("./rastershader/colorrampshader/item")
+    assert len(items) == 5
+    values = [float(i.get("value")) for i in items]
+    assert values[0] == 0.0 and values[-1] == 3.0
+    from matplotlib import colormaps
+    from matplotlib.colors import to_hex
+
+    expected = [to_hex(colormaps["Blues"](i / 4)) for i in range(5)]
+    assert [i.get("color") for i in items] == expected
+
+    # 0-depth cells are fully transparent (vmin == 0 ramp).
+    entry = renderer.find("./rasterTransparency/singleValuePixelList/pixelListEntry")
+    assert entry is not None
+    assert entry.get("min") == "0" and entry.get("max") == "0"
+    assert entry.get("percentTransparent") == "100"
+
+    # The same transparency entry lands in the .qgz inline pipe (single seam).
+    qgs_root = _read_qgs(result["qgz_path"])
+    qgs_entry = qgs_root.find(
+        "./projectlayers/maplayer/pipe/rasterrenderer/rasterTransparency"
+        "/singleValuePixelList/pixelListEntry"
+    )
+    assert qgs_entry is not None
+    assert qgs_entry.get("percentTransparent") == "100"
+
+
+@pytest.mark.asyncio
+async def test_qml_zero_transparency_only_for_zero_min_ramps(
+    tmp_path: Path, raster_path: Path
+) -> None:
+    """A ramp that does NOT start at 0 (e.g. a DEM rescale=100,500) must not
+    punch a transparency hole at value 0."""
+    out_dir = tmp_path / "dem"
+    result = await export_case_to_qgis(
+        layers=[
+            {
+                "name": "dem",
+                "layer_type": "raster",
+                "uri": f"{raster_path}?rescale=100,500&colormap_name=terrain",
+            }
+        ],
+        output_dir=str(out_dir),
+    )
+    raw = Path(result["qml_paths"][0]).read_bytes()
+    body = raw.split(b"\n", 1)[1] if raw.startswith(b"<!DOCTYPE") else raw
+    root = ET.fromstring(body)
+    assert root.find(".//rasterTransparency") is None
+
+
+@pytest.mark.asyncio
+async def test_lowercase_titiler_colormap_resolves_case_insensitively(
+    tmp_path: Path, raster_path: Path
+) -> None:
+    """TiTiler carries lowercase colormap names (ylgnbu); matplotlib registers
+    YlGnBu. The translation must resolve case-insensitively instead of
+    silently degrading every real flood-depth export to viridis."""
+    result = await export_case_to_qgis(
+        layers=[
+            {
+                "name": "depth",
+                "layer_type": "raster",
+                "uri": f"{raster_path}?rescale=0,3&colormap_name=ylgnbu",
+            }
+        ],
+        output_dir=str(tmp_path / "lc"),
+    )
+    root = _read_qgs(result["qgz_path"])
+    items = root.findall(
+        "./projectlayers/maplayer/pipe/rasterrenderer/rastershader"
+        "/colorrampshader/item"
+    )
+    from matplotlib import colormaps
+    from matplotlib.colors import to_hex
+
+    expected = [to_hex(colormaps["YlGnBu"](i / 4)) for i in range(5)]
     assert [i.get("color") for i in items] == expected
 
 

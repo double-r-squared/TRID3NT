@@ -13,14 +13,25 @@ into a self-contained folder a user can open directly in desktop QGIS 3.x:
   singleband-pseudocolor renderer translated from our TiTiler style params.
 
 **Styling choice (documented per spec):** raster styling is embedded INLINE in
-the ``.qgs`` ``<maplayer><pipe><rasterrenderer>`` node rather than as sidecar
-``.qml`` files. Inside a QGIS project the project XML is the authoritative
-style source, so inline embedding is the reliable single-file path for
-"open the .qgz and it looks right"; sidecar ``.qml`` auto-loading only applies
-when a layer is added standalone, which is not this tool's contract. The
+the ``.qgs`` ``<maplayer><pipe><rasterrenderer>`` node AND written as a
+sidecar ``<name>.qml`` next to every exported GeoTIFF. Inside a QGIS project
+the project XML is the authoritative style source, so inline embedding is the
+reliable single-file path for "open the .qgz and it looks right"; the sidecar
+``.qml`` exists for the OTHER consumer -- the TRID3NT QGIS plugin's
+"open case in QGIS" flow adds the exported GeoTIFFs STANDALONE to the user's
+current project (it never opens the .qgz, which would replace their open
+project), so without a per-raster style file those layers rendered default
+grayscale (near-black flood frames). Both forms are built from the SAME
+``_raster_pipe_element`` translation, so the .qgz and the sidecars can never
+disagree. Sidecar paths are returned as ``qml_paths`` in the result JSON. The
 translation samples 5 interpolated stops from the matplotlib colormap named by
 ``colormap_name`` over the ``rescale=<vmin>,<vmax>`` range (falling back to a
-viridis 0-1 ramp when params are absent or the colormap is unknown).
+viridis 0-1 ramp when params are absent or the colormap is unknown; colormap
+lookup is CASE-INSENSITIVE because TiTiler style params carry lowercase names
+like ``ylgnbu`` while matplotlib registers ``YlGnBu``). Ramps whose minimum is
+exactly 0 (flood/depth-style) additionally get a raster-transparency entry
+making 0-value cells fully transparent -- 0 depth means dry land, and nodata
+stays transparent via the default empty ``nodataColor``.
 
 **Local-first URI handling:** a layer ``uri`` may be a plain local path, an
 ``s3://`` object (boto3; honors ``AWS_ENDPOINT_URL_S3`` / ``AWS_ENDPOINT_URL``
@@ -259,19 +270,29 @@ def _style_from_layer(layer: dict[str, Any]) -> tuple[float, float, str]:
 
 def _colormap_stops(cmap_name: str, vmin: float, vmax: float, n: int = 5) -> list[tuple[float, str]]:
     """Sample ``n`` interpolated ``(value, "#rrggbb")`` stops from the
-    matplotlib colormap ``cmap_name`` over [vmin, vmax]. Unknown colormap
-    names fall back to viridis (honest degrade, never a crash)."""
+    matplotlib colormap ``cmap_name`` over [vmin, vmax].
+
+    Lookup is CASE-INSENSITIVE on a miss: TiTiler style params carry lowercase
+    colormap names (``ylgnbu``, ``blues``) while matplotlib's registry is
+    case-sensitive (``YlGnBu``, ``Blues``) -- without the retry every real
+    flood-depth export silently degraded to viridis. Truly unknown names fall
+    back to viridis (honest degrade, never a crash)."""
     from matplotlib import colormaps
     from matplotlib.colors import to_hex
 
     try:
         cmap = colormaps[cmap_name]
     except (KeyError, TypeError):
-        logger.warning(
-            "export_case_to_qgis: unknown colormap %r -- falling back to viridis",
-            cmap_name,
-        )
-        cmap = colormaps["viridis"]
+        folded = str(cmap_name or "").lower()
+        match = next((n_ for n_ in colormaps if n_.lower() == folded), None)
+        if match is not None:
+            cmap = colormaps[match]
+        else:
+            logger.warning(
+                "export_case_to_qgis: unknown colormap %r -- falling back to viridis",
+                cmap_name,
+            )
+            cmap = colormaps["viridis"]
     if vmax <= vmin:  # degenerate range -> nudge so QGIS gets distinct stops
         vmax = vmin + 1.0
     stops: list[tuple[float, str]] = []
@@ -282,9 +303,14 @@ def _colormap_stops(cmap_name: str, vmin: float, vmax: float, n: int = 5) -> lis
 
 
 def _raster_pipe_element(vmin: float, vmax: float, cmap_name: str) -> ET.Element:
-    """Build the inline ``<pipe>`` node carrying a QGIS 3.x singleband
-    pseudocolor renderer with 5 interpolated stops (see module docstring for
-    the inline-vs-sidecar-QML decision)."""
+    """Build the ``<pipe>`` node carrying a QGIS 3.x singleband pseudocolor
+    renderer with 5 interpolated stops. Shared by the inline ``.qgs`` maplayer
+    AND the sidecar ``.qml`` (single seam -- see module docstring).
+
+    Transparency: nodata is transparent via the empty ``nodataColor`` default;
+    when the ramp starts at exactly 0 (flood/depth-style rescale=0,N) a
+    raster-transparency single-value entry additionally makes 0-value cells
+    fully transparent -- 0 depth is dry land, never a black cell."""
     pipe = ET.Element("pipe")
     renderer = ET.SubElement(
         pipe,
@@ -299,6 +325,14 @@ def _raster_pipe_element(vmin: float, vmax: float, cmap_name: str) -> ET.Element
             "classificationMax": repr(float(vmax)),
         },
     )
+    if float(vmin) == 0.0:
+        transparency = ET.SubElement(renderer, "rasterTransparency")
+        value_list = ET.SubElement(transparency, "singleValuePixelList")
+        ET.SubElement(
+            value_list,
+            "pixelListEntry",
+            {"min": "0", "max": "0", "percentTransparent": "100"},
+        )
     shader = ET.SubElement(renderer, "rastershader")
     ramp = ET.SubElement(
         shader,
@@ -326,6 +360,30 @@ def _raster_pipe_element(vmin: float, vmax: float, cmap_name: str) -> ET.Element
     ET.SubElement(pipe, "brightnesscontrast", {"brightness": "0", "contrast": "0", "gamma": "1"})
     ET.SubElement(pipe, "rasterresampler", {"maxOversampling": "2"})
     return pipe
+
+
+def _qml_bytes(vmin: float, vmax: float, cmap_name: str) -> bytes:
+    """Serialize a standalone QGIS layer-style document (``.qml``) carrying
+    the SAME pseudocolor pipe the ``.qgs`` embeds inline.
+
+    Written as a sidecar next to every exported GeoTIFF so a consumer that
+    adds the raster STANDALONE (the TRID3NT QGIS plugin's ``loadNamedStyle``
+    call; QGIS also auto-loads a same-stem ``.qml`` on manual add) renders the
+    web colormap instead of default grayscale."""
+    root = ET.Element(
+        "qgis",
+        {
+            "version": "3.28.0-Firenze",
+            "styleCategories": "AllStyleCategories",
+            "hasScaleBasedVisibilityFlag": "0",
+            "maxScale": "0",
+            "minScale": "1e+08",
+        },
+    )
+    root.append(_raster_pipe_element(vmin, vmax, cmap_name))
+    ET.SubElement(root, "blendMode").text = "0"
+    header = b"<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>\n"
+    return header + ET.tostring(root, encoding="utf-8", xml_declaration=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -622,6 +680,7 @@ async def export_case_to_qgis(
           "gpkg_path": str | None,      # None when the case has no vectors
           "exported_vector_count": int,
           "exported_raster_count": int,
+          "qml_paths": [str, ...],      # sidecar .qml style per raster
           "skipped": [{"name": str, "reason": str}, ...],
           "output_dir": str,
         }
@@ -666,6 +725,7 @@ async def export_case_to_qgis(
 
     # --- Per-layer export (skip-not-fail; case layer ORDER preserved) ------
     entries: list[dict[str, Any]] = []  # .qgs records, in case layer order
+    qml_paths: list[str] = []  # sidecar style files, raster export order
     skipped: list[dict[str, str]] = []
     bounds: list[tuple[float, float, float, float]] = []
     used_names: set[str] = set()
@@ -723,6 +783,21 @@ async def export_case_to_qgis(
                 if rb is not None:
                     bounds.append(rb)
                 vmin, vmax, cmap = _style_from_layer({**layer, "uri": uri or resolved_uri})
+                # Sidecar .qml (same translation as the .qgz pipe) so the
+                # QGIS plugin's standalone-add path renders the web colormap
+                # instead of default grayscale. A sidecar write failure is a
+                # style-only degrade, never a reason to skip a good raster.
+                try:
+                    qml_path = out / f"{safe}.qml"
+                    qml_path.write_bytes(_qml_bytes(vmin, vmax, cmap))
+                    qml_paths.append(str(qml_path))
+                except OSError as exc:
+                    logger.warning(
+                        "export_case_to_qgis: could not write style sidecar "
+                        "for %r (%s) -- raster exported unstyled",
+                        name,
+                        exc,
+                    )
                 entries.append(
                     {
                         "layer_id": layer_qgis_id,
@@ -770,6 +845,7 @@ async def export_case_to_qgis(
         "gpkg_path": str(gpkg_path) if n_vec > 0 else None,
         "exported_vector_count": n_vec,
         "exported_raster_count": n_ras,
+        "qml_paths": qml_paths,
         "skipped": skipped,
         "output_dir": str(out),
         "exported_at": datetime.now(timezone.utc).isoformat(),
