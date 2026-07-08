@@ -764,3 +764,22 @@ class TestArgShapeCoercion:
         )
         lo_lon, lo_lat, hi_lon, hi_lat = args.bbox
         assert lo_lon < -120.85 < hi_lon and lo_lat < 39.02 < hi_lat
+
+    def test_bracketed_bbox_string_coerces(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox="[-121.0, 38.9, -120.7, 39.1]",
+            ignition_lonlat=(-120.85, 39.02),
+        )
+        assert args.bbox == (-121.0, 38.9, -120.7, 39.1)
+
+    def test_latlon_point_pairs_derive(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox="39.02,-120.85,39.02,-120.85",
+            ignition_lonlat=(-120.85, 39.02),
+        )
+        lo_lon, lo_lat, hi_lon, hi_lat = args.bbox
+        assert lo_lon < -120.85 < hi_lon and lo_lat < 39.02 < hi_lat

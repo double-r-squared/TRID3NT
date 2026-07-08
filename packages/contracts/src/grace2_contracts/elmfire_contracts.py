@@ -216,7 +216,8 @@ class ElmfireRunArgs(GraceModel):
         as ABSENT so the model_post_init default derives the domain from the
         ignition point instead of failing the run."""
         if isinstance(value, str):
-            parts = [p.strip() for p in value.replace(";", ",").split(",")]
+            cleaned = value.replace(";", ",").strip().strip("[](){}")
+            parts = [p.strip().strip("[](){}") for p in cleaned.split(",")]
             try:
                 nums = [float(p) for p in parts if p]
             except ValueError:
