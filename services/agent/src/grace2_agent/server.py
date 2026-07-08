@@ -6630,6 +6630,21 @@ async def _build_swmm_granularity_envelope(params: dict) -> tuple[Any, Any, str]
     return envelope, auto, dem_path
 
 
+def _local_compute_lane() -> bool:
+    """True when solves run on the LOCAL machine (the TRID3NT local build).
+
+    Local-cloud fingerprint seam (NATE 2026-07-08): the canonical deployment
+    signal is the solver dispatch backend -- ``GRACE2_SOLVER_BACKEND=
+    local-docker`` (``tools.solver.solver_backend()``), which the local build
+    pins and the cloud stack never sets. Used ONLY to localize user-visible
+    confirm-card wording (compute labels / "cloud solve" prose); it never
+    changes dispatch. Cloud wording stays byte-identical when this is False.
+    """
+    from .tools.solver import SOLVER_BACKEND_LOCAL_DOCKER, solver_backend
+
+    return solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER
+
+
 # NATE 2026-06-26: per-fetcher resolution ladders for the fetch-resolution gate.
 # Finer = smaller metres. fetch_dem can go to 1 m (3DEP); fetch_topobathy floors
 # at 3 m (CUDEM tiles). Both default to 10 m (the tools' resolution_m default).
@@ -6751,6 +6766,12 @@ async def _build_fetch_resolution_envelope(
     )[:512]
 
     engine = "dem" if tool_name == "fetch_dem" else "topobathy"
+    # Local-cloud fingerprint fix (NATE 2026-07-08): the local build must not
+    # surface the cloud "fetch (1 vCPU)" compute label on the confirm card --
+    # the fetch runs in-process on the local machine, so the compute label is
+    # "local" (the QGIS-plugin/web cards render local wording off it). The
+    # cloud lane keeps the exact prior values byte-for-byte.
+    fetch_compute_class = "local" if _local_compute_lane() else "fetch"
     granularity = GranularitySuggestion(
         engine=engine,
         resolution_param="resolution_m",
@@ -6759,7 +6780,7 @@ async def _build_fetch_resolution_envelope(
         estimated_active_cells=int(px_estimate),
         estimated_solve_seconds=0.0,
         vcpus=1,
-        compute_class="fetch",
+        compute_class=fetch_compute_class,
         cell_cap=int(MAX_FETCH_PX) ** 2,
         coarsened=False,
         reason=reason,
@@ -6899,6 +6920,14 @@ async def _build_flood_run_settings_envelope(
             tuple(coerced),  # type: ignore[arg-type]
         )
         compute_class = params.get("compute_class", "standard") or "standard"
+        card_vcpus = int(auto.vcpus)
+        if _local_compute_lane():
+            # Local-cloud fingerprint fix (NATE 2026-07-08): the local build
+            # solves on the local machine, so the card's compute descriptors
+            # are the local lane's ("local" + host CPU count -- mirrors the
+            # SWMM builder's local lane). Cloud keeps the exact prior values.
+            compute_class = "local"
+            card_vcpus = os.cpu_count() or 1
         rungs = sorted(
             {r for r in SFINCS_RES_LADDER if r > 0}
             | {float(auto.grid_resolution_m)}
@@ -6910,7 +6939,7 @@ async def _build_flood_run_settings_envelope(
             resolution_choices=[float(r) for r in rungs if r > 0],
             estimated_active_cells=int(auto.estimated_active_cells),
             estimated_solve_seconds=float(auto.estimated_solve_seconds),
-            vcpus=int(auto.vcpus),
+            vcpus=card_vcpus,
             compute_class=str(compute_class),
             cell_cap=int(auto.cell_cap),
             coarsened=bool(auto.coarsened),
@@ -6953,7 +6982,14 @@ async def _build_flood_run_settings_envelope(
         threshold_mb=0.0,
         recommendation=(
             f"Run a SFINCS flood simulation for {where} "
-            "(cloud solve, typically 5-20 minutes)."
+            # Local-cloud fingerprint fix (NATE 2026-07-08): local builds run
+            # the solve on this machine -- never say "cloud solve" there. The
+            # cloud phrase is byte-identical to the prior wording.
+            + (
+                "(local solve)."
+                if _local_compute_lane()
+                else "(cloud solve, typically 5-20 minutes)."
+            )
             + res_phrase
             + cadence_phrase
             + " Review the run settings, then confirm to start."
@@ -7056,12 +7092,22 @@ def _build_psha_confirm_envelope(params: dict) -> Any:
         if return_period_years is not None
         else ""
     )
+    # Local-cloud fingerprint fix (NATE 2026-07-08): the local build runs the
+    # OpenQuake engine on this machine -- never say "AWS Batch"/"cloud solve"
+    # there. The cloud phrase is byte-identical to the prior wording.
+    dispatch_phrase = (
+        "This runs the OpenQuake engine locally (typically several minutes)."
+        if _local_compute_lane()
+        else (
+            "This dispatches the OpenQuake engine to AWS Batch (a cloud "
+            "solve, typically several minutes)."
+        )
+    )
     recommendation = (
         f"Run a classical probabilistic seismic-hazard (PSHA) calculation over "
         f"{area_phrase}: intensity measure {imt} at a {poe:g} probability of "
-        f"exceedance in {inv_time:g} years{rp_phrase}. This dispatches the "
-        f"OpenQuake engine to AWS Batch (a cloud solve, typically several "
-        f"minutes). Confirm to start."
+        f"exceedance in {inv_time:g} years{rp_phrase}. {dispatch_phrase} "
+        f"Confirm to start."
     )[:512]
 
     return PayloadWarningEnvelopePayload(
