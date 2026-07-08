@@ -1868,8 +1868,10 @@ class Persistence:
         from .secrets_handler import (
             AWS_SSM_VAULT_SCHEME,
             GCP_SM_VAULT_SCHEME,
+            LOCAL_FILE_VAULT_SCHEME,
             SecretRevokedError,
             _default_ssm_client,
+            _file_read_secret,
         )
 
         if not secret_ref.is_active:
@@ -1879,6 +1881,14 @@ class Persistence:
             )
 
         ref = secret_ref.vault_ref
+
+        # LOCAL file-vault path (fingerprint audit L8): checked FIRST so a
+        # local-build ref never touches a cloud client. Refs written by the
+        # local build carry the ``local-file://`` scheme; the value lives in
+        # the mode-0600 ``secrets_vault.json`` next to the file-persistence
+        # store.
+        if ref.startswith(LOCAL_FILE_VAULT_SCHEME):
+            return _file_read_secret(ref)
 
         # AWS SSM Parameter Store SecureString path (AWS prod stack).
         if ref.startswith(AWS_SSM_VAULT_SCHEME):
