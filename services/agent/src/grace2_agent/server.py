@@ -9500,6 +9500,26 @@ async def _invoke_tool_via_emitter(
     uri_registry = get_uri_registry(state.session_id)
     params = uri_registry.resolve_params(tool_name, params)
 
+    # 2026-07-08 small-model resilience: local 8B models omit publish_layer's
+    # layer_id entirely (live TypeError). The tool itself now derives one, but
+    # the wrap-site emission below keys off params["layer_id"], so inject the
+    # SAME derived id here (post-URI-resolution, so a handle-resolved
+    # layer_uri maps back to the producing tool's layer_id) - otherwise the
+    # layer would publish without ever being announced to the map.
+    if tool_name == "publish_layer" and not params.get("layer_id"):
+        _pl_uri = params.get("layer_uri")
+        if isinstance(_pl_uri, str) and _pl_uri:
+            from .tools.publish_layer import derive_layer_id as _derive_layer_id
+
+            params = dict(params)
+            params["layer_id"] = _derive_layer_id(_pl_uri, uri_registry)
+            logger.info(
+                "publish_layer: layer_id omitted by the model - derived %r "
+                "from layer_uri=%r",
+                params["layer_id"],
+                _pl_uri,
+            )
+
     # job VAULT-READ: thread the user's per-Case ``secret_ref`` into a keyed
     # tool so its ``_resolve_*_key`` reads the VAULT key first (then env). This
     # mirrors the eBird secret_ref convention. No-op for non-keyed tools and

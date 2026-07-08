@@ -89,6 +89,7 @@ from . import register_tool
 __all__ = [
     "publish_layer",
     "PublishLayerError",
+    "derive_layer_id",
     "style_params_from_band_stats",
     "legend_for_published_layer",
     "pop_legend_for_uri",
@@ -2200,6 +2201,37 @@ def _poll_execution(
         time.sleep(poll_interval_s)
 
 
+def derive_layer_id(layer_uri: str, registry: Any | None = None) -> str:
+    """Derive a stable ``layer_id`` when the caller omitted one (2026-07-08).
+
+    Local 8B models omit ``publish_layer``'s ``layer_id`` entirely (live
+    TypeError evidence). Derivation order:
+
+    1. the registered layer handle whose URI equals the (already
+       server-resolved) ``layer_uri`` - i.e. the producing tool's own
+       ``layer_id`` (``uri_registry.lookup_handle_for_uri``; uses the ambient
+       dispatch registry when ``registry`` is not passed);
+    2. the URI basename stem, sanitized to ``[A-Za-z0-9_-]`` (QGIS layer name
+       + WMS ``LAYERS=`` safe);
+    3. a fresh ``layer-<ulid>`` when the stem is empty.
+    """
+    import re as _re
+    from urllib.parse import urlparse as _urlparse
+
+    from ..uri_registry import lookup_handle_for_uri
+
+    handle = lookup_handle_for_uri(layer_uri, registry)
+    if handle:
+        return handle
+    path = _urlparse(layer_uri).path if "://" in layer_uri else layer_uri
+    base = path.rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    slug = _re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-")
+    if slug:
+        return slug
+    return f"layer-{new_ulid()}"
+
+
 # --------------------------------------------------------------------------- #
 # Tool registration
 # --------------------------------------------------------------------------- #
@@ -2227,7 +2259,7 @@ _PUBLISH_LAYER_METADATA = AtomicToolMetadata(
 )
 def publish_layer(
     layer_uri: str,
-    layer_id: str,
+    layer_id: str | None = None,
     style_preset: str | None = None,
     project_qgs_uri: str | None = None,
     case_id: str | None = None,
@@ -2267,7 +2299,11 @@ def publish_layer(
             readable by GDAL via the ``/vsigs/`` virtual filesystem.
         layer_id: QGIS layer name + WMS ``LAYERS=`` value for the published
             layer. Must be stable and unique within the ``.qgs`` project
-            (e.g. ``"flood-depth-peak-<run_id>"``).
+            (e.g. ``"flood-depth-peak-<run_id>"``). OPTIONAL (2026-07-08,
+            small-model resilience): when omitted, the id is DERIVED - from
+            the producing tool's registered ``layer_id`` when the resolved
+            ``layer_uri`` maps to a registered layer, else from the URI
+            basename stem (sanitized), else a fresh ``layer-<ulid>``.
         style_preset: filename stem of the QML preset to apply, or omit for
             AUTO selection (recommended): flood/plume depth COGs get the
             ``"continuous_flood_depth"`` Blues ramp; terrain products
@@ -2328,6 +2364,19 @@ def publish_layer(
         - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` -
           call this as the final step of the workflow chain.
     """
+    # 2026-07-08 small-model resilience: layer_id is optional. Local 8B models
+    # call publish_layer without it (live TypeError: missing 1 required
+    # positional argument: 'layer_id'). The server dispatch seam injects the
+    # same derived id into params so the wrap-site emission still fires; this
+    # in-tool derivation covers direct/programmatic callers.
+    if not layer_id:
+        layer_id = derive_layer_id(layer_uri)
+        logger.info(
+            "publish_layer: layer_id omitted - derived %r from layer_uri=%s",
+            layer_id,
+            layer_uri,
+        )
+
     # sprint-14-aws (job-0290): on the AWS deployment rasters publish through
     # TiTiler (a COG XYZ tile server reading s3:// directly) instead of the
     # QGIS Server / PyQGIS worker chain. We return a ready XYZ tile TEMPLATE
