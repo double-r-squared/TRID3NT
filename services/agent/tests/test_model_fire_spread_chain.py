@@ -209,14 +209,27 @@ def test_batch_job_def_seam_constant():
 # (4) Tool typed errors (ignition REQUIRED — never fabricated).
 # ===========================================================================
 def test_tool_typed_error_on_missing_bbox():
+    """Missing bbox is NO LONGER an error when ignition is present - the
+    domain derives ~5 km around the ignition (contract model_post_init) and
+    the run proceeds past validation (here into staging, which fails in the
+    test env - any non-params error proves validation passed)."""
+    import asyncio
+
     from grace2_agent.tools.model_fire_spread import model_fire_spread
 
-    out = asyncio.run(model_fire_spread(bbox=None, ignition_lonlat=_IGN))
+    out = asyncio.run(
+        model_fire_spread(
+            bbox=None,
+            ignition_lonlat=(-120.85, 39.02),
+            duration_hours=1,
+        )
+    )
     assert out["status"] == "error"
-    assert out["error_code"] == "FIRE_PARAMS_INCOMPLETE"
-
-    out2 = asyncio.run(model_fire_spread(bbox="garbage", ignition_lonlat=_IGN))
-    assert out2["error_code"] == "FIRE_PARAMS_INVALID"
+    assert out["error_code"] not in (
+        "FIRE_PARAMS_INVALID",
+        "FIRE_PARAMS_INCOMPLETE",
+        "FIRE_IGNITION_REQUIRED",
+    )
 
 
 def test_tool_typed_error_on_missing_ignition():
@@ -783,3 +796,26 @@ class TestArgShapeCoercion:
         )
         lo_lon, lo_lat, hi_lon, hi_lat = args.bbox
         assert lo_lon < -120.85 < hi_lon and lo_lat < 39.02 < hi_lat
+
+    def test_tool_wrapper_accepts_string_shapes(self):
+        """The wrapper must DELEGATE shape handling to ElmfireRunArgs - its
+        old manual pre-validation rejected string ignition/bbox (live
+        2026-07-08: list("lon,lat") explodes into characters). Passing
+        validation means any failure comes from LATER stages (staging in the
+        test env) - the only forbidden outcomes are the params errors."""
+        import asyncio
+
+        from grace2_agent.tools.model_fire_spread import model_fire_spread
+
+        result = asyncio.run(
+            model_fire_spread(
+                bbox="-120.85,39.02",
+                ignition_lonlat="-120.85,39.02",
+                duration_hours=1,
+            )
+        )
+        assert result.get("error_code") not in (
+            "FIRE_PARAMS_INVALID",
+            "FIRE_PARAMS_INCOMPLETE",
+            "FIRE_IGNITION_REQUIRED",
+        )

@@ -35,7 +35,6 @@ from grace2_contracts.elmfire_contracts import (
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
-from ..tool_arg_normalizer import coerce_bbox_value
 from ..workflows.model_fire_spread_scenario import (
     FireSpreadComposerError,
     model_fire_spread_scenario,
@@ -152,28 +151,12 @@ async def model_fire_spread(
     FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
     ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
     """
-    # --- bbox ----------------------------------------------------------------
-    if bbox is None:
-        return {
-            "status": "error",
-            "error_code": "FIRE_PARAMS_INCOMPLETE",
-            "error_message": (
-                "model_fire_spread requires a bbox "
-                "(min_lon, min_lat, max_lon, max_lat) in EPSG:4326."
-            ),
-        }
-    coerced = coerce_bbox_value(bbox)
-    if coerced is None:
-        return {
-            "status": "error",
-            "error_code": "FIRE_PARAMS_INVALID",
-            "error_message": (
-                "invalid bbox (expected 4 numbers "
-                f"min_lon,min_lat,max_lon,max_lat): {bbox!r}"
-            ),
-        }
-
     # --- ignition: REQUIRED, never fabricated --------------------------------
+    # All SHAPE handling (string "lon,lat" / dict ignition, string / reordered
+    # / point-collapsed / missing bbox deriving a ~5 km domain) lives in
+    # ElmfireRunArgs' before-validators - the wrapper no longer pre-validates
+    # (its old manual checks rejected the very shapes the contract coerces;
+    # observed live 2026-07-08).
     if ignition_lonlat is None:
         return {
             "status": "error",
@@ -187,24 +170,11 @@ async def model_fire_spread(
                 "coordinates as ignition_lonlat."
             ),
         }
-    try:
-        ign = [float(v) for v in list(ignition_lonlat)[:2]]
-        if len(ign) != 2:
-            raise ValueError("need [lon, lat]")
-    except (TypeError, ValueError) as exc:
-        return {
-            "status": "error",
-            "error_code": "FIRE_PARAMS_INVALID",
-            "error_message": (
-                f"invalid ignition_lonlat (expected [lon, lat]): "
-                f"{ignition_lonlat!r} ({exc})"
-            ),
-        }
 
     try:
         run_args = ElmfireRunArgs(
-            bbox=tuple(coerced),  # type: ignore[arg-type]
-            ignition_lonlat=(ign[0], ign[1]),
+            bbox=bbox,  # type: ignore[arg-type]
+            ignition_lonlat=ignition_lonlat,  # type: ignore[arg-type]
             wind_speed_mph=float(wind_speed_mph),
             wind_dir_deg=float(wind_dir_deg),
             fuel_moisture=fuel_moisture,  # type: ignore[arg-type]
