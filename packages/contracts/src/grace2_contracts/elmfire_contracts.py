@@ -121,6 +121,11 @@ ELMFIRE_FLAME_LEN_STYLE_PRESET: str = "continuous_flame_length_m"
 ELMFIRE_SPREAD_RATE_STYLE_PRESET: str = "continuous_fire_spread_rate"
 
 
+#: Half-width, degrees, of the domain derived around a bare ignition point
+#: when the model omits the bbox (~5 km at temperate latitudes).
+DEFAULT_FIRE_DOMAIN_HALFWIDTH_DEG = 0.045
+
+
 class ElmfireRunArgs(GraceModel):
     """Scenario parameters for one deterministic ELMFIRE fire-spread run.
 
@@ -155,7 +160,7 @@ class ElmfireRunArgs(GraceModel):
 
     schema_version: Literal["v1"] = "v1"
 
-    bbox: BBox
+    bbox: BBox | None = None
     ignition_lonlat: tuple[float, float]
 
     wind_speed_mph: float = Field(
@@ -178,6 +183,62 @@ class ElmfireRunArgs(GraceModel):
             return value
         key = value.strip().lower()
         return _PRESET_ALIASES.get(key, key)
+
+    @field_validator("ignition_lonlat", mode="before")
+    @classmethod
+    def _coerce_ignition_shape(cls, value: Any) -> Any:
+        """Small local models pass "lon,lat" strings or {lon, lat} dicts for
+        the ignition point (observed live 2026-07-08). Coerce the common
+        shapes BEFORE the tuple check; anything unparseable passes through so
+        the honest type error still fires."""
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.replace(";", ",").split(",")]
+            if len(parts) == 2:
+                try:
+                    return (float(parts[0]), float(parts[1]))
+                except ValueError:
+                    return value
+        if isinstance(value, dict):
+            lon = value.get("lon", value.get("longitude"))
+            lat = value.get("lat", value.get("latitude"))
+            if lon is not None and lat is not None:
+                try:
+                    return (float(lon), float(lat))
+                except (TypeError, ValueError):
+                    return value
+        return value
+
+    @field_validator("bbox", mode="before")
+    @classmethod
+    def _coerce_bbox_shape(cls, value: Any) -> Any:
+        """Accept "a,b,c,d" strings; treat a 2-element point (the model
+        conflating bbox with the ignition, observed live) or an empty value
+        as ABSENT so the model_post_init default derives the domain from the
+        ignition point instead of failing the run."""
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.replace(";", ",").split(",")]
+            try:
+                nums = [float(p) for p in parts if p]
+            except ValueError:
+                return value
+            if len(nums) == 4:
+                return tuple(nums)
+            if len(nums) <= 2:
+                return None
+        if isinstance(value, (list, tuple)) and len(value) <= 2:
+            return None
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        """Default the computational domain to ~5 km around the ignition when
+        the model omitted (or point-collapsed) the bbox - the sensible-default
+        norm; the gate card still shows the derived domain for user sign-off."""
+        if self.bbox is None:
+            lon, lat = self.ignition_lonlat
+            d = DEFAULT_FIRE_DOMAIN_HALFWIDTH_DEG
+            object.__setattr__(
+                self, "bbox", (lon - d, lat - d, lon + d, lat + d)
+            )
 
     @field_validator("ignition_lonlat")
     @classmethod

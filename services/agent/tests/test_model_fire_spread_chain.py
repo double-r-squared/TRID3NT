@@ -682,3 +682,68 @@ def test_fire_confirm_envelope_carries_cells_and_runtime():
     assert env.tool_args["fuel_moisture_pct"]["m1_pct"] == 3.0
     assert "ELMFIRE" in env.recommendation
     assert "Confirm to start" in env.recommendation
+
+
+class TestArgShapeCoercion:
+    """Live-observed small-model arg shapes (2026-07-08): ignition as a
+    "lon,lat" string and bbox point-collapsed onto the ignition. Both must
+    coerce instead of failing the run."""
+
+    def test_ignition_string_coerces(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox=(-121.0, 38.9, -120.7, 39.1),
+            ignition_lonlat="-120.85,39.02",
+        )
+        assert args.ignition_lonlat == (-120.85, 39.02)
+
+    def test_ignition_dict_coerces(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox=(-121.0, 38.9, -120.7, 39.1),
+            ignition_lonlat={"lon": -120.85, "lat": 39.02},
+        )
+        assert args.ignition_lonlat == (-120.85, 39.02)
+
+    def test_point_bbox_derives_domain_from_ignition(self):
+        from grace2_contracts.elmfire_contracts import (
+            DEFAULT_FIRE_DOMAIN_HALFWIDTH_DEG as D,
+            ElmfireRunArgs,
+        )
+
+        args = ElmfireRunArgs(
+            bbox="-120.85,39.02", ignition_lonlat="-120.85,39.02"
+        )
+        assert args.bbox == (
+            -120.85 - D, 39.02 - D, -120.85 + D, 39.02 + D,
+        )
+
+    def test_missing_bbox_derives_domain(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(ignition_lonlat=(-120.85, 39.02))
+        assert args.bbox is not None
+        lo_lon, lo_lat, hi_lon, hi_lat = args.bbox
+        assert lo_lon < -120.85 < hi_lon and lo_lat < 39.02 < hi_lat
+
+    def test_bbox_string_four_coerces(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox="-121.0, 38.9, -120.7, 39.1",
+            ignition_lonlat=(-120.85, 39.02),
+        )
+        assert args.bbox == (-121.0, 38.9, -120.7, 39.1)
+
+    def test_garbage_ignition_still_fails_honestly(self):
+        import pytest
+        from pydantic import ValidationError
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        with pytest.raises(ValidationError):
+            ElmfireRunArgs(
+                bbox=(-121.0, 38.9, -120.7, 39.1),
+                ignition_lonlat="somewhere in California",
+            )
