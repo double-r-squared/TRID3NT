@@ -161,6 +161,11 @@ resource "aws_ecs_task_definition" "agent" {
         { name = "GRACE2_AWS_BATCH_JOB_DEF_GEOCLAW", value = "grace2-geoclaw" },
         { name = "GRACE2_AWS_BATCH_JOB_DEF_LANDLAB", value = "grace2-landlab" },
         { name = "GRACE2_AWS_BATCH_JOB_DEF_SWAN", value = "grace2-swan" },
+        # ELMFIRE wildfire spread (FIRE-4, 2026-07-08): routes
+        # run_solver(solver='elmfire') to the grace2-elmfire job def
+        # (infra/aws-batch/elmfire.tf). run_elmfire deliberately does NOT seed
+        # SOLVER_BATCH_JOBDEF_REGISTRY, so this env var IS the activation switch.
+        { name = "GRACE2_AWS_BATCH_JOB_DEF_ELMFIRE", value = "grace2-elmfire" },
         # TiTiler base for publishing raster COGs (DEM, landcover, and the SFINCS
         # flood-DEPTH frames) as tile layers. Without it publish_layer fails
         # RASTER_PUBLISH_UNAVAILABLE and the turn completes layers=0 -- the solve

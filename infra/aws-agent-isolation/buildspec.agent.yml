@@ -22,8 +22,14 @@
 #
 # TRIGGER (manual, off-box):
 #   # 1. upload the build context (repo root subset incl. services/agent +
-#   #    packages/contracts, the local grace2-contracts dep):
-#   tar czf agent_src.tgz services/agent packages/contracts
+#   #    packages/contracts, the local grace2-contracts dep, AND the
+#   #    services/workers PYTHON sources -- the Dockerfile COPYs them to
+#   #    /opt/venv/services/workers so the parents[5] repo-root discovery in
+#   #    run_elmfire/run_modflow resolves the agent-side deck authors. .py files
+#   #    ONLY: services/workers also holds multi-GB spike/evidence dirs that
+#   #    must never enter the context (FIRE-4, 2026-07-08):
+#   tar czf agent_src.tgz services/agent packages/contracts \
+#     $(find services/workers -name '*.py' -not -path '*__pycache__*')
 #   aws s3 cp agent_src.tgz \
 #     s3://grace2-agent-bundle-226996537797/agent-build/agent_src.tgz --region us-west-2
 #   # 2. build + push :latest + :codebuild to the agent ECR repo:
