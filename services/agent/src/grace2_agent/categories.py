@@ -284,6 +284,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # cross-listed to fire below (reached from the wildfire lane next to
     # MTBS / NIFC / FIRMS).
     "model_debris_flow": "hazard_modeling",
+    # FIRE-3: the ELMFIRE wildfire-spread composer (LANDFIRE fuels + terrain ->
+    # deck -> run_solver('elmfire') -> time-of-arrival + burned-extent
+    # animation). Filed as a hazard engine; cross-listed to fire below (reached
+    # from the wildfire lane next to LANDFIRE / NIFC / FIRMS).
+    "model_fire_spread": "hazard_modeling",
     # The QGIS bridge exporter: a case-product utility, not a modeling engine.
     # geographic_primitives is the general-purpose/utility lane; reached from
     # "take this into QGIS / export my project".
@@ -657,6 +662,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # engine) and materially belongs to fire (post-wildfire hazard, reached from
     # the MTBS / NIFC / FIRMS lane).
     "model_debris_flow": ("fire",),
+    # FIRE-3: the ELMFIRE wildfire-spread composer is PRIMARY hazard_modeling
+    # (a modeling engine) and materially belongs to fire (fire-behavior
+    # modeling, reached from the LANDFIRE / NIFC / FIRMS wildfire lane).
+    "model_fire_spread": ("fire",),
     # The satellite fire-animation composer spans hazard_modeling (it composes a
     # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
     # news_events (it ingests the fire news / incident lookup up front).

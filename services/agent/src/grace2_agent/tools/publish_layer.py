@@ -628,6 +628,17 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "population_density": ("0,250", "magma"),
     "slope_angle_deg": ("0,60", "ylorrd"),
     "aspect_compass_deg": ("0,360", "hsv"),
+    # FIRE-3 (ELMFIRE wildfire spread) -- ADDITIVE; entries above stay
+    # byte-identical. Time-of-arrival is HOURS from ignition over a typical
+    # scenario window (<= 24 h band; early arrival = dark, the advancing front
+    # = bright) -> the perceptually-uniform inferno "fire" ramp; flame length
+    # in METRES (postprocess converts ELMFIRE's feet once; most surface fires
+    # < 10 m) -> a "longer = hotter" ylorrd ramp; spread rate in m/min
+    # (ELMFIRE ft/min converted once; head-fire rates are typically < 30
+    # m/min) -> an oranges intensity ramp, visibly distinct from flame length.
+    "continuous_fire_arrival_hr": ("0,24", "inferno"),
+    "continuous_flame_length_m": ("0,10", "ylorrd"),
+    "continuous_fire_spread_rate": ("0,30", "oranges"),
 }
 
 #: Safe non-empty default - never let a continuous raster fall through to an

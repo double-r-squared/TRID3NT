@@ -571,6 +571,11 @@ def render_namelist(
     the proven container consumed; only the values are templated. Paths are
     relative to the case dir (``cd <deck_dir> && elmfire_<VER>
     ./inputs/elmfire.data``), mirroring ``01-run.sh``.
+
+    ONE ADDITIVE flag beyond the tutorial set: ``DUMP_FLAME_LENGTH = .TRUE.``
+    (FIRE-3). Tutorial 01 simply does not enable it; the flag is a first-class
+    ``&OUTPUTS`` dump documented at https://elmfire.io/user_guide/io.html and
+    the composer publishes the flame-length raster as its own COG.
     """
 
     def _f(v: float) -> str:
@@ -609,6 +614,7 @@ LW_MOISTURE_CONTENT            = {_f(weather["lw_pct"])}
 &OUTPUTS
 OUTPUTS_DIRECTORY    = './outputs'
 DTDUMP               = {_f(dtdump_s)}
+DUMP_FLAME_LENGTH    = .TRUE.
 DUMP_FLIN            = .TRUE.
 DUMP_SPREAD_RATE     = .TRUE.
 DUMP_TIME_OF_ARRIVAL = .TRUE.

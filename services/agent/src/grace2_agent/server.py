@@ -421,6 +421,15 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
     # whole AOI, so no rupture/incident-area user input is needed for classical
     # PSHA (that is scenario mode, which is not built).
     "run_seismic_hazard_psha",
+    # FIRE-3: the ELMFIRE wildfire-spread composer joins the confirm set
+    # (Invariant 9 — a consequential solver run: LANDFIRE fetches + a
+    # containerized level-set solve). The card is built by
+    # _build_fire_confirm_envelope from the call args: approximate grid cell
+    # count + a FIRE-1-calibrated runtime estimate + the scenario weather, so
+    # the user confirms the actual run about to dispatch. Simple
+    # proceed/cancel (no granularity picker at v1 — cellsize_m is an explicit
+    # tool arg the LLM can restate).
+    "model_fire_spread",
 }
 
 
@@ -7079,6 +7088,106 @@ def _build_psha_confirm_envelope(params: dict) -> Any:
     )
 
 
+def _build_fire_confirm_envelope(params: dict) -> Any:
+    """FIRE-3: build the ELMFIRE fire-spread solver-confirm card.
+
+    A simple proceed/cancel confirmation (mirrors ``run_seismic_hazard_psha``):
+    PURE arithmetic from the call args — the approximate computational grid
+    (``estimate_elmfire_grid``, cosine-latitude cell count) + the
+    FIRE-1-calibrated runtime heuristic (``estimate_elmfire_runtime_s``) + the
+    scenario weather (wind, fuel-moisture preset expanded to its m1/m10/m100
+    percentages, duration). No fetch, no rasterio — safe to build inline. The
+    ignition-required rule is NOT enforced here: a missing ignition falls
+    through to the tool's own typed ``FIRE_IGNITION_REQUIRED`` error (the gate
+    must never mask parameter problems, matching the extraction-failure
+    fall-through below).
+    """
+    from grace2_contracts.elmfire_contracts import FUEL_MOISTURE_PRESETS
+    from grace2_contracts.payload_warning import PayloadWarningEnvelopePayload
+    from .tool_arg_normalizer import coerce_bbox_value
+    from .workflows.run_elmfire import (
+        estimate_elmfire_grid,
+        estimate_elmfire_runtime_s,
+    )
+
+    coerced = coerce_bbox_value(params.get("bbox"))
+    try:
+        cellsize_m = float(params.get("cellsize_m", 30.0))
+    except (TypeError, ValueError):
+        cellsize_m = 30.0
+    try:
+        duration_hours = float(params.get("duration_hours", 6.0))
+    except (TypeError, ValueError):
+        duration_hours = 6.0
+    try:
+        wind_speed_mph = float(params.get("wind_speed_mph", 15.0))
+    except (TypeError, ValueError):
+        wind_speed_mph = 15.0
+    try:
+        wind_dir_deg = float(params.get("wind_dir_deg", 0.0))
+    except (TypeError, ValueError):
+        wind_dir_deg = 0.0
+    preset = str(params.get("fuel_moisture", "dry")).strip().lower()
+    moisture = FUEL_MOISTURE_PRESETS.get(preset)
+
+    n_cells: int | None = None
+    est_runtime_s: float | None = None
+    if coerced is not None and len(coerced) == 4:
+        _nx, _ny, n_cells = estimate_elmfire_grid(coerced, cellsize_m)
+        est_runtime_s = estimate_elmfire_runtime_s(
+            n_cells, duration_hours * 3600.0
+        )
+
+    cells_phrase = (
+        f"~{n_cells:,} cells at {cellsize_m:g} m" if n_cells is not None
+        else "the requested AOI"
+    )
+    runtime_phrase = (
+        f"; estimated solver time ~{est_runtime_s:,.0f} s"
+        if est_runtime_s is not None
+        else ""
+    )
+    moisture_phrase = (
+        f"{preset} fuels"
+        + (
+            f" (1h/10h/100h = {moisture['m1_pct']:g}/{moisture['m10_pct']:g}/"
+            f"{moisture['m100_pct']:g}%)"
+            if moisture
+            else ""
+        )
+    )
+    recommendation = (
+        f"Run an ELMFIRE wildfire-spread simulation over {cells_phrase}: "
+        f"{duration_hours:g} h burn, wind {wind_speed_mph:g} mph from "
+        f"{wind_dir_deg:g} deg, {moisture_phrase}{runtime_phrase}. This "
+        f"fetches LANDFIRE fuels + terrain and dispatches the ELMFIRE solver. "
+        f"Confirm to start."
+    )[:512]
+
+    return PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name="model_fire_spread",
+        tool_args={
+            "bbox": list(coerced) if coerced is not None else params.get("bbox"),
+            "ignition_lonlat": params.get("ignition_lonlat"),
+            "wind_speed_mph": wind_speed_mph,
+            "wind_dir_deg": wind_dir_deg,
+            "fuel_moisture": preset,
+            "fuel_moisture_pct": moisture,
+            "duration_hours": duration_hours,
+            "cellsize_m": cellsize_m,
+            "estimated_cells": n_cells,
+            "estimated_runtime_s": (
+                round(est_runtime_s) if est_runtime_s is not None else None
+            ),
+        },
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation=recommendation,
+        options=["proceed", "cancel"],
+    )
+
+
 async def _gate_on_solver_confirm(
     websocket: ServerConnection,
     state: SessionState,
@@ -7289,6 +7398,14 @@ async def _gate_on_solver_confirm(
             # composer extraction is needed (the run args are the tool args), so
             # this is built inline rather than via a workflow helper.
             envelope = _build_psha_confirm_envelope(params)
+        elif tool_name == "model_fire_spread":
+            # FIRE-3: ELMFIRE fire-spread solver-confirm card. Simple
+            # proceed/cancel with the approximate cell count + the
+            # FIRE-1-calibrated runtime estimate + the scenario weather —
+            # PURE arithmetic built inline (no fetch/rasterio), so nothing is
+            # offloaded. A missing ignition point deliberately falls through
+            # to the tool's typed FIRE_IGNITION_REQUIRED error after approval.
+            envelope = _build_fire_confirm_envelope(params)
         else:  # unknown gated tool: fail open to the tool's own validation
             return True, params
     except Exception:  # noqa: BLE001 — never mask param errors with a gate
