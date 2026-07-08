@@ -222,12 +222,38 @@ class ElmfireRunArgs(GraceModel):
             except ValueError:
                 return value
             if len(nums) == 4:
-                return tuple(nums)
+                return cls._reorder_or_none(nums)
             if len(nums) <= 2:
                 return None
-        if isinstance(value, (list, tuple)) and len(value) <= 2:
-            return None
+        if isinstance(value, (list, tuple)):
+            if len(value) <= 2:
+                return None
+            if len(value) == 4:
+                try:
+                    return cls._reorder_or_none([float(v) for v in value])
+                except (TypeError, ValueError):
+                    return value
         return value
+
+    @staticmethod
+    def _reorder_or_none(nums: list[float]) -> tuple[float, ...] | None:
+        """Accept the canonical (min_lon, min_lat, max_lon, max_lat); repair
+        the lon,lon,lat,lat ordering small models emit (observed live
+        2026-07-08); anything else incoherent -> None so the domain derives
+        from the ignition point (the gate card shows the final domain)."""
+
+        def is_lat(v: float) -> bool:
+            return -90.0 <= v <= 90.0
+
+        def is_lon(v: float) -> bool:
+            return -180.0 <= v <= 180.0
+
+        a, b, c, d = nums
+        if is_lon(a) and is_lat(b) and is_lon(c) and is_lat(d) and a < c and b < d:
+            return (a, b, c, d)  # canonical
+        if is_lon(a) and is_lon(b) and is_lat(c) and is_lat(d) and a < b and c < d:
+            return (a, c, b, d)  # lon,lon,lat,lat -> reorder
+        return None
 
     def model_post_init(self, __context: Any) -> None:
         """Default the computational domain to ~5 km around the ignition when

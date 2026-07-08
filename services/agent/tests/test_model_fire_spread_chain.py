@@ -747,3 +747,20 @@ class TestArgShapeCoercion:
                 bbox=(-121.0, 38.9, -120.7, 39.1),
                 ignition_lonlat="somewhere in California",
             )
+
+    def test_lonlon_latlat_bbox_reorders(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox="-121.0,-120.7,38.9,39.1", ignition_lonlat=(-120.85, 39.02)
+        )
+        assert args.bbox == (-121.0, 38.9, -120.7, 39.1)
+
+    def test_incoherent_bbox_derives_from_ignition(self):
+        from grace2_contracts.elmfire_contracts import ElmfireRunArgs
+
+        args = ElmfireRunArgs(
+            bbox=(999.0, 5.0, -3.0, 1.0), ignition_lonlat=(-120.85, 39.02)
+        )
+        lo_lon, lo_lat, hi_lon, hi_lat = args.bbox
+        assert lo_lon < -120.85 < hi_lon and lo_lat < 39.02 < hi_lat
