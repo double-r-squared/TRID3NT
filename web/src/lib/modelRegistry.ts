@@ -10,7 +10,18 @@
  *   Anthropic — warm terracotta / clay (#c2603c)
  *   Amazon    — muted amber (#b8860b)
  *   DeepSeek  — slate blue / indigo (#5c7fa3)
+ *
+ * LOCAL build (VITE_DEPLOYMENT=local; fingerprint audit A10): the local agent
+ * serves ONE locally hosted model (Ollama / OpenAI-compatible, chosen by the
+ * agent's env) - advertising Bedrock cloud models it cannot serve would be
+ * dishonest. In local mode the registry collapses to a single generic "Local
+ * model" entry. Its id is deliberately NOT a Bedrock id: the agent's
+ * resolve_selected_model maps any unknown id to None ("use the server
+ * default"), which IS the locally configured model. Cloud registry is
+ * byte-identical when the flag is unset/cloud.
  */
+
+import { isLocalDeployment } from "./deployment";
 
 export interface ModelEntry {
   /** Bedrock model id / cross-region inference profile id. */
@@ -39,7 +50,7 @@ export interface ModelEntry {
 //       it is the strongest cheap+agentic Anthropic option.
 //   us.deepseek.r1-v1:0              REJECTS toolConfig — cannot drive the agent
 //       loop on Bedrock; intentionally OMITTED (no broken option in the picker).
-export const SELECTABLE_MODELS: ModelEntry[] = [
+const CLOUD_SELECTABLE_MODELS: ModelEntry[] = [
   {
     id: "us.anthropic.claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
@@ -85,7 +96,25 @@ export const SELECTABLE_MODELS: ModelEntry[] = [
   },
 ];
 
-// SELECTABLE_MODELS is always non-empty (5 entries defined above).
+// LOCAL build: one generic entry describing the locally hosted model. The id
+// "local-default" is unknown to the agent's model resolver by design (unknown
+// -> server default = the local model). No prompt-cache claim (cachePoint is
+// Bedrock-only).
+const LOCAL_SELECTABLE_MODELS: ModelEntry[] = [
+  {
+    id: "local-default",
+    label: "Local model",
+    provider: "Local runtime",
+    accentColor: "#5c7fa3",
+    supportsPromptCache: false,
+  },
+];
+
+export const SELECTABLE_MODELS: ModelEntry[] = isLocalDeployment()
+  ? LOCAL_SELECTABLE_MODELS
+  : CLOUD_SELECTABLE_MODELS;
+
+// SELECTABLE_MODELS is always non-empty (5 cloud entries / 1 local entry).
 // The non-null assertions below are safe: the array is module-level and
 // immutable after import.
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
