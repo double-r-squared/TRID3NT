@@ -288,6 +288,14 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # geographic_primitives is the general-purpose/utility lane; reached from
     # "take this into QGIS / export my project".
     "export_case_to_qgis": "geographic_primitives",
+    # case-analysis batch: point/series sampling + the case situation report are
+    # general-purpose case utilities (the conversational-analysis surface);
+    # exposure-in-footprint is an impact/exposure product, so it files under
+    # damage_assessment alongside compute_impact_envelope.
+    "compute_exposure_summary": "damage_assessment",
+    "query_point_hazard": "geographic_primitives",
+    "extract_timeseries_at_point": "geographic_primitives",
+    "compose_case_report": "geographic_primitives",
     # sprint-18 MODFLOW GWF-only archetype composers (Wave-1 + Wave-2): each is a
     # run_model_* groundwater-flow composer that dispatches the shared MODFLOW
     # solver via run_modflow_archetype_job. Filed alongside the other MODFLOW

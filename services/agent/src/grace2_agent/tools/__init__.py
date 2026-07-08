@@ -353,6 +353,7 @@ from . import fetch_modis_lst  # noqa: F401
 from . import fetch_hifld_transmission_lines  # noqa: F401
 from . import fetch_lehd_jobs  # noqa: F401
 from . import fetch_nws_river_forecast  # noqa: F401
+from . import fetch_storm_tracks  # noqa: F401 - registers fetch_storm_tracks (IBTrACS historical + NHC active)
 from . import fetch_copernicus_dem  # noqa: F401
 from . import fetch_chirps_precipitation  # noqa: F401
 from . import fetch_ghsl_population  # noqa: F401
@@ -365,6 +366,10 @@ from . import fetch_noaa_coops_currents  # noqa: F401
 from . import fetch_airnow_air_quality  # noqa: F401
 from . import fetch_openaq_measurements  # noqa: F401
 from . import export_case_to_qgis  # noqa: E402,F401 - QGIS bridge v1: registers export_case_to_qgis (case layers -> export.gpkg + local GeoTIFF copies + hand-built .qgz project with TiTiler-translated singleband-pseudocolor styling; local-first s3/http/file loader; per-layer skip honesty)
+from . import compute_exposure_summary  # noqa: E402,F401 -- case-analysis batch: registers compute_exposure_summary (hazard-footprint exposure: WorldPop population sum + fetch_buildings footprint count + area km^2 inside cells over threshold; per-component honest degrade, typed empty-footprint error; feeds compose_case_report via a session store)
+from . import query_point_hazard  # noqa: E402,F401 -- case-analysis batch: registers query_point_hazard (sample EVERY raster layer of the current Case at a lon/lat or geocoded place; per-layer value+units with honest outside-extent/nodata/unreadable entries; typed no-case-layers error)
+from . import extract_timeseries_at_point  # noqa: E402,F401 -- case-analysis batch: registers extract_timeseries_at_point (detects the Case's animation-frame raster sequence via the web LayerPanel frame-token grouping port, samples each frame at a point -> ordered (label, value) series; typed no-frame-sequence honest miss)
+from . import compose_case_report  # noqa: E402,F401 -- case-analysis batch: registers compose_case_report (markdown situation report for the current Case: title/date/AOI bbox + per-layer key stats via the summarize_layer_statistics machinery + sim params when present + this session's exposure numbers; written to the case artifacts dir; LayerURI-free result)
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
