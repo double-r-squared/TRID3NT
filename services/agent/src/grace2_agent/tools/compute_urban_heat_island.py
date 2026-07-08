@@ -399,6 +399,8 @@ def compute_urban_heat_island(
 ) -> UrbanHeatIslandLayerURI:
     """Quantify the urban heat island: MODIS LST stratified by land-cover class.
 
+    Use this (do not stop at geocode_location) once you have the AOI; it is the tool that actually computes the urban-heat-island analysis.
+
     **What it does:** Fetches MODIS 8-day land-surface temperature (deg C, 1 km;
     ``fetch_modis_lst``) and the Esri/IO 10 m annual land cover
     (``fetch_esri_landcover_10m``) over ``bbox``, resamples the LST onto the

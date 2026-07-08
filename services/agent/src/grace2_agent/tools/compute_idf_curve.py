@@ -176,6 +176,8 @@ def compute_idf_curve(
 ) -> dict[str, Any]:
     """Chart the full NOAA Atlas 14 IDF (intensity-duration-frequency) curve for a point.
 
+    Use this (not fetch_climate_normals or a fetch_* rainfall tool) when you want the NOAA Atlas 14 IDF rainfall-frequency CHART.
+
     Access pattern: Tier 3 (direct HTTPS point query to the NOAA PFDS endpoint).
 
     **What it does:** Queries the NOAA Atlas 14 Precipitation Frequency Data

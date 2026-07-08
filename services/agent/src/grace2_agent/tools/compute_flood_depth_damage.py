@@ -387,6 +387,8 @@ def compute_flood_depth_damage(
 ) -> FloodDepthDamageLayerURI:
     """Screen flood damage per structure from a depth raster (HAZUS-style curve).
 
+    Use this (not run_model_flood_scenario, which SIMULATES the flood) when a flood DEPTH raster already exists and you want per-structure HAZUS damage.
+
     **What it does:** Samples the flood depth at every structure point (USACE
     NSI fetched over the raster bounds by default, or caller-supplied
     ``assets_uri``), converts to depth above the first floor (subtracting the

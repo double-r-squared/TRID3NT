@@ -619,6 +619,8 @@ def compute_change_detection(
 ) -> ChangeDetectionLayerURI:
     """Detect surface change between two dates by differencing Sentinel-2 NDVI/NDWI.
 
+    Use this (not compute_ndvi, which is one date) when you want the DIFFERENCE between two dates.
+
     **What it does:** Fetches the least-cloudy Sentinel-2 L2A scene for EACH of
     two date windows over ``bbox`` (Microsoft Planetary Computer STAC -- the
     same search path as ``compute_ndvi``), computes the spectral index per date
