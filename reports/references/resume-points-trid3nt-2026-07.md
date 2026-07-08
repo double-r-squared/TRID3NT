@@ -24,7 +24,8 @@ per application. Everything below is factual to the project as of 2026-07.
 
 ## Scientific computing / simulation engines
 
-- Integrated 7 physics engines end-to-end behind one solver abstraction: SFINCS (coastal/pluvial flood), MODFLOW 6 + MF6-GWT (groundwater flow and contaminant transport), PySWMM (urban drainage), GeoClaw (tsunami), SWAN (waves), OpenQuake (seismic hazard), Landlab (landscape evolution), plus Pelicun damage assessment.
+- Integrated 8 physics engines end-to-end behind one solver abstraction: SFINCS (coastal/pluvial flood), MODFLOW 6 + MF6-GWT (groundwater flow and contaminant transport), PySWMM (urban drainage), GeoClaw (tsunami), SWAN (waves), OpenQuake (seismic hazard), Landlab (landscape evolution), ELMFIRE (wildfire spread), plus Pelicun damage assessment.
+- Took ELMFIRE from research spike to live-proven engine in one day: multi-stage container build (rewrote the upstream Dockerfile that shipped compilers, 522MB), verification within 1.2-2.4% of the exact Behave ellipse, a grid-aligned deck builder with hard geotransform asserts (the identified top silent-failure risk), and a composer chain live-proven on real LANDFIRE fuels + real 3DEP terrain (501-acre burn, animated time-of-arrival COGs).
 - Built 18 MODFLOW scenario archetypes (sustainable yield, saltwater intrusion via variable-density BUY, MAR/ASR, capture zones via PRT particle tracking, multi-species transport) as data-driven composer tools.
 - Covered the full SFINCS scenario space: pluvial, fluvial, coastal surge, compound, wind-driven, infiltration, levee breach, and tsunami forcing.
 - Reproduced a published Deltares Hurricane Michael coastal-flood demo (SFINCS quadtree + SnapWave, computed-vs-observed) as the platform's coastal North Star.
@@ -71,6 +72,9 @@ per application. Everything below is factual to the project as of 2026-07.
 - Swept the full 182-tool catalog against the local stack in three resumable passes (direct execution, curated args, chained layer inputs): 137+ tools proven end-to-end, API-key-gated sources earmarked, every real failure root-caused and fixed rather than skipped.
 - Built an LLM tool-routing benchmark from tool docstrings (172 prompts, case-seeded, verdicts scored by a judge harness) plus a retrieval-vs-model failure splitter that replays failed prompts through the tool-retrieval layer; proved 100% of routing failures were model misses, not retrieval misses, redirecting effort from RAG tuning to a model upgrade.
 - Designed an LLM self-improvement loop: failed-then-corrected tool calls distilled into "lessons" (JSONL store, LRU-capped), retrieved by BM25 into a token-budgeted system-prompt appendix behind a dark-launch flag, then A/B-benchmarked against the dark baseline on the full routing sweep.
+- Ran a controlled 4-cell A/B (dark baseline / lessons-on / bigger 9B quant / gated lessons) with flip analysis showing run variance dwarfed every treatment effect - the disciplined negative result that redirected effort from prompt tweaks to interaction design; caught two silent-capability-loss incidents on the way (chat-template context overflow silently truncating tool schemas; an unarmed env flag making a treatment arm secretly identical to control).
+- Defined and measured "usable coverage" (tool reachable in <= 2 user turns): 87% for an 8B model on a 183-tool catalog vs 24-26% cold single-prompt accuracy - the metric that reflects what users actually experience.
+- Hardened tool dispatch against small-model failure modes: placeholder handle resolution (models passing 'LayerURI_from_fetch_dem' instead of real handles resolve deterministically to the producing tool's registered output when unambiguous) plus derived-argument defaults, turning a 0-for-7 demo flow into 5-for-5.
 
 ## QGIS plugin (TRID3NT for QGIS)
 
@@ -78,7 +82,10 @@ per application. Everything below is factual to the project as of 2026-07.
 - Wrote a dependency-free RFC 6455 WebSocket client in pure stdlib (QGIS's bundled Python ships no WS library): handshake, masking, fragmentation, ping/pong, capped-jitter reconnect with session resume, all unit-tested against a scripted stub server.
 - Caught a shipped Qt crash class with a real-Qt headless test tier (offscreen QgsApplication + fake iface): a pyqtSignal named `event` shadowed the C++ virtual QObject.event(), qFatal-aborting the host app on first connect - invisible to pure-python tests, reproduced on first run of the real-Qt driver.
 - Diagnosed a cross-run test-pollution bug byte-by-byte at the wire level (identical JSON, one client rejected): a stub-server user id persisted into the real QSettings profile and poisoned live handshakes; fixed with a read-side ULID guard plus save/restore hygiene in the test driver.
-- 60+ plugin tests across pure-python and real-Qt tiers; one-command profile install; dual local/remote-cloud modes sharing one client.
+- Native QGIS Temporal Controller animation: frame-sequence rasters (flood-depth timesteps) are stamped with per-layer temporal ranges on materialize, so QGIS's built-in scrubber plays simulation animations like the web app - proven live on a SFINCS flood case.
+- Styled exports: the case exporter writes QML sidecars from the same TiTiler style translation the web uses (blue depth ramps, transparent nodata), fixing black-raster exports - and uncovered a case-sensitivity bug silently degrading every styled export to the wrong colormap.
+- Live pull-and-render proven end-to-end: a prompt typed in the QGIS dock drives the local LLM to fetch real USGS elevation, confirm the resolution gate, publish tiles, and render terrain-styled XYZ over OSM in ~70 seconds, fully offline-capable.
+- 85+ plugin tests across pure-python and real-Qt tiers; one-command profile install; dual local/remote-cloud modes sharing one client.
 
 ## Reliability, testing, ops
 
