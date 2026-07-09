@@ -42,7 +42,11 @@ from typing import Any
 
 from pydantic import ValidationError
 from websockets.asyncio.server import ServerConnection, serve
-from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+)
 
 from grace2_contracts import new_ulid, now_utc
 from grace2_contracts.execution import LayerURI
@@ -2750,7 +2754,7 @@ async def _emit_cache_status(
             "candidates_tokens": usage.candidates_token_count,
             "cache_name": state.gemini_cache_name,
         }
-        await websocket.send(
+        await _session_safe_send(websocket, state.session_id,
             _json.dumps(
                 {
                     "type": "cache-status",
@@ -2859,7 +2863,7 @@ async def _stream_gemini_reply(
         state="running",
     )
     state.current_pipeline_steps = [thinking_step]
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope(
             "pipeline-state",
             state.session_id,
@@ -3126,7 +3130,7 @@ async def _stream_gemini_reply(
                     chunk = AgentMessageChunkPayload(
                         message_id=current_message_id, delta=event.delta, done=False
                     )
-                    await websocket.send(
+                    await _session_safe_send(websocket, state.session_id,
                         _new_envelope("agent-message-chunk", state.session_id, chunk)
                     )
                     turn_text_parts.append(event.delta)
@@ -3753,7 +3757,7 @@ async def _stream_gemini_reply(
                 # final-segment finalize below no-ops -- emit a standalone
                 # terminator here with a fresh id (mirrors the abort path).
                 if current_message_id is None:
-                    await websocket.send(
+                    await _session_safe_send(websocket, state.session_id,
                         _new_envelope(
                             "agent-message-chunk",
                             state.session_id,
@@ -3781,7 +3785,7 @@ async def _stream_gemini_reply(
             # no-ops. The client still waits for a stream-closing done=True to
             # stop spinning, so emit a standalone terminator with a fresh id.
             if current_message_id is None:
-                await websocket.send(
+                await _session_safe_send(websocket, state.session_id,
                     _new_envelope(
                         "agent-message-chunk",
                         state.session_id,
@@ -3848,7 +3852,7 @@ async def _stream_gemini_reply(
                 # closing bubble (one message_id == one bubble). Each chunk
                 # carries done=False; the terminal done=True comes from
                 # ``_finalize_segment`` below.
-                await websocket.send(
+                await _session_safe_send(websocket, state.session_id,
                     _new_envelope(
                         "agent-message-chunk",
                         state.session_id,
@@ -3878,7 +3882,7 @@ async def _stream_gemini_reply(
                 # terminator with a fresh id (mirrors the loop_exhausted / abort
                 # paths). Honesty floor: no synthesized summary, just the
                 # close-frame.
-                await websocket.send(
+                await _session_safe_send(websocket, state.session_id,
                     _new_envelope(
                         "agent-message-chunk",
                         state.session_id,
@@ -3896,7 +3900,7 @@ async def _stream_gemini_reply(
             state="complete",
         )
         state.current_pipeline_steps = [thinking_step]
-        await websocket.send(
+        await _session_safe_send(websocket, state.session_id,
             _new_envelope(
                 "pipeline-state",
                 state.session_id,
@@ -3950,6 +3954,25 @@ async def _stream_gemini_reply(
         except Exception:  # noqa: BLE001 — socket may be down on cancel
             pass
         raise
+    except ConnectionClosed as exc:
+        # F2 (live-feedback 2026-07-09 local): the CLIENT transport died
+        # mid-turn. This is NOT a model failure -- the LLM stream rides httpx,
+        # never websockets, so a ConnectionClosed reaching this scope can only
+        # be a residual raw send to the dead client socket. Every known
+        # per-turn send now routes through ``_session_safe_send`` (never
+        # raises; sibling-socket fallback), so this branch is a backstop: log
+        # once and end the turn quietly. NO ``LLM_UNAVAILABLE`` error envelope
+        # and NO terminal-failure card -- reporting a client transport drop as
+        # a model failure was the 01:23 misreport ("Model generation failed:
+        # no close frame received or sent"). The persisted chat/tool rows plus
+        # the session-resume replay carry the turn's results to the client
+        # when it reconnects.
+        logger.warning(
+            "client websocket closed mid-turn (transport drop, not a model "
+            "failure) session=%s: %s",
+            state.session_id,
+            exc,
+        )
     except Exception as exc:  # noqa: BLE001 — surface as A.6 LLM_UNAVAILABLE
         logger.exception("model stream failed: %s", exc)
         await _send_error(
@@ -5854,7 +5877,7 @@ async def _finalize_segment(
     """
     text = "".join(segment_parts).strip()
     # (1) wire terminal for this bubble — always fires (id has text).
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope(
             "agent-message-chunk",
             state.session_id,
@@ -6389,7 +6412,7 @@ async def _maybe_gate_on_payload_warning(
     fut: asyncio.Future = loop.create_future()
     _register_pending_confirmation(state.session_id, warning_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("tool-payload-warning", state.session_id, warning_payload)
     )
     logger.info(
@@ -6508,7 +6531,7 @@ async def _gate_on_code_exec(
     fut: asyncio.Future = loop.create_future()
     _register_pending_confirmation(state.session_id, code_exec_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("code-exec-request", state.session_id, request_payload)
     )
     logger.info(
@@ -7562,7 +7585,7 @@ async def _gate_on_solver_confirm(
     fut: asyncio.Future = loop.create_future()
     _register_pending_confirmation(state.session_id, warning_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("tool-payload-warning", state.session_id, envelope)
     )
     logger.info(
@@ -8144,7 +8167,7 @@ async def _emit_credential_request_and_wait(
     fut: asyncio.Future = loop.create_future()
     _register_pending_credential(state.session_id, request_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("credential-request", state.session_id, payload)
     )
     logger.info(
@@ -8464,7 +8487,7 @@ async def _emit_region_choice_and_wait(
     fut: asyncio.Future = loop.create_future()
     _register_pending_region_choice(state.session_id, payload.request_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("region-choice-request", state.session_id, payload)
     )
     logger.info(
@@ -8694,7 +8717,7 @@ async def _emit_spatial_input_and_wait(
     fut: asyncio.Future = loop.create_future()
     _register_pending_spatial_input(state.session_id, payload.request_id, fut)
 
-    await websocket.send(
+    await _session_safe_send(websocket, state.session_id,
         _new_envelope("spatial-input-request", state.session_id, payload)
     )
     logger.info(
