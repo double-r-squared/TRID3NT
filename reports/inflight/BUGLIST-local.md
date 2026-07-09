@@ -19,6 +19,11 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | F15 | Mobile: spatial-input banner/toolbar/slider overlap (NATE live report 2026-07-09) | FIXED-VERIFIED | flex top-stack on mobile (overlap impossible by construction, structural test); desktop byte-identical, verified no overlap |
 | F16 | Landcover over a state fails (guardrail dead-end + purpose='aoi' rejected + server rewrote purposes to 'barrier') | FIXED-VERIFIED | live E2E post-restart: WA prompt -> resolution card -> Proceed -> landcover layer renders, loading resolves. NLCD auto-coarsen (30-600m ladder, 4000px budget) + esri 10m tiled to 8 deg2 + aoi purpose end-to-end |
 | OPEN-1 | Esri landcover fetch is 107MB (needs default coarsening/COG windowing) | FIXED | superseded by F16: NLCD auto-coarsen + esri tile/mosaic with honest payload estimate |
+| F17 | QGIS: "case blank has no layers to export" when browsing cases (Open-in-QGIS was the export route) | FIXED-VERIFIED | Cases dialog rework: Open = primary (chat+layers), export renamed "Export GeoTIFFs", empty case -> friendly note; headless live proof 2026-07-09 |
+| F18 | QGIS: white canvas on case select (layers added but no zoom + no basemap) | FIXED-VERIFIED | auto OSM basemap (settings-gated, default on) + zoom-to-case-bbox on open; deterministic dock-wiring proof: canvas lands on bbox |
+| F19 | QGIS: no delete-case / new-case affordances | FIXED-VERIFIED | Delete (confirm) + New case in Cases dialog + header New button; live create/delete round-trip proven (case rebinds, deleted id vanishes from list) |
+| F20 | QGIS: AOI checkboxes live-apply in dock; wanted in Settings with Save | FIXED-VERIFIED | both AOI toggles + auto-basemap moved to Settings w/ Save/Cancel, apply-at-once; dock shows read-only AOI status line |
+| F21 | QGIS: yellow gate cards stay expanded after decision | FIXED-VERIFIED | collapse to amber one-line summary + "show details" read-only re-expand; verified under offscreen QGIS |
 | OPEN-2 | Styled exports: 0-transparency only when ramp vmin==0 exactly | OPEN | noted in styled-export lane |
 | OPEN-3 | QGIS remote mode: exports do not download GeoTIFFs | OPEN | pre-existing, noted |
 | OPEN-4 | 22 unusable tools list (post-remediation re-measure pending) | OPEN | usability re-run not yet scheduled |
