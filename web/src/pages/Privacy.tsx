@@ -68,15 +68,27 @@ export function Privacy(): JSX.Element {
         <section>
           <h2>Data we collect</h2>
           <ul>
-            <li>
-              <strong>Session identifiers.</strong> Today TRID3NT uses
-              anonymous sessions: a randomly generated session ID and
-              anonymous user ID stored in your browser&rsquo;s localStorage.
-              They contain no personal information. When Google sign-in
-              launches, signing in will additionally associate your Google
-              account&rsquo;s basic profile (name, email address) with your
-              workspace.
-            </li>
+            {local ? (
+              /* F5 (live-feedback 2026-07-08): the local build is single-user
+                 with no sign-in of any kind -- the Google-sign-in sentence is
+                 cloud copy and must not render here. */
+              <li>
+                <strong>Session identifiers.</strong> TRID3NT uses anonymous
+                sessions: a randomly generated session ID and anonymous user
+                ID stored in your browser&rsquo;s localStorage. They contain
+                no personal information, and there is no account or sign-in.
+              </li>
+            ) : (
+              <li>
+                <strong>Session identifiers.</strong> Today TRID3NT uses
+                anonymous sessions: a randomly generated session ID and
+                anonymous user ID stored in your browser&rsquo;s localStorage.
+                They contain no personal information. When Google sign-in
+                launches, signing in will additionally associate your Google
+                account&rsquo;s basic profile (name, email address) with your
+                workspace.
+              </li>
+            )}
             <li>
               <strong>Chat and Case content.</strong> The messages you send,
               the agent&rsquo;s responses, the tools it ran, and the Cases
@@ -170,9 +182,14 @@ export function Privacy(): JSX.Element {
         <section>
           <h2>Your choices</h2>
           <ul>
-            <li>
-              You can use TRID3NT anonymously today; no account is required.
-            </li>
+            {local ? (
+              <li>TRID3NT runs without an account; there is nothing to sign
+              in to.</li>
+            ) : (
+              <li>
+                You can use TRID3NT anonymously today; no account is required.
+              </li>
+            )}
             <li>
               Clearing your browser&rsquo;s localStorage for this site
               discards your anonymous session identifiers; a fresh session is
@@ -196,11 +213,18 @@ export function Privacy(): JSX.Element {
 
         <section>
           <h2>Changes to this policy</h2>
-          <p>
-            If this policy changes materially (for example when Google
-            sign-in launches), we will update this page and its effective
-            date.
-          </p>
+          {local ? (
+            <p>
+              If this policy changes materially, we will update this page and
+              its effective date.
+            </p>
+          ) : (
+            <p>
+              If this policy changes materially (for example when Google
+              sign-in launches), we will update this page and its effective
+              date.
+            </p>
+          )}
         </section>
       </main>
 

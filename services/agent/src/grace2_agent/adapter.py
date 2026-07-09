@@ -85,6 +85,20 @@ class TextDeltaEvent:
 
 
 @dataclass(frozen=True)
+class ThinkingDeltaEvent:
+    """A streamed reasoning-channel fragment (local OpenAI-compatible path).
+
+    NATE live-feedback 2026-07-08 (local build): Ollama's OpenAI-compat stream
+    surfaces qwen3-family thinking as ``delta.reasoning`` chunks. The
+    openai_adapter yields these as ``ThinkingDeltaEvent`` so the server can
+    forward them live to the web as ``agent-thinking-chunk`` envelopes (greyed
+    foldable block). Never emitted by the Bedrock / Vertex / scripted paths;
+    the server loop must tolerate + may drop them (user toggle off).
+    """
+    delta: str
+
+
+@dataclass(frozen=True)
 class FunctionCallEvent:
     """Gemini decided to call a tool.
 
@@ -139,7 +153,9 @@ class UsageMetadataEvent:
     cache_hit: bool = False
 
 
-StreamEvent = TextDeltaEvent | FunctionCallEvent | UsageMetadataEvent
+StreamEvent = (
+    TextDeltaEvent | ThinkingDeltaEvent | FunctionCallEvent | UsageMetadataEvent
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2371,8 +2387,15 @@ async def stream_events_with_contents(
     system_prompt: str | None = None,
     cached_content_name: str | None = None,
     bedrock_model: str | None = None,
+    show_thinking: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Stream one Gemini turn from a fully-built ``contents`` list (job-0169).
+
+    ``show_thinking`` (local build, NATE 2026-07-08): forwarded to the OpenAI
+    adapter only. When True the adapter omits the ``/no_think`` system suffix
+    (GRACE2_OPENAI_EXTRA_SYSTEM) for this round so the model's reasoning
+    channel is generated and surfaced as ``ThinkingDeltaEvent``s. Ignored by
+    the Bedrock / Vertex / scripted paths.
 
     This is the primitive the multi-turn loop driver in ``server.py`` uses.
     Each call corresponds to exactly one ``generate_content_stream`` round —
@@ -2448,6 +2471,7 @@ async def stream_events_with_contents(
             tool_declarations=tool_declarations,
             system_prompt=system_prompt,
             model=bedrock_model,
+            show_thinking=show_thinking,
         ):
             yield _ev
         return
@@ -2621,6 +2645,7 @@ __all__ = [
     "GeminiSettings",
     "StreamEvent",
     "TextDeltaEvent",
+    "ThinkingDeltaEvent",
     "FunctionCallEvent",
     "UsageMetadataEvent",
     "SYSTEM_PROMPT",

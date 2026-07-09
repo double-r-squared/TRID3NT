@@ -2330,7 +2330,14 @@ async def _send_error(
     retryable: bool = False,
 ) -> None:
     payload = ErrorPayload(error_code=code, message=message, retryable=retryable)
-    await websocket.send(_new_envelope("error", session_id, payload))
+    # F1 (2026-07-08): route through the session-aware safe send. An error
+    # reply aimed at a just-dropped socket must reach the session's surviving
+    # sibling socket when one exists, and must NEVER raise into the caller --
+    # pre-fix, the turn-failure path's _send_error re-raised ConnectionClosed
+    # and skipped the terminal-failure-card persist entirely.
+    await _session_safe_send(
+        websocket, session_id, _new_envelope("error", session_id, payload)
+    )
 
 
 # WS-30s STORM FIX (server data heartbeat): the browser ``WebSocket`` API
@@ -2413,6 +2420,62 @@ async def _heartbeat_loop(
             )
 
 
+# ---------------------------------------------------------------------------
+# F1 (live-feedback 2026-07-08 local): mid-turn emission resilience.
+#
+# ROOT CAUSE of "nothing streams during the turn / it all appears at the end":
+# every raw ``await websocket.send(...)`` inside the turn task uses the socket
+# CAPTURED at dispatch time. A browser reload / transport drop mid-turn kills
+# that socket; the turn is detached and kept running (job-SOLVE-SURVIVE), and
+# ``_rebind_live_turns`` re-points the PipelineEmitter sink to the new socket,
+# but the direct sends (agent-message-chunk text deltas, cache-status,
+# loop_exhausted, segment terminators, turn-complete) still target the DEAD
+# socket. Worse, the first such raise inside the stream loop propagated to the
+# ``model stream failed`` handler and ABORTED the whole turn (observed live:
+# the landcover turn died at iter=3 with ConnectionClosedOK 1001, so the
+# fetched landcover was never published).
+#
+# Fix: ``_session_safe_send`` -- try the captured socket, then fall back to
+# any OTHER live socket registered for the session (``_SESSION_WS_CONNECTIONS``
+# is maintained by the resume handshake for exactly this kind of lookup), and
+# NEVER raise. The web side fans message-scoped envelope types across its
+# sibling GraceWs instances (ws.ts SESSION_SCOPED_TYPES), so delivering to
+# either of the session's sockets reaches the right UI handler. When every
+# socket is dead the frame is dropped (logged debug) -- the persisted chat/tool
+# rows remain the durable replay backstop, and the turn KEEPS RUNNING.
+# ---------------------------------------------------------------------------
+
+
+async def _session_safe_send(
+    websocket: "ServerConnection | None",
+    session_id: str,
+    message: str,
+) -> bool:
+    """Send ``message`` on the captured socket, falling back to any live
+    socket of ``session_id``. Never raises; returns True when a send landed.
+    """
+    if websocket is not None:
+        try:
+            await websocket.send(message)
+            return True
+        except Exception:  # noqa: BLE001 -- captured socket may be dead
+            pass
+    for conn in list(_SESSION_WS_CONNECTIONS.get(session_id, ())):
+        if conn is websocket:
+            continue
+        try:
+            await conn.send(message)
+            return True
+        except Exception:  # noqa: BLE001 -- sibling may be mid-close too
+            continue
+    logger.debug(
+        "session-safe-send: no live socket for session=%s (frame dropped; "
+        "persisted rows remain the replay backstop)",
+        session_id,
+    )
+    return False
+
+
 async def _send_loop_exhausted(
     websocket: ServerConnection,
     session_id: str,
@@ -2460,14 +2523,16 @@ async def _send_loop_exhausted(
             ),
             "retryable": False,
         }
-        await websocket.send(
+        await _session_safe_send(
+            websocket,
+            session_id,
             _json.dumps(
                 {
                     "type": "loop_exhausted",
                     "session_id": session_id,
                     "payload": payload,
                 }
-            )
+            ),
         )
         logger.info(
             "loop_exhausted envelope sent session=%s max_iter=%d",
@@ -2499,7 +2564,9 @@ async def _send_agent_abort(
     import json as _json
 
     try:
-        await websocket.send(
+        await _session_safe_send(
+            websocket,
+            session_id,
             _json.dumps(
                 {
                     "type": "loop_exhausted",
@@ -2511,7 +2578,7 @@ async def _send_agent_abort(
                         "retryable": False,
                     },
                 }
-            )
+            ),
         )
         logger.warning(
             "agent-abort session=%s reason=%s", session_id, reason_code
@@ -6338,7 +6405,7 @@ async def _maybe_gate_on_payload_warning(
     # with an asyncio timeout so the dispatch coroutine doesn't hang forever).
     try:
         decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
-            fut, timeout=warning_payload.ttl_seconds
+            fut, timeout=_gate_wait_timeout(warning_payload.ttl_seconds)
         )
     except asyncio.TimeoutError:
         audit_entry["decision"] = "timeout"
@@ -6454,7 +6521,7 @@ async def _gate_on_code_exec(
 
     try:
         decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
-            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+            fut, timeout=_gate_wait_timeout(CODE_EXEC_CONFIRM_TIMEOUT_SECONDS)
         )
     except asyncio.TimeoutError:
         logger.warning(
@@ -6643,6 +6710,33 @@ def _local_compute_lane() -> bool:
     from .tools.solver import SOLVER_BACKEND_LOCAL_DOCKER, solver_backend
 
     return solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER
+
+
+# F6 (live-feedback 2026-07-08): user-decision gates must NOT expire in the
+# TRID3NT local build. The cloud read-decision TTLs (300s payload-warning /
+# code-exec / solver-confirm / credential / region-choice, 60-300s spatial
+# input) exist because a hung turn holds Bedrock-connection economics on the
+# always-on box; locally the user OWNS the machine and the LLM, so a gate card
+# should wait for them indefinitely. "Effectively unbounded" = 24h -- long
+# enough that no human session ever hits it, finite so an abandoned process
+# still unwinds its futures.
+_LOCAL_GATE_TIMEOUT_SECONDS: int = 24 * 3600
+
+
+def _gate_wait_timeout(default_seconds: float) -> float:
+    """Effective ``asyncio.wait_for`` timeout for a user-decision gate future.
+
+    Local build (``_local_compute_lane()`` -- the established
+    ``solver_backend() == "local-docker"`` seam): 24h, so confirmation /
+    resolution / credential / region-choice / spatial-input gates never time
+    out on a user who stepped away. Cloud: ``default_seconds`` unchanged
+    (byte-identical behavior when the backend is aws-batch/unset). The wire
+    envelope (``ttl_seconds`` etc.) is NOT rewritten -- only the server-side
+    wait changes, so the client contract is untouched.
+    """
+    if _local_compute_lane():
+        return float(_LOCAL_GATE_TIMEOUT_SECONDS)
+    return float(default_seconds)
 
 
 # NATE 2026-06-26: per-fetcher resolution ladders for the fetch-resolution gate.
@@ -7483,7 +7577,7 @@ async def _gate_on_solver_confirm(
 
     try:
         decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
-            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+            fut, timeout=_gate_wait_timeout(CODE_EXEC_CONFIRM_TIMEOUT_SECONDS)
         )
     except asyncio.TimeoutError:
         logger.warning(
@@ -8063,7 +8157,7 @@ async def _emit_credential_request_and_wait(
 
     try:
         provided: CredentialProvidedEnvelopePayload = await asyncio.wait_for(
-            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+            fut, timeout=_gate_wait_timeout(CODE_EXEC_CONFIRM_TIMEOUT_SECONDS)
         )
     except asyncio.TimeoutError:
         logger.warning(
@@ -8383,7 +8477,7 @@ async def _emit_region_choice_and_wait(
 
     try:
         provided: RegionChoiceProvidedEnvelopePayload = await asyncio.wait_for(
-            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+            fut, timeout=_gate_wait_timeout(CODE_EXEC_CONFIRM_TIMEOUT_SECONDS)
         )
     except asyncio.TimeoutError:
         logger.info(
@@ -8612,7 +8706,7 @@ async def _emit_spatial_input_and_wait(
 
     try:
         response: SpatialInputResponsePayload = await asyncio.wait_for(
-            fut, timeout=payload.default_timeout_seconds
+            fut, timeout=_gate_wait_timeout(payload.default_timeout_seconds)
         )
     except asyncio.TimeoutError:
         logger.info(

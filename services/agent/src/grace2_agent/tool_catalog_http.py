@@ -1543,6 +1543,99 @@ def _resolve_export_qgis_file(query_string: str) -> tuple[Path, str]:
 
 
 # ---------------------------------------------------------------------------
+# /api/local-models -- installed local (Ollama) models (F2, live-feedback
+# 2026-07-08).
+# ---------------------------------------------------------------------------
+#
+# The TRID3NT LOCAL build serves its LLM through an OpenAI-compatible endpoint
+# (MODEL_PROVIDER=openai, typically Ollama). The web model selector needs the
+# REAL installed model list to offer cloud-style hot-swap, but the browser
+# generally cannot reach the Ollama server (:11434) directly. This endpoint
+# proxies Ollama's ``GET /api/tags`` from the agent process (which CAN reach
+# it -- it is the same host the chat completions go to) and returns:
+#
+#     {"models": [{"id": "qwen3:8b-16k", "label": "qwen3:8b-16k"}, ...],
+#      "default": "qwen3:8b-16k" | null}
+#
+# ``default`` is the agent's configured GRACE2_OPENAI_MODEL (null when unset).
+# CLOUD posture: when MODEL_PROVIDER != "openai" the route is treated as
+# ABSENT (404, exactly what an unknown path returns today), so the cloud
+# surface is behavior-identical. Ollama unreachable -> honest 502.
+
+
+def _local_models_route_enabled() -> bool:
+    """The route exists only for the OpenAI-compatible (local) provider."""
+    try:
+        from .bedrock_adapter import model_provider
+
+        return model_provider() == "openai"
+    except Exception:  # noqa: BLE001 -- import fault -> route absent
+        return False
+
+
+def _ollama_tags_url() -> str:
+    """Derive the Ollama ``/api/tags`` URL from the agent's own LLM endpoint.
+
+    ``GRACE2_OPENAI_BASE_URL`` is the OpenAI-compatible base the adapter dials
+    (e.g. ``http://127.0.0.1:11434/v1``); the native Ollama API lives one level
+    up. Strips a trailing ``/v1`` and appends ``/api/tags``. Falls back to the
+    Ollama default host when the env is unset (dev convenience).
+    """
+    base = os.environ.get("GRACE2_OPENAI_BASE_URL", "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    if not base:
+        base = "http://127.0.0.1:11434"
+    return f"{base}/api/tags"
+
+
+class _LocalModelsUpstreamError(Exception):
+    """Ollama /api/tags unreachable or returned an unusable payload."""
+
+
+def _fetch_local_models() -> bytes:
+    """SYNC (httpx; caller wraps in ``asyncio.to_thread``): build the JSON body.
+
+    Raises ``_LocalModelsUpstreamError`` on any upstream fault so the handler
+    emits an honest 502 -- never a fabricated empty success.
+    """
+    import httpx
+
+    url = _ollama_tags_url()
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:  # noqa: BLE001 -- unreachable / non-JSON / 5xx
+        raise _LocalModelsUpstreamError(
+            f"local model runtime unreachable at {url}: {exc}"
+        ) from exc
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    models: list[dict[str, str]] = []
+    if isinstance(raw_models, list):
+        for m in raw_models:
+            if not isinstance(m, dict):
+                continue
+            name = m.get("name") or m.get("model")
+            if isinstance(name, str) and name.strip():
+                name = name.strip()
+                models.append({"id": name, "label": name})
+    default = os.environ.get("GRACE2_OPENAI_MODEL", "").strip() or None
+    # Configured default first, so a client that picks entry 0 gets the model
+    # the agent would serve anyway.
+    if default is not None:
+        for i, m in enumerate(models):
+            if m["id"] == default:
+                models.insert(0, models.pop(i))
+                break
+    return json.dumps(
+        {"models": models, "default": default}, separators=(",", ":")
+    ).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
 # HTTP server (asyncio, stdlib only)
 # ---------------------------------------------------------------------------
 
@@ -1750,6 +1843,32 @@ async def _handle_http(
             writer.write(
                 _format_response(500, b'{"error":"telemetry summary failed"}')
             )
+    elif proxy_path == "/api/local-models":
+        # F2 (live-feedback 2026-07-08): installed local (Ollama) models for
+        # the web model selector's local hot-swap. Route ABSENT (404 -- same
+        # as any unknown path) unless MODEL_PROVIDER=openai, so the cloud
+        # agent's HTTP surface is behavior-identical. The upstream fetch runs
+        # off the event loop.
+        if not _local_models_route_enabled():
+            writer.write(_format_response(404, b'{"error":"not found"}'))
+        else:
+            try:
+                body = await asyncio.to_thread(_fetch_local_models)
+                writer.write(_format_response(200, body))
+            except _LocalModelsUpstreamError as exc:
+                writer.write(
+                    _format_response(
+                        502,
+                        json.dumps(
+                            {"error": str(exc)}, separators=(",", ":")
+                        ).encode("utf-8"),
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("local-models listing failed")
+                writer.write(
+                    _format_response(500, b'{"error":"local models failed"}')
+                )
     elif proxy_path == "/api/building-detail":
         # Click-to-enrich (NATE 2026-06-27): the building footprint inline
         # GeoJSON is now SLIM (id-only props). The popup fetches the full tag
