@@ -751,6 +751,7 @@ export function ResolutionPickerCard({
       icon={<IconGrid size={14} color={ACCENT} />}
       testId="resolution-picker-card"
       ariaLabel={cardTitle}
+      highlight={decided === null}
       extraAttrs={{
         "data-warning-id": warning.warning_id,
         "data-engine": g.engine,
