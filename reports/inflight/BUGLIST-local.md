@@ -16,12 +16,14 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | F12 | Client WS drop killed turn + misreported LLM_UNAVAILABLE | FIXED-UNVERIFIED | c93a809, 268 tests; live phone-drop scenario not re-tested |
 | F13 | Cases ephemeral per-device | FIXED-VERIFIED | batch E2E C6: second browser context sees the shared case list (single local user + adoption c93a809) |
 | F14 | LAN/Tailscale access | FIXED-VERIFIED | http://100.92.163.46:5173 -> 200; all services bound; NATE reached it on phone |
-| OPEN-1 | Esri landcover fetch is 107MB (needs default coarsening/COG windowing) | OPEN | gate + coarser-fetch option make it survivable; real fix = smarter fetch |
+| F15 | Mobile: spatial-input banner/toolbar/slider overlap (NATE live report 2026-07-09) | FIXED-VERIFIED | flex top-stack on mobile (overlap impossible by construction, structural test); desktop byte-identical, verified no overlap |
+| F16 | Landcover over a state fails (guardrail dead-end + purpose='aoi' rejected + server rewrote purposes to 'barrier') | FIXED-VERIFIED | live E2E post-restart: WA prompt -> resolution card -> Proceed -> landcover layer renders, loading resolves. NLCD auto-coarsen (30-600m ladder, 4000px budget) + esri 10m tiled to 8 deg2 + aoi purpose end-to-end |
+| OPEN-1 | Esri landcover fetch is 107MB (needs default coarsening/COG windowing) | FIXED | superseded by F16: NLCD auto-coarsen + esri tile/mosaic with honest payload estimate |
 | OPEN-2 | Styled exports: 0-transparency only when ramp vmin==0 exactly | OPEN | noted in styled-export lane |
 | OPEN-3 | QGIS remote mode: exports do not download GeoTIFFs | OPEN | pre-existing, noted |
 | OPEN-4 | 22 unusable tools list (post-remediation re-measure pending) | OPEN | usability re-run not yet scheduled |
 | OPEN-5 | Local model first token can take ~75s cold (qwen3:8b context load); no UX regression (thinking block covers it) but worth an Ollama keep-alive | OPEN | observed in e2e_thinking_stream (block at T+76s cold vs 18s warm in QGIS proof) |
-| OPEN-6 | Old flood case replay: depth layers absent + tile 404s on the pre-existing Chattanooga case (stale MinIO artifacts from old runs suspected, possibly pruned) | OPEN | e2e_flood_proof 2026-07-09: old case has_depth_layers=false; FRESH flood run same session worked (3 layers at ~2min), so the live path is fine |
+| OPEN-6 | Old flood case replay: depth layers absent + tile 404s on the pre-existing Chattanooga case (stale MinIO artifacts from old runs suspected, possibly pruned) | OPEN | e2e_flood_proof 2026-07-09: first run has_depth_layers=false; SECOND run (post landcover-fix restart) has_depth_layers=true + animation group - may be intermittent or case-pick dependent, downgraded to flaky |
 
 | OPEN-7 | Test-suite hygiene: test_active_aoi_repair_job2::test_bare_followup_refetch_short_circuits (5-min solver-confirm gate timeout for fetch_dem, then FAIL - fetch_dem swept into a confirm gate the test never answers) + test_modflow_archetype_offload.py collection error (imports 'services', needs repo-root run; from offload commit 46b08c7) | OPEN | both PRE-EXISTING: reproduced identically on pre-change commit d59b402 in a clean worktree |
 
