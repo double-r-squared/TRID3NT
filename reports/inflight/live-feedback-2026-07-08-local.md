@@ -71,3 +71,11 @@ The QGIS dock should also render the agent-thinking-chunk stream (grey,
 foldable, same semantics as web F8). Plugin-side: handle the new envelope
 in trid3nt_client/ws_bridge, render collapsible grey text in the dock
 message list.
+
+## F10 - No activity signifier between tool cards (NATE 2026-07-09)
+"I see the geocoded area then no signifiers that anything else is
+happening, a fetch or thinking could be occurring but I can't see it"
+-> Between a completed card and the next event there is dead air. Need:
+the CURRENT tool's card to appear at dispatch START in a running state
+(spinner + elapsed), and the thinking stream to fill inter-tool gaps.
+Extends F1/F8.
