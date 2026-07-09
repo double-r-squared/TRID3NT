@@ -65,3 +65,9 @@ this thinking text should be greyed and foldable"
 envelope; web renders grey collapsible block (streaming-expanded, folds on
 answer); Settings toggle (local mode), /no_think stripped per-turn when on.
 Dispatched as an addition to the F1 lane (same streaming seam).
+
+## F9 - QGIS plugin thinking stream (NATE 2026-07-09)
+The QGIS dock should also render the agent-thinking-chunk stream (grey,
+foldable, same semantics as web F8). Plugin-side: handle the new envelope
+in trid3nt_client/ws_bridge, render collapsible grey text in the dock
+message list.
