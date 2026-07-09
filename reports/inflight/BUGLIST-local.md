@@ -21,6 +21,9 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | OPEN-3 | QGIS remote mode: exports do not download GeoTIFFs | OPEN | pre-existing, noted |
 | OPEN-4 | 22 unusable tools list (post-remediation re-measure pending) | OPEN | usability re-run not yet scheduled |
 | OPEN-5 | Local model first token can take ~75s cold (qwen3:8b context load); no UX regression (thinking block covers it) but worth an Ollama keep-alive | OPEN | observed in e2e_thinking_stream (block at T+76s cold vs 18s warm in QGIS proof) |
+| OPEN-6 | Old flood case replay: depth layers absent + tile 404s on the pre-existing Chattanooga case (stale MinIO artifacts from old runs suspected, possibly pruned) | OPEN | e2e_flood_proof 2026-07-09: old case has_depth_layers=false; FRESH flood run same session worked (3 layers at ~2min), so the live path is fine |
+
+| OPEN-7 | Test-suite hygiene: test_active_aoi_repair_job2::test_bare_followup_refetch_short_circuits (5-min solver-confirm gate timeout for fetch_dem, then FAIL - fetch_dem swept into a confirm gate the test never answers) + test_modflow_archetype_offload.py collection error (imports 'services', needs repo-root run; from offload commit 46b08c7) | OPEN | both PRE-EXISTING: reproduced identically on pre-change commit d59b402 in a clean worktree |
 
 Notes 2026-07-09 (AFK batch close-out):
 - F8 was the real find of the night: the 2026-07-08 F8 commit shipped adapter+contract+UI but the server dispatch loop hooks were missing (both building agents were cut by session limits mid-work and the note said UNVERIFIED). Symptom was thinking-els=0 in the batch E2E; fixed in server.py (payload show_thinking -> stream_events_with_contents; ThinkingDeltaEvent -> agent-thinking-chunk, gated on the per-turn toggle, bubble-id shared with the answer).
