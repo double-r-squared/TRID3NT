@@ -26,6 +26,8 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | F21 | QGIS: yellow gate cards stay expanded after decision | FIXED-VERIFIED | collapse to amber one-line summary + "show details" read-only re-expand; verified under offscreen QGIS |
 | F22 | QGIS: cases invisible until manual Connect (same class as cloud cases-box-off) | FIXED-VERIFIED | agent GET /api/case-list cold route + dock auto-connect on show (local mode) + cold list in Cases dialog + click-to-open queues select across connect; headless proof AUTO-CONNECT PASS |
 | F23 | QGIS: every connect minted a throwaway "QGIS session" case (clutter regrowth) | FIXED-VERIFIED | connect reuses resumed/newest case, creates only at zero cases; proof NO-NEW-CASE 188->188; case cleanup 2026-07-09: 158 zero-layer junk cases soft-deleted (345->188 active, user-approved) |
+| F24 | Duplicate resolution gates per model retry hang the turn (model arg-fumble -> new gate per retry; 2nd gate unanswered forever since local gates never expire) | IN-PROGRESS | found by Claude mobile drive 2026-07-09 (M4 fail); fix = per-turn gate decision memory (same tool+bbox proceed auto-applies) |
+| F25 | fetch_landcover rejects dataset='nlcd' (model's natural first guess) -> 2 wasted error retries per turn | IN-PROGRESS | agent log iter1-3; fix = alias 'nlcd'/'nlcd_' -> default vintage + docstring contract |
 | OPEN-2 | Styled exports: 0-transparency only when ramp vmin==0 exactly | OPEN | noted in styled-export lane |
 | OPEN-3 | QGIS remote mode: exports do not download GeoTIFFs | OPEN | pre-existing, noted |
 | OPEN-4 | 22 unusable tools list (post-remediation re-measure pending) | OPEN | usability re-run not yet scheduled |
@@ -33,6 +35,10 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | OPEN-6 | Old flood case replay: depth layers absent + tile 404s on the pre-existing Chattanooga case (stale MinIO artifacts from old runs suspected, possibly pruned) | OPEN | e2e_flood_proof 2026-07-09: first run has_depth_layers=false; SECOND run (post landcover-fix restart) has_depth_layers=true + animation group - may be intermittent or case-pick dependent, downgraded to flaky |
 
 | OPEN-7 | Test-suite hygiene: test_active_aoi_repair_job2::test_bare_followup_refetch_short_circuits (5-min solver-confirm gate timeout for fetch_dem, then FAIL - fetch_dem swept into a confirm gate the test never answers) + test_modflow_archetype_offload.py collection error (imports 'services', needs repo-root run; from offload commit 46b08c7) | OPEN | both PRE-EXISTING: reproduced identically on pre-change commit d59b402 in a clean worktree |
+
+Drive log 2026-07-09 (Claude self-drive, NATE-requested):
+- QGIS headless drive 10/11: auto-connect, no-new-case, 188-row dialog, click-open (18 layers + OSM + zoom to Chattanooga), New case, Delete, county landcover layer landed gate-free (small AOI, correct). Miss: no thinking text observed that turn (seam proven elsewhere same hour - web M1 at 3s/38s; qwen3 emitted no reasoning on that tool turn; not a code bug).
+- Mobile drive (iPhone 13 viewport) 6/7: thinking, gate renders + fits viewport (364x310), Confirm tap works, no stuck loading, no chrome overlaps. Miss = F24 (duplicate gate hang). Driver kept: web/tools/e2e_mobile_landcover_drive.mjs. Proofs: docs/proof/46-*, 47-*.
 
 Notes 2026-07-09 (AFK batch close-out):
 - F8 was the real find of the night: the 2026-07-08 F8 commit shipped adapter+contract+UI but the server dispatch loop hooks were missing (both building agents were cut by session limits mid-work and the note said UNVERIFIED). Symptom was thinking-els=0 in the batch E2E; fixed in server.py (payload show_thinking -> stream_events_with_contents; ThinkingDeltaEvent -> agent-thinking-chunk, gated on the per-turn toggle, bubble-id shared with the answer).
