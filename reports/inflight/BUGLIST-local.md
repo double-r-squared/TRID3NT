@@ -24,6 +24,8 @@ Updated: 2026-07-09 (Claude maintains; statuses: FIXED-VERIFIED / FIXED-UNVERIFI
 | F19 | QGIS: no delete-case / new-case affordances | FIXED-VERIFIED | Delete (confirm) + New case in Cases dialog + header New button; live create/delete round-trip proven (case rebinds, deleted id vanishes from list) |
 | F20 | QGIS: AOI checkboxes live-apply in dock; wanted in Settings with Save | FIXED-VERIFIED | both AOI toggles + auto-basemap moved to Settings w/ Save/Cancel, apply-at-once; dock shows read-only AOI status line |
 | F21 | QGIS: yellow gate cards stay expanded after decision | FIXED-VERIFIED | collapse to amber one-line summary + "show details" read-only re-expand; verified under offscreen QGIS |
+| F22 | QGIS: cases invisible until manual Connect (same class as cloud cases-box-off) | FIXED-VERIFIED | agent GET /api/case-list cold route + dock auto-connect on show (local mode) + cold list in Cases dialog + click-to-open queues select across connect; headless proof AUTO-CONNECT PASS |
+| F23 | QGIS: every connect minted a throwaway "QGIS session" case (clutter regrowth) | FIXED-VERIFIED | connect reuses resumed/newest case, creates only at zero cases; proof NO-NEW-CASE 188->188; case cleanup 2026-07-09: 158 zero-layer junk cases soft-deleted (345->188 active, user-approved) |
 | OPEN-2 | Styled exports: 0-transparency only when ramp vmin==0 exactly | OPEN | noted in styled-export lane |
 | OPEN-3 | QGIS remote mode: exports do not download GeoTIFFs | OPEN | pre-existing, noted |
 | OPEN-4 | 22 unusable tools list (post-remediation re-measure pending) | OPEN | usability re-run not yet scheduled |
