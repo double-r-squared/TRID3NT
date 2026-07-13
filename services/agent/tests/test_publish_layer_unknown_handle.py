@@ -53,6 +53,11 @@ def _clean_registries():
         "usgs-earthquakes-abc12345",  # a real-shaped handle the server failed
         "qgis://project1",  # fabricated scheme
         "output_of_previous_tool",
+        # Angle-bracket template placeholders - live 2026-07-13: the model
+        # passed a gs-shaped one, which the scheme allowlist alone misses.
+        "gs://<result-fetched_usgs_earthquakes-uri>",
+        "s3://<bucket>/<key>.tif",
+        "<layer_uri_from_fetch_dem>",
         "",
         "   ",
     ],

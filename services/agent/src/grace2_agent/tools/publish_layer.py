@@ -2233,6 +2233,13 @@ def _looks_like_unresolved_handle(layer_uri: str) -> bool:
     v = (layer_uri or "").strip()
     if not v:
         return True
+    # Angle brackets are never valid in a real URI - they are the classic
+    # template-placeholder shape ('gs://<result-fetch_usgs_earthquakes-uri>',
+    # '<layer_uri_from_fetch_dem>'; the gs:// variant observed live
+    # 2026-07-13). Tile-template braces ({z}/{x}/{y}) remain VALID input for
+    # the idempotent-republish branch, so only <> are placeholder markers.
+    if "<" in v or ">" in v:
+        return True
     if v.startswith("/vsi") or v.startswith("/") or v.startswith("\\"):
         return False  # GDAL virtual path / absolute filesystem path
     if any(v.startswith(scheme) for scheme in _CONSUMABLE_URI_SCHEMES):
