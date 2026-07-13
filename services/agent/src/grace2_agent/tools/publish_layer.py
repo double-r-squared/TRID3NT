@@ -2233,12 +2233,15 @@ def _looks_like_unresolved_handle(layer_uri: str) -> bool:
     v = (layer_uri or "").strip()
     if not v:
         return True
-    # Angle brackets are never valid in a real URI - they are the classic
-    # template-placeholder shape ('gs://<result-fetch_usgs_earthquakes-uri>',
-    # '<layer_uri_from_fetch_dem>'; the gs:// variant observed live
-    # 2026-07-13). Tile-template braces ({z}/{x}/{y}) remain VALID input for
-    # the idempotent-republish branch, so only <> are placeholder markers.
-    if "<" in v or ">" in v:
+    # Angle brackets and literal ellipses are never valid in a real URI -
+    # they are template-placeholder shapes, BOTH observed live 2026-07-13:
+    # 'gs://<result-fetched_usgs_earthquakes-uri>' and
+    # 's3://.../earthquakes_layer.fgb' (the latter slipped past a scheme
+    # allowlist and hit the F32 benign vector no-op, minting a success-shaped
+    # "Layer published" for a fabricated URI). Tile-template braces
+    # ({z}/{x}/{y}) remain VALID input for the idempotent-republish branch,
+    # so braces are NOT placeholder markers.
+    if "<" in v or ">" in v or "..." in v:
         return True
     if v.startswith("/vsi") or v.startswith("/") or v.startswith("\\"):
         return False  # GDAL virtual path / absolute filesystem path

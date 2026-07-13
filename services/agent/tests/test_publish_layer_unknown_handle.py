@@ -58,6 +58,11 @@ def _clean_registries():
         "gs://<result-fetched_usgs_earthquakes-uri>",
         "s3://<bucket>/<key>.tif",
         "<layer_uri_from_fetch_dem>",
+        # Literal-ellipsis placeholder - live 2026-07-13: slipped past the
+        # scheme allowlist into the F32 benign vector no-op (fabricated
+        # success-shaped "Layer published").
+        "s3://.../earthquakes_layer.fgb",
+        "gs://.../flood_depth_peak.tif",
         "",
         "   ",
     ],
