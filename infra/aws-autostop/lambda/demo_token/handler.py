@@ -196,10 +196,10 @@ def handler(event, context):  # noqa: ANN001, ARG001
         # No/empty/malformed code -- treat as a denied gate (generic body).
         return _response(403, {"error": "invalid access code"})
 
-    # Constant-time compare against the stored code. On ANY SSM failure fail
+    # Constant-time compare against the stored code(s). On ANY SSM failure fail
     # closed (500) rather than leaking whether the code matched.
     try:
-        stored = _get_secure_param(SSM_CODE_PARAM).strip()
+        stored_raw = _get_secure_param(SSM_CODE_PARAM)
     except ClientError as exc:
         logger.exception("SSM get of access code failed: %s", exc)
         return _response(500, {"error": "demo sign-in unavailable"})
@@ -207,7 +207,23 @@ def handler(event, context):  # noqa: ANN001, ARG001
         logger.exception("Unexpected SSM error reading access code: %s", exc)
         return _response(500, {"error": "demo sign-in unavailable"})
 
-    if not hmac.compare_digest(submitted, stored):
+    # MULTI-CODE (2026-07-14): the SSM value is a newline- and/or
+    # comma-separated LIST of valid access codes (a single code is just a
+    # one-element list, so this stays backward compatible). Judges can be
+    # handed distinct codes; ADD or REVOKE codes by editing the SSM value
+    # ALONE -- no Lambda redeploy. Compare against every code with no early
+    # break so timing does not leak which code (or how many) matched.
+    valid_codes = [
+        code.strip()
+        for line in stored_raw.splitlines()
+        for code in line.split(",")
+        if code.strip()
+    ]
+    matched = False
+    for code in valid_codes:
+        if hmac.compare_digest(submitted, code):
+            matched = True
+    if not matched:
         # Code mismatch -- generic 403, NO Cognito call (no create, no auth).
         logger.info("demo-token: access code mismatch")
         return _response(403, {"error": "invalid access code"})
