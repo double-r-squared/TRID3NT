@@ -88,6 +88,8 @@ async def run_telemac(
     source_q_m3s: float = 8.0,
     channel_width_m: float = 60.0,
     river_geometry_uri: str | None = None,
+    mesh_resolution: str = "auto",
+    mesh_resolution_m: float | None = None,
     compute_class: str = "medium",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -144,6 +146,17 @@ async def run_telemac(
             (no re-fetch). Otherwise leave unset and the tool fetches the reach
             itself from the place / AOI. (You do NOT need to fetch the river
             first -- ``location`` alone is enough.)
+        mesh_resolution: mesh GRANULARITY lever (BK-3c). One of ``"auto"`` (the
+            default - the tool sizes the mesh from the reach geometry under a node
+            budget), ``"fine"`` (more cells across the channel; sharper plume,
+            slower solve), or ``"coarse"`` (fewer cells; faster, blockier). Set it
+            from the user's intent, e.g. "high-res mesh" -> ``"fine"``, "quick /
+            coarse run" -> ``"coarse"``. NOT hardcoded - the chosen edge length +
+            node estimate come back on the layer so they can be shown/approved.
+        mesh_resolution_m: OPTIONAL explicit mesh target edge length in METERS
+            (e.g. 8.0). Overrides ``mesh_resolution``. Still clamped under the node
+            budget so a reckless value can't wedge the solve. Leave unset unless
+            the user asks for a specific resolution.
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
@@ -213,6 +226,8 @@ async def run_telemac(
             source_q_m3s=float(source_q_m3s),
             channel_width_m=float(channel_width_m),
             river_geometry_uri=(str(river_geometry_uri) if river_geometry_uri else None),
+            mesh_resolution=str(mesh_resolution or "auto"),
+            mesh_resolution_m=(float(mesh_resolution_m) if mesh_resolution_m is not None else None),
             compute_class=compute_class,
         )
         logger.info(

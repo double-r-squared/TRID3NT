@@ -90,6 +90,88 @@ DEFAULT_SOURCE_Q_M3S: float = 8.0
 DEFAULT_DYE_CONC_MGL: float = 100.0
 DEFAULT_SIM_DURATION_S: float = 3600.0
 
+# --------------------------------------------------------------------------- #
+# Mesh granularity autoscaler (BK-3c) - resolution is a USER/LLM lever, NEVER a
+# hardcoded constant. The worker meshes a channel ribbon of length L (the reach)
+# x width W with a single uniform gmsh target edge length ``h`` (mesh_size_m).
+# Two physics/cost constraints bound ``h``:
+#   (1) ACROSS-CHANNEL RESOLUTION: the plume must be resolved across the channel,
+#       so we need >= N cells spanning the width -> h <= W / N. N is set by the
+#       chosen resolution preset (fine = more cells across, coarse = fewer). This
+#       is the dominant constraint for a narrow reach.
+#   (2) NODE BUDGET: a triangulated ribbon of area A = L*W has ~A/(k*h^2) nodes
+#       (k ~ 0.87 for good-quality equilateral triangles). Cap it at NODE_CAP so
+#       a long reach can't explode the solve -> h >= sqrt(A / (k*NODE_CAP)).
+# The final h is max(across-channel target, budget floor), then clamped to an
+# absolute [MESH_H_FLOOR_M, W/2] sanity range (>= 2 cells across no matter what).
+# An explicit override_m (LLM/user "use 8 m edges") wins outright but is still
+# budget-clamped so a reckless value can't wedge the solver.
+# --------------------------------------------------------------------------- #
+#: cells-across-the-channel target per resolution preset. "medium"/"auto" ~= the
+#: legacy DEFAULT_MESH_SIZE_M (14 m on a 60 m channel = ~4.3 cells across).
+MESH_CELLS_ACROSS_BY_PRESET: dict[str, float] = {
+    "fine": 6.0,
+    "medium": 60.0 / DEFAULT_MESH_SIZE_M,  # ~4.3, parity with the old default
+    "auto": 60.0 / DEFAULT_MESH_SIZE_M,
+    "coarse": 3.0,
+}
+#: node-count ceiling for a single local-docker TELEMAC reach (keeps the solve to
+#: minutes, not hours). The autoscaler coarsens ``h`` to stay under this.
+MESH_NODE_CAP: int = 60000
+#: triangulated-ribbon node-density constant (nodes ~= area / (k * h^2)).
+_MESH_NODE_K: float = 0.87
+#: absolute gmsh edge-length floor (below this gmsh quality + solve cost degrade).
+MESH_H_FLOOR_M: float = 3.0
+
+
+def _estimate_mesh_nodes(reach_length_km: float, channel_width_m: float, h: float) -> int:
+    """Estimated node count for a length x width channel ribbon meshed at edge ``h``."""
+    area = max(reach_length_km, 0.0) * 1000.0 * max(channel_width_m, 0.0)
+    if h <= 0.0 or area <= 0.0:
+        return 0
+    return int(round(area / (_MESH_NODE_K * h * h)))
+
+
+def suggest_mesh_size_m(
+    reach_length_km: float,
+    channel_width_m: float,
+    resolution: str = "auto",
+    override_m: float | None = None,
+) -> tuple[float, int, str]:
+    """Pick the mesh target edge length ``h`` (BK-3c). Returns ``(h, est_nodes, label)``.
+
+    ``resolution`` is a preset ("auto"/"medium"/"fine"/"coarse"); ``override_m`` is
+    an explicit edge length that wins outright (still budget-clamped). Never
+    returns the hardcoded default blindly - it is always derived from the reach
+    geometry + the chosen lever, so a small AOI gets a fine mesh and a long reach
+    gets coarsened under the node budget.
+    """
+    L = max(float(reach_length_km), 0.0)
+    W = max(float(channel_width_m), 1.0)
+    preset = str(resolution or "auto").strip().lower()
+
+    # budget floor: coarsest h that keeps node count <= MESH_NODE_CAP.
+    area = L * 1000.0 * W
+    budget_floor = (area / (_MESH_NODE_K * MESH_NODE_CAP)) ** 0.5 if area > 0 else MESH_H_FLOOR_M
+
+    if override_m is not None and float(override_m) > 0.0:
+        h = float(override_m)
+        label = f"custom {h:.3g} m"
+    else:
+        cells = MESH_CELLS_ACROSS_BY_PRESET.get(preset, MESH_CELLS_ACROSS_BY_PRESET["auto"])
+        h = W / cells
+        label = f"auto ({preset})" if preset in ("auto",) else preset
+
+    # apply constraints: never finer than the absolute floor / budget floor, never
+    # coarser than 2 cells across the channel.
+    h = max(h, MESH_H_FLOOR_M, budget_floor)
+    h = min(h, W / 2.0)
+    if override_m is not None and h > float(override_m):
+        label += f" -> {h:.3g} m (budget-clamped)"
+
+    est_nodes = _estimate_mesh_nodes(L, W, h)
+    return round(h, 3), est_nodes, label
+
 
 # --------------------------------------------------------------------------- #
 # Typed errors
@@ -291,6 +373,8 @@ async def model_river_dye_release_scenario(
     source_q_m3s: float = DEFAULT_SOURCE_Q_M3S,
     channel_width_m: float = DEFAULT_CHANNEL_WIDTH_M,
     river_geometry_uri: str | None = None,
+    mesh_resolution: str = "auto",
+    mesh_resolution_m: float | None = None,
     *,
     compute_class: str = "medium",
     pipeline_emitter: Any | None = None,
@@ -384,6 +468,21 @@ async def model_river_dye_release_scenario(
     seed_lon, seed_lat = seed
 
     # --- Stage 3: stage the worker manifest (ReachConfig overrides) ----------- #
+    # BK-3c: mesh resolution is derived from the reach geometry + the chosen lever
+    # (auto/preset/explicit override), NEVER the hardcoded default. Surfaced on the
+    # returned layer so the agent narrates it and the approve-mesh gate can show it.
+    mesh_size_m, mesh_node_estimate, mesh_resolution_label = suggest_mesh_size_m(
+        reach_length_km=reach_length_km,
+        channel_width_m=channel_width_m,
+        resolution=mesh_resolution,
+        override_m=mesh_resolution_m,
+    )
+    logger.info(
+        "model_river_dye_release_scenario mesh granularity: %s -> h=%.3g m "
+        "(~%d nodes, reach=%.3g km x %.3g m)",
+        mesh_resolution_label, mesh_size_m, mesh_node_estimate,
+        reach_length_km, channel_width_m,
+    )
     reach_name = _slug(location_name)
     reach: dict[str, Any] = {
         "name": reach_name,
@@ -392,7 +491,7 @@ async def model_river_dye_release_scenario(
         "nav_direction": "DM",
         "distance_km": float(reach_length_km),
         "channel_width_m": float(channel_width_m),
-        "mesh_size_m": DEFAULT_MESH_SIZE_M,
+        "mesh_size_m": mesh_size_m,
         "dye_conc_mgl": float(dye_concentration_mgl),
         "spill_frac": float(min(max(spill_fraction, 0.0), 1.0)),
         "pulse_window_s": float(spill_duration_s),
@@ -560,10 +659,17 @@ def _publish_peak_layer(
         f"raster is the PEAK dye envelope over the run; the animation plays from "
         f"the native SELAFIN mesh. Not a calibrated site study."
     )
+    # BK-3c: the chosen mesh granularity travels on every return branch so the
+    # agent can narrate it and the approve-mesh gate can display it.
+    mesh_meta = {
+        "mesh_size_m": mesh_size_m,
+        "mesh_node_estimate": mesh_node_estimate,
+        "mesh_resolution_label": mesh_resolution_label,
+    }
     if raw_peak.layer_type != "raster" or not (
         raw_peak.uri.startswith("gs://") or raw_peak.uri.startswith("s3://")
     ):
-        return raw_peak.model_copy(update={"fallback_note": honesty})
+        return raw_peak.model_copy(update={"fallback_note": honesty, **mesh_meta})
     layer_id_for_pub = f"telemac-dye-peak-{run_id}"
     try:
         published_uri = publish_layer(
@@ -577,7 +683,7 @@ def _publish_peak_layer(
             "error_code=%s (%s) - returning the unpublished peak.",
             layer_id_for_pub, exc.error_code, exc,
         )
-        return raw_peak.model_copy(update={"fallback_note": honesty})
+        return raw_peak.model_copy(update={"fallback_note": honesty, **mesh_meta})
     return TelemacDyeLayerURI(
         layer_id=layer_id_for_pub,
         name=raw_peak.name,
@@ -593,6 +699,9 @@ def _publish_peak_layer(
         dye_peak_time_s=raw_peak.dye_peak_time_s,
         plume_reach_m=raw_peak.plume_reach_m,
         active_frames=raw_peak.active_frames,
+        mesh_size_m=mesh_size_m,
+        mesh_node_estimate=mesh_node_estimate,
+        mesh_resolution_label=mesh_resolution_label,
     )
 
 
