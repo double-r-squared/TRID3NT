@@ -119,9 +119,40 @@ MESH_CELLS_ACROSS_BY_PRESET: dict[str, float] = {
 #: minutes, not hours). The autoscaler coarsens ``h`` to stay under this.
 MESH_NODE_CAP: int = 60000
 #: triangulated-ribbon node-density constant (nodes ~= area / (k * h^2)).
-_MESH_NODE_K: float = 0.87
+#: CALIBRATED against two live TELEMAC meshes of the 8 km x 60 m Snake reach
+#: (h=20 -> 3011 nodes -> k=0.40; h=10 -> 10230 nodes -> k=0.47), so the node
+#: estimate the approve-mesh gate shows tracks reality within ~15%.
+_MESH_NODE_K: float = 0.43
 #: absolute gmsh edge-length floor (below this gmsh quality + solve cost degrade).
 MESH_H_FLOOR_M: float = 3.0
+#: TELEMAC-2D timestep MUST be coupled to the mesh edge length or the solve
+#: DIVERGES (CFL). Proven live 2026-07-17 on the 8 km Snake reach:
+#:   (h=20, dt=1.0)   -> OK      (h=14, dt=1.0) -> OK (historical default)
+#:   (h=10, dt=1.0)   -> CRASH   (h=10, dt=0.714) -> CRASH   (h=10, dt=0.5) -> OK
+#: The stable dt scales with the edge length (constant Courant):
+#: dt = TIMESTEP_REF_S * min(1, h / MESH_TIMESTEP_REF_M). Anchored at h=20 m ->
+#: 1 s so the law passes THROUGH both live-proven-stable points - (20, 1.0) and
+#: (10, 0.5) - and lands at or below the stable dt at every tested size (h=14 ->
+#: 0.7 s, safely under its proven-stable 1.0 s; a smaller dt at a fixed mesh is
+#: strictly more stable). An earlier /14 anchor shipped h=10 -> 0.714 s, which
+#: the live solve REJECTED - hence the conservative /20. This makes "fine" usable.
+TIMESTEP_REF_S: float = 1.0
+MESH_TIMESTEP_REF_M: float = 20.0
+#: floor on the coupled timestep (a runaway-fine mesh can't drive dt to zero).
+TIMESTEP_FLOOR_S: float = 0.2
+
+
+def suggest_time_step_s(mesh_size_m: float) -> float:
+    """CFL-safe TELEMAC timestep for a given mesh edge length (BK-3c / OPEN-27).
+
+    dt scales with the edge length (constant Courant), capped at the proven-stable
+    1 s for meshes >= 14 m so the default is unchanged, floored so a very fine mesh
+    still terminates. Threaded into the worker manifest as ``time_step_s`` (an
+    existing ReachConfig field) - no worker rebuild needed.
+    """
+    h = max(float(mesh_size_m), MESH_H_FLOOR_M)
+    dt = TIMESTEP_REF_S * min(1.0, h / MESH_TIMESTEP_REF_M)
+    return round(max(dt, TIMESTEP_FLOOR_S), 3)
 
 
 def _estimate_mesh_nodes(reach_length_km: float, channel_width_m: float, h: float) -> int:
@@ -477,10 +508,13 @@ async def model_river_dye_release_scenario(
         resolution=mesh_resolution,
         override_m=mesh_resolution_m,
     )
+    # OPEN-27: couple the timestep to the mesh so a finer mesh does not diverge
+    # (CFL). Proven live: fine h=10 crashed at fixed dt=1 s, ran clean at dt<=0.5.
+    time_step_s = suggest_time_step_s(mesh_size_m)
     logger.info(
         "model_river_dye_release_scenario mesh granularity: %s -> h=%.3g m "
-        "(~%d nodes, reach=%.3g km x %.3g m)",
-        mesh_resolution_label, mesh_size_m, mesh_node_estimate,
+        "(~%d nodes, dt=%.3g s, reach=%.3g km x %.3g m)",
+        mesh_resolution_label, mesh_size_m, mesh_node_estimate, time_step_s,
         reach_length_km, channel_width_m,
     )
     reach_name = _slug(location_name)
@@ -492,6 +526,7 @@ async def model_river_dye_release_scenario(
         "distance_km": float(reach_length_km),
         "channel_width_m": float(channel_width_m),
         "mesh_size_m": mesh_size_m,
+        "time_step_s": time_step_s,
         "dye_conc_mgl": float(dye_concentration_mgl),
         "spill_frac": float(min(max(spill_fraction, 0.0), 1.0)),
         "pulse_window_s": float(spill_duration_s),
