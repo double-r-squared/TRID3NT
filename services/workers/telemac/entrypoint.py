@@ -154,6 +154,7 @@ def run_pipeline(
     bank_source = "constant"
     bank_stats = {}
     if str(getattr(cfg, "bank_source", "auto")).lower() != "constant":
+        _bank_t0 = time.time()
         try:
             lon0, lat0 = ll[:, 0].min(), ll[:, 1].min()
             lon1, lat1 = ll[:, 0].max(), ll[:, 1].max()
@@ -169,16 +170,20 @@ def run_pipeline(
                         hx, hy = tr.transform(h[:, 0], h[:, 1])
                         hs.append(np.column_stack([hx, hy]))
                     polys_utm.append((np.column_stack([ex, ey]), hs))
+                LOG.info("bank polygons fetched in %.1fs; sampling...",
+                         time.time() - _bank_t0)
                 res = B.estimate_bank_offsets(cl, polys_utm)
+                LOG.info("bank sampling done at %.1fs", time.time() - _bank_t0)
                 if res is not None:
-                    lo, ro, frac = res
-                    cfg.bank_offsets = (lo, ro)
+                    # recentered mid-water axis + symmetric half-widths
+                    cl, halfw, frac = res
+                    cfg.bank_offsets = (halfw, halfw)
                     bank_source = "nhdarea"
                     bank_stats = {
                         "bank_valid_frac": frac,
-                        "bank_width_min_m": round(float((lo + ro).min()), 1),
-                        "bank_width_mean_m": round(float((lo + ro).mean()), 1),
-                        "bank_width_max_m": round(float((lo + ro).max()), 1),
+                        "bank_width_min_m": round(float(2 * halfw.min()), 1),
+                        "bank_width_mean_m": round(float(2 * halfw.mean()), 1),
+                        "bank_width_max_m": round(float(2 * halfw.max()), 1),
                     }
                     LOG.info("real banks: nhdarea frac=%.2f width min/mean/max="
                              "%.0f/%.0f/%.0f m", frac,
