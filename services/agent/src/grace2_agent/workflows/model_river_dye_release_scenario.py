@@ -960,7 +960,7 @@ async def preview_telemac_mesh(
             location = raw_bbox  # LLM put a place name in the bbox field
     has_loc = bool(location and str(location).strip())
     if has_loc and coerced_bbox is not None:
-        has_loc = False  # explicit bbox wins (mirror of run_telemac OPEN-24)
+        coerced_bbox = None  # LOCATION wins (mirror of run_telemac, 2026-07-18)
     if not has_loc and coerced_bbox is None:
         raise ValueError("preview_telemac_mesh: no location/bbox in params")
 
@@ -1022,10 +1022,12 @@ async def preview_telemac_mesh(
         override_m=(float(mesh_resolution_m) if mesh_resolution_m else None),
     )
     time_step_s = suggest_time_step_s(mesh_size_m)
+    preview_river_name = _named_watercourse(location or location_name) or ""
     reach: dict[str, Any] = {
         "name": _slug(location_name),
         "seed_lon": round(seed_lon, 6),
         "seed_lat": round(seed_lat, 6),
+        **({"river_name": preview_river_name} if preview_river_name else {}),
         "nav_direction": "DM",
         "distance_km": reach_length_km,
         "channel_width_m": channel_width_m,

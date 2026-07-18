@@ -988,6 +988,26 @@ PRESCRIBED TRACERS VALUES       = {';'.join(tracer)}
 SCHEME FOR ADVECTION OF TRACERS          = 1
 COEFFICIENT FOR DIFFUSION OF TRACERS     = 1.E-1
 """
+    # DAMOCLES hard 72-char line limit: one over-long line (e.g. a long
+    # geocoded reach name in a comment or the TITLE) derails the parser into
+    # "KEY-WORD ... IS UNKNOWN" on a LATER, valid line. Live-hit 2026-07-18:
+    # 'longview_cowlitz_county_washington_98632_united_' made an 86-char
+    # comment + ~80-char TITLE and DAMOCLES blamed 'GEOMETRY FILE' at line 10.
+    # Comments are safely sliced; the quoted TITLE is shortened keeping quotes.
+    lines = []
+    for ln in cas.splitlines():
+        if len(ln) <= 72:
+            lines.append(ln)
+        elif ln.startswith("/"):
+            lines.append(ln[:72])
+        elif ln.startswith("TITLE"):
+            lines.append(f"TITLE : '{cfg.name[:40]} DYE PULSE'"[:72])
+        else:
+            lines.append(ln)  # data lines are worker-generated and short
+    cas = "\n".join(lines) + "\n"
+    over = [ln for ln in lines if len(ln) > 72]
+    if over:
+        LOG.warning("cas lines still >72 chars after clamp: %r", over[:3])
     with open(cas_path, "w") as f:
         f.write(cas)
 
