@@ -149,6 +149,50 @@ def run_pipeline(
     tr = pmeta.pop("lonlat_transformer")
     LOG.info("centerline processed: %s", pmeta)
 
+    # 2b. BK-7: real river banks from NHDArea polygons (honest fallback to the
+    # constant-width ribbon when the fetch/sampling cannot see water).
+    bank_source = "constant"
+    bank_stats = {}
+    if str(getattr(cfg, "bank_source", "auto")).lower() != "constant":
+        try:
+            lon0, lat0 = ll[:, 0].min(), ll[:, 1].min()
+            lon1, lat1 = ll[:, 0].max(), ll[:, 1].max()
+            pad = 0.01
+            polys = B.fetch_bank_polygons(
+                (lon0 - pad, lat0 - pad, lon1 + pad, lat1 + pad))
+            if polys:
+                polys_utm = []
+                for ext, holes in polys:
+                    ex, ey = tr.transform(ext[:, 0], ext[:, 1])
+                    hs = []
+                    for h in holes:
+                        hx, hy = tr.transform(h[:, 0], h[:, 1])
+                        hs.append(np.column_stack([hx, hy]))
+                    polys_utm.append((np.column_stack([ex, ey]), hs))
+                res = B.estimate_bank_offsets(cl, polys_utm)
+                if res is not None:
+                    lo, ro, frac = res
+                    cfg.bank_offsets = (lo, ro)
+                    bank_source = "nhdarea"
+                    bank_stats = {
+                        "bank_valid_frac": frac,
+                        "bank_width_min_m": round(float((lo + ro).min()), 1),
+                        "bank_width_mean_m": round(float((lo + ro).mean()), 1),
+                        "bank_width_max_m": round(float((lo + ro).max()), 1),
+                    }
+                    LOG.info("real banks: nhdarea frac=%.2f width min/mean/max="
+                             "%.0f/%.0f/%.0f m", frac,
+                             bank_stats["bank_width_min_m"],
+                             bank_stats["bank_width_mean_m"],
+                             bank_stats["bank_width_max_m"])
+                else:
+                    LOG.warning("bank sampling saw too little water; "
+                                "constant-width fallback")
+            else:
+                LOG.warning("no NHDArea polygons; constant-width fallback")
+        except Exception:  # noqa: BLE001 -- banks are an enhancement, never fatal
+            LOG.exception("bank estimation failed; constant-width fallback")
+
     # 3. Gmsh mesh (tagged boundary)
     mesh = B.build_channel_mesh(cl, cfg)
     LOG.info("mesh: npoin=%d nelem=%d nptfr=%d in=%d out=%d banks_ok=%s smooth_tries=%d",
@@ -239,6 +283,8 @@ def run_pipeline(
             "edge_max_m": round(float(seg.max()), 2),
             "bbox4326": bbox4326,
             "bed_assigned": False,
+            "bank_source": bank_source,
+            **bank_stats,
             "wireframe_capped": wireframe_capped,
             "wall_s": round(time.time() - t0, 1),
         }
@@ -308,6 +354,8 @@ def run_pipeline(
         "n_inflow_nodes": int(mesh["n_in"]),
         "n_outflow_nodes": int(mesh["n_out"]),
         "lb_order": lb or guess,
+        "bank_source": bank_source,
+        **bank_stats,
         "release_point_used": bool(mesh.get("release_point_used")),
         "release_point_rejected_dist_m": mesh.get("release_point_rejected_dist_m"),
         "enforced_slope": bed.get("enforced_slope"),

@@ -86,6 +86,8 @@ _COMPLETION_METRIC_KEYS: tuple[str, ...] = (
     "edge_max_m",
     "bbox4326",
     "preview_geojson",
+    "bank_source",
+    "bank_width_mean_m",
 )
 
 

@@ -68,6 +68,10 @@ class ReachConfig:
     # interior mesh node to this point (validated within 2 channel widths).
     release_lon: float = None           # type: ignore[assignment]
     release_lat: float = None           # type: ignore[assignment]
+    # BK-7 real-bank meshing: "auto" samples USGS NHDArea river polygons for
+    # per-station left/right bank offsets (mesh follows the REAL river);
+    # "constant" keeps the legacy fixed-width ribbon.
+    bank_source: str = "auto"
     pulse_window_s: float = 300.0       # dye-on window; source turns OFF after
     source_q_m3s: float = 8.0           # carrier discharge of the point source (small vs inflow)
     duration_s: float = 3600.0
@@ -201,15 +205,153 @@ def process_centerline(ll: np.ndarray, cfg: ReachConfig):
 
 
 # ---------------------------------------------------------------------------
-# 3. Channel banks + Gmsh mesh (adapts P0 build_gmsh_channel, honoring gotchas)
+# 2b. BK-7: real river banks from USGS NHDArea polygons
 # ---------------------------------------------------------------------------
-def _offset_banks(cl: np.ndarray, width: float):
+_NHDAREA_URL = (
+    "https://hydro.nationalmap.gov/arcgis/rest/services/NHDPlus_HR/"
+    "MapServer/8/query"
+)
+
+
+def fetch_bank_polygons(bbox4326, timeout=30.0):
+    """NHDArea water polygons intersecting ``bbox4326`` (lonlat) as a list of
+    (exterior_ring, [hole_rings]) lonlat arrays. None on ANY failure/empty -
+    the caller falls back to the constant-width ribbon (honest degrade)."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+
+    params = urllib.parse.urlencode({
+        "geometry": ",".join(f"{v:.6f}" for v in bbox4326),
+        "geometryType": "esriGeometryEnvelope",
+        "inSR": "4326", "outSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "ftype", "f": "geojson",
+    })
+    try:
+        with urllib.request.urlopen(f"{_NHDAREA_URL}?{params}", timeout=timeout) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- degrade, never dead-end
+        LOG.warning("NHDArea fetch failed (%s); constant-width fallback", exc)
+        return None
+    polys = []
+    for f in data.get("features") or []:
+        g = f.get("geometry") or {}
+        if g.get("type") == "Polygon":
+            rings = g.get("coordinates") or []
+            if rings:
+                polys.append((np.asarray(rings[0], dtype=float),
+                              [np.asarray(rr, dtype=float) for rr in rings[1:]]))
+        elif g.get("type") == "MultiPolygon":
+            for rings in g.get("coordinates") or []:
+                if rings:
+                    polys.append((np.asarray(rings[0], dtype=float),
+                                  [np.asarray(rr, dtype=float) for rr in rings[1:]]))
+    return polys or None
+
+
+def estimate_bank_offsets(cl, polys_utm, max_half=300.0, step=3.0,
+                          min_half=8.0, valid_frac_floor=0.3):
+    """Per-station (left, right) bank distances from the water polygons.
+
+    Casts a perpendicular transect at every centerline station, marks which
+    samples are WATER (inside an exterior ring minus its holes), and takes the
+    contiguous water run nearest the centerline. Stations with no water within
+    ~30 m are interpolated from neighbours; if fewer than ``valid_frac_floor``
+    of stations see water at all, returns None (constant-width fallback).
+    Profiles are smoothed + gradient-limited so gmsh bank offsetting stays
+    simple (no bowties from step changes)."""
+    import shapely.geometry as sg
+    try:
+        import shapely
+        _contains = lambda g, xs, ys: shapely.contains_xy(g, xs, ys)  # noqa: E731
+    except Exception:  # noqa: BLE001 -- shapely<2 fallback
+        from shapely.prepared import prep
+        def _contains(g, xs, ys, _p={}):
+            pg = _p.setdefault(id(g), prep(g))
+            return np.array([pg.contains(sg.Point(x, y)) for x, y in zip(xs, ys)])
+
+    water = [sg.Polygon(ext, holes=[h for h in holes if len(h) >= 4])
+             for ext, holes in polys_utm if len(ext) >= 4]
+    water = [w.buffer(0) for w in water if not w.is_empty]
+    if not water:
+        return None
+    from shapely.ops import unary_union
+    union = unary_union(water)
+
     x, y = cl[:, 0], cl[:, 1]
     dx = np.gradient(x); dy = np.gradient(y)
     seg = np.hypot(dx, dy); seg[seg == 0] = 1e-9
     nx = -dy / seg; ny = dx / seg
-    left = np.column_stack([x + nx * width / 2, y + ny * width / 2])
-    right = np.column_stack([x - nx * width / 2, y - ny * width / 2])
+    ts = np.arange(-max_half, max_half + step, step)
+    n = len(cl)
+    left = np.full(n, np.nan); right = np.full(n, np.nan)
+    for i in range(n):
+        sx = x[i] + nx[i] * ts
+        sy = y[i] + ny[i] * ts
+        try:
+            wet = np.asarray(_contains(union, sx, sy), dtype=bool)
+        except Exception:  # noqa: BLE001
+            return None
+        if not wet.any():
+            continue
+        # contiguous wet runs; pick the one nearest t=0 (within 30 m)
+        idx = np.flatnonzero(wet)
+        splits = np.flatnonzero(np.diff(idx) > 1)
+        runs = np.split(idx, splits + 1)
+        zero = len(ts) // 2
+        best, bestd = None, 1e18
+        for run in runs:
+            d = 0.0 if run[0] <= zero <= run[-1] else min(
+                abs(ts[run[0]]), abs(ts[run[-1]]))
+            if d < bestd:
+                best, bestd = run, d
+        if best is None or bestd > 30.0:
+            continue
+        # offsets relative to the centerline station (positive both sides)
+        left[i] = max(min_half, ts[best[-1]])
+        right[i] = max(min_half, -ts[best[0]])
+    valid = np.isfinite(left) & np.isfinite(right)
+    if valid.mean() < valid_frac_floor:
+        return None
+    # interpolate gaps from valid neighbours
+    ii = np.arange(n)
+    for arr in (left, right):
+        good = np.isfinite(arr)
+        arr[~good] = np.interp(ii[~good], ii[good], arr[good])
+    # smooth + clamp + gradient-limit (max 35% of station spacing per step)
+    k = np.ones(9) / 9.0
+    ds = float(np.median(seg))
+    max_delta = 0.35 * ds
+    for arr in (left, right):
+        arr[:] = np.convolve(arr, k, mode="same")
+        np.clip(arr, min_half, max_half, out=arr)
+        for _ in range(200):
+            d = np.diff(arr)
+            over = np.abs(d) > max_delta
+            if not over.any():
+                break
+            d = np.clip(d, -max_delta, max_delta)
+            arr[1:] = arr[0] + np.cumsum(d)
+            np.clip(arr, min_half, max_half, out=arr)
+    return left, right, round(float(valid.mean()), 3)
+
+
+# ---------------------------------------------------------------------------
+# 3. Channel banks + Gmsh mesh (adapts P0 build_gmsh_channel, honoring gotchas)
+# ---------------------------------------------------------------------------
+def _offset_banks(cl: np.ndarray, width: float, offsets=None):
+    x, y = cl[:, 0], cl[:, 1]
+    dx = np.gradient(x); dy = np.gradient(y)
+    seg = np.hypot(dx, dy); seg[seg == 0] = 1e-9
+    nx = -dy / seg; ny = dx / seg
+    if offsets is not None:
+        lo, ro = offsets
+        left = np.column_stack([x + nx * lo, y + ny * lo])
+        right = np.column_stack([x - nx * ro, y - ny * ro])
+    else:
+        left = np.column_stack([x + nx * width / 2, y + ny * width / 2])
+        right = np.column_stack([x - nx * width / 2, y - ny * width / 2])
     return left, right
 
 
@@ -228,7 +370,8 @@ def build_channel_mesh(cl: np.ndarray, cfg: ReachConfig):
     """
     import gmsh
 
-    left, right = _offset_banks(cl, cfg.channel_width_m)
+    offsets = getattr(cfg, "bank_offsets", None)
+    left, right = _offset_banks(cl, cfg.channel_width_m, offsets)
     # gotcha 7: if banks self-intersect at a bend, smooth harder until simple
     tries = 0
     while not _banks_valid(left, right) and tries < 6:
@@ -236,7 +379,10 @@ def build_channel_mesh(cl: np.ndarray, cfg: ReachConfig):
         cl = np.column_stack([np.convolve(cl[:, 0], k, mode="same"),
                               np.convolve(cl[:, 1], k, mode="same")])
         cl[0] = cl[0]; cl[-1] = cl[-1]
-        left, right = _offset_banks(cl, cfg.channel_width_m)
+        if offsets is not None:
+            offsets = (np.convolve(offsets[0], k, mode="same"),
+                       np.convolve(offsets[1], k, mode="same"))
+        left, right = _offset_banks(cl, cfg.channel_width_m, offsets)
         tries += 1
     banks_ok = _banks_valid(left, right)
 
