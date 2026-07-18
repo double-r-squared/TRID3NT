@@ -62,9 +62,16 @@ substance from the prompt; the gate card states class + what is/isn't modeled.
 
 - M1 (code exists, pre-directive): substance LABEL lever on the tracer path +
   wide-river bank sampling + Longview case + harness. Finish + verify.
-- M2: oil-module spike (offline, free): author cas + oil steering + drogues
-  positioning file on the PROVEN Twin Falls mesh; run in-container; confirm
-  drogues output + dissolved tracer; parse particles. GO/NO-GO evidence.
+- M2 DONE - GO (2026-07-18, on the proven Longview mesh): the steering
+  file's PRESENCE auto-activates the module in v9 (lecdon_telemac2d.f - no
+  PARTICLE TRANSPORT keyword); release = user_fortran OIL_FLOT override
+  (default is a hardcoded LT=10000 Loire demo). 100-particle light-crude
+  slick: 3.6 km drift in 59 min (~river velocity), Fay spreading 7->206 m
+  radius, CORRECT END, TecPlot drogues.txt parsed (60 snapshots). HAP line =
+  5 cols (FM TB SOLU KDISS KVOL). Templates versioned at
+  services/workers/telemac/oil_templates/. Proof render
+  m2_oil_particles_satellite.png - the 41-min cluster crosses Cottonwood
+  Island: island HOLES in the ribbon mesh are M3's quality gate.
 - M3: particle postprocess (animated points + density COG) + presets +
   comparison demo (same reach, tracer vs oil run side by side).
 - M4: tracer decay rates for non-conservative substances (coliform etc.).
