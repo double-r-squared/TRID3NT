@@ -865,7 +865,7 @@ async def model_river_dye_release_scenario(
                 layer_type="vector",
                 uri=f"s3://{_get_runs_bucket()}/{batch_run_id}/slick.geojson",
                 style_preset="nhdplus_flowlines",
-                role="output",
+                role="primary",
                 bbox=peak.bbox,
             )
             emitted = await publish_input_layer(emitter, slick_layer)
