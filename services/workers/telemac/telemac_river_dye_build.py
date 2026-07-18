@@ -63,6 +63,11 @@ class ReachConfig:
     # rather than the old continuous upstream-inflow injection saturating the
     # whole reach. Clean flow (inflow->outflow) still drives it.
     spill_frac: float = 0.25            # along-channel position of the spill (0=up,1=down)
+    # BK-6 release-point picker: explicit spill location (EPSG:4326). When BOTH
+    # are set they OVERRIDE spill_frac - the source snaps to the nearest
+    # interior mesh node to this point (validated within 2 channel widths).
+    release_lon: float = None           # type: ignore[assignment]
+    release_lat: float = None           # type: ignore[assignment]
     pulse_window_s: float = 300.0       # dye-on window; source turns OFF after
     source_q_m3s: float = 8.0           # carrier discharge of the point source (small vs inflow)
     duration_s: float = 3600.0
@@ -492,15 +497,29 @@ def spill_point(mesh, cfg):
     anyway; we pre-snap so the reported coordinate is an actual wet node.
     """
     cl = mesh["centerline"]
-    seglen = np.hypot(np.diff(cl[:, 0]), np.diff(cl[:, 1]))
-    cum = np.concatenate([[0.0], np.cumsum(seglen)])
-    total = float(cum[-1])
-    target = float(np.clip(cfg.spill_frac, 0.0, 1.0)) * total
-    j = int(np.clip(np.searchsorted(cum, target), 1, len(cl) - 1))
-    seg = max(cum[j] - cum[j - 1], 1e-9)
-    st = (target - cum[j - 1]) / seg
-    px = cl[j - 1, 0] + st * (cl[j, 0] - cl[j - 1, 0])
-    py = cl[j - 1, 1] + st * (cl[j, 1] - cl[j - 1, 1])
+    # BK-6: an explicit user-picked release point (set as UTM by run_pipeline
+    # from cfg.release_lon/lat) overrides the spill_frac walk - but only when
+    # it lands within 2 channel widths of the mesh (else fall back + note).
+    rel = getattr(cfg, "release_utm", None)
+    px = py = None
+    if rel is not None:
+        rx, ry = float(rel[0]), float(rel[1])
+        d2r = (mesh["X"] - rx) ** 2 + (mesh["Y"] - ry) ** 2
+        if float(np.sqrt(d2r.min())) <= 2.0 * float(cfg.channel_width_m):
+            px, py = rx, ry
+            mesh["release_point_used"] = True
+        else:
+            mesh["release_point_rejected_dist_m"] = round(float(np.sqrt(d2r.min())), 1)
+    if px is None:
+        seglen = np.hypot(np.diff(cl[:, 0]), np.diff(cl[:, 1]))
+        cum = np.concatenate([[0.0], np.cumsum(seglen)])
+        total = float(cum[-1])
+        target = float(np.clip(cfg.spill_frac, 0.0, 1.0)) * total
+        j = int(np.clip(np.searchsorted(cum, target), 1, len(cl) - 1))
+        seg = max(cum[j] - cum[j - 1], 1e-9)
+        st = (target - cum[j - 1]) / seg
+        px = cl[j - 1, 0] + st * (cl[j, 0] - cl[j - 1, 0])
+        py = cl[j - 1, 1] + st * (cl[j, 1] - cl[j - 1, 1])
     ring = set(int(n) for n in mesh["ring"])
     d2 = (mesh["X"] - px) ** 2 + (mesh["Y"] - py) ** 2
     for idx in np.argsort(d2):

@@ -251,6 +251,15 @@ def run_pipeline(
     Z, bed = B.fetch_dem_bed(mesh, cfg, tr)
     LOG.info("dem bed: %s", bed)
 
+    # BK-6: project the user-picked release point (lonlat) into the mesh UTM
+    # so spill_point can honor it (validated there within 2 channel widths).
+    if getattr(cfg, "release_lon", None) is not None \
+            and getattr(cfg, "release_lat", None) is not None:
+        rx, ry = tr.transform(float(cfg.release_lon), float(cfg.release_lat))
+        cfg.release_utm = (float(rx), float(ry))
+        LOG.info("release point provided: (%.5f, %.5f) -> UTM (%.1f, %.1f)",
+                 cfg.release_lon, cfg.release_lat, rx, ry)
+
     slf = str(data_dir / "river.slf")
     cli = str(data_dir / "river.cli")
     res = str(data_dir / "r2d_river.slf")
@@ -299,6 +308,8 @@ def run_pipeline(
         "n_inflow_nodes": int(mesh["n_in"]),
         "n_outflow_nodes": int(mesh["n_out"]),
         "lb_order": lb or guess,
+        "release_point_used": bool(mesh.get("release_point_used")),
+        "release_point_rejected_dist_m": mesh.get("release_point_rejected_dist_m"),
         "enforced_slope": bed.get("enforced_slope"),
         "bed_drop_m": bed.get("bed_drop_m"),
         "reach_len_m": bed.get("reach_len_m"),

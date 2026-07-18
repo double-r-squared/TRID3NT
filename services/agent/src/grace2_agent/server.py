@@ -7157,14 +7157,20 @@ async def _build_telemac_mesh_envelope(
             "elements": nelem,
             "time_step_s": dt,
             "compute_class": "local",
+            # BK-6: the client card enters "Select release point" mode - the
+            # user clicks the map inside the mesh; Continue stays greyed until
+            # a point exists; the point rides back in revised_args.
+            "release_point_required": True,
+            "mesh_bbox": list(stats.get("bbox") or []),
         },
         estimated_mb=0.0,
         threshold_mb=0.0,
         recommendation=(
             f"The river mesh for {where} is previewed on the map "
-            f"({npoin:,} nodes at {h:g} m edges, dt {dt:g} s). Approve to run "
-            f"the dye solve (est ~{est_s / 60.0:.0f} min), pick a finer or "
-            "coarser mesh, or cancel."
+            f"({npoin:,} nodes at {h:g} m edges, dt {dt:g} s; est solve "
+            f"~{est_s / 60.0:.0f} min). Click the map INSIDE the mesh to place "
+            "the spill release point (click again to move it), then Continue. "
+            "You can also pick a finer/coarser mesh, or cancel."
         )[:512],
         options=["proceed", "cancel", "narrow_scope"],
         granularity=granularity,
@@ -8443,6 +8449,13 @@ async def _gate_on_solver_confirm(
             approved = dict(params)
             approved["confirmed"] = True
             approved["mesh_resolution_m"] = chosen_h
+            # BK-6: the user-picked release point rides revised_args.
+            for _rk in ("release_lon", "release_lat"):
+                if revised.get(_rk) is not None:
+                    try:
+                        approved[_rk] = float(revised[_rk])
+                    except (TypeError, ValueError):
+                        pass
             logger.info(
                 "telemac approve-mesh narrow_scope session=%s warning_id=%s "
                 "previewed_h=%.3g chosen_h=%.3g",

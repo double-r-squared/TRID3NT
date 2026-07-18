@@ -90,6 +90,8 @@ async def run_telemac(
     river_geometry_uri: str | None = None,
     mesh_resolution: str = "auto",
     mesh_resolution_m: float | None = None,
+    release_lon: float | None = None,
+    release_lat: float | None = None,
     compute_class: str = "medium",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -157,6 +159,9 @@ async def run_telemac(
             (e.g. 8.0). Overrides ``mesh_resolution``. Still clamped under the node
             budget so a reckless value can't wedge the solve. Leave unset unless
             the user asks for a specific resolution.
+        release_lon: EPSG:4326 longitude of the USER-PICKED spill point (BK-6).
+            Comes from the approve-mesh gate's map click - do NOT invent it.
+        release_lat: EPSG:4326 latitude of the user-picked spill point.
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
@@ -312,6 +317,8 @@ async def run_telemac(
             river_geometry_uri=(str(river_geometry_uri) if river_geometry_uri else None),
             mesh_resolution=str(mesh_resolution or "auto"),
             mesh_resolution_m=(float(mesh_resolution_m) if mesh_resolution_m is not None else None),
+            release_lon=(float(release_lon) if release_lon is not None else None),
+            release_lat=(float(release_lat) if release_lat is not None else None),
             compute_class=compute_class,
         )
         logger.info(

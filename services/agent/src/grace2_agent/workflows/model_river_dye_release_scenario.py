@@ -523,6 +523,8 @@ async def model_river_dye_release_scenario(
     river_geometry_uri: str | None = None,
     mesh_resolution: str = "auto",
     mesh_resolution_m: float | None = None,
+    release_lon: float | None = None,
+    release_lat: float | None = None,
     *,
     compute_class: str = "medium",
     pipeline_emitter: Any | None = None,
@@ -641,6 +643,11 @@ async def model_river_dye_release_scenario(
         "mesh_size_m": mesh_size_m,
         "time_step_s": time_step_s,
         "dye_conc_mgl": float(dye_concentration_mgl),
+        # BK-6: user-picked release point overrides spill_frac (worker snaps to
+        # the nearest interior mesh node, validated within 2 channel widths).
+        **({"release_lon": round(float(release_lon), 6),
+            "release_lat": round(float(release_lat), 6)}
+           if release_lon is not None and release_lat is not None else {}),
         "spill_frac": float(min(max(spill_fraction, 0.0), 1.0)),
         "pulse_window_s": float(spill_duration_s),
         "source_q_m3s": float(source_q_m3s),
