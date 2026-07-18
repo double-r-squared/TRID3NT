@@ -69,16 +69,18 @@ substance from the prompt; the gate card states class + what is/isn't modeled.
   comparison demo (same reach, tracer vs oil run side by side).
 - M4: tracer decay rates for non-conservative substances (coliform etc.).
 
-## 4. Longview/Columbia case status (blocking bug found)
+## 4. Longview/Columbia case status (RESOLVED 2026-07-18)
 
-Mesh-only Columbia run HUNG >8 min before any worker log line: suspected the
-NHDArea fetch for the Columbia (mainstem polygons are huge; no paging, no
-result cap in v1 fetch) or NLDI 5km nav. FIX BEFORE RETRY: bound the NHDArea
-query (maxRecordCount paging OR resultRecordCount + geometry simplification
-tolerance param) + add fetch wall-time logging + timeout the whole bank stage
-(~60s) with constant-width fallback. Case params nailed: seed (-122.96,46.10)
-comid 24520446, reach 5 km, stated width 800 (real banks override), h=40,
-dt=2 (CFL law), substance=oil (tracer surrogate until M3).
+Both hangs root-caused + fixed (GRACE-2 6d753fa): (a) giant mainstem NHDArea
+polygons -> server simplification + resultRecordCount + clip-to-transect-
+envelope before union (bank stage now ~2s); (b) self-intersecting offset
+banks wedged gmsh 18 min silent -> hybrid GEOS offset_curve banks + SIGALRM
+240s + fail-closed MESH_BANKS_INVALID + banks_debug.npz. Wrong-arm seeding
+fixed systemically (OPEN-26, 4981632): composer extracts the watercourse
+name, worker re-seeds onto the gnis_name mainstem before the NLDI snap
+(witnessed: Longview city-center seed -> comid 24520446, frac=1.00, widths
+690-907m). Trace-scale case proven: 3km reach, h=40, real widths 965-1204m,
+4990 nodes / 5.3s mesh (data/mesh-proof/columbia/).
 
 ## 5. Harness (nailed per NATE)
 
