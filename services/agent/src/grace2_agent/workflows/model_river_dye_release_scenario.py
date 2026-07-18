@@ -733,10 +733,20 @@ async def model_river_dye_release_scenario(
     class _SolveReturnedFailed(RuntimeError):
         pass
 
+    # OPEN-29 companion: the default 1800 s wait outran a cap-sized solve live
+    # (74k nodes x 14400 steps ~ 38 min -> publish leg lost to the timeout).
+    # Bound by the WORST honest mesh (the node cap; the preview re-clamp keeps
+    # any approved h at or under it) with 1.5x headroom, floored at 1800.
+    _wait_s = max(
+        1800.0,
+        estimate_telemac_solve_seconds(
+            MESH_NODE_CAP, float(reach["duration_s"]), float(reach["time_step_s"])
+        ) * 1.5,
+    )
     try:
         async with substep(emitter, "run_solver"):
             try:
-                run_result = await wait_for_completion(handle)
+                run_result = await wait_for_completion(handle, timeout_s=_wait_s)
             except asyncio.CancelledError:
                 logger.info("model_river_dye_release_scenario cancelled awaiting solver")
                 await route_sim_terminal(emitter, _sim_step_id, run_result=None)
@@ -1034,49 +1044,71 @@ async def preview_telemac_mesh(
         "mesh_size_m": mesh_size_m,
         "time_step_s": time_step_s,
     }
-    run_tag = new_ulid()
-    manifest_uri = await asyncio.to_thread(
-        _stage_manifest, reach, run_tag, mesh_only=True
-    )
-    logger.info(
-        "preview_telemac_mesh dispatch run_tag=%s seed=(%.5f,%.5f) h=%.3g dt=%.3g",
-        run_tag, seed_lon, seed_lat, mesh_size_m, time_step_s,
-    )
-
-    # --- Fast mesh-only worker run (no sim cards; the gate IS the surface) --- #
-    handle = run_solver(
-        solver=TELEMAC_SOLVER_NAME,
-        model_setup_uri=manifest_uri,
-        compute_class="small",
-    )
-    # A healthy mesh-only run is ~10-40 s; 180 s bounds a hung gmsh so a broken
-    # preview cannot park the turn for 7 minutes before the gate falls open.
-    run_result = await wait_for_completion(handle, poll_interval_s=3, timeout_s=180)
-    if run_result is None or run_result.status != "complete":
-        raise TelemacDyeScenarioError(
-            "TELEMAC_MESH_BUILD_FAILED",
-            "mesh-only preview run did not complete "
-            f"(status={getattr(run_result, 'status', None)}).",
+    # OPEN-29: the suggest_mesh_size_m budget floor estimates nodes from the
+    # STATED channel width, but real-bank meshing follows the MEASURED river -
+    # live 2026-07-18 the Columbia (stated 150-500 m, real ~1400 m) previewed
+    # 295k nodes at h=10 against the 60k cap, cascading into a coarsest-rung
+    # solve that outran the wait budget. After the first mesh-only build, if
+    # the MEASURED npoin blows the cap, re-derive h from the measured node
+    # density (nodes scale ~1/h^2) and rebuild ONCE at the honest edge length.
+    for attempt in (1, 2):
+        run_tag = new_ulid()
+        manifest_uri = await asyncio.to_thread(
+            _stage_manifest, reach, run_tag, mesh_only=True
         )
-    mesh_run_id = getattr(run_result, "run_id", None) or handle.run_id
-
-    def _read_mesh_metrics() -> dict[str, Any]:
-        s3 = _get_s3_client()
-        obj = s3.get_object(
-            Bucket=_get_runs_bucket(), Key=f"{mesh_run_id}/telemac_metrics.json"
+        logger.info(
+            "preview_telemac_mesh dispatch run_tag=%s seed=(%.5f,%.5f) h=%.3g dt=%.3g",
+            run_tag, seed_lon, seed_lat, mesh_size_m, time_step_s,
         )
-        loaded = json.loads(obj["Body"].read().decode("utf-8"))
-        return loaded if isinstance(loaded, dict) else {}
 
-    m = await asyncio.to_thread(_read_mesh_metrics)
-    npoin = int(m.get("npoin") or 0)
-    nelem = int(m.get("nelem") or 0)
-    bbox4326 = m.get("bbox4326")
-    if npoin <= 0:
-        raise TelemacDyeScenarioError(
-            "TELEMAC_MESH_BUILD_FAILED",
-            f"mesh-only preview metrics carry no node count (run {mesh_run_id}).",
+        # Fast mesh-only worker run (no sim cards; the gate IS the surface).
+        handle = run_solver(
+            solver=TELEMAC_SOLVER_NAME,
+            model_setup_uri=manifest_uri,
+            compute_class="small",
         )
+        # A healthy mesh-only run is ~10-40 s; 240 s bounds a hung gmsh so a
+        # broken preview cannot park the turn before the gate falls open.
+        run_result = await wait_for_completion(handle, poll_interval_s=3, timeout_s=240)
+        if run_result is None or run_result.status != "complete":
+            raise TelemacDyeScenarioError(
+                "TELEMAC_MESH_BUILD_FAILED",
+                "mesh-only preview run did not complete "
+                f"(status={getattr(run_result, 'status', None)}).",
+            )
+        mesh_run_id = getattr(run_result, "run_id", None) or handle.run_id
+
+        def _read_mesh_metrics() -> dict[str, Any]:
+            s3 = _get_s3_client()
+            obj = s3.get_object(
+                Bucket=_get_runs_bucket(), Key=f"{mesh_run_id}/telemac_metrics.json"
+            )
+            loaded = json.loads(obj["Body"].read().decode("utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
+
+        m = await asyncio.to_thread(_read_mesh_metrics)
+        npoin = int(m.get("npoin") or 0)
+        nelem = int(m.get("nelem") or 0)
+        bbox4326 = m.get("bbox4326")
+        if npoin <= 0:
+            raise TelemacDyeScenarioError(
+                "TELEMAC_MESH_BUILD_FAILED",
+                f"mesh-only preview metrics carry no node count (run {mesh_run_id}).",
+            )
+        if attempt == 1 and npoin > MESH_NODE_CAP * 1.15:
+            h_honest = mesh_size_m * (npoin / MESH_NODE_CAP) ** 0.5
+            logger.warning(
+                "preview_telemac_mesh: measured %d nodes at h=%.3g blows the "
+                "%d cap (stated width %.0f m vs real banks) - rebuilding once "
+                "at h=%.3g",
+                npoin, mesh_size_m, MESH_NODE_CAP, channel_width_m, h_honest,
+            )
+            mesh_size_m = round(h_honest, 1)
+            time_step_s = suggest_time_step_s(mesh_size_m)
+            reach["mesh_size_m"] = mesh_size_m
+            reach["time_step_s"] = time_step_s
+            continue
+        break
 
     # --- Emit the wireframe as a role='input' vector layer + zoom-to --------- #
     # current_emitter() is NOT bound in the pre-dispatch gate context (live
