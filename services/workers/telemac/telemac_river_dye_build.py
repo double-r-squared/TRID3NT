@@ -250,7 +250,7 @@ def fetch_bank_polygons(bbox4326, timeout=30.0):
     return polys or None
 
 
-def estimate_bank_offsets(cl, polys_utm, max_half=300.0, step=3.0,
+def estimate_bank_offsets(cl, polys_utm, max_half=800.0, step=4.0,
                           min_half=8.0, valid_frac_floor=0.3):
     """Per-station (left, right) bank distances from the water polygons.
 
@@ -651,7 +651,13 @@ def spill_point(mesh, cfg):
     if rel is not None:
         rx, ry = float(rel[0]), float(rel[1])
         d2r = (mesh["X"] - rx) ** 2 + (mesh["Y"] - ry) ** 2
-        if float(np.sqrt(d2r.min())) <= 2.0 * float(cfg.channel_width_m):
+        # accept radius: 2 stated widths OR 1.5x the widest REAL bank span
+        # (wide rivers like the Columbia dwarf the stated default width)
+        lim = 2.0 * float(cfg.channel_width_m)
+        off = getattr(cfg, "bank_offsets", None)
+        if off is not None:
+            lim = max(lim, 1.5 * float((off[0] + off[1]).max()))
+        if float(np.sqrt(d2r.min())) <= lim:
             px, py = rx, ry
             mesh["release_point_used"] = True
         else:

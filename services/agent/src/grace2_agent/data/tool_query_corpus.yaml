@@ -1732,3 +1732,8 @@ run_telemac:
   - "show a dye release in the river moving downstream and following the channel bends"
   - "river spill: how does the contaminant plume advect down the river in the surface water"
   - "chemical released into the river upstream, where does it go and how fast does it move down the reach"
+  - an oil spill from a barge on the river, where does the oil go downstream
+  - simulate an oil spill in the Columbia River and how it moves downstream
+  - diesel spilled into the river, track the plume in the water
+  - a fuel spill in the river near the city, model the transport downstream
+  - sewage released into the river, how far downstream does it travel

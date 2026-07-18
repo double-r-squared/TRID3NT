@@ -525,6 +525,7 @@ async def model_river_dye_release_scenario(
     mesh_resolution_m: float | None = None,
     release_lon: float | None = None,
     release_lat: float | None = None,
+    substance: str = "dye",
     *,
     compute_class: str = "medium",
     pipeline_emitter: Any | None = None,
@@ -744,6 +745,7 @@ async def model_river_dye_release_scenario(
                 run_id=batch_run_id,
                 utm_epsg=utm_epsg,
                 reach_name=reach_name,
+                substance=substance,
             )
     finally:
         try:
@@ -762,7 +764,7 @@ async def model_river_dye_release_scenario(
     async with substep(emitter, "publish_layer"):
         peak = await asyncio.to_thread(
             _publish_peak_layer, raw_peak, batch_run_id, location_name, reach_name,
-            mesh_size_m, mesh_node_estimate, mesh_resolution_label,
+            mesh_size_m, mesh_node_estimate, mesh_resolution_label, substance,
         )
 
     logger.info(
@@ -806,6 +808,7 @@ def _publish_peak_layer(
     mesh_size_m: float | None = None,
     mesh_node_estimate: int | None = None,
     mesh_resolution_label: str | None = None,
+    substance: str = "dye",
 ) -> TelemacDyeLayerURI:
     """Publish the peak dye COG through publish_layer (render chokepoint) and
     enrich the narration. On publish failure the raw peak is returned UNCHANGED
@@ -815,12 +818,21 @@ def _publish_peak_layer(
     The three mesh_* params are the composer's chosen granularity (BK-3c),
     threaded explicitly - referencing composer locals here was a NameError that
     crashed every publish (caught by the BK-3b seam audit)."""
+    surrogate = ""
+    if substance and substance != "dye":
+        surrogate = (
+            f" NOTE: {substance} is modeled as a passively advected dissolved "
+            f"tracer (transport + dilution only) - NOT slick physics "
+            f"(no spreading/evaporation/weathering/beaching)."
+        )
     honesty = (
-        f"Idealized demo: a FINITE mid-reach point-source dye pulse released on "
+        f"Idealized demo: a FINITE mid-reach point-source {substance or 'dye'} "
+        f"pulse released on "
         f"the real {location_name} river reach (NLDI/NHDPlus geometry) over a "
         f"planar idealized channel bed with prescribed tracer dispersion. The "
-        f"raster is the PEAK dye envelope over the run; the animation plays from "
-        f"the native SELAFIN mesh. Not a calibrated site study."
+        f"raster is the PEAK concentration envelope over the run; the animation "
+        f"plays from the native SELAFIN mesh. Not a calibrated site study."
+        + surrogate
     )
     # BK-3c: the chosen mesh granularity travels on every return branch so the
     # agent can narrate it and the approve-mesh gate can display it.
@@ -928,7 +940,11 @@ async def preview_telemac_mesh(
     except (TypeError, ValueError):
         reach_length_km = DEFAULT_REACH_LENGTH_KM
     reach_length_km = min(max(reach_length_km, 0.5), 15.0)
-    channel_width_m = float(params.get("channel_width_m") or DEFAULT_CHANNEL_WIDTH_M)
+    try:
+        channel_width_m = float(params.get("channel_width_m") or DEFAULT_CHANNEL_WIDTH_M)
+    except (TypeError, ValueError):
+        channel_width_m = DEFAULT_CHANNEL_WIDTH_M
+    channel_width_m = min(max(channel_width_m, 10.0), 1500.0)
     try:
         sim_duration_s = float(params.get("sim_duration_s") or DEFAULT_SIM_DURATION_S)
     except (TypeError, ValueError):

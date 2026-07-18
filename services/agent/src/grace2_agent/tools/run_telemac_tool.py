@@ -92,6 +92,7 @@ async def run_telemac(
     mesh_resolution_m: float | None = None,
     release_lon: float | None = None,
     release_lat: float | None = None,
+    substance: str = "dye",
     compute_class: str = "medium",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -162,6 +163,11 @@ async def run_telemac(
         release_lon: EPSG:4326 longitude of the USER-PICKED spill point (BK-6).
             Comes from the approve-mesh gate's map click - do NOT invent it.
         release_lat: EPSG:4326 latitude of the user-picked spill point.
+        substance: WHAT was spilled - e.g. "dye", "oil", "diesel", "sewage",
+            "chemical". Set from the user's words. Modeled as a PASSIVELY
+            ADVECTED dissolved tracer (transport + dilution); labels/narration
+            follow the substance. (True oil-slick physics - spreading,
+            evaporation, beaching - is the separate oil-spill module, WIP.)
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
@@ -285,6 +291,19 @@ async def run_telemac(
             sim_duration_s,
         )
         sim_duration_s = min(max(sim_duration_s, 600.0), 14400.0)
+    # substance sanitize (label only - never solver-affecting)
+    substance = "".join(c for c in str(substance or "dye").strip().lower()
+                        if c.isalnum() or c in " -_")[:24] or "dye"
+    try:
+        channel_width_m = float(channel_width_m)
+    except (TypeError, ValueError):
+        channel_width_m = 60.0
+    if not (10.0 <= channel_width_m <= 1500.0):
+        logger.warning(
+            "run_telemac: channel_width_m %r outside [10, 1500] - clamped",
+            channel_width_m,
+        )
+        channel_width_m = min(max(channel_width_m, 10.0), 1500.0)
     try:
         source_q_m3s = float(source_q_m3s)
     except (TypeError, ValueError):
@@ -319,6 +338,7 @@ async def run_telemac(
             mesh_resolution_m=(float(mesh_resolution_m) if mesh_resolution_m is not None else None),
             release_lon=(float(release_lon) if release_lon is not None else None),
             release_lat=(float(release_lat) if release_lat is not None else None),
+            substance=substance,
             compute_class=compute_class,
         )
         logger.info(
