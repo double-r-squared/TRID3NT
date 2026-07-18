@@ -207,6 +207,18 @@ async def run_telemac(
     if has_loc and coerced_bbox is not None:
         has_loc = False  # explicit bbox wins; ignore the redundant location
 
+    # LLM-invented compute_class hardening (live 2026-07-17: the model passed
+    # compute_class='dye_spill' and the dispatch crashed AFTER the geocode +
+    # river fetch). Coerce anything outside the known ladder to 'medium' -
+    # same job-0164 family as the **_extra_ignored absorption above.
+    _ALLOWED_COMPUTE = {"small", "medium", "standard", "large", "xlarge", "gpu"}
+    if str(compute_class).strip().lower() not in _ALLOWED_COMPUTE:
+        logger.warning(
+            "run_telemac: unknown compute_class %r coerced to 'medium'",
+            compute_class,
+        )
+        compute_class = "medium"
+
     logger.info(
         "run_telemac location=%r bbox=%s spill_frac=%.3g pulse_s=%.0f dye=%.4g "
         "reach_km=%.3g sim_s=%.0f",
