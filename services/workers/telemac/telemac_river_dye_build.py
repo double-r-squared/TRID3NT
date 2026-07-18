@@ -1304,17 +1304,31 @@ COEFFICIENT FOR DIFFUSION OF TRACERS     = 1.E-1
         # the deepest interior node within 300 m - because OIL_BEACHING kills
         # floats in shallow margins (live: 100 particles dead in ~80 steps at
         # a shallow release node while the same preset thrived 250 m away).
+        # CLEARANCE-snap (live-bisected 2026-07-18): floats released near a
+        # wall/island boundary are silently dropped from the drogues tracker
+        # within ~minutes (oil balance still counts their mass as surface),
+        # while a release 437m clear survived 100/100 for the full run. Pick
+        # the interior node with MAX distance-from-any-boundary within 400m
+        # of the spill point, tie-broken by deeper bed.
         ox, oy = sx, sy
-        bed_z = mesh.get("bed_z")
-        if bed_z is not None:
-            X_, Y_ = mesh["X"], mesh["Y"]
-            interior = mesh["ipob"] == 0
-            near = (np.hypot(X_ - sx, Y_ - sy) < 300.0) & interior
-            if np.any(near):
-                idx = np.where(near)[0][np.argmin(np.asarray(bed_z)[near])]
-                ox, oy = float(X_[idx]), float(Y_[idx])
-                LOG.info("oil release thalweg-snapped: (%.0f,%.0f) -> "
-                         "(%.0f,%.0f)", sx, sy, ox, oy)
+        X_, Y_ = mesh["X"], mesh["Y"]
+        interior = mesh["ipob"] == 0
+        near = (np.hypot(X_ - sx, Y_ - sy) < 400.0) & interior
+        if np.any(near):
+            from scipy.spatial import cKDTree
+            bx = np.column_stack([X_[~interior], Y_[~interior]])
+            clr, _ = cKDTree(bx).query(
+                np.column_stack([X_[near], Y_[near]]))
+            score = clr.copy()
+            bed_z = mesh.get("bed_z")
+            if bed_z is not None:
+                bz = np.asarray(bed_z)[near]
+                score = clr - 0.01 * (bz - bz.min())  # clearance first, depth tie-break
+            idx = np.where(near)[0][np.argmax(score)]
+            ox, oy = float(X_[idx]), float(Y_[idx])
+            LOG.info("oil release clearance-snapped: (%.0f,%.0f) -> (%.0f,%.0f) "
+                     "(wall clearance %.0f m)", sx, sy, ox, oy,
+                     float(clr[np.argmax(score)]))
         write_oil_inputs(cfg, ox, oy, os.path.dirname(os.path.abspath(cas_path)))
         cas += (
             "/\n"
