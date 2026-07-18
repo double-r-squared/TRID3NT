@@ -293,6 +293,33 @@ def _locality_tail(location: str) -> str | None:
     return None
 
 
+_WATERCOURSE_TYPES = ("river", "creek", "slough", "fork", "bayou")
+_NAME_STOPWORDS = frozenset({"the", "a", "an", "on", "in", "into", "near", "at", "by"})
+
+
+def _named_watercourse(location: str) -> str | None:
+    """The GNIS-style watercourse name in a location phrase, or None.
+
+    'Columbia River near Longview, Washington' -> 'Columbia River'. OPEN-26:
+    the worker re-seeds onto the NAMED mainstem (gnis_name flowline query)
+    before the NLDI position-snap, so a geocode near a confluence stops
+    landing the mesh on the tributary/slough."""
+    import re
+
+    m = re.search(
+        rf"\b((?:[\w'.-]+\s+){{1,3}}(?:{'|'.join(_WATERCOURSE_TYPES)}))\b",
+        str(location or ""), flags=re.IGNORECASE,
+    )
+    if not m:
+        return None
+    words = m.group(1).split()
+    while words and words[0].lower() in _NAME_STOPWORDS:
+        words = words[1:]
+    if len(words) < 2:  # need at least '<Name> River'
+        return None
+    return " ".join(w.title() for w in words)
+
+
 async def _geocode_seed_center(
     geocode_fn: Any, location: str, geo: Any
 ) -> tuple[float, float, str]:
@@ -634,10 +661,14 @@ async def model_river_dye_release_scenario(
         reach_length_km, channel_width_m,
     )
     reach_name = _slug(location_name)
+    # OPEN-26: hand the worker the NAMED watercourse so it re-seeds onto the
+    # gnis_name mainstem (confluence disambiguation, Columbia-proven).
+    river_name = _named_watercourse(location or location_name) or ""
     reach: dict[str, Any] = {
         "name": reach_name,
         "seed_lon": round(seed_lon, 6),
         "seed_lat": round(seed_lat, 6),
+        **({"river_name": river_name} if river_name else {}),
         "nav_direction": "DM",
         "distance_km": float(reach_length_km),
         "channel_width_m": float(channel_width_m),
