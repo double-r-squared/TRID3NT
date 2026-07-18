@@ -7083,7 +7083,9 @@ async def _gate_on_code_exec(
     return True, approved
 
 
-async def _build_telemac_mesh_envelope(params: dict) -> tuple[Any, dict]:
+async def _build_telemac_mesh_envelope(
+    params: dict, emitter: Any = None
+) -> tuple[Any, dict]:
     """Build the BK-3b approve-mesh confirm card for ``run_telemac``.
 
     The heavy-work-in-builder license comes from the SWMM #154 builder below
@@ -7113,7 +7115,7 @@ async def _build_telemac_mesh_envelope(params: dict) -> tuple[Any, dict]:
         preview_telemac_mesh,
     )
 
-    stats = await preview_telemac_mesh(params)
+    stats = await preview_telemac_mesh(params, emitter=emitter)
     h = float(stats["mesh_size_m"])
     npoin = int(stats["npoin"])
     nelem = int(stats["nelem"])
@@ -8199,7 +8201,9 @@ async def _gate_on_solver_confirm(
             # worker and emits the wireframe preview layer BEFORE the card, so
             # the user approves a mesh they can SEE (with real node counts +
             # the CFL-coupled dt on the card). ~10-25 s pre-card.
-            envelope, telemac_preview = await _build_telemac_mesh_envelope(params)
+            envelope, telemac_preview = await _build_telemac_mesh_envelope(
+                params, emitter=state.emitter
+            )
         elif tool_name == "run_swmm_urban_flood":
             # #154 granularity gate (sprint-16): make mesh resolution a USER
             # lever (memory: feedback_user_controlled_granularity). The enriched

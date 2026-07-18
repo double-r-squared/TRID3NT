@@ -253,6 +253,88 @@ class TelemacDyeScenarioInputError(TelemacDyeScenarioError):
 # --------------------------------------------------------------------------- #
 # Registry / geometry helpers
 # --------------------------------------------------------------------------- #
+async def _call_registry_tool(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Invoke a registry tool fn that may be sync (returns the value) or async
+    (returns an awaitable) - normalize both (what _maybe_emit does internally)."""
+    import inspect
+
+    out = fn(*args, **kwargs)
+    if inspect.isawaitable(out):
+        out = await out
+    return out
+
+
+def _is_state_snap_geocode(geo: Any) -> bool:
+    """True when geocode_location fell back to a WHOLE-STATE bbox.
+
+    A state-snap centroid is the middle of the state - as a river-reach seed it
+    is ~100+ km of drift (THE root cause of OPEN-25a: 'Snake River near Twin
+    Falls' geocoding to central Idaho). Never seed a reach from one."""
+    return isinstance(geo, dict) and (
+        geo.get("source") == "state-bbox-fallback"
+        or geo.get("fallback_reason") is not None
+    )
+
+
+def _locality_tail(location: str) -> str | None:
+    """Extract the locality phrase from a river+locality compound query.
+
+    'Snake River near Twin Falls, Idaho' -> 'Twin Falls, Idaho'. Nominatim
+    often has no feature for the compound but pins the locality fine; the
+    worker NLDI-snaps the locality seed to the nearest flowline anyway."""
+    import re
+
+    for sep in ("near", "at", "by", "outside", "in"):
+        m = re.search(rf"\b{sep}\b(.+)$", location, flags=re.IGNORECASE)
+        if m:
+            tail = m.group(1).strip(" ,")
+            if tail and tail.lower() != location.strip().lower():
+                return tail
+    return None
+
+
+async def _geocode_seed_center(
+    geocode_fn: Any, location: str, geo: Any
+) -> tuple[float, float, str]:
+    """Resolve (lon, lat, name) for the reach seed from a geocode result,
+    REJECTING state-snaps (OPEN-25a hardening).
+
+    ``geo`` is the first-attempt result (already fetched by the caller so the
+    emit-wrapped card shows the user's own phrase). On a state-snap, retry
+    ONCE with the locality tail; if that also snaps (or no tail exists), raise
+    the typed ambiguity error instead of simulating the wrong river."""
+    if _is_state_snap_geocode(geo):
+        tail = _locality_tail(location)
+        retry = None
+        if tail:
+            logger.info(
+                "telemac seed geocode: %r snapped to a whole state; retrying "
+                "with locality tail %r", location, tail,
+            )
+            try:
+                retry = await _call_registry_tool(geocode_fn, tail)
+            except Exception as exc:  # noqa: BLE001 -- fall through to the typed error
+                logger.warning("telemac seed geocode retry failed: %s", exc)
+        if retry is not None and not _is_state_snap_geocode(retry):
+            geo = retry
+        else:
+            raise TelemacDyeScenarioError(
+                "TELEMAC_DYE_GEOCODE_AMBIGUOUS",
+                f"geocode_location({location!r}) only matched a whole US state "
+                "- too coarse to place a river reach (the centroid would be "
+                "~100 km off). Give a more specific place (a city/town near "
+                "the reach) or an explicit bbox AOI.",
+            )
+    glat = geo.get("latitude") if isinstance(geo, dict) else None
+    glon = geo.get("longitude") if isinstance(geo, dict) else None
+    if glat is None or glon is None:
+        raise TelemacDyeScenarioError(
+            "TELEMAC_DYE_GEOCODE_FAILED",
+            f"geocode_location({location!r}) returned no centroid lat/lon.",
+        )
+    return float(glon), float(glat), str(geo.get("name") or location)
+
+
 def _registry_fn(name: str) -> Any:
     entry = TOOL_REGISTRY.get(name)
     if entry is None:
@@ -490,15 +572,11 @@ async def model_river_dye_release_scenario(
                 tool_name="geocode_location",
                 invoke=lambda: geocode_fn(location),
             )
-        glat = geo.get("latitude") if isinstance(geo, dict) else None
-        glon = geo.get("longitude") if isinstance(geo, dict) else None
-        if glat is None or glon is None:
-            raise TelemacDyeScenarioError(
-                "TELEMAC_DYE_GEOCODE_FAILED",
-                f"geocode_location({location!r}) returned no centroid lat/lon.",
-            )
-        center_lon, center_lat = float(glon), float(glat)
-        location_name = str(geo.get("name") or location)
+        # OPEN-25a hardening: reject whole-state snaps (retry with the locality
+        # tail, else typed ambiguity error - never seed from a state centroid).
+        center_lon, center_lat, location_name = await _geocode_seed_center(
+            geocode_fn, str(location), geo
+        )
     else:
         assert bbox is not None
         center_lon, center_lat = _bbox_center(bbox)
@@ -786,7 +864,9 @@ def _publish_peak_layer(
 # --------------------------------------------------------------------------- #
 # BK-3b: fast mesh-only preview for the approve-mesh gate
 # --------------------------------------------------------------------------- #
-async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
+async def preview_telemac_mesh(
+    params: dict[str, Any], *, emitter: Any = None
+) -> dict[str, Any]:
     """Build (only) the TELEMAC mesh for the approve-mesh gate - no solve.
 
     Called by the server's ``_build_telemac_mesh_envelope`` (the ``run_telemac``
@@ -820,43 +900,47 @@ async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
 
     location = params.get("location")
     coerced_bbox = None
-    if params.get("bbox") is not None:
-        cb = coerce_bbox_value(params.get("bbox"))
+    raw_bbox = params.get("bbox")
+    if raw_bbox is not None:
+        cb = coerce_bbox_value(raw_bbox)
         if cb is not None:
             coerced_bbox = tuple(cb)
+        elif isinstance(raw_bbox, str) and any(c.isalpha() for c in raw_bbox) \
+                and not (location and str(location).strip()):
+            location = raw_bbox  # LLM put a place name in the bbox field
     has_loc = bool(location and str(location).strip())
     if has_loc and coerced_bbox is not None:
         has_loc = False  # explicit bbox wins (mirror of run_telemac OPEN-24)
     if not has_loc and coerced_bbox is None:
         raise ValueError("preview_telemac_mesh: no location/bbox in params")
 
-    reach_length_km = float(params.get("reach_length_km") or DEFAULT_REACH_LENGTH_KM)
+    # Mirror of the tool's LLM-arg hardening (the gate builder sees RAW params):
+    # a 50 km reach live-hung gmsh on the meandering centerline - clamp.
+    try:
+        reach_length_km = float(params.get("reach_length_km") or DEFAULT_REACH_LENGTH_KM)
+    except (TypeError, ValueError):
+        reach_length_km = DEFAULT_REACH_LENGTH_KM
+    reach_length_km = min(max(reach_length_km, 0.5), 15.0)
     channel_width_m = float(params.get("channel_width_m") or DEFAULT_CHANNEL_WIDTH_M)
-    sim_duration_s = float(params.get("sim_duration_s") or DEFAULT_SIM_DURATION_S)
+    try:
+        sim_duration_s = float(params.get("sim_duration_s") or DEFAULT_SIM_DURATION_S)
+    except (TypeError, ValueError):
+        sim_duration_s = DEFAULT_SIM_DURATION_S
+    sim_duration_s = min(max(sim_duration_s, 600.0), 14400.0)
     mesh_resolution = str(params.get("mesh_resolution") or "auto")
     mesh_resolution_m = params.get("mesh_resolution_m")
     river_geometry_uri = params.get("river_geometry_uri")
-
-    # Registry tool fns may be sync (return the dict directly) or async -
-    # normalize both, mirroring what _maybe_emit does for the main composer.
-    import inspect
-
-    async def _call_tool(fn: Any, /, *args: Any, **kwargs: Any) -> Any:
-        out = fn(*args, **kwargs)
-        if inspect.isawaitable(out):
-            out = await out
-        return out
+    if river_geometry_uri and not str(river_geometry_uri).startswith(("s3://", "gs://")):
+        river_geometry_uri = None  # pseudo-call string, not a real URI
 
     # --- Stage 1-2 mirror (QUIET: no substep/tool cards pre-gate) ------------ #
     if has_loc:
         geocode_fn = _registry_fn("geocode_location")
-        geo = await _call_tool(geocode_fn, location)
-        glat = geo.get("latitude") if isinstance(geo, dict) else None
-        glon = geo.get("longitude") if isinstance(geo, dict) else None
-        if glat is None or glon is None:
-            raise ValueError(f"preview geocode failed for {location!r}")
-        center_lon, center_lat = float(glon), float(glat)
-        location_name = str(geo.get("name") or location)
+        geo = await _call_registry_tool(geocode_fn, location)
+        # OPEN-25a hardening (same as the main composer): reject state-snaps.
+        center_lon, center_lat, location_name = await _geocode_seed_center(
+            geocode_fn, str(location), geo
+        )
     else:
         assert coerced_bbox is not None
         center_lon, center_lat = _bbox_center(coerced_bbox)  # type: ignore[arg-type]
@@ -867,7 +951,7 @@ async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
         river_uri: str | None = str(river_geometry_uri)
     else:
         fetch_river_fn = _registry_fn("fetch_river_geometry")
-        river_layer = await _call_tool(fetch_river_fn, bbox=river_bbox)
+        river_layer = await _call_registry_tool(fetch_river_fn, bbox=river_bbox)
         river_uri = _layer_field(river_layer, "uri")
     seed: tuple[float, float] | None = None
     if river_uri:
@@ -909,7 +993,9 @@ async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
         model_setup_uri=manifest_uri,
         compute_class="small",
     )
-    run_result = await wait_for_completion(handle, poll_interval_s=3, timeout_s=420)
+    # A healthy mesh-only run is ~10-40 s; 180 s bounds a hung gmsh so a broken
+    # preview cannot park the turn for 7 minutes before the gate falls open.
+    run_result = await wait_for_completion(handle, poll_interval_s=3, timeout_s=180)
     if run_result is None or run_result.status != "complete":
         raise TelemacDyeScenarioError(
             "TELEMAC_MESH_BUILD_FAILED",
@@ -937,7 +1023,10 @@ async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
         )
 
     # --- Emit the wireframe as a role='input' vector layer + zoom-to --------- #
-    emitter = current_emitter()
+    # current_emitter() is NOT bound in the pre-dispatch gate context (live
+    # finding 2026-07-17: emitter=NONE) - the server passes state.emitter in.
+    if emitter is None:
+        emitter = current_emitter()
     preview_layer = LayerURI(
         layer_id=f"telemac-mesh-preview-{mesh_run_id}",
         name=f"Mesh preview ({mesh_size_m:g} m edges, {npoin:,} nodes)",
@@ -947,7 +1036,12 @@ async def preview_telemac_mesh(params: dict[str, Any]) -> dict[str, Any]:
         role="input",
         bbox=tuple(bbox4326) if bbox4326 else None,
     )
-    await publish_input_layer(emitter, preview_layer)
+    emitted = await publish_input_layer(emitter, preview_layer)
+    logger.info(
+        "preview_telemac_mesh wireframe emit: emitter=%s emitted=%s layer=%s",
+        "bound" if emitter is not None else "NONE", emitted,
+        preview_layer.layer_id,
+    )
     if emitter is not None and bbox4326:
         try:
             await emitter.emit_map_command("zoom-to", {"bbox": list(bbox4326)})
