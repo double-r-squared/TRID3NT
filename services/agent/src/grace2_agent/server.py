@@ -5606,6 +5606,73 @@ async def _handle_case_command(
         )
         return
 
+    if command == "set-bbox":
+        # Persistent per-case AOI (NATE 2026-07-19, cloud parity): the plugin's
+        # draw/edit tool sends the user's rectangle here so CaseSummary.bbox is
+        # durably the user's chosen extent - not None until a tool happens to
+        # pin it. The agent already injects state.case_bbox into EVERY turn
+        # (_turn_case_bbox -> build_layers_present_note) and snaps fetch bbox
+        # params to it, so a set case bbox is exactly what stops the model
+        # re-deriving/geocoding the area every turn. Clones the rename branch:
+        # write the field, re-snapshot the view + thin manifest, re-emit the
+        # case-list; ALSO update state.case_bbox when this is the OPEN case so
+        # the very next turn's in-prompt AOI line is correct with no reopen.
+        if not cmd.case_id:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(set-bbox) requires case_id",
+            )
+            return
+        bbox = _coerce_bbox4((cmd.args or {}).get("bbox"))
+        if bbox is None:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(set-bbox) requires args.bbox = "
+                "[min_lon, min_lat, max_lon, max_lat]",
+            )
+            return
+        existing = await p.get_case(cmd.case_id)
+        if existing is None:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case-command(set-bbox): case {cmd.case_id!r} not found",
+            )
+            return
+        updated = existing.model_copy(
+            update={"bbox": list(bbox), "updated_at": now_utc()}
+        )
+        try:
+            await p.upsert_case(updated)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case-command(set-bbox) upsert failed: %s", exc)
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case set-bbox failed: {exc}",
+            )
+            return
+        # Open case: refresh the durable in-session pin so the next turn's
+        # AOI line + fetch-bbox snapping use the new extent immediately.
+        if cmd.case_id == state.active_case_id:
+            state.case_bbox = list(bbox)
+        await _persist_case_view_snapshot(state, case_id=cmd.case_id)
+        await _persist_case_manifest(state, case_id=cmd.case_id)
+        await _emit_case_list(websocket, state, force=True)
+        logger.info(
+            "case-command set-bbox session=%s case=%s bbox=%s",
+            state.session_id,
+            cmd.case_id,
+            list(bbox),
+        )
+        return
+
     if command == "archive":
         if not cmd.case_id:
             await _send_error(
