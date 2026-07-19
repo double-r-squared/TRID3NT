@@ -349,3 +349,28 @@ WS-live-proven (lane clear, NATE off desktop):
   synced. NATE live-verifies the visual overlay + drag on next plugin reload.
 Deferred (queued): module wave #224 (WAQTEL/GAIA/SFR/spiderweb), the 6 chat-UI
 notes, OPEN-28 datetime telemetry warning, empty-retry determinism lever.
+
+## 2026-07-19 (cont) - UI-notes batch + OpenRouter model extensibility SHIPPED
+Higher-leverage tasks NATE pulled ahead of the module wave (#224 held). Workflows
+on Opus per directive. All offline-tested + deployed (agent PID 1647513, plugin
+synced to installed dir + vendor):
+- CHAT-UI NOTES (plugin 31ef597): all 6 NATE notes - SimCard foldable-anytime +
+  right-side progress readout + subtle fill, tool calls as a |-> directory tree
+  (dropped the circles, kept color), state-color chips (green/grey/red), gate+sim
+  cards land INLINE (close pending entry on insert, BUG-4 discipline). 206 tests +
+  harness DOCK-UI-OK.
+- OPENROUTER MODEL EXTENSIBILITY: agent adapter was already env-driven + per-turn
+  model_id already flowed end-to-end (scoping win). Shipped:
+  * agent default_headers (02f0ed6, HTTP-Referer/X-Title, env-driven no-op).
+  * turnkey .env.openrouter.example (7972424) - paste key + restart = prove path,
+    zero code. Curate TOOL-CAPABLE models (agent is tool-heavy; free models often
+    ignore tools). Model switch = live per-turn; provider switch = restart.
+  * SECURITY: untracked + gitignored .env.local (was tracked - would leak a pasted
+    key).
+  * plugin picker (00d6395): Settings provider combo + password api-key +
+    editable model combo (curated per-provider) + honest restart note; model_id
+    wired live through send_chat mirroring show_thinking. 217 tests (11 new).
+NATE live-verifies on plugin reload: bbox overlay+draw, chat-UI batch, model
+picker. Live OpenRouter turn needs NATE's OPENROUTER_API_KEY (his step).
+Design docs: reports/design/{per-case-bbox,openrouter-model-extensibility}-2026-07-19.md.
+Still HELD (not dropped): module wave #224 (WAQTEL/GAIA/SFR/spiderweb).
