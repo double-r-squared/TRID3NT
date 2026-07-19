@@ -98,6 +98,8 @@ async def run_telemac(
     contaminant: str | None = None,
     decay_half_life_hours: float | None = None,
     decay_rate_per_day: float | None = None,
+    grain_size_um: float | None = None,
+    sediment_type: str | None = None,
     compute_class: str = "medium",
     # 2026-07-18 release-seeding tri-state, set ONLY by the approve-mesh
     # decision tail (underscore prefix -> stripped from the LLM schema by
@@ -191,8 +193,14 @@ async def run_telemac(
             WAQTEL first-order DECAY module (WATER QUALITY PROCESS = 17) so the
             plume ALSO decays as it travels - the downstream peak is lower and
             the pulse persists a shorter time than a plain conservative dye;
-            everything else is the plain conservative dye tracer. (True oil-slick
-            physics - spreading, evaporation, beaching - is the oil-spill module.)
+            SEDIMENT words ("sediment"/"sand"/"silt"/"mud"/"slurry"/"tailings"/
+            "sediment-laden runoff") activate the GAIA sediment module: the
+            suspended sediment SETTLES and DEPOSITS on the bed as it travels, so
+            you also get a "where and how much did it deposit" bed-deposition map
+            (mm) beside the concentration ribbon - answering "sediment washes down
+            the river, where does it settle out". everything else is the plain
+            conservative dye tracer. (True oil-slick physics - spreading,
+            evaporation, beaching - is the oil-spill module.)
         decay_half_life_hours: OPTIONAL. For a DECAYING substance only, the
             first-order half-life in HOURS (overrides the classify default). The
             WAQTEL decay coefficient is k = ln(2)/half_life. Honest literature
@@ -202,6 +210,17 @@ async def run_telemac(
         decay_rate_per_day: OPTIONAL alternative to ``decay_half_life_hours`` for
             a decaying substance - the first-order decay rate k in per-DAY units
             (WAQTEL law 3). Clamped to [0.01, 100] /day. Use one or the other.
+        grain_size_um: OPTIONAL. For a SEDIMENT substance only, the median grain
+            diameter d50 in MICRONS (sets how fast it settles: ~200 um fine sand
+            deposits within a few-km reach, ~20 um silt mostly stays in suspension
+            and exits). Default 200 (fine sand); clamped to [5, 2000]. An HONEST
+            demo default / user override - there is no site bed-composition
+            fetcher, so never presented as a measured value. Set from the user's
+            words (e.g. "silt" -> ~20, "fine sand" -> ~150).
+        sediment_type: OPTIONAL alias for a SEDIMENT substance - one of "sand" /
+            "silt" / "mud" - which also picks the default grain size when
+            grain_size_um is unset. All modeled as non-cohesive in v1 (cohesive
+            mud is a future upgrade), narrated honestly.
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
@@ -430,6 +449,15 @@ async def run_telemac(
         return min(max(f, lo), hi)
     decay_half_life_hours = _pos_float(decay_half_life_hours, 0.1, 720.0)
     decay_rate_per_day = _pos_float(decay_rate_per_day, 0.01, 100.0)
+    # sediment grain size (microns): only meaningful for the sediment class. Clamp
+    # to [5, 2000] um (silt .. coarse sand); a bogus value coerces to None so the
+    # composer keeps the type-preset default (honest demo default, not measured).
+    grain_size_um = _pos_float(grain_size_um, 5.0, 2000.0)
+    # sediment_type alias (sand|silt|mud): label only, sanitized like substance.
+    if sediment_type is not None:
+        sediment_type = "".join(
+            c for c in str(sediment_type).strip().lower()
+            if c.isalnum() or c in " -_")[:8] or None
 
     logger.info(
         "run_telemac location=%r bbox=%s spill_frac=%.3g pulse_s=%.0f dye=%.4g "
@@ -460,6 +488,8 @@ async def run_telemac(
             substance=substance,
             decay_half_life_hours=decay_half_life_hours,
             decay_rate_per_day=decay_rate_per_day,
+            grain_size_um=grain_size_um,
+            sediment_type=sediment_type,
             compute_class=compute_class,
         )
         logger.info(

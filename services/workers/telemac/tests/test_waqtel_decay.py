@@ -24,7 +24,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import telemac_river_dye_build as B
-from telemac_river_dye_build import ReachConfig, WAQTEL_FILENAME
+from telemac_river_dye_build import (
+    GAIA_STEERING_FILENAME,
+    ReachConfig,
+    WAQTEL_FILENAME,
+)
 
 
 def _tiny_mesh():
@@ -127,9 +131,74 @@ def test_oil_emits_no_waqtel(tmp_path):
     assert not (tmp_path / WAQTEL_FILENAME).exists()
 
 
+# --- GAIA v1 sediment: coupling block + gaia_river.cas ---------------------- #
+def test_sediment_emits_gaia_block_and_steering_file(tmp_path):
+    cfg = ReachConfig(substance_class="sediment", sediment_type="sand",
+                      grain_size_um=200.0, dye_conc_mgl=2000.0,
+                      workdir=str(tmp_path))
+    cas = _author(cfg, tmp_path)
+    # the two GAIA coupling keywords land in the t2d cas
+    assert "COUPLING WITH" in cas and "'GAIA'" in cas
+    assert "GAIA STEERING FILE" in cas
+    assert GAIA_STEERING_FILENAME in cas
+    # the appended gaia suspended tracer is output to r2d (T2 added to printouts)
+    assert "VARIABLES FOR GRAPHIC PRINTOUTS = 'U,V,H,S,B,T1,T2'" in cas
+    # PRESCRIBED TRACERS VALUES widened for BOTH tracers x every liquid boundary
+    # (2 tracers x 2 boundaries here = 4 zeros) - not the single-tracer default.
+    pline = [ln for ln in cas.splitlines()
+             if ln.startswith("PRESCRIBED TRACERS VALUES")][0]
+    assert pline.count("0.") >= 4
+    # NO oil / decay coupling (mutually exclusive)
+    assert "WAQTEL" not in cas
+    assert "OIL SPILL STEERING FILE" not in cas
+    # the gaia steering file was written with the supply-limited NCO keywords
+    gaia = tmp_path / GAIA_STEERING_FILENAME
+    assert gaia.exists()
+    body = gaia.read_text()
+    assert "CLASSES TYPE OF SEDIMENT        = NCO" in body
+    assert "LAYERS INITIAL THICKNESS        = 0." in body   # supply-limited v1
+    assert "BED LOAD FOR ALL SANDS          = NO" in body    # v1 bedload off
+    assert "SUSPENSION FOR ALL SANDS        = YES" in body
+    assert "MASS-BALANCE                    = YES" in body
+    # source concentration = dye_conc_mgl (mg/L) / 1000 -> kg/m3 (2000 -> 2)
+    assert "SUSPENDED SEDIMENTS CONCENTRATION VALUES AT THE SOURCES = 2" in body
+    # d50 in metres (200 um -> 0.0002)
+    assert "CLASSES SEDIMENT DIAMETERS      = 0.0002" in body
+    # DAMOCLES 72-char clamp holds on every gaia steering line
+    assert all(len(ln) <= 72 for ln in body.splitlines())
+
+
+def test_tracer_emits_no_gaia(tmp_path):
+    cfg = ReachConfig(substance_class="tracer", workdir=str(tmp_path))
+    cas = _author(cfg, tmp_path)
+    assert "GAIA" not in cas
+    assert "COUPLING WITH" not in cas
+    assert not (tmp_path / GAIA_STEERING_FILENAME).exists()
+    # the single-tracer default is untouched (no T2, no widened tracer values)
+    assert "VARIABLES FOR GRAPHIC PRINTOUTS = 'U,V,H,S,B,T1'" in cas
+
+
+def test_oil_and_decay_emit_no_gaia(tmp_path):
+    for cfg in (ReachConfig(substance_class="oil", oil_preset="light_crude",
+                            workdir=str(tmp_path)),
+                ReachConfig(substance_class="decay", decay_law=1, decay_coef=2.0,
+                            workdir=str(tmp_path))):
+        cas = _author(cfg, tmp_path)
+        assert "GAIA" not in cas
+        assert not (tmp_path / GAIA_STEERING_FILENAME).exists()
+
+
 # --- ReachConfig defaults leave non-decay runs unaffected ------------------- #
 def test_reachconfig_decay_defaults():
     cfg = ReachConfig()
     assert cfg.substance_class == "tracer"
     assert cfg.decay_law == 1
     assert cfg.decay_coef == 2.0
+
+
+def test_reachconfig_sediment_defaults():
+    cfg = ReachConfig()
+    assert cfg.grain_size_um == 200.0
+    assert cfg.sediment_density == 2650.0
+    assert cfg.sediment_type == "sand"
+    assert cfg.erodible_bed is False

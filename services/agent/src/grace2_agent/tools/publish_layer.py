@@ -557,6 +557,12 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # perceptually-uniform magma ramp; landslide susceptibility/probability in
     # [0,1] -> a red(high)->green(low) rdylgn_r ramp.
     "diverging_river_seepage": ("-100,100", "rdbu"),
+    # GAIA sediment bed-evolution (deposition/erosion, mm): a SIGNED field
+    # (deposition positive / erosion negative) -> a diverging rdbu ramp centered
+    # on 0, same pattern as river seepage. The deposition COG carries a data-
+    # driven legend (mm-scale) so the actual range renders; this registry range is
+    # the fallback (a fixed mm band would wash out sub-mm event deposition).
+    "diverging_bed_evolution": ("-20,20", "rdbu"),
     "continuous_seismic_pga": ("0,1", "magma"),
     "continuous_landslide_susceptibility": ("0,1", "rdylgn_r"),
     # conservation micro-North-Star -- ADDITIVE. NDVI is the canonical
@@ -2318,6 +2324,7 @@ _STYLE_PRESET_LABELS: dict[str, str] = {
     "continuous_dem": "Elevation",
     "categorical_landcover": "Land Cover",
     "continuous_impervious_surface": "Impervious Surface",
+    "diverging_bed_evolution": "Sediment Deposition",
 }
 
 

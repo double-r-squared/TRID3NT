@@ -120,6 +120,27 @@ class ReachConfig:
     oil_preset: str = "light_crude"
     decay_law: int = 1                  # WAQTEL LAW OF TRACERS DEGRADATION
     decay_coef: float = 2.0             # COEFFICIENT 1 FOR ... DEGRADATION (T90 h)
+    # GAIA v1 sediment class (mutually exclusive with oil/decay): a SUSPENDED
+    # sediment substance (sand / silt / mud) that settles + deposits. author_deck
+    # couples GAIA (COUPLING WITH = 'GAIA' + GAIA STEERING FILE = gaia_river.cas)
+    # and author_gaia_deck writes the ~18-line GAIA steering. In-image smoke
+    # (2026-07-19, gaia.dico v9) PINNED the coupling wiring: GAIA appends the ONE
+    # suspended class as a SECOND telemac2d TRACER, so the result r2d_river.slf
+    # carries it as 'NCOH SEDIMENT1' in g/l (== kg/m3), while gaia_river.slf
+    # carries 'CUMUL BED EVOL' in METRES (the deposition map, var mnemonic E).
+    # v1 is SUPPLY-LIMITED: LAYERS INITIAL THICKNESS = 0 so nothing erodes - only
+    # the injected pulse can deposit (erodible_bed = initial thickness > 0 +
+    # bedload formulas is the v2 flag, OUT of v1). grain_size_um sets the NCO d50
+    # (fine sand default); the source concentration reuses dye_conc_mgl (mg/L)
+    # / 1000 -> kg/m3 (GAIA's SI unit, confirmed g/l in the smoke). The dye
+    # tracer is KEPT as a REQUIRED hydraulic companion: a GAIA-only tracer (no
+    # user tracer) trips DEBIMP "SUPERCRITICAL ENTRY WITH FREE DEPTH" on the
+    # Q-prescribed inflow (proven in the smoke); the dye rides as a conservative
+    # reference and the postprocess picks the SEDIMENT tracer, not the dye.
+    grain_size_um: float = 200.0        # suspended d50 in microns (fine sand)
+    sediment_density: float = 2650.0    # grain density kg/m3 (quartz)
+    sediment_type: str = "sand"         # sand|silt|mud (narration + grain hint)
+    erodible_bed: bool = False          # v2 flag - v1 forces supply-limited
     n_drogues: int = 100                # slick particle count (oil class)
     drogues_period_s: int = 60          # particle snapshot cadence, seconds
     # release AFTER the startup transient: constant-depth init drains shallow
@@ -1394,6 +1415,82 @@ def write_waqtel_decay(cfg, workdir: str) -> str:
     return WAQTEL_FILENAME
 
 
+#: the worker-authored GAIA steering file (its own DAMOCLES-parsed .cas, same
+#: 72-char line limit) named in the t2d cas via GAIA STEERING FILE, and the GAIA
+#: result SELAFIN carrying CUMUL BED EVOL (deposition). Both ship as outputs.
+GAIA_STEERING_FILENAME = "gaia_river.cas"
+GAIA_RESULT_FILENAME = "gaia_river.slf"
+
+
+def write_gaia_deck(cfg, slf_name: str, cli_name: str, workdir: str) -> str:
+    """Author the GAIA steering file for ONE supply-limited suspended class.
+
+    Emits ~18 keywords (all under the DAMOCLES 72-char clamp) for GAIA's INTERNAL
+    coupling to TELEMAC-2D: same GEOMETRY + BOUNDARY CONDITIONS files (river.slf /
+    river.cli - GAIA's dico marks the BC file OBLIG and reuses the CONLIM reader),
+    its own RESULTS FILE (gaia_river.slf) and ONE non-cohesive (NCO) suspended
+    class. The class settles (CLASSES SETTLING VELOCITIES = -9 -> auto
+    Stokes/Zanke/van Rijn by grain size) and is SUPPLY-LIMITED (LAYERS INITIAL
+    THICKNESS = 0 so nothing erodes - only the injected pulse deposits); bedload is
+    OFF (v1). The source concentration is the T2D source's concentration expressed
+    in GAIA's SI unit kg/m3 (= dye_conc_mgl mg/L / 1000; the smoke confirmed the
+    r2d suspended tracer reads in g/l == kg/m3). Bed-evolution output is ON via the
+    'B,E' graphic printouts (E == CUMUL BED EVOL, the deposition map, in metres).
+
+    v1 always emits NCO (non-cohesive): sand and silt are non-cohesive by
+    construction and mud is approximated as very-fine non-cohesive sediment (the
+    cohesive CO Krone/Partheniades path + its extra critical-shear/Partheniades
+    keywords is v2, deliberately NOT emitted so the deck stays the in-image-proven
+    shape). ``sediment_type`` only tunes the default grain size + narration.
+
+    Returns the steering filename written into ``workdir``.
+    """
+    # source concentration: reuse the dye pulse concentration (mg/L) as the
+    # generic source concentration, converted to GAIA's kg/m3 (g/l). Clamped >= 0.
+    conc_kgm3 = max(float(getattr(cfg, "dye_conc_mgl", 100.0)) / 1000.0, 0.0)
+    # d50 in METRES from microns; floored so a bogus value cannot zero the grain.
+    d50_m = max(float(getattr(cfg, "grain_size_um", 200.0)), 1.0) * 1.0e-6
+    density = float(getattr(cfg, "sediment_density", 2650.0))
+    lines = [
+        "/------------------------------------------------------------------/",
+        "/  GAIA steering - ONE suspended NCO class, supply-limited bed",
+        "/  (LAYERS INITIAL THICKNESS = 0 -> only the injected pulse deposits)",
+        f"/  type={str(getattr(cfg, 'sediment_type', 'sand'))[:8]} "
+        f"d50={d50_m*1e6:g}um conc={conc_kgm3:g}kg/m3",
+        "/------------------------------------------------------------------/",
+        f"GEOMETRY FILE                   = {os.path.basename(slf_name)}",
+        f"BOUNDARY CONDITIONS FILE        = {os.path.basename(cli_name)}",
+        f"RESULTS FILE                    = {GAIA_RESULT_FILENAME}",
+        "VARIABLES FOR GRAPHIC PRINTOUTS = 'B,E'",
+        "CLASSES TYPE OF SEDIMENT        = NCO",
+        f"CLASSES SEDIMENT DIAMETERS      = {d50_m:g}",
+        f"CLASSES SEDIMENT DENSITY        = {density:g}",
+        "CLASSES INITIAL FRACTION        = 1.",
+        "CLASSES SETTLING VELOCITIES     = -9.",
+        "SUSPENSION FOR ALL SANDS        = YES",
+        "BED LOAD FOR ALL SANDS          = NO",
+        "SUSPENSION TRANSPORT FORMULA FOR ALL SANDS = 3",
+        "LAYERS INITIAL THICKNESS        = 0.",
+        "SCHEME FOR ADVECTION OF SUSPENDED SEDIMENTS = 1",
+        f"SUSPENDED SEDIMENTS CONCENTRATION VALUES AT THE SOURCES = {conc_kgm3:g}",
+        "MASS-BALANCE                    = YES",
+    ]
+    # DAMOCLES hard 72-char line limit (identical to author_deck's clamp): every
+    # line is defensively sliced; comments are safe, the data lines are short by
+    # construction (the keyword above is the longest at 55 + a small number).
+    clamped = [ln[:72] if len(ln) > 72 else ln for ln in lines]
+    over = [ln for ln in clamped if len(ln) > 72]
+    if over:
+        LOG.warning("gaia steering lines still >72 chars after clamp: %r",
+                    over[:3])
+    path = os.path.join(workdir, GAIA_STEERING_FILENAME)
+    with open(path, "w") as f:
+        f.write("\n".join(clamped) + "\n")
+    LOG.info("gaia sediment steering authored: d50=%gum density=%g conc=%gkg/m3 "
+             "-> %s", d50_m * 1e6, density, conc_kgm3, GAIA_STEERING_FILENAME)
+    return GAIA_STEERING_FILENAME
+
+
 # M2-spike-proven oil steering parameters (oilspill.f reader format). Fractions
 # sum to 1.0 per preset; HAP rows = FM TB SOLU KDISS KVOL.
 OIL_PRESETS: dict[str, dict] = {
@@ -1620,6 +1717,42 @@ COEFFICIENT FOR DIFFUSION OF TRACERS     = 1.E-1
             "COUPLING WITH                   = 'WAQTEL'\n"
             f"WAQTEL STEERING FILE            = {WAQTEL_FILENAME}\n"
             "WATER QUALITY PROCESS           = 17\n"
+        )
+
+    if str(getattr(cfg, "substance_class", "tracer")).lower() == "sediment":
+        # GAIA v1 sediment class (mutually exclusive with oil/decay): couple GAIA
+        # internally to TELEMAC-2D. In-image smoke (2026-07-19) PINNED the wiring:
+        # GAIA appends its ONE suspended class as a SECOND t2d tracer, so the T2D
+        # deck must (a) OUTPUT it - add T2 to VARIABLES FOR GRAPHIC PRINTOUTS so
+        # the suspended concentration lands in r2d_river.slf as 'NCOH SEDIMENT1'
+        # [g/l == kg/m3] - and (b) size PRESCRIBED TRACERS VALUES for BOTH tracers
+        # x EVERY liquid boundary (1 dye + 1 gaia class; the smoke errored "MORE
+        # PRESCRIBED TRACER VALUES ARE REQUIRED" until the count covered both).
+        # The dye tracer stays as the REQUIRED hydraulic companion: a gaia-only
+        # tracer (no user tracer) trips DEBIMP "SUPERCRITICAL ENTRY WITH FREE
+        # DEPTH" on the Q-prescribed inflow (proven), while the same deck WITH the
+        # dye tracer solves to CORRECT END OF RUN with the mass balance closing.
+        # The postprocess picks the SEDIMENT tracer (not the dye) for the
+        # concentration COG and reads CUMUL BED EVOL from gaia_river.slf for the
+        # deposition COG. All new gaia cas lines respect the 72-char DAMOCLES clamp
+        # (author_gaia_deck clamps its own file; these three t2d lines are short).
+        write_gaia_deck(cfg, os.path.basename(slf), os.path.basename(cli),
+                        os.path.dirname(os.path.abspath(cas_path)))
+        # add T2 (the appended gaia suspended tracer) to the graphic printouts
+        cas = cas.replace(
+            "VARIABLES FOR GRAPHIC PRINTOUTS = 'U,V,H,S,B,T1'",
+            "VARIABLES FOR GRAPHIC PRINTOUTS = 'U,V,H,S,B,T1,T2'")
+        # widen PRESCRIBED TRACERS VALUES to (dye + gaia class) x n_liquid_bounds
+        # zeros (clean boundaries - dye + sediment both enter via the point source
+        # / gaia source keyword, never the open boundaries).
+        n_tr_vals = 2 * max(len(lb_order), 1)
+        cas = cas.replace(
+            "PRESCRIBED TRACERS VALUES       = " + ";".join(tracer),
+            "PRESCRIBED TRACERS VALUES       = " + ";".join(["0."] * n_tr_vals))
+        cas += (
+            "/\n"
+            "COUPLING WITH                   = 'GAIA'\n"
+            f"GAIA STEERING FILE              = {GAIA_STEERING_FILENAME}\n"
         )
 
     # DAMOCLES hard 72-char line limit: one over-long line (e.g. a long

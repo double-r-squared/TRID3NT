@@ -94,3 +94,33 @@ def test_oil_beats_decay_on_order():
     # A string carrying BOTH an oil word and a decay word must classify as oil
     # (oil is matched first) - proves the branch ORDER the task requires.
     assert classify_substance("oily sewage")[0] == "oil"
+
+
+# --- GAIA sediment class: settling sediment substances ---------------------- #
+@pytest.mark.parametrize("s,exp_type", [
+    ("sediment", "sand"),
+    ("sand", "sand"),
+    ("silt", "silt"),
+    ("mud", "mud"),
+    ("slurry", "sand"),
+    ("tailings", "silt"),
+    ("sediment-laden runoff", "silt"),
+    ("fine sand washing downstream", "sand"),
+    ("a mud slug in the river", "mud"),
+])
+def test_sediment_substances_are_sediment(s, exp_type):
+    cls, payload = classify_substance(s)
+    assert cls == "sediment"
+    assert isinstance(payload, dict)
+    assert payload["type"] == exp_type
+    # each type carries a default d50 in microns (fine sand ~200, silt ~20-30,
+    # mud ~8) - a demo default the run_telemac grain_size_um param can override.
+    assert payload["grain_size"] > 0.0
+
+
+def test_sediment_does_not_shadow_oil_or_decay():
+    # oil + decay still win over sediment (branch order oil -> decay -> sediment):
+    # 'oily sand' is oil, 'sewage sediment' is decay, plain 'sand' is sediment.
+    assert classify_substance("oily sand")[0] == "oil"
+    assert classify_substance("sewage sediment")[0] == "decay"
+    assert classify_substance("sand")[0] == "sediment"
