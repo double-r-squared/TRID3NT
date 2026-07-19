@@ -307,3 +307,23 @@ errors; recovered and re-rolled. Follow-ups queued: OPEN-25b DEM retry
 ladder (now proven needed), drogue boundary-drop root cause (16/100 on one
 run vs 100/100 here), reach seeding from bare release coords
 (Cowlitz-vs-Columbia), coverage-metric look at narrow gate bboxes.
+
+## 2026-07-18 (late) - TELEMAC follow-up batch LIVE-PROVEN
+Workflow-built (2 implementers + adversarial reviews + research agent), then
+3 proof-drive rounds to a PASS (run 01KXW8EY8HMX7VQVAVYCMR2YVE):
+- Release-coordinate reach seeding: bare coords 46.11,-122.96 seeded the
+  COLUMBIA MAINSTEM (seed_kind=release-position, width_mean 909.7 m, 18.5k
+  nodes) where every prior bare-coords run meshed the Cowlitz (185.6 m).
+  Two arg-shape fixes en route: spill_location_latlon combined-string alias
+  (fe41b3d tool-level, then 00ca346 moved to the CENTRAL normalizer - the
+  gate preview reads normalized args, tool-level was too late).
+- OPEN-25b DEM ladder deployed (STAC x3 backoff -> USGS 3DEP exportImage
+  fallback -> honest typed error; 6 mocked unit tests; live proof awaits a
+  real outage).
+- Drogue "loss" RESOLVED as correct physics: TELEMAC deletes floats that
+  EXIT through a liquid boundary (streamline.f SCHAR11 IFABOR=0); metrics
+  now report released/exited_domain/remaining honestly (live: 100/99/1).
+Commits 2639db4 + fe41b3d + 00ca346; image rebuilt; 31+ offline tests green.
+Columbia-mainstem proof case kept as the release-seeding reference.
+Deferred: drift-runway authoring (release <=30% chainage), write_oil_inputs
+regex tighten, BK-1a fresh-slate startup.
