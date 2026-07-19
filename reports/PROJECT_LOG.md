@@ -327,3 +327,25 @@ Commits 2639db4 + fe41b3d + 00ca346; image rebuilt; 31+ offline tests green.
 Columbia-mainstem proof case kept as the release-seeding reference.
 Deferred: drift-runway authoring (release <=30% chainage), write_oil_inputs
 regex tighten, BK-1a fresh-slate startup.
+
+## 2026-07-19 - Reliability + persistent per-case bbox (NATE priority) SHIPPED
+Two live-frustration fixes, all offline-tested then agent-restart-deployed +
+WS-live-proven (lane clear, NATE off desktop):
+- EMPTY-COMPLETION RETRY (14a304d): local qwen empty round (no text + no tool
+  call) now injects a corrective user nudge + retries x2 before ending, instead
+  of dying silently (the "hillshade stopped" class). openai-path only; Bedrock
+  untouched; 4 offline scripted-adapter tests. build_user_text_content helper.
+- PERSISTENT PER-CASE BBOX (cloud parity): KEY finding - the agent ALREADY
+  injects state.case_bbox into every turn (_format_aoi_bbox_line) + snaps fetch
+  bbox params to it; the case was just never given a bbox, so the model spun.
+  Fix = (a) set-bbox case-command persists a user-drawn AOI + updates the open
+  case's state.case_bbox (96bbdc4, GRACE-2 + contract literal); (b) plugin
+  (1ee5fcd, trid3nt-local): dashed QgsRubberBand AOI overlay, "Set AOI"
+  QgsMapToolExtent rectangle draw, default-canvas-bbox on new-case, set-bbox
+  transport. Offline 206 plugin tests + 4 agent tests. LIVE-PROVEN via WS:
+  DEFAULT_ON_CREATE_OK (new case carries bbox in case-list) + set-bbox persist
+  round-trip (edited bbox survives to case-list + updates the in-session pin).
+  Vendor synced (c4581cb), agent restarted (PID 1559781), installed plugin
+  synced. NATE live-verifies the visual overlay + drag on next plugin reload.
+Deferred (queued): module wave #224 (WAQTEL/GAIA/SFR/spiderweb), the 6 chat-UI
+notes, OPEN-28 datetime telemetry warning, empty-retry determinism lever.
