@@ -93,6 +93,7 @@ async def run_telemac(
     mesh_resolution_m: float | None = None,
     release_lon: float | None = None,
     release_lat: float | None = None,
+    spill_location_latlon: str | None = None,
     substance: str = "dye",
     contaminant: str | None = None,
     compute_class: str = "medium",
@@ -271,6 +272,24 @@ async def run_telemac(
     # the worker can seed the centerline/corridor from the RELEASE (see the
     # _release_seeds_reach tri-state above); implausible ones are dropped
     # with a warning, never a crash.
+    # Alias: models pass a combined 'spill_location_latlon' string ("lat,lon")
+    # instead of release_lat/release_lon (qwen did this twice on 2026-07-18 -
+    # same silent-swallow class as the contaminant field). Parse it only when
+    # the split coords are absent; the plausibility gate below still applies.
+    if (release_lat is None and release_lon is None
+            and spill_location_latlon):
+        try:
+            _lat_s, _lon_s = str(spill_location_latlon).split(",", 1)
+            release_lat, release_lon = float(_lat_s), float(_lon_s)
+            logger.info(
+                "run_telemac: parsed spill_location_latlon %r -> lat=%s lon=%s",
+                spill_location_latlon, release_lat, release_lon,
+            )
+        except (ValueError, TypeError):
+            logger.warning(
+                "run_telemac: unparseable spill_location_latlon %r - ignored",
+                spill_location_latlon,
+            )
     _release_pair = plausible_release_coords(release_lon, release_lat)
     if _release_pair is None and (release_lon is not None or release_lat is not None):
         logger.warning(
