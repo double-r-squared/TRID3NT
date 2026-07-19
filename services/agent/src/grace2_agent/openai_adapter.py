@@ -68,6 +68,7 @@ the agent starts cleanly on environments where the package is not installed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -573,6 +574,71 @@ def contents_to_openai_messages(
 # ---------------------------------------------------------------------------
 
 
+#: 429 retry policy (NATE 2026-07-19): OpenRouter free-tier models are a
+#: shared, transiently rate-limited pool - a single 429 mid multi-round tool
+#: turn would otherwise kill the whole turn. The request-time 429 lands BEFORE
+#: any token, so a bounded retry honoring the provider's ``retry_after`` makes
+#: throttled (incl. :free) models survive a tool-heavy turn. env-tunable.
+_RATE_LIMIT_MAX_RETRIES = int(os.environ.get("GRACE2_OPENAI_RATE_LIMIT_RETRIES", "4"))
+_RATE_LIMIT_MAX_WAIT_S = float(os.environ.get("GRACE2_OPENAI_RATE_LIMIT_MAX_WAIT_S", "45"))
+_RATE_LIMIT_BACKOFF_S = (5.0, 15.0, 30.0, 45.0)
+
+
+def _retry_after_seconds(exc: Any, attempt: int) -> float:
+    """Seconds to wait before retrying a 429 - honor the provider's
+    ``Retry-After`` header / ``retry_after_seconds`` metadata when present,
+    else fall back to the backoff schedule. Capped at _RATE_LIMIT_MAX_WAIT_S."""
+    wait: float | None = None
+    resp = getattr(exc, "response", None)
+    hdrs = getattr(resp, "headers", None)
+    if hdrs is not None:
+        try:
+            raw = hdrs.get("retry-after") or hdrs.get("Retry-After")
+            if raw is not None:
+                wait = float(raw)
+        except (TypeError, ValueError):
+            wait = None
+    if wait is None:
+        body = getattr(exc, "body", None)
+        try:
+            meta = (body or {}).get("error", {}).get("metadata", {})
+            ra = meta.get("retry_after_seconds")
+            if ra is not None:
+                wait = float(ra)
+        except (AttributeError, TypeError, ValueError):
+            wait = None
+    if wait is None:
+        wait = _RATE_LIMIT_BACKOFF_S[min(attempt, len(_RATE_LIMIT_BACKOFF_S) - 1)]
+    return max(1.0, min(float(wait), _RATE_LIMIT_MAX_WAIT_S))
+
+
+async def _create_stream_with_retry(client: Any, kwargs: dict[str, Any]) -> Any:
+    """Open the streaming completion, retrying a request-time 429 with backoff
+    (see _RATE_LIMIT_MAX_RETRIES). The 429 raises at ``create`` before any
+    token is streamed, so retrying here is clean (no partial-stream replay).
+    Non-429 errors propagate unchanged. Returns the AsyncStream context manager.
+    """
+    import openai  # noqa: WPS433 -- dep dormant unless the openai provider is on
+
+    last_exc: BaseException | None = None
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            return await client.chat.completions.create(**kwargs)  # type: ignore[attr-defined]
+        except openai.RateLimitError as exc:  # 429
+            last_exc = exc
+            if attempt >= _RATE_LIMIT_MAX_RETRIES:
+                break
+            wait = _retry_after_seconds(exc, attempt)
+            logger.warning(
+                "openai 429 rate-limited (attempt %d/%d) - sleeping %.0fs then "
+                "retrying (model=%s)", attempt + 1, _RATE_LIMIT_MAX_RETRIES,
+                wait, kwargs.get("model"),
+            )
+            await asyncio.sleep(wait)
+    assert last_exc is not None
+    raise last_exc
+
+
 async def _stream_one_round(
     client: Any, kwargs: dict[str, Any]
 ) -> AsyncIterator[StreamEvent]:
@@ -585,7 +651,7 @@ async def _stream_one_round(
     # Structure: {index: {"id": str, "name": str, "args_buf": str}}
     tool_call_accumulators: dict[int, dict[str, Any]] = {}
 
-    async with await client.chat.completions.create(**kwargs) as stream:  # type: ignore[attr-defined]
+    async with await _create_stream_with_retry(client, kwargs) as stream:  # type: ignore[attr-defined]
         async for chunk in stream:
             choices = getattr(chunk, "choices", None) or []
             for choice in choices:
