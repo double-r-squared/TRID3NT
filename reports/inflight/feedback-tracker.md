@@ -68,3 +68,20 @@ Status of every item from the live-testing feedback. DONE = committed + deployed
 - [ ] Collapsed SimCard shows PROGRESS on the right, next to the collapse toggle (pct/elapsed at a glance)
 - [ ] Sim/gate card ORDERING bug: card sits at the BOTTOM while the streaming text fills ABOVE it - card must land inline chronologically (same class as the BUG-4 GateCard fix: close the pending entry when the card inserts)
 - [ ] Cards get a FILL (subtle background), not outline-only
+
+## PRIORITY - NATE 2026-07-19: persistent per-case bbox (cloud parity)
+HIGH VALUE (NATE watched the LLM spin reasoning about "what bounding box am I
+using", never deciding). Directive: EVERY case must have a bbox the AGENT can
+always reference AND the user can use or EDIT - exactly like the cloud version.
+Not the Settings-toggle canvas/selection AOI (per-send, invisible, optional) we
+have today. Requirements:
+1. Every case gets a bbox (default = canvas extent on create, or drawn).
+2. The bbox is PERSISTED on the case + ATTACHED to every prompt so the agent
+   never reasons about which AOI - it is always in context.
+3. Shown as an editable dotted overlay (QgsRubberBand, BK-4c).
+4. User edits it by drawing a new rectangle (QgsMapTool, BK-4b) -> updates +
+   persists + re-renders + re-attaches.
+Spans plugin (overlay + draw tool + case-scoped store) + agent (per-case AOI in
+context every turn) + persistence. Supersedes/absorbs #170 + BK-4(b)(c). Scoping
+in flight 2026-07-19; build on NATE go (needs plugin reload + agent restart).
+Related: the empty-completion retry (wf) also reduces the same spinning pain.
