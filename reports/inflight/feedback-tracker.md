@@ -120,3 +120,21 @@ NO restart (also kills the "provider switch = restart" caveat). Optionally persi
 to .env.local (gitignored) so it survives restart. Plugin Settings Save POSTs
 key+provider+model to that endpoint. Fold into #225. Secret: localhost only, never
 logged, password-echo field.
+
+## 2026-07-19 MODEL COMPARISON RESULT (#225 data pass)
+Drove 1 representative 3-tool prompt (fetch DEM Boise -> hillshade) per model via
+per-turn model_id. FINDING:
+- ALL free models 429 rate-limited IMMEDIATELY (meta-llama/llama-3.3-70b:free,
+  qwen/qwen3-next-80b:free, google/gemma-4-31b:free). OpenRouter error verbatim:
+  "temporarily rate-limited upstream ... add your own key to accumulate your rate
+  limits", is_byok:false, retry_after ~29s. The :free tier is a SHARED throttled
+  pool - cannot sustain a tool-heavy multi-round turn. NOT viable for real work.
+- deepseek/deepseek-chat (PAID ~$0.14/1M): WORKS, routes correctly (geocode
+  first), no 429; 3-tool chain slow (>240s, mostly DEM fetch not the model).
+- Per-model telemetry CONFIRMED: post-fix rows tagged with model_id
+  (deepseek/deepseek-chat), pre-fix rows None. Data in tool_call_telemetry.json.
+  GAP: /api/telemetry/summary by_model reads EMPTY despite 188 tagged rows -
+  read-path filter (recency/Mongo) - small follow-up for the aggregated view.
+RECOMMENDATION: use a cheap PAID model (deepseek-chat, pennies) for module
+live-tests + real use; free needs OpenRouter credits or BYOK to be viable.
+Module wave live-tests run on deepseek-chat (or local qwen), NOT a :free model.
