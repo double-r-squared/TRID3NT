@@ -42,6 +42,7 @@ from ..tool_arg_normalizer import coerce_bbox_value
 from ..workflows.model_river_dye_release_scenario import (
     TelemacDyeScenarioError,
     model_river_dye_release_scenario,
+    plausible_release_coords,
 )
 from ..workflows.postprocess_telemac import PostprocessTelemacError
 
@@ -95,6 +96,19 @@ async def run_telemac(
     substance: str = "dye",
     contaminant: str | None = None,
     compute_class: str = "medium",
+    # 2026-07-18 release-seeding tri-state, set ONLY by the approve-mesh
+    # decision tail (underscore prefix -> stripped from the LLM schema by
+    # _strip_private_params): True = the release coords came on the CALL and
+    # also seed the reach; False = they are a gate-picked click (source only,
+    # never relocate the previewed reach); None = no gate ran - auto
+    # (plausible coords seed the reach).
+    _release_seeds_reach: bool | None = None,
+    # BK-3b decouple, also set ONLY by the approve-mesh decision tail: the
+    # ORIGINAL call-provided release coords the preview meshed from, preserved
+    # separately because the gate click overwrites release_lon/release_lat.
+    # The reach seeds from THESE; the click moves the source only.
+    _seed_release_lon: float | None = None,
+    _seed_release_lat: float | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -249,6 +263,22 @@ async def run_telemac(
         )
         coerced_bbox = None
 
+    # Release-coordinate sanitize (live 2026-07-18: bare release_lat/lon with
+    # no river name left the geocoded CITY as the reach seed, so the corridor
+    # grabbed the nearest water body - a Longview prompt meshed the Cowlitz
+    # instead of the Columbia and the built mesh did not even contain the
+    # release point). Plausible coords thread through the reach manifest so
+    # the worker can seed the centerline/corridor from the RELEASE (see the
+    # _release_seeds_reach tri-state above); implausible ones are dropped
+    # with a warning, never a crash.
+    _release_pair = plausible_release_coords(release_lon, release_lat)
+    if _release_pair is None and (release_lon is not None or release_lat is not None):
+        logger.warning(
+            "run_telemac: implausible release point lon=%r lat=%r - dropped",
+            release_lon, release_lat,
+        )
+    release_lon, release_lat = _release_pair or (None, None)
+
     # LLM-invented compute_class hardening (live 2026-07-17: the model passed
     # compute_class='dye_spill' and the dispatch crashed AFTER the geocode +
     # river fetch). Coerce anything outside the known ladder to 'medium' -
@@ -364,8 +394,11 @@ async def run_telemac(
             river_geometry_uri=(str(river_geometry_uri) if river_geometry_uri else None),
             mesh_resolution=str(mesh_resolution or "auto"),
             mesh_resolution_m=(float(mesh_resolution_m) if mesh_resolution_m is not None else None),
-            release_lon=(float(release_lon) if release_lon is not None else None),
-            release_lat=(float(release_lat) if release_lat is not None else None),
+            release_lon=release_lon,
+            release_lat=release_lat,
+            release_seeds_reach=_release_seeds_reach,
+            seed_release_lon=_seed_release_lon,
+            seed_release_lat=_seed_release_lat,
             substance=substance,
             compute_class=compute_class,
         )
