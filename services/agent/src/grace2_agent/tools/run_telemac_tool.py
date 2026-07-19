@@ -93,6 +93,7 @@ async def run_telemac(
     release_lon: float | None = None,
     release_lat: float | None = None,
     substance: str = "dye",
+    contaminant: str | None = None,
     compute_class: str = "medium",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
@@ -303,6 +304,24 @@ async def run_telemac(
     # substance sanitize (label only - never solver-affecting)
     substance = "".join(c for c in str(substance or "dye").strip().lower()
                         if c.isalnum() or c in " -_")[:24] or "dye"
+    # M3 close-out (live drive 2026-07-18): models split intent across two
+    # fields - substance='dye' AND contaminant='crude oil' - so an oil spill
+    # silently ran the tracer class. If substance classifies as tracer but
+    # the contaminant string classifies as oil-family, the contaminant IS the
+    # substance (same sanitize; oil keywords win over the generic default).
+    if contaminant:
+        from ..workflows.model_river_dye_release_scenario import (  # noqa: WPS433
+            classify_substance,
+        )
+        cont = "".join(c for c in str(contaminant).strip().lower()
+                       if c.isalnum() or c in " -_")[:24]
+        if (cont and classify_substance(substance)[0] == "tracer"
+                and classify_substance(cont)[0] == "oil"):
+            logger.info(
+                "run_telemac: substance %r is tracer-class but contaminant %r "
+                "is oil-family - classifying by contaminant", substance, cont,
+            )
+            substance = cont
     try:
         channel_width_m = float(channel_width_m)
     except (TypeError, ValueError):
