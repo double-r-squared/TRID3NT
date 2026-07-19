@@ -138,3 +138,20 @@ per-turn model_id. FINDING:
 RECOMMENDATION: use a cheap PAID model (deepseek-chat, pennies) for module
 live-tests + real use; free needs OpenRouter credits or BYOK to be viable.
 Module wave live-tests run on deepseek-chat (or local qwen), NOT a :free model.
+
+## 2026-07-19 FAST FREE MODEL FOUND (#225 resolved)
+Probed all free tool-capable models directly for upstream availability. FINDING:
+the 429s were UPSTREAM SATURATION of SPECIFIC models, not free-tier in general.
+- SATURATED (429, upstream=Venice/Google AI Studio): llama-3.3-70b:free,
+  qwen3-next-80b:free, gemma-4-31b:free, qwen3-coder:free.
+- OPEN + FAST (200): the whole NVIDIA nemotron family - nemotron-3-super-120b-a12b
+  :free (410ms health / 24s full 2-tool turn), ultra-550b, nano-30b/9b; also
+  gpt-oss-20b, gemma-4-26b, cohere/north-mini-code.
+CHOSEN: nvidia/nemotron-3-super-120b-a12b:free (120B MoE 12b-active = fast +
+capable). LIVE-PROVEN: routed geocode_location + fetch_river_geometry correctly,
+24s (deepseek 244s + DNF; local qwen minutes). Set as durable default in
+.env.local + use_openrouter.sh default. This is the opencode mechanism: pick a
+free model whose UPSTREAM has capacity (NVIDIA serves nemotron free + open); the
+popular models funnel through hammered providers. The Settings dropdown fetch +
+the /models probe surface which are open at any moment. 429-retry (a115668) is
+the backstop for transient throttle. Module wave drives now run on nemotron.
