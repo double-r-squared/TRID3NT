@@ -96,6 +96,8 @@ async def run_telemac(
     spill_location_latlon: str | None = None,
     substance: str = "dye",
     contaminant: str | None = None,
+    decay_half_life_hours: float | None = None,
+    decay_rate_per_day: float | None = None,
     compute_class: str = "medium",
     # 2026-07-18 release-seeding tri-state, set ONLY by the approve-mesh
     # decision tail (underscore prefix -> stripped from the LLM schema by
@@ -182,8 +184,24 @@ async def run_telemac(
         substance: WHAT was spilled - e.g. "dye", "oil", "diesel", "sewage",
             "chemical". Set from the user's words. Modeled as a PASSIVELY
             ADVECTED dissolved tracer (transport + dilution); labels/narration
-            follow the substance. (True oil-slick physics - spreading,
-            evaporation, beaching - is the separate oil-spill module, WIP.)
+            follow the substance. THREE substance classes route automatically:
+            oil-family words ("oil"/"diesel"/"crude"/"bunker") add the oil-spill
+            slick module; DECAYING / BACTERIAL words ("sewage"/"E. coli"/
+            "coliform"/"effluent"/"wastewater"/"bacteria"/"die-off") add the
+            WAQTEL first-order DECAY module (WATER QUALITY PROCESS = 17) so the
+            plume ALSO decays as it travels - the downstream peak is lower and
+            the pulse persists a shorter time than a plain conservative dye;
+            everything else is the plain conservative dye tracer. (True oil-slick
+            physics - spreading, evaporation, beaching - is the oil-spill module.)
+        decay_half_life_hours: OPTIONAL. For a DECAYING substance only, the
+            first-order half-life in HOURS (overrides the classify default). The
+            WAQTEL decay coefficient is k = ln(2)/half_life. Honest literature
+            defaults if unset: bacterial die-off ~ a T90 of ~2 h in daylight
+            freshwater (fecal-coliform / E. coli). Clamped to [0.1, 720] h. Set
+            from the user's words (e.g. "half-life of 6 hours"); do NOT invent it.
+        decay_rate_per_day: OPTIONAL alternative to ``decay_half_life_hours`` for
+            a decaying substance - the first-order decay rate k in per-DAY units
+            (WAQTEL law 3). Clamped to [0.01, 100] /day. Use one or the other.
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
@@ -364,11 +382,16 @@ async def run_telemac(
         )
         cont = "".join(c for c in str(contaminant).strip().lower()
                        if c.isalnum() or c in " -_")[:24]
+        # Promote a tracer-class substance to whatever NON-tracer class the
+        # contaminant names (oil OR decay) - the LLM splits intent across the
+        # two fields (substance="dye"/"water" + contaminant="crude oil" or
+        # "sewage"), proven live twice for oil. Any non-tracer contaminant wins.
         if (cont and classify_substance(substance)[0] == "tracer"
-                and classify_substance(cont)[0] == "oil"):
+                and classify_substance(cont)[0] != "tracer"):
             logger.info(
                 "run_telemac: substance %r is tracer-class but contaminant %r "
-                "is oil-family - classifying by contaminant", substance, cont,
+                "is %s-family - classifying by contaminant", substance, cont,
+                classify_substance(cont)[0],
             )
             substance = cont
     try:
@@ -391,6 +414,22 @@ async def run_telemac(
             source_q_m3s,
         )
         source_q_m3s = min(max(source_q_m3s, 0.5), 30.0)
+
+    # WAQTEL decay override coercion (the workflow does the law-mapping + final
+    # clamp; here we only coerce to a positive float or drop to None so a bogus
+    # arg never crashes the call). Only meaningful for the decay substance class.
+    def _pos_float(v: float | None, lo: float, hi: float) -> float | None:
+        if v is None:
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if not (f > 0.0):
+            return None
+        return min(max(f, lo), hi)
+    decay_half_life_hours = _pos_float(decay_half_life_hours, 0.1, 720.0)
+    decay_rate_per_day = _pos_float(decay_rate_per_day, 0.01, 100.0)
 
     logger.info(
         "run_telemac location=%r bbox=%s spill_frac=%.3g pulse_s=%.0f dye=%.4g "
@@ -419,6 +458,8 @@ async def run_telemac(
             seed_release_lon=_seed_release_lon,
             seed_release_lat=_seed_release_lat,
             substance=substance,
+            decay_half_life_hours=decay_half_life_hours,
+            decay_rate_per_day=decay_rate_per_day,
             compute_class=compute_class,
         )
         logger.info(

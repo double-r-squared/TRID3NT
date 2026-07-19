@@ -106,8 +106,20 @@ class ReachConfig:
     # auto-activates in v9) - a floating particle slick rides on TOP of the
     # tracer solve (the module's soluble fraction feeds T1). oil_preset picks
     # the steering parameters from OIL_PRESETS.
+    # WAQTEL v1a "decay" class: a first-order-decaying substance (sewage /
+    # E. coli / effluent) rides the UNCHANGED dye tracer but the t2d cas couples
+    # WAQTEL with WATER QUALITY PROCESS = 17, whose nametrac branch applies a
+    # first-order decay SINK to every existing user tracer - so ZERO new tracers,
+    # ZERO postprocess/contract change; only a sink term in the solve. author_deck
+    # writes a tiny t2d_river.waqtel steering file from these two fields ONLY when
+    # substance_class == "decay"; the defaults leave every non-decay run byte-
+    # identical. decay_law: 1 = T90 bacterial die-off (coef = T90 hours), 2 =
+    # first-order (coef = k in h^-1), 3 = first-order (coef = k in d^-1) - the
+    # LAW OF TRACERS DEGRADATION values verified vs telemac2d.dico.
     substance_class: str = "tracer"
     oil_preset: str = "light_crude"
+    decay_law: int = 1                  # WAQTEL LAW OF TRACERS DEGRADATION
+    decay_coef: float = 2.0             # COEFFICIENT 1 FOR ... DEGRADATION (T90 h)
     n_drogues: int = 100                # slick particle count (oil class)
     drogues_period_s: int = 60          # particle snapshot cadence, seconds
     # release AFTER the startup transient: constant-depth init drains shallow
@@ -1337,6 +1349,51 @@ def write_sources_pulse(path, cfg):
         f.write("\n".join(lines) + "\n")
 
 
+#: the authored WAQTEL steering file (its own DAMOCLES-parsed .cas, subject to
+#: the same 72-char line limit as the main deck). Named in the t2d cas via
+#: WAQTEL STEERING FILE and uploaded as forcing evidence by the supervisor.
+WAQTEL_FILENAME = "t2d_river.waqtel"
+
+
+def write_waqtel_decay(cfg, workdir: str) -> str:
+    """Author the tiny WAQTEL steering file for first-order tracer DECAY.
+
+    WATER QUALITY PROCESS = 17 (degradation): its nametrac branch loops over ALL
+    existing user tracers and applies a first-order decay SINK, so it rides
+    directly on the UNCHANGED dye tracer (NUMBER OF TRACERS = 1) - zero new
+    tracers. Two keys (arrays sized to the tracer count = 1): LAW OF TRACERS
+    DEGRADATION picks the law (1 = T90 bacterial die-off with the coefficient in
+    HOURS, 2 = first-order k in h^-1, 3 = first-order k in d^-1) and COEFFICIENT
+    1 FOR LAW OF TRACERS DEGRADATION is that per-tracer coefficient. Returns the
+    steering filename written into ``workdir``. The DAMOCLES 72-char line limit
+    applies here exactly as in the main deck, so every line is clamped.
+    """
+    law = int(getattr(cfg, "decay_law", 1))
+    coef = float(getattr(cfg, "decay_coef", 2.0))
+    lines = [
+        "/------------------------------------------------------------------/",
+        "/  WAQTEL steering - first-order tracer DEGRADATION (process 17)",
+        f"/  law={law} (1=T90 h, 2=k h^-1, 3=k d^-1)  coef={coef:g}  ntrac=1 (dye)",
+        "/------------------------------------------------------------------/",
+        f"LAW OF TRACERS DEGRADATION           = {law}",
+        f"COEFFICIENT 1 FOR LAW OF TRACERS DEGRADATION = {coef:g}",
+    ]
+    # DAMOCLES hard 72-char line limit (identical to author_deck's clamp): a
+    # single over-long line derails the parser. Comments are safely sliced;
+    # the two data lines are short by construction but clamped defensively.
+    clamped = [ln[:72] if len(ln) > 72 else ln for ln in lines]
+    over = [ln for ln in clamped if len(ln) > 72]
+    if over:
+        LOG.warning("waqtel steering lines still >72 chars after clamp: %r",
+                    over[:3])
+    path = os.path.join(workdir, WAQTEL_FILENAME)
+    with open(path, "w") as f:
+        f.write("\n".join(clamped) + "\n")
+    LOG.info("waqtel decay steering authored: law=%d coef=%g -> %s",
+             law, coef, WAQTEL_FILENAME)
+    return WAQTEL_FILENAME
+
+
 # M2-spike-proven oil steering parameters (oilspill.f reader format). Fractions
 # sum to 1.0 per preset; HAP rows = FM TB SOLU KDISS KVOL.
 OIL_PRESETS: dict[str, dict] = {
@@ -1547,6 +1604,22 @@ COEFFICIENT FOR DIFFUSION OF TRACERS     = 1.E-1
             f"PRINTOUT PERIOD FOR DROGUES     = "
             f"{max(int(cfg.drogues_period_s / max(cfg.time_step_s, 1e-6)), 1)}\n"
             "ASCII DROGUES FILE              = drogues.txt\n"
+        )
+
+    if str(getattr(cfg, "substance_class", "tracer")).lower() == "decay":
+        # WAQTEL v1a decay class (mutually exclusive with oil): couple WAQTEL
+        # with WATER QUALITY PROCESS = 17 (first-order tracer DEGRADATION). Its
+        # nametrac branch applies a decay SINK to every existing user tracer, so
+        # it rides directly on the UNCHANGED dye tracer (NUMBER OF TRACERS = 1) -
+        # ZERO new tracers, ZERO postprocess/contract change, ZERO SOURCES change
+        # (the pulse column stays the dye concentration). Only three keys land in
+        # the t2d cas; the decay law + coefficient live in the tiny steering file.
+        write_waqtel_decay(cfg, os.path.dirname(os.path.abspath(cas_path)))
+        cas += (
+            "/\n"
+            "COUPLING WITH                   = 'WAQTEL'\n"
+            f"WAQTEL STEERING FILE            = {WAQTEL_FILENAME}\n"
+            "WATER QUALITY PROCESS           = 17\n"
         )
 
     # DAMOCLES hard 72-char line limit: one over-long line (e.g. a long

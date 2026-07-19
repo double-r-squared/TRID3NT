@@ -86,6 +86,7 @@ DEFAULT_OUTPUTS = [
     "particles.json",      # oil class: parsed slick snapshots (EPSG:4326)
     "oil_spill.txt",       # oil class: the steering file used (evidence)
     "slick.geojson",       # oil class: renderable slick snapshots
+    "t2d_river.waqtel",    # decay class: the WAQTEL steering file (forcing evidence)
 ]
 
 #: Metrics filename the ``LocalSolverSpec.classify_exit`` reads from the rundir.
@@ -491,6 +492,13 @@ def run_pipeline(
         "bank_source": bank_source,
         **oil_stats,
         "substance_class": str(getattr(cfg, "substance_class", "tracer")),
+        # WAQTEL v1a decay honesty: record the degradation law + coefficient the
+        # deck was authored with (only meaningful for the decay class; harmless
+        # defaults otherwise) so the run summary carries the decay parameters.
+        **({"decay_law": int(getattr(cfg, "decay_law", 1)),
+            "decay_coef": float(getattr(cfg, "decay_coef", 2.0))}
+           if str(getattr(cfg, "substance_class", "tracer")).lower() == "decay"
+           else {}),
         "domain_mode": mesh.get("domain_mode"),
         "n_islands": mesh.get("n_islands"),
         "water_coverage_frac": mesh.get("water_coverage_frac"),

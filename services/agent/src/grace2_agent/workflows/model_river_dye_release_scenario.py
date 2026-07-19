@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -160,13 +161,57 @@ OIL_SUBSTANCE_PRESETS: dict[str, str] = {
     "oil": "light_crude",   # generic 'oil' - matched LAST (substring order)
 }
 
+#: WAQTEL v1a first-order DECAY substance class (the third class beside oil and
+#: the plain conservative dye tracer). A decaying substance (sewage / E. coli /
+#: effluent) rides the UNCHANGED dye tracer but the .cas couples WAQTEL with
+#: WATER QUALITY PROCESS = 17, whose nametrac branch applies a first-order decay
+#: SINK to every existing user tracer - so ZERO new tracers, ZERO postprocess or
+#: contract change; only a sink term in the solve. The dict value picks the
+#: WAQTEL degradation law + a literature default coefficient; the run_telemac
+#: decay_half_life_hours / decay_rate_per_day param OVERRIDES the coefficient.
+#: ``law``: 1 = T90 bacterial die-off (coef = T90 hours), 2 = first-order (coef =
+#: k in h^-1), 3 = first-order (coef = k in d^-1) - verified vs telemac2d.dico
+#: LAW OF TRACERS DEGRADATION. Keys are matched as substrings AFTER the oil set.
+#: Bacterial keywords default to T90 ~ 2 h (daylight-freshwater fecal-coliform
+#: die-off, a narrated literature default - never a fabricated observation); a
+#: generic "decaying" substance falls to a mild first-order k. Both period-
+#: stripped variants ("e coli"/"ecoli", from the run_telemac alnum sanitize) and
+#: the raw ("e. coli"/"e.coli") are listed so classify matches on either path.
+DECAY_SUBSTANCE_PRESETS: dict[str, dict[str, float]] = {
+    "sewage": {"law": 1, "coef": 2.0},
+    "e. coli": {"law": 1, "coef": 2.0},
+    "e.coli": {"law": 1, "coef": 2.0},
+    "e coli": {"law": 1, "coef": 2.0},   # period-stripped by the tool sanitize
+    "ecoli": {"law": 1, "coef": 2.0},
+    "coliform": {"law": 1, "coef": 2.0},
+    "coli": {"law": 1, "coef": 2.0},     # catch-all for the coliform family
+    "bacteria": {"law": 1, "coef": 2.0},
+    "bacterial": {"law": 1, "coef": 2.0},
+    "effluent": {"law": 1, "coef": 2.0},
+    "wastewater": {"law": 1, "coef": 2.0},
+    "die-off": {"law": 1, "coef": 2.0},
+    "decaying": {"law": 2, "coef": 0.35},  # generic first-order k in h^-1
+    "half-life": {"law": 2, "coef": 0.35},
+}
 
-def classify_substance(substance: str) -> tuple[str, str | None]:
-    """('oil', preset) for oil-family substances, ('tracer', None) otherwise."""
+
+def classify_substance(substance: str) -> tuple[str, str | dict[str, float] | None]:
+    """Route a substance string to a TELEMAC substance class + its payload.
+
+    Returns ``('oil', preset)`` for oil-family substances (payload = the
+    OIL_PRESETS key), ``('decay', {law, coef})`` for a first-order-decaying
+    substance (payload = the WAQTEL degradation law + default coefficient), and
+    ``('tracer', None)`` for the plain conservative dye. Order matters: oil
+    keywords win first, then decay, else the tracer default - so 'oil' stays oil
+    and a bare 'dye' stays a conservative tracer, byte-identical to before.
+    """
     s = str(substance or "dye").strip().lower()
     for key, preset in OIL_SUBSTANCE_PRESETS.items():
         if key in s:
             return "oil", preset
+    for key, params in DECAY_SUBSTANCE_PRESETS.items():
+        if key in s:
+            return "decay", dict(params)
     return "tracer", None
 
 
@@ -601,6 +646,8 @@ async def model_river_dye_release_scenario(
     release_lon: float | None = None,
     release_lat: float | None = None,
     substance: str = "dye",
+    decay_half_life_hours: float | None = None,
+    decay_rate_per_day: float | None = None,
     *,
     release_seeds_reach: bool | None = None,
     seed_release_lon: float | None = None,
@@ -715,7 +762,43 @@ async def model_river_dye_release_scenario(
     # OPEN-26: hand the worker the NAMED watercourse so it re-seeds onto the
     # gnis_name mainstem (confluence disambiguation, Columbia-proven).
     river_name = _named_watercourse(location or location_name) or ""
-    substance_class, oil_preset = classify_substance(substance)
+    substance_class, substance_payload = classify_substance(substance)
+    oil_preset = substance_payload if substance_class == "oil" else None
+    # WAQTEL v1a decay class: classify_substance picks the degradation law + a
+    # literature default coefficient; the run_telemac decay_half_life_hours /
+    # decay_rate_per_day param OVERRIDES the coefficient (and, for a half-life,
+    # switches to first-order law 2 with k = ln2/hl; for a per-day rate, law 3).
+    # These are USER/LLM parameters with narrated defaults - never fabricated
+    # observations. The dye pulse (SOURCES column) is UNCHANGED; WAQTEL only
+    # adds a first-order decay SINK to the existing dye tracer in the solve.
+    decay_law = 1
+    decay_coef = 2.0
+    if substance_class == "decay":
+        if isinstance(substance_payload, dict):
+            decay_law = int(substance_payload.get("law", 1))
+            decay_coef = float(substance_payload.get("coef", 2.0))
+        if decay_half_life_hours is not None:
+            try:
+                hl = float(decay_half_life_hours)
+            except (TypeError, ValueError):
+                hl = 0.0
+            if hl > 0.0:
+                hl = min(max(hl, 0.1), 720.0)   # clamp: 6 min .. 30 days
+                decay_law = 2                    # first-order, k in h^-1
+                decay_coef = round(math.log(2.0) / hl, 6)
+        elif decay_rate_per_day is not None:
+            try:
+                kd = float(decay_rate_per_day)
+            except (TypeError, ValueError):
+                kd = 0.0
+            if kd > 0.0:
+                decay_law = 3                    # first-order, k in d^-1
+                decay_coef = round(min(max(kd, 0.01), 100.0), 6)
+        logger.info(
+            "substance %r -> decay class (WAQTEL process 17, law=%d coef=%.4g): "
+            "first-order sink on the dye tracer, no new tracer",
+            substance, decay_law, decay_coef,
+        )
     if substance_class == "oil":
         logger.info("substance %r -> oil class (preset %s): slick particles + "
                     "dissolved tracer", substance, oil_preset)
@@ -745,6 +828,9 @@ async def model_river_dye_release_scenario(
         **({"river_name": river_name} if river_name else {}),
         **({"substance_class": "oil", "oil_preset": oil_preset}
            if substance_class == "oil" else {}),
+        **({"substance_class": "decay",
+            "decay_law": decay_law, "decay_coef": decay_coef}
+           if substance_class == "decay" else {}),
         "nav_direction": "DM",
         "distance_km": float(reach_length_km),
         "channel_width_m": float(channel_width_m),
