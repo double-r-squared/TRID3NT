@@ -85,3 +85,15 @@ Spans plugin (overlay + draw tool + case-scoped store) + agent (per-case AOI in
 context every turn) + persistence. Supersedes/absorbs #170 + BK-4(b)(c). Scoping
 in flight 2026-07-19; build on NATE go (needs plugin reload + agent restart).
 Related: the empty-completion retry (wf) also reduces the same spinning pain.
+
+## NATE 2026-07-19 directives (priority + process)
+- NEW HIGH-LEVERAGE PRIORITY: MODEL EXTENSIBILITY - add free models via OpenRouter
+  (or similar OpenAI-compatible platform), the way opencode does it: pick a
+  provider + model (incl. OpenRouter :free variants). The local build already
+  runs MODEL_PROVIDER=openai (ollama); OpenRouter is OpenAI-compatible, so this
+  is base_url + key + model selection + a plugin Settings model/provider picker.
+- COALESCE the 6 chat-UI notes into ONE batch, do it now.
+- HOLD the module wave #224 (WAQTEL/GAIA/SFR/spiderweb) until these smaller
+  higher-leverage tasks land. DO NOT FORGET #224 - it is queued, not dropped.
+- PROCESS: NATE downgrading this session Fable -> Opus soon. When launching
+  Workflows/subagents, use OPUS (model override) from here on.
