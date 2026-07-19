@@ -288,3 +288,22 @@
 2026-06-27 | tools-batch3-4 | [TOOLS] batch3+4 LANDED on tools-work (two 8-agent workflows, keyless, local-first vs REAL sources): 14 NEW fetchers, registry 144 -> 158. batch3: fetch_usgs_volcano_alerts (HANS, global ~70), fetch_usgs_water_quality (WQP, ground-truths MODFLOW-GWT plume), fetch_usgs_groundwater_levels (NWIS gw, ground-truths MODFLOW heads), fetch_snotel_snow (NRCS AWDB SWE), fetch_sentinel1_sar (PC STAC, flood mapping), fetch_modis_lst (PC STAC, urban heat), fetch_hifld_transmission_lines (HIFLD lines), fetch_lehd_jobs (LODES economic exposure). batch4: fetch_nws_river_forecast (NWPS AHPS flood-category gauges), fetch_copernicus_dem (PC STAC GLO-30 GLOBAL DEM), fetch_chirps_precipitation (CHC quasi-global rainfall, global ~14MB), fetch_ghsl_population (JRC GHS-POP global), fetch_jrc_global_surface_water (PC STAC GSW occurrence), fetch_soilgrids (ISRIC global soil). Full suite 8780 passed (3 pre-existing swmm-api unrelated); global-query audit +volcano +chirps (both bounded). DEDUP guard caught 2 duplicates -> NOT built, recommend EXTEND existing: fetch_noaa_storm_events == fetch_storm_events_db (add bbox+date filters + magnitude/deaths props); fetch_osm_waterways == fetch_river_geometry (add waterway_type ditch/drain filter). ORCH/WEB FOLLOW-UPS: NEW render style presets -- volcano_alerts, nws_river_gauges, sar_backscatter_db, land_surface_temp_c, water_occurrence_pct, soil_property, precip_mm, ghsl population reuse; tools degrade gracefully.
 
 2026-06-27 | tools-batch5 | [TOOLS] batch5 LANDED on tools-work (8-agent workflow): 2 EXTENDS + 6 NEW, registry 158 -> 164. EXTEND fetch_storm_events_db (+bbox + begin/end date-window, multi-year spanning, MAGNITUDE/DEATHS props, supports_global_query=True national); EXTEND fetch_river_geometry (+waterway_type ditch/drain via closed vocab, data_fetch.py). NEW: fetch_epa_ejscreen (EPA EJScreen EJ indices by block group; EPA pulled its service 2025-02-05 -> agent found a live ArcGIS Online mirror), fetch_tsunami_events (NCEI global historical tsunami DB, global-bounded), fetch_climate_normals (NCEI 1991-2020 normals), fetch_noaa_coops_currents (CO-OPS tidal currents), fetch_airnow_air_quality + fetch_openaq_measurements (SECRET-gated AQI via the SSM credential path, honest no-key degrade -- the smoke/health-exposure gap). Full suite 9142 passed (3 pre-existing swmm-api unrelated; an earlier 62-fail run was a tmpfs disk-full, fixed by TMPDIR on root disk); global-query audit +storm_events +tsunami. SESSION TOTAL: registry 129 -> 164 (35 tools added/upgraded) + QGIS coalesced worker + 2 worker escalations.
+## 2026-07-18 - TELEMAC oil spill + dye release feature CLOSED (task #223)
+Double live E2E PASS, sequential, separate cases, headless-driven (NATE go):
+- OIL (Columbia/Longview prompt, run 01KXVY6S4FN1Q3NWGHPH8WKAV2): gate +
+  preview-before-gate + release point + "Peak oil concentration" raster +
+  "Oil slick track (light_crude)" layer (first live publish), 100/100
+  drogues, 2.7 km drift, 80k-node water-polygon mesh, 27-min solve.
+- DYE (Snake/Twin Falls prompt, run 01KXW3F6S3C1CPAPGNDC08SXJZ): tracer
+  class (no oil layers), "Peak dye concentration" raster, 496-node mesh,
+  26 s solve. Negative control for substance routing.
+Fixes landed during close-out: slick LayerURI role output->primary
+(2b81e2c), run_telemac classifies oil from the contaminant field when
+substance is tracer-class (cb047df; qwen splits intent across fields).
+Verification figures (mesh wireframe + caps + plume + slick + release)
+delivered to NATE. External flake during the window: Planetary Computer
+STAC search outage (~18:30-19:20) killed 2 dye attempts with honest typed
+errors; recovered and re-rolled. Follow-ups queued: OPEN-25b DEM retry
+ladder (now proven needed), drogue boundary-drop root cause (16/100 on one
+run vs 100/100 here), reach seeding from bare release coords
+(Cowlitz-vs-Columbia), coverage-metric look at narrow gate bboxes.
