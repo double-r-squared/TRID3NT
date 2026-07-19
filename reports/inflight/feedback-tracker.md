@@ -110,3 +110,13 @@ Key added; agent live on OpenRouter deepseek/deepseek-chat. Directives (#225):
 4. COMPOUND EXPERIMENT: re-run tracer with more moving parts on an advanced
    model - e.g. TELEMAC tracer THEN analyze possible affected habitats
    (tracer -> habitat impact chain). New compound-demo idea.
+
+## NATE 2026-07-19 (cont) - OpenRouter KEY via Settings FORM (not env)
+Instead of pasting the key into .env.local, a Settings FORM enters the OpenRouter
+key (+ base_url/model). KEY INSIGHT: openai_adapter reads GRACE2_OPENAI_BASE_URL/
+API_KEY/MODEL from os.environ AT CALL TIME, so a local agent HTTP endpoint (POST
+:8766 /api/provider-config) that updates os.environ live -> next turn uses it with
+NO restart (also kills the "provider switch = restart" caveat). Optionally persist
+to .env.local (gitignored) so it survives restart. Plugin Settings Save POSTs
+key+provider+model to that endpoint. Fold into #225. Secret: localhost only, never
+logged, password-echo field.
