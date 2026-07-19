@@ -60,3 +60,11 @@ Status of every item from the live-testing feedback. DONE = committed + deployed
 ## Rule reminders (in memory)
 - Opus on Claude's subagents; Haiku = the in-site agent model; Claude does NOT drive the live prod agent (NATE verifies).
 - Concise responses. Accumulate + wait for go; don't get carried away past the queue.
+
+## QUEUED - NATE UI notes 2026-07-19 (local QGIS plugin chat, next UI batch)
+- [ ] SimCard foldable ANY time (today it only collapses at terminal state) - user-driven fold/unfold while running
+- [ ] Nested tool calls as a DIRECTORY-TREE layout: parent tool on its own line, children indented with a tree connector (run_model / |-> fetch_dem style, nicer arrow ok) - replace the chip "circles" which read cluttered; KEEP the accent color
+- [ ] Tool chip color = STATE: green success / grey in-progress / red failed (not a fixed blue)
+- [ ] Collapsed SimCard shows PROGRESS on the right, next to the collapse toggle (pct/elapsed at a glance)
+- [ ] Sim/gate card ORDERING bug: card sits at the BOTTOM while the streaming text fills ABOVE it - card must land inline chronologically (same class as the BUG-4 GateCard fix: close the pending entry when the card inserts)
+- [ ] Cards get a FILL (subtle background), not outline-only
