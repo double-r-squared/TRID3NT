@@ -374,3 +374,25 @@ NATE live-verifies on plugin reload: bbox overlay+draw, chat-UI batch, model
 picker. Live OpenRouter turn needs NATE's OPENROUTER_API_KEY (his step).
 Design docs: reports/design/{per-case-bbox,openrouter-model-extensibility}-2026-07-19.md.
 Still HELD (not dropped): module wave #224 (WAQTEL/GAIA/SFR/spiderweb).
+
+## 2026-07-19 (cont) - #225 model selector + per-model telemetry SHIPPED + LIVE-PROVEN
+NATE OpenRouter follow-on. Workflows on Opus. All 3 features deployed (agent PID
+1691774 on OpenRouter deepseek/deepseek-chat, plugin synced):
+- F1 PER-MODEL TELEMETRY (2a016f5): tag tool+shadow rows with the EFFECTIVE model
+  (default turns no longer "unknown") + OPEN-28 default=str (datetime shadow rows
+  now persist). by_model accuracy slice already served at /api/telemetry/summary.
+- F3 KEY FORM / LIVE PROVIDER-CONFIG (516d645 agent + cd07c38 plugin): POST
+  /api/provider-config updates os.environ live (adapter reads env per-call) ->
+  next turn uses new provider/key/model, NO restart; num_ctx cache reset. Plugin
+  Settings Save POSTs provider/key/model off-thread; note now "applies on next
+  message". Kills the "provider switch = restart" caveat.
+- F2 FREE-MODEL DROPDOWN (516d645 + cd07c38): /api/local-models OpenRouter branch
+  fetches GET /models, filters FREE + tool-capable, 600s TTL cache; plugin combo
+  live-populates with static fallback.
+LIVE-PROVEN: /api/local-models -> 17 free+tool-capable models; POST
+/api/provider-config -> {ok:true, base_url_host:openrouter.ai}; ZERO sk-or- in
+agent log (key never logged - security verified). Agent 323 + plugin 225 offline
+tests. Design: reports/design/openrouter-model-extensibility-2026-07-19.md.
+NATE live-verifies the Settings form + dropdown visual on plugin reload. Next:
+gather per-model accuracy data -> pick capable free model -> resume module wave
+#224 + the tracer->habitat compound experiment.
