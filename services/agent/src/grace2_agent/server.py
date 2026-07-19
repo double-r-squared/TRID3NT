@@ -121,6 +121,7 @@ from .adapter import (
     build_layers_present_note,
     build_function_call_content,
     build_function_response_content,
+    build_user_text_content,
     build_tool_declarations,
     load_settings,
     rehydrate_history_from_case,
@@ -610,6 +611,29 @@ _DELIVERABLE_COMPLETE_DIRECTIVE: str = (
     "explicitly asked for ADDITIONAL analysis beyond this, do NOT call more "
     "tools -- give a brief (1-3 sentence) final summary of what was produced "
     "and stop. Calling further tools now will not improve the answer."
+)
+
+#: OPEN-16 EMPTY-COMPLETION RETRY (live 2026-07-19): the local qwen3 model
+#: occasionally returns a round with ZERO tool calls AND ZERO non-whitespace
+#: text (log: "gemini loop terminal ... text_chunks=0"). This is NOT context
+#: overflow (that is the OPEN-14 compaction/clip guard) -- the model has room
+#: and simply emits nothing, so the turn used to die silently and the user
+#: request never ran. Instead of breaking, the loop RETRIES the round with a
+#: corrective user-role nudge appended (production tool-runner pattern:
+#: OpenAI tool-runner / LangChain retry-with-nudge, NOT a blind resend),
+#: BOUNDED by this cap so an always-empty model can never loop forever (same
+#: safety discipline as the loop watchdog). Scoped to the LOCAL
+#: (MODEL_PROVIDER=openai) path only -- a legitimately empty Bedrock round
+#: must NOT change.
+_EMPTY_COMPLETION_RETRY_CAP: int = 2
+
+#: The corrective user-role nudge appended to ``contents`` before a retried
+#: empty round (OPEN-16). Plain instruction -- either act (tool) or answer;
+#: never another empty message.
+_EMPTY_COMPLETION_NUDGE: str = (
+    "Your previous response was empty. Either call the appropriate tool to "
+    "fulfill the request, or reply with your answer. Do not return an empty "
+    "message."
 )
 
 
@@ -3160,6 +3184,12 @@ async def _stream_gemini_reply(
     # is not fabricating; one that never tried and claims success is).
     _turn_ever_called_tool = False
 
+    # OPEN-16 EMPTY-COMPLETION RETRY: per-turn counter of empty-round retries
+    # already spent, capped at ``_EMPTY_COMPLETION_RETRY_CAP``. Past the cap the
+    # empty round falls through to the existing terminal break (never an infinite
+    # loop). Local-path only (guarded on ``_provider == "openai"`` below).
+    _empty_retries = 0
+
     iterations = 0
     try:
         while iterations < _step_cap:
@@ -3324,6 +3354,49 @@ async def _stream_gemini_reply(
             # is finished — either narrated the answer or had nothing more to
             # do.  Break out of the loop.
             if not turn_function_calls:
+                # OPEN-16 EMPTY-COMPLETION RETRY: a round with ZERO tool calls
+                # (we are in this branch) AND ZERO non-whitespace text is the
+                # qwen3 empty-completion shape -- the model emitted nothing at
+                # all, so the user's request would silently die here. Rather
+                # than break, retry the round with a corrective user nudge,
+                # bounded by ``_EMPTY_COMPLETION_RETRY_CAP``. Ordering: this
+                # runs BEFORE the OPEN-14 fabrication backstop below, but the
+                # two are disjoint -- an EMPTY round has no closing text, so
+                # ``looks_like_fabricated_action_claim("")`` is always False;
+                # the backstop only ever fires on a NON-empty narration round.
+                # Scoped to the LOCAL (MODEL_PROVIDER=openai) path -- ``_provider``
+                # is resolved once above (job-0287) -- so Bedrock's production
+                # narration (a legitimately empty round) is byte-unchanged. The
+                # empty round already incremented ``iterations`` (counts toward
+                # ``_step_cap``) and never set ``_turn_ever_called_tool`` / never
+                # touched the loop watchdog (both live in the tool-dispatch path
+                # below), so a retry cannot escape the step cap nor trip the
+                # runaway guard.
+                _empty_round = not "".join(turn_text_parts).strip()
+                if (
+                    _provider == "openai"
+                    and _empty_round
+                    and _empty_retries < _EMPTY_COMPLETION_RETRY_CAP
+                ):
+                    _empty_retries += 1
+                    logger.warning(
+                        "empty-completion retry %d/%d session=%s iter=%d",
+                        _empty_retries,
+                        _EMPTY_COMPLETION_RETRY_CAP,
+                        state.session_id,
+                        iterations,
+                    )
+                    # Corrective user-role nudge, built with the same plain-text
+                    # Content idiom the initial user message uses (adapter.
+                    # build_user_text_content) -- no hand-rolled google.genai
+                    # types here. Appended so the retried round sees "your last
+                    # turn was empty, act or answer".
+                    contents.append(build_user_text_content(_EMPTY_COMPLETION_NUDGE))
+                    # Observability is log-only (above): a retry must not inject
+                    # a transient note into the persisted narration segment, and
+                    # inventing a new envelope type is out of scope (NATE is
+                    # live) -- the log.warning is the durable retry witness.
+                    continue
                 logger.info(
                     "gemini loop terminal session=%s iter=%d text_chunks=%d",
                     state.session_id,
