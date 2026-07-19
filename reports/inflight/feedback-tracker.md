@@ -97,3 +97,16 @@ Related: the empty-completion retry (wf) also reduces the same spinning pain.
   higher-leverage tasks land. DO NOT FORGET #224 - it is queued, not dropped.
 - PROCESS: NATE downgrading this session Fable -> Opus soon. When launching
   Workflows/subagents, use OPUS (model override) from here on.
+
+## NATE 2026-07-19 (OpenRouter live) - model selector + per-model telemetry + experiments
+Key added; agent live on OpenRouter deepseek/deepseek-chat. Directives (#225):
+1. Settings FREE-ONLY model dropdown: live OpenRouter model list, filter to FREE
+   (:free / pricing 0) AND tool-capable (supported_parameters includes tools);
+   select + test different models from the dropdown. Replaces the static combo.
+2. PER-MODEL TELEMETRY: tag the tool-usage / turn tracking data with the model
+   used, so accuracy can be sliced per model for analysis later ("need data
+   first"). NATE sees clear improvement with better/faster models already.
+3. Once the new modules (#224) land, CONTINUE on a more capable FREE model.
+4. COMPOUND EXPERIMENT: re-run tracer with more moving parts on an advanced
+   model - e.g. TELEMAC tracer THEN analyze possible affected habitats
+   (tracer -> habitat impact chain). New compound-demo idea.
